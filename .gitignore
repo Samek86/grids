@@ -2,3 +2,6 @@
 *.exe
 *.ini
 sessions/
+
+# Video production materials (keep local only)
+docs/motion/
