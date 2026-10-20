@@ -41,11 +41,13 @@ const ID_UP: i32 = 103;
 const ID_EDIT: i32 = 104;
 const ID_OPEN_IN: i32 = 105;
 const ID_FILTER: i32 = 106;
+const ID_FAV: i32 = 107; // ☆+ / ★: add or remove the pane's folder from favourites
 // top toolbar buttons (children of the main window)
 const ID_TB_LAYOUT: i32 = 201;
 const ID_TB_SAVE: i32 = 202;
 const ID_TB_LOAD: i32 = 204;
 const ID_TB_THEME: i32 = 205;
+const ID_TB_FAV: i32 = 206;
 const ID_TB_VIEW: i32 = 203;
 // menu ids
 const ID_HIDDEN: usize = 1100;
@@ -149,6 +151,7 @@ fn glyph(id: i32) -> &'static str {
         ID_TB_LAYOUT => "\u{E8A9}",
         ID_TB_SAVE => "\u{E74E}",
         ID_TB_LOAD => "\u{E838}",
+        ID_TB_FAV => "\u{E734}",
         ID_TB_THEME if DARK_ON.load(Ordering::Relaxed) => "\u{E706}", // sun: back to light
         ID_TB_THEME => "\u{E708}",                                     // moon: go dark
         _ => "\u{E890}",
@@ -188,6 +191,7 @@ struct Session {
     dark: bool,
     dblup: bool,            // double-click on empty space goes to the parent folder
     file: String,           // named session (.grids) the layout was last loaded from / saved to
+    favs: Vec<String>,      // favourite folders (parsing names), app-wide
 }
 
 impl Default for Session {
@@ -206,6 +210,7 @@ impl Default for Session {
             dark: false,
             dblup: true,
             file: String::new(),
+            favs: Vec::new(),
         }
     }
 }
@@ -289,6 +294,7 @@ impl Session {
                 "dark" => s.dark = v.trim() == "1",
                 "dblup" => s.dblup = v.trim() != "0",
                 "session" => s.file = v.trim().to_string(),
+                "fav" if !v.trim().is_empty() => s.favs.push(v.trim().to_string()),
                 _ => {
                     if let Some(i) = slot('p') {
                         s.paths[i] = v.to_string();
@@ -321,6 +327,9 @@ impl Session {
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
+        for f in &self.favs {
+            o += &format!("fav={f}\n");
+        }
         for i in 0..MAXP {
             if !self.paths[i].is_empty() {
                 o += &format!("p{i}={}\n", self.paths[i]);
@@ -332,9 +341,13 @@ impl Session {
         o
     }
 
-    /// What goes into a named session file: no window position, no pointer to itself.
+    fn is_fav(&self, path: &str) -> bool {
+        !path.is_empty() && self.favs.iter().any(|f| f.eq_ignore_ascii_case(path))
+    }
+
+    /// What goes into a named session file: no window position, no pointer to itself, no favourites.
     fn snapshot(&self) -> String {
-        Session { win: None, file: String::new(), ..self.clone() }.to_ini()
+        Session { win: None, file: String::new(), favs: Vec::new(), ..self.clone() }.to_ini()
     }
 
     /// Takes grid + folders from a named session; window position and sidebar width stay as they are.
@@ -516,6 +529,7 @@ struct PaneGeo {
     btn: [RECT; 4], // back, forward, up, open-in
     addr: RECT,
     filt: RECT,
+    fav: RECT,
     view: RECT,
 }
 
@@ -524,14 +538,16 @@ fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     let (bar, bh, b, pad) = (s(30), s(22), s(24), s(4));
     let y = (bar - bh) / 2;
     let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
-    let fw = s(150).min((w - 2 * pad - 4 * b) / 3).max(0);
-    let filt = r(w - pad - fw, fw);
+    let fav = r(w - pad - b, b);
+    let fw = s(150).min((w - 2 * pad - 5 * b) / 3).max(0);
+    let filt = r(fav.left - s(2) - fw, fw);
     let open = r(filt.left - s(2) - b, b);
     let addr_x = pad + 3 * b + s(4);
     PaneGeo {
         btn: [r(pad, b), r(pad + b, b), r(pad + 2 * b, b), open],
         addr: r(addr_x, open.left - s(4) - addr_x),
         filt,
+        fav,
         // 2px in, so the active ring stays visible around the list
         view: RECT { left: s(2), top: bar, right: w - s(2), bottom: h - s(2) },
     }
@@ -588,6 +604,9 @@ struct App {
     load: HWND, // load popup while open
     load_closed: Option<Instant>,
     load_hot: Option<usize>, // card index, or LOAD_SAVE_AS / LOAD_FOLDER
+    fav_popup: HWND,
+    fav_closed: Option<Instant>,
+    fav_hot: Option<(usize, bool)>, // (row, on its ✕)
     cards: Vec<(PathBuf, Session, String)>,
     hover: HWND, // owner-drawn button under the mouse
     tip: HWND,
@@ -622,6 +641,9 @@ thread_local! {
         load: HWND::default(),
         load_closed: None,
         load_hot: None,
+        fav_popup: HWND::default(),
+        fav_closed: None,
+        fav_hot: None,
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),
@@ -801,6 +823,19 @@ unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         fill(dc, rc, blend(bg, ink, t));
     }
     let fg = if tinted || hot || pressed { ink } else { pal().sub };
+    if id == ID_FAV {
+        // ★ filled (gray, or the header ink when tinted) in a favourite folder, otherwise ☆ with a small +
+        let fav = app(|a| a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == parent)).is_some_and(|i| a.s.is_fav(&a.s.paths[i])));
+        if fav {
+            return text(dc, rc, "\u{E735}", icon_font, if tinted { ink } else { pal().sub }, DT_CENTER);
+        }
+        // ☆ exactly where ★ goes, with a small + drawn inside it (lines, so it stays crisp)
+        let s = |v: i32| v * dpi / 96;
+        text(dc, rc, "\u{E734}", icon_font, fg, DT_CENTER);
+        let (cx, cy, arm, t) = ((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2 + s(1), s(2), s(1).max(1));
+        fill(dc, RECT { left: cx - arm, top: cy - t / 2, right: cx + arm + 1, bottom: cy - t / 2 + t }, fg);
+        return fill(dc, RECT { left: cx - t / 2, top: cy - arm, right: cx - t / 2 + t, bottom: cy + arm + 1 }, fg);
+    }
     if !on_main {
         return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
     }
@@ -1022,6 +1057,9 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
         _ = SetWindowTextW(e, &HSTRING::from(disp));
     }
+    if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
+        _ = InvalidateRect(Some(b), None, false);
+    }
     if let Ok(fv) = eb.GetCurrentView::<IFolderView2>() {
         if view.0 != 0 {
             _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(view.0), view.1);
@@ -1225,6 +1263,7 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
         (ID_FWD, w!("앞으로"), w!("앞으로  (Alt+→)")),
         (ID_UP, w!("상위 폴더"), w!("상위 폴더  (Alt+↑)")),
         (ID_OPEN_IN, w!("다른 패널에서 열기"), w!("다른 패널에서 열기")),
+        (ID_FAV, w!("즐겨찾기"), w!("즐겨찾기에 추가 (채워진 별: 빼기)")),
     ];
     for (id, name, tip) in buttons {
         add_tip(child(h, w!("BUTTON"), name, btn, plain, id, font), tip);
@@ -1310,6 +1349,7 @@ unsafe fn layout_pane(h: HWND) {
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
     moves.push((ctl(ID_EDIT), inside(pg.addr, s(8), s(6))));
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
+    moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
 }
 
@@ -1325,11 +1365,13 @@ unsafe fn relayout() {
         let tree = RECT { left: sr.left + s(2), top: sr.top + s(4), right: sr.right - s(2), bottom: sr.bottom - s(2) };
         let mut moves = vec![(a.tree_hwnd, tree)];
         let mut x = g.pad;
-        for (id, w) in [(ID_TB_LAYOUT, s(70)), (ID_TB_SAVE, s(32)), (ID_TB_LOAD, s(32)), (ID_TB_VIEW, s(32)), (ID_TB_THEME, s(32))] {
-            let b = unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
-            moves.push((b, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
+        let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
+        for (id, w) in [(ID_TB_LAYOUT, s(70)), (ID_TB_SAVE, s(32)), (ID_TB_LOAD, s(32)), (ID_TB_VIEW, s(32)), (ID_TB_FAV, s(32))] {
+            moves.push((tb(id), RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
             x += w + s(4);
         }
+        let right = g.w - g.pad; // the theme toggle sits at the far right
+        moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
             if let Some(p) = p {
                 moves.push((p.hwnd, cell_rect(&g, &a.s.heights, i)));
@@ -1419,7 +1461,7 @@ unsafe fn set_active(i: usize) {
 
 unsafe fn repaint_header(pane: HWND) {
     _ = InvalidateRect(Some(pane), None, false);
-    for id in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN, ID_EDIT, ID_FILTER] {
+    for id in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN, ID_FAV, ID_EDIT, ID_FILTER] {
         if let Ok(c) = GetDlgItem(Some(pane), id) {
             _ = InvalidateRect(Some(c), None, true);
         }
@@ -2240,6 +2282,145 @@ extern "system" fn load_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
     }
 }
 
+// ---------- favourites: ☆+ in each pane header, the ★ list in the toolbar ----------
+
+unsafe fn repaint_fav_buttons() {
+    for h in app(|a| a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>()) {
+        if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
+            _ = InvalidateRect(Some(b), None, false);
+        }
+    }
+}
+
+unsafe fn toggle_fav(i: usize) {
+    app(|a| {
+        let path = a.s.paths[i].clone();
+        if a.s.is_fav(&path) {
+            a.s.favs.retain(|f| !f.eq_ignore_ascii_case(&path));
+        } else if !path.is_empty() {
+            a.s.favs.push(path);
+        }
+    });
+    repaint_fav_buttons();
+}
+
+struct FavGeo {
+    w: i32,
+    h: i32,
+    rows: Vec<(RECT, RECT)>, // (row, remove ✕)
+}
+
+fn fav_geo(n: usize, dpi: i32) -> FavGeo {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, rh, w) = (s(6), s(40), s(380));
+    let rows = (0..n as i32)
+        .map(|k| {
+            let row = RECT { left: pad, top: pad + k * rh, right: w - pad, bottom: pad + (k + 1) * rh };
+            (row, RECT { left: row.right - s(32), ..row })
+        })
+        .collect();
+    FavGeo { w, h: 2 * pad + n.max(1) as i32 * rh, rows }
+}
+
+unsafe fn open_favs() {
+    let (main, dpi, open, closed, n) = app(|a| (a.main, a.dpi, a.fav_popup, a.fav_closed, a.s.favs.len()));
+    // a click on the button first deactivates (closes) the popup; don't reopen it right away
+    if !open.0.is_null() || closed.is_some_and(|t| t.elapsed().as_millis() < 300) {
+        return;
+    }
+    let g = fav_geo(n, dpi);
+    let mut rc = RECT::default();
+    if let Ok(b) = GetDlgItem(Some(main), ID_TB_FAV) {
+        _ = GetWindowRect(b, &mut rc);
+    }
+    app(|a| a.fav_hot = None);
+    let style = WS_POPUP | WS_VISIBLE;
+    let y = rc.bottom + 6 * dpi / 96;
+    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsFav"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
+        return;
+    };
+    let square = DWMWCP_DONOTROUND;
+    _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
+    app(|a| a.fav_popup = h);
+}
+
+unsafe fn paint_favs(h: HWND) {
+    let (favs, hot, dpi, font, small, icon_font) = app(|a| (a.s.favs.clone(), a.fav_hot, a.dpi, a.font, a.small_font, a.icon_font));
+    let g = fav_geo(favs.len(), dpi);
+    let s = |v: i32| v * dpi / 96;
+    buffered(h, |dc, rc| {
+        fill(dc, rc, pal().card);
+        frame(dc, rc, 1, pal().line);
+        if favs.is_empty() {
+            text(dc, rc, "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", font, pal().sub, DT_CENTER);
+        }
+        for (k, (f, (row, remove))) in favs.iter().zip(&g.rows).enumerate() {
+            if hot.is_some_and(|(i, _)| i == k) {
+                fill(dc, *row, pal().pill);
+                let x_on = hot == Some((k, true));
+                text(dc, *remove, "\u{E711}", icon_font, if x_on { pal().text } else { pal().sub }, DT_CENTER);
+            }
+            let icon = RECT { left: row.left + s(6), right: row.left + s(28), ..*row };
+            text(dc, icon, "\u{E8B7}", icon_font, pal().sub, DT_CENTER);
+            let line = |top: i32, hgt: i32| RECT { left: icon.right + s(6), right: remove.left - s(4), top, bottom: top + hgt };
+            text(dc, line(row.top + s(3), s(19)), &short_name(f), font, pal().text, DT_LEFT);
+            text(dc, line(row.top + s(21), s(16)), f, small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
+        }
+    });
+}
+
+fn fav_hit(g: &FavGeo, x: i32, y: i32) -> Option<(usize, bool)> {
+    let inside = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+    g.rows.iter().position(|(row, _)| inside(row)).map(|k| (k, inside(&g.rows[k].1)))
+}
+
+extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
+        match msg {
+            WM_PAINT => paint_favs(h),
+            WM_ERASEBKGND => return LRESULT(1),
+            WM_MOUSEMOVE => {
+                let (x, y) = xy(lp);
+                let hot = fav_hit(&g, x, y);
+                if app(|a| std::mem::replace(&mut a.fav_hot, hot)) != hot {
+                    _ = InvalidateRect(Some(h), None, false);
+                }
+            }
+            WM_LBUTTONUP => {
+                let (x, y) = xy(lp);
+                match fav_hit(&g, x, y) {
+                    Some((k, true)) => {
+                        // ✕: drop it and shrink the list in place
+                        app(|a| {
+                            a.s.favs.remove(k);
+                            a.fav_hot = None;
+                        });
+                        let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
+                        _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                        _ = InvalidateRect(Some(h), None, false);
+                        repaint_fav_buttons();
+                    }
+                    Some((k, false)) => {
+                        let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                        _ = DestroyWindow(h);
+                        if !navigate(i, &path) {
+                            _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+                        }
+                        focus_view(i);
+                    }
+                    None => {}
+                }
+            }
+            WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => _ = DestroyWindow(h),
+            WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
+            WM_DESTROY => app(|a| (a.fav_popup, a.fav_closed) = (HWND::default(), Some(Instant::now()))),
+            _ => return DefWindowProcW(h, msg, wp, lp),
+        }
+        LRESULT(0)
+    }
+}
+
 unsafe fn popup_menu(menu: HMENU, id: i32) {
     let main = app(|a| a.main);
     let mut rc = RECT::default();
@@ -2423,6 +2604,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 id if id == ID_TB_LAYOUT as usize => open_grid(),
                 id if id == ID_TB_SAVE as usize => save_current(),
                 id if id == ID_TB_LOAD as usize => open_load(),
+                id if id == ID_TB_FAV as usize => open_favs(),
                 id if id == ID_TB_THEME as usize => {
                     app(|a| a.s.dark ^= true);
                     apply_theme();
@@ -2516,6 +2698,11 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 (ID_OPEN_IN, _) => {
                     if let Some(i) = pane_of(h) {
                         open_in_menu(h, i);
+                    }
+                }
+                (ID_FAV, _) => {
+                    if let Some(i) = pane_of(h) {
+                        toggle_fav(i);
                     }
                 }
                 // typing in the filter box applies after a short pause
@@ -2613,6 +2800,14 @@ fn main() -> Result<()> {
         });
         RegisterClassW(&WNDCLASSW {
             style: CS_DROPSHADOW,
+            lpfnWndProc: Some(fav_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsFav"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DROPSHADOW,
             lpfnWndProc: Some(load_proc),
             hInstance: hinst,
             hCursor: arrow,
@@ -2667,6 +2862,7 @@ fn main() -> Result<()> {
             (ID_TB_SAVE, w!("세션 저장"), w!("세션 저장 (Ctrl+S) · 초록 점 = 저장 안 된 배치 변경")),
             (ID_TB_LOAD, w!("불러오기"), w!("세션 불러오기")),
             (ID_TB_VIEW, w!("보기"), w!("보기: 숨김 파일 · 선택 색 · 단축키")),
+            (ID_TB_FAV, w!("즐겨찾기"), w!("즐겨찾기 폴더 (선택한 패널에서 열기)")),
             (ID_TB_THEME, w!("테마"), w!("라이트 / 다크 테마")),
         ];
         for (id, label, hint) in tb {
@@ -2752,6 +2948,11 @@ mod tests {
         cur.colr = vec![0.3, 0.7];
         assert!(layout_differs(&cur, &base));
         assert!(!s.snapshot().contains("win=") && !s.snapshot().contains("session="));
+        // favourites: kept in grids.ini, case-insensitive, never in a named session
+        let mut f = Session { favs: vec![r"C:\Work".into(), r"D:\".into()], ..Default::default() };
+        f = Session::parse(&f.to_ini());
+        assert!(f.is_fav(r"c:\work") && !f.is_fav(r"C:\Work\x") && !f.is_fav(""));
+        assert!(!f.snapshot().contains("fav="));
         assert_eq!((short_name(r"C:\Users\x\"), short_name("C:\\"), short_name(THIS_PC)), ("x".into(), "C:".into(), "내 PC".into()));
 
         // cells tile the length exactly, with `gap` between neighbours
@@ -2777,9 +2978,9 @@ mod tests {
         // pane top bar: back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
         for (w, dpi) in [(800, 96), (260, 96), (1200, 144)] {
             let p = pane_geo(w, 500, dpi);
-            let row = [p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt];
+            let row = [p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
-            assert!(p.filt.right <= w && p.view.top >= p.btn[0].bottom);
+            assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
     }
 }
