@@ -187,7 +187,7 @@ Ctrl+H\tShow hidden files\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
-⇄ button: open the selected folder (or the current one) in another pane\n\
+⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns\n\
 Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
@@ -204,7 +204,7 @@ Ctrl+H\t숨김 파일 표시\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
-⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기\n\
+⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께\n\
 저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
@@ -650,7 +650,7 @@ struct Pane {
     eb: IExplorerBrowser,
     cookie: u32,
     disp: String,
-    fresh: bool, // no folder shown yet: the session's columns are still to be applied
+    pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
 }
 
 struct App {
@@ -1196,6 +1196,14 @@ unsafe fn open_in(src: usize, dst: usize) {
     let is_dir = |it: &IShellItem| it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
     let sel = fv.GetSelection(false).and_then(|a| a.GetItemAt(0)).ok().filter(is_dir);
     if let Some(item) = sel.or_else(|| fv.GetFolder::<IShellItem>().ok()) {
+        // the target takes this pane's columns too (order, widths, sort): set one up, copy it around
+        save_view(src);
+        app(|a| {
+            let cols = a.s.cols[src].clone();
+            if let Some(p) = a.panes[dst].as_mut() {
+                p.pending = Some(cols);
+            }
+        });
         browse_item(dst, &item);
         set_active(dst);
         focus_view(dst);
@@ -1234,10 +1242,10 @@ unsafe fn apply_filter(i: usize) {
 }
 
 // Pane-sticky view mode: remember it before leaving a folder, re-apply after arriving. The columns
-// are only remembered (for the session); they go back on when a session's pane first opens.
+// are only remembered; they go back on when a session's pane first opens, or come along with open in.
 unsafe fn save_view(i: usize) {
-    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.fresh)) {
-        return; // the session's columns haven't been applied yet: don't overwrite them
+    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some())) {
+        return; // columns are about to be put on: don't overwrite what is waiting
     }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
@@ -1325,10 +1333,10 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
     let Some((h, eb, view, restore)) = app(|a| {
         a.s.paths[i] = parse;
-        let (v, cols) = (a.s.views[i], a.s.cols[i].clone());
+        let v = a.s.views[i];
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
-            (p.hwnd, p.eb.clone(), v, std::mem::replace(&mut p.fresh, false).then_some(cols))
+            (p.hwnd, p.eb.clone(), v, p.pending.take())
         })
     }) else {
         return;
@@ -1561,7 +1569,8 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     eb.SetOptions(EBO_NOBORDER)?;
     let ev: IExplorerBrowserEvents = Events(i).into();
     let cookie = eb.Advise(&ev)?;
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), fresh: true })
+    let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending })
 }
 
 unsafe fn destroy_pane(i: usize) {
