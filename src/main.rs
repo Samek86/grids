@@ -74,6 +74,8 @@ const TVM_SETBKCOLOR: u32 = 0x111D;
 // list-view messages (the Explorer list inside each pane)
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_GETHEADER: u32 = 0x101F;
+const LVM_GETCOLUMNORDERARRAY: u32 = 0x103B;
+const HDM_GETITEMCOUNT: u32 = 0x1200;
 const LVM_SETTEXTCOLOR: u32 = 0x1024;
 const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 const LVM_SETSELECTEDCOLUMN: u32 = 0x108C;
@@ -228,6 +230,7 @@ struct Session {
     file: String,           // named session (.grids) the layout was last loaded from / saved to
     favs: Vec<String>,      // favourite folders (parsing names), app-wide
     ko: bool,               // Korean UI
+    cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
 }
 
 impl Default for Session {
@@ -248,6 +251,7 @@ impl Default for Session {
             file: String::new(),
             favs: Vec::new(),
             ko: false,
+            cols: vec![String::new(); MAXP],
         }
     }
 }
@@ -338,6 +342,8 @@ impl Session {
                         s.paths[i] = v.to_string();
                     } else if let (Some(i), [m, z]) = (slot('v'), &nums::<i32>(v)[..]) {
                         s.views[i] = (*m, *z);
+                    } else if let Some(i) = slot('c') {
+                        s.cols[i] = v.trim().to_string();
                     }
                 }
             }
@@ -375,6 +381,9 @@ impl Session {
             if self.views[i].0 != 0 {
                 o += &format!("v{i}={},{}\n", self.views[i].0, self.views[i].1);
             }
+            if !self.cols[i].is_empty() {
+                o += &format!("c{i}={}\n", self.cols[i]);
+            }
         }
         o
     }
@@ -391,7 +400,7 @@ impl Session {
     /// Takes grid + folders from a named session; window position and sidebar width stay as they are.
     fn take_layout(&mut self, o: &Session) {
         (self.heights, self.colr, self.rowr) = (o.heights.clone(), o.colr.clone(), o.rowr.clone());
-        (self.active, self.paths, self.views) = (o.active, o.paths.clone(), o.views.clone());
+        (self.active, self.paths, self.views, self.cols) = (o.active, o.paths.clone(), o.views.clone(), o.cols.clone());
     }
 }
 
@@ -402,6 +411,29 @@ fn layout_differs(cur: &Session, base: &Session) -> bool {
         || !near(&cur.colr, &base.colr)
         || cur.rowr.iter().zip(&base.rowr).any(|(a, b)| !near(a, b))
         || (0..cur.panes()).any(|i| base.views[i].0 != 0 && cur.views[i] != base.views[i])
+        || (0..cur.panes()).any(|i| !base.cols[i].is_empty() && cur.paths[i] == base.paths[i] && cur.cols[i] != base.cols[i])
+}
+
+// A view's columns: visible ones in order with their widths, then the sort columns, each property as
+// "format GUID/property id": "GUID/pid=width,...;GUID/pid=direction,...".
+fn cols_text(cols: &[(PROPERTYKEY, u32)], sort: &[(PROPERTYKEY, i32)]) -> String {
+    let key = |k: &PROPERTYKEY| format!("{:?}/{}", k.fmtid, k.pid);
+    let cols: Vec<String> = cols.iter().map(|(k, w)| format!("{}={w}", key(k))).collect();
+    let sort: Vec<String> = sort.iter().map(|(k, d)| format!("{}={d}", key(k))).collect();
+    format!("{};{}", cols.join(","), sort.join(","))
+}
+
+fn parse_cols(t: &str) -> (Vec<(PROPERTYKEY, u32)>, Vec<(PROPERTYKEY, i32)>) {
+    fn items<T: std::str::FromStr>(s: &str) -> Vec<(PROPERTYKEY, T)> {
+        let item = |e: &str| {
+            let (k, v) = e.split_once('=')?;
+            let (g, pid) = k.split_once('/')?;
+            Some((PROPERTYKEY { fmtid: GUID::try_from(g).ok()?, pid: pid.parse().ok()? }, v.parse().ok()?))
+        };
+        s.split(',').filter_map(item).collect()
+    }
+    let (cols, sort) = t.split_once(';').unwrap_or((t, ""));
+    (items(cols), items(sort))
 }
 
 // Existing relative paths become absolute; shell names like ::{GUID} pass through.
@@ -618,6 +650,7 @@ struct Pane {
     eb: IExplorerBrowser,
     cookie: u32,
     disp: String,
+    fresh: bool, // no folder shown yet: the session's columns are still to be applied
 }
 
 struct App {
@@ -1039,6 +1072,13 @@ unsafe fn check_dirty() {
         save_view(i);
     }
     let changed = app(|a| {
+        if let Some(b) = a.base.as_mut() {
+            for i in 0..a.s.panes() {
+                if b.cols[i].is_empty() && b.paths[i] == a.s.paths[i] {
+                    b.cols[i] = a.s.cols[i].clone();
+                }
+            }
+        }
         let d = a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
         std::mem::replace(&mut a.dirty, d) != d
     });
@@ -1193,24 +1233,102 @@ unsafe fn apply_filter(i: usize) {
     }
 }
 
-// Pane-sticky view mode: remember it before leaving a folder, re-apply after arriving.
+// Pane-sticky view mode: remember it before leaving a folder, re-apply after arriving. The columns
+// are only remembered (for the session); they go back on when a session's pane first opens.
 unsafe fn save_view(i: usize) {
+    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.fresh)) {
+        return; // the session's columns haven't been applied yet: don't overwrite them
+    }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
     if fv.GetViewModeAndIconSize(&mut m, &mut z).is_ok() {
         app(|a| a.s.views[i] = (m.0, z));
+    }
+    let pane = app(|a| a.panes[i].as_ref().map(|p| p.hwnd)).unwrap_or_default();
+    if let Some(c) = read_cols(&fv, &header_names(pane)) {
+        app(|a| a.s.cols[i] = c);
+    }
+}
+
+// Column names in on-screen order, from the pane's list header: dragging a column to a new place
+// changes only the header's order, which the view's own column list doesn't follow.
+unsafe fn header_names(pane: HWND) -> Vec<String> {
+    extern "system" fn first_list(h: HWND, out: LPARAM) -> BOOL {
+        let mut c = [0u16; 16];
+        let n = unsafe { GetClassNameW(h, &mut c) } as usize;
+        if String::from_utf16_lossy(&c[..n]) != "SysListView32" {
+            return true.into();
+        }
+        unsafe { *(out.0 as *mut HWND) = h };
+        false.into()
+    }
+    let mut lv = HWND::default();
+    _ = EnumChildWindows(Some(pane), Some(first_list), LPARAM(&mut lv as *mut _ as isize));
+    let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+    let n = SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize;
+    let mut order = vec![0i32; n];
+    SendMessageW(lv, LVM_GETCOLUMNORDERARRAY, Some(WPARAM(n)), Some(LPARAM(order.as_mut_ptr() as isize)));
+    order
+        .iter()
+        .map(|&k| {
+            let mut text = [0u16; 128];
+            let mut item = HDITEMW { mask: HDI_TEXT, pszText: PWSTR(text.as_mut_ptr()), cchTextMax: text.len() as i32, ..Default::default() };
+            SendMessageW(header, HDM_GETITEMW, Some(WPARAM(k as usize)), Some(LPARAM(&mut item as *mut _ as isize)));
+            String::from_utf16_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(0)])
+        })
+        .collect()
+}
+
+// The view's visible columns with widths, put in on-screen order by name, then its sort columns.
+unsafe fn read_cols(fv: &IFolderView2, shown: &[String]) -> Option<String> {
+    let cm: IColumnManager = fv.cast().ok()?;
+    let mut keys = vec![PROPERTYKEY::default(); cm.GetColumnCount(CM_ENUM_VISIBLE).ok()? as usize];
+    cm.GetColumns(CM_ENUM_VISIBLE, &mut keys).ok()?;
+    let info = |k: &PROPERTYKEY| {
+        let mask = (CM_MASK_WIDTH.0 | CM_MASK_NAME.0) as u32;
+        let mut ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: mask, ..Default::default() };
+        _ = cm.GetColumnInfo(k, &mut ci);
+        let name = String::from_utf16_lossy(&ci.wszName[..ci.wszName.iter().position(|&c| c == 0).unwrap_or(0)]);
+        (*k, ci.uWidth, name)
+    };
+    let mut left: Vec<_> = keys.iter().map(info).collect();
+    let mut cols = Vec::new();
+    for name in shown {
+        if let Some(at) = left.iter().position(|c| &c.2 == name) {
+            cols.push(left.remove(at));
+        }
+    }
+    cols.extend(left); // any the header didn't name keep the view's order
+    let cols: Vec<_> = cols.into_iter().map(|(k, w, _)| (k, w)).collect();
+    let mut sort = vec![SORTCOLUMN::default(); fv.GetSortColumnCount().ok()?.max(0) as usize];
+    fv.GetSortColumns(&mut sort).ok()?;
+    Some(cols_text(&cols, &sort.iter().map(|c| (c.propkey, c.direction.0)).collect::<Vec<_>>()))
+}
+
+unsafe fn apply_cols(fv: &IFolderView2, text: &str) {
+    let (cols, sort) = parse_cols(text);
+    if let (false, Ok(cm)) = (cols.is_empty(), fv.cast::<IColumnManager>()) {
+        if cm.SetColumns(&cols.iter().map(|c| c.0).collect::<Vec<_>>()).is_ok() {
+            for (k, w) in &cols {
+                let ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: CM_MASK_WIDTH.0 as u32, uWidth: *w, ..Default::default() };
+                _ = cm.SetColumnInfo(k, &ci);
+            }
+        }
+    }
+    if !sort.is_empty() {
+        _ = fv.SetSortColumns(&sort.iter().map(|&(propkey, d)| SORTCOLUMN { propkey, direction: SORTDIRECTION(d) }).collect::<Vec<_>>());
     }
 }
 
 unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
-    let Some((h, eb, view)) = app(|a| {
+    let Some((h, eb, view, restore)) = app(|a| {
         a.s.paths[i] = parse;
-        let v = a.s.views[i];
+        let (v, cols) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
-            (p.hwnd, p.eb.clone(), v)
+            (p.hwnd, p.eb.clone(), v, std::mem::replace(&mut p.fresh, false).then_some(cols))
         })
     }) else {
         return;
@@ -1224,6 +1342,9 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     if let Ok(fv) = eb.GetCurrentView::<IFolderView2>() {
         if view.0 != 0 {
             _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(view.0), view.1);
+        }
+        if let Some(cols) = restore.filter(|c| !c.is_empty()) {
+            apply_cols(&fv, &cols);
         }
         // No full-row select: a drag that starts in the size/date cells draws a selection box
         // (and selects the names it covers) instead of grabbing that row's file.
@@ -1440,7 +1561,7 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     eb.SetOptions(EBO_NOBORDER)?;
     let ev: IExplorerBrowserEvents = Events(i).into();
     let cookie = eb.Advise(&ev)?;
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new() })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), fresh: true })
 }
 
 unsafe fn destroy_pane(i: usize) {
@@ -3220,6 +3341,24 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn columns() {
+        let k = |pid| PROPERTYKEY { fmtid: GUID::from_u128(0xB725F130_47EF_101A_A5F1_02608C9EEBAC), pid };
+        let text = cols_text(&[(k(10), 220), (k(12), 80)], &[(k(12), -1)]);
+        assert_eq!(parse_cols(&text), (vec![(k(10), 220), (k(12), 80)], vec![(k(12), -1)]));
+        assert_eq!(parse_cols("junk;"), (vec![], vec![]));
+        // kept in the session; a change counts only while the pane shows the folder it was saved with
+        let mut base = Session { paths: vec![r"C:\a".into(); MAXP], ..Default::default() };
+        base.cols[0] = text.clone();
+        let base = Session::parse(&base.to_ini());
+        assert_eq!(base.cols[0], text);
+        let mut cur = base.clone();
+        cur.cols[0] = cols_text(&[(k(12), 80), (k(10), 220)], &[(k(12), -1)]);
+        assert!(layout_differs(&cur, &base));
+        cur.paths[0] = r"C:\b".into();
+        assert!(!layout_differs(&cur, &base));
+    }
 
     #[test]
     fn session_layout_args() {
