@@ -7,9 +7,17 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::Graphics::GdiPlus::{
+    FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreatePen1,
+    GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDrawPath, GdipFillPath,
+    GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpGraphics, PixelOffsetModeHalf,
+    SmoothingModeAntiAlias, UnitPixel,
+};
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
@@ -17,7 +25,14 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::*;
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Controls::Dialogs::{
+    ChooseFontW, CF_FORCEFONTEXIST, CF_INITTOLOGFONTSTRUCT, CF_NOSCRIPTSEL, CF_NOVERTFONTS, CF_SCREENFONTS, CHOOSEFONTW,
+};
+use windows::Win32::UI::Controls::{
+    BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
+    TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTTOOLINFOW, WM_MOUSELEAVE,
+};
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST, STRRET};
 use windows::Win32::UI::Shell::*;
@@ -32,10 +47,14 @@ const ID_UP: i32 = 103;
 const ID_EDIT: i32 = 104;
 const ID_OPEN_IN: i32 = 105;
 const ID_FILTER: i32 = 106;
+// top toolbar buttons (children of the main window)
+const ID_TB_LAYOUT: i32 = 201;
+const ID_TB_SESS: i32 = 202;
+const ID_TB_VIEW: i32 = 203;
 // menu ids
-const ID_LAYOUT: usize = 1000; // + (rows-1)*4 + (cols-1)
 const ID_HIDDEN: usize = 1100;
 const ID_KEYS: usize = 1101;
+const ID_FONT: usize = 1102;
 const ID_SESS_SAVE: usize = 1200;
 const ID_SESS_DIR: usize = 1201;
 const ID_SESS: usize = 1300; // + index into App::sess_files
@@ -48,6 +67,31 @@ const COPY_ID: usize = 0x5144_4952; // "QDIR": WM_COPYDATA from a second instanc
 // Move without copying old pixels: copied bits are what left ghost borders/buttons while resizing.
 const MOVE: SET_WINDOW_POS_FLAGS = SET_WINDOW_POS_FLAGS(SWP_NOZORDER.0 | SWP_NOACTIVATE.0 | SWP_NOCOPYBITS.0);
 
+// "Pebble" theme, 0xRRGGBB: soft gray ground, white rounded plates, one accent.
+const BG: u32 = 0xEEF0F3;
+const CARD: u32 = 0xFFFFFF;
+const LINE: u32 = 0xE3E6EB;
+const PILL: u32 = 0xF2F3F6;
+const TEXT: u32 = 0x1D2026;
+const SUB: u32 = 0x6B7280;
+const ACCENT: u32 = 0x3478F6;
+const ACCENT_SOFT: u32 = 0xD9E6FD;
+const SHADOW: u32 = 0x0F172A;
+// Segoe Fluent Icons / MDL2 Assets code points
+const ICON_SEARCH: &str = "\u{E721}";
+
+fn glyph(id: i32) -> &'static str {
+    match id {
+        ID_BACK => "\u{E72B}",
+        ID_FWD => "\u{E72A}",
+        ID_UP => "\u{E74A}",
+        ID_OPEN_IN => "\u{E8AB}",
+        ID_TB_LAYOUT => "\u{E8A9}",
+        ID_TB_SESS => "\u{E728}",
+        _ => "\u{E890}",
+    }
+}
+
 const KEYS_HELP: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
@@ -56,8 +100,10 @@ Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
+레이아웃 버튼: 마우스로 행×열을 고르고 클릭 (방향키+Enter도 가능)\n\
 ⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기\n\
-세션 메뉴: 레이아웃+폴더를 .qdr로 저장 / 불러오기\n\
+세션: 레이아웃+폴더를 .qdr로 저장 / 불러오기\n\
+보기 → 글꼴: exe 옆 fonts 폴더의 글꼴(예: Pretendard)도 설치 없이 사용\n\
 스플리터 더블클릭: 균등 분할\n\
 실행 인자: qdir.exe C:\\a D:\\b ... 또는 qdir.exe 작업.qdr\n\
 이미 실행 중이면 그 창에서 엽니다.";
@@ -75,6 +121,8 @@ struct Session {
     active: usize,
     paths: Vec<String>,     // parsing names per pane slot
     views: Vec<(i32, i32)>, // (FOLDERVIEWMODE, icon size); 0 = shell default
+    font: String,           // UI font face; empty = first installed of the defaults
+    font_pt: i32,
 }
 
 impl Default for Session {
@@ -89,6 +137,8 @@ impl Default for Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
+            font: String::new(),
+            font_pt: 10,
         }
     }
 }
@@ -131,6 +181,8 @@ impl Session {
                 "colr" => s.colr = nums(v),
                 "rowr" => s.rowr = nums(v),
                 "active" => s.active = v.parse().unwrap_or(0),
+                "font" => s.font = v.trim().to_string(),
+                "font_pt" => s.font_pt = v.parse().unwrap_or(10).clamp(7, 24),
                 _ => {
                     if let Some(i) = slot('p') {
                         s.paths[i] = v.to_string();
@@ -155,6 +207,7 @@ impl Session {
         }
         o += &format!("side={}\ngrid={},{}\n", self.side, self.rows, self.cols);
         o += &format!("colr={}\nrowr={}\nactive={}\n", join(&self.colr), join(&self.rowr), self.active);
+        o += &format!("font={}\nfont_pt={}\n", self.font, self.font_pt);
         for i in 0..MAXP {
             if !self.paths[i].is_empty() {
                 o += &format!("p{i}={}\n", self.paths[i]);
@@ -264,13 +317,17 @@ enum Hit {
     Grid(Option<usize>, Option<usize>), // (column boundary, row boundary)
 }
 
+// Main window: toolbar on top, status line at the bottom, plates (sidebar + grid) in between.
+// The gaps between plates are the splitters.
 struct Geo {
-    h: i32,      // content height (status bar below it)
-    bottom: i32, // client bottom
-    side: i32,
-    gap: i32,
-    gx: i32,
     w: i32,
+    h: i32,   // client height
+    top: i32, // toolbar bottom = plates top
+    bot: i32, // plates bottom = status line top
+    pad: i32,
+    gap: i32,
+    side: i32, // sidebar plate width
+    gx: i32,   // grid left
     xs: Vec<(i32, i32)>,
     ys: Vec<(i32, i32)>,
 }
@@ -279,31 +336,68 @@ fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
-    let gap = s(5);
-    let h = (rc.bottom - s(22)).max(0);
-    let side = a.s.side.clamp(s(80), (rc.right - s(200)).max(s(80)));
-    let gx = side + gap;
+    let (pad, gap, top) = (s(12), s(10), s(50));
+    let bot = (rc.bottom - s(30)).max(top);
+    let side = a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120)));
+    let gx = pad + side + gap;
     Geo {
-        xs: cells(gx, rc.right - gx, &a.s.colr, gap),
-        ys: cells(0, h, &a.s.rowr, gap),
-        h,
-        bottom: rc.bottom,
+        xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
+        ys: cells(top, bot - top, &a.s.rowr, gap),
         w: rc.right,
-        side,
+        h: rc.bottom,
+        top,
+        bot,
+        pad,
         gap,
+        side,
         gx,
     }
 }
 
+fn side_rect(g: &Geo) -> RECT {
+    RECT { left: g.pad, top: g.top, right: g.pad + g.side, bottom: g.bot }
+}
+
 fn status_rect(g: &Geo) -> RECT {
-    RECT { left: 0, top: g.h, right: g.w, bottom: g.bottom }
+    RECT { left: 0, top: g.bot, right: g.w, bottom: g.h }
+}
+
+fn cell_rect(g: &Geo, i: usize, cols: usize) -> RECT {
+    let ((x0, x1), (y0, y1)) = (g.xs[i % cols], g.ys[i / cols]);
+    RECT { left: x0, top: y0, right: x1, bottom: y1 }
+}
+
+// Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; the Explorer view below.
+struct PaneGeo {
+    btn: [RECT; 4], // back, forward, up, open-in
+    addr: RECT,
+    filt: RECT,
+    view: RECT,
+}
+
+fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
+    let s = |v: i32| v * dpi / 96;
+    let (bar, bh, b, pad) = (s(46), s(30), s(30), s(8));
+    let y = (bar - bh) / 2;
+    let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
+    let fw = s(180).min((w - 2 * pad - 4 * b) / 3).max(0);
+    let filt = r(w - pad - fw, fw);
+    let open = r(filt.left - s(4) - b, b);
+    let addr_x = pad + 3 * b + s(6);
+    PaneGeo {
+        btn: [r(pad, b), r(pad + b, b), r(pad + 2 * b, b), open],
+        addr: r(addr_x, open.left - s(6) - addr_x),
+        filt,
+        // inset so the square list sits inside the plate's rounded corners
+        view: RECT { left: s(6), top: bar, right: w - s(6), bottom: h - s(6) },
+    }
 }
 
 fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
-    if y >= g.h {
+    if y < g.top || y >= g.bot {
         return None;
     }
-    if x >= g.side && x < g.gx {
+    if x >= g.pad + g.side && x < g.gx {
         return Some(Hit::Side);
     }
     if x < g.gx {
@@ -331,6 +425,9 @@ struct App {
     tree_hwnd: HWND,
     tree_input: bool, // a click/key reached the tree since its last selection change
     font: HFONT,
+    icon_font: HFONT,
+    fh: i32, // UI font line height in px
+    pill_brush: HBRUSH,
     dpi: i32,
     panes: Vec<Option<Pane>>,
     drag: Option<Hit>,
@@ -338,7 +435,13 @@ struct App {
     status: String,
     status_key: String,
     sess_menu: HMENU,
+    view_menu: HMENU,
     sess_files: Vec<PathBuf>,
+    hover: HWND, // owner-drawn button under the mouse
+    tip: HWND,
+    grid: HWND, // layout picker popup while open
+    grid_hover: (usize, usize),
+    grid_closed: Option<Instant>,
 }
 
 thread_local! {
@@ -349,6 +452,9 @@ thread_local! {
         tree_hwnd: HWND::default(),
         tree_input: false,
         font: HFONT::default(),
+        icon_font: HFONT::default(),
+        fh: 16,
+        pill_brush: HBRUSH::default(),
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
         drag: None,
@@ -356,7 +462,13 @@ thread_local! {
         status: String::new(),
         status_key: String::new(),
         sess_menu: HMENU::default(),
+        view_menu: HMENU::default(),
         sess_files: Vec::new(),
+        hover: HWND::default(),
+        tip: HWND::default(),
+        grid: HWND::default(),
+        grid_hover: (0, 0),
+        grid_closed: None,
     });
 }
 
@@ -396,12 +508,255 @@ unsafe fn text_of(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
-unsafe fn make_font(dpi: i32) -> HFONT {
-    let mut lf = LOGFONTW { lfHeight: -12 * dpi / 96, ..Default::default() };
-    for (d, c) in lf.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) {
+// ---------- fonts ----------
+
+fn logfont(face: &str, px: i32) -> LOGFONTW {
+    let mut lf = LOGFONTW { lfHeight: -px, lfCharSet: DEFAULT_CHARSET, lfQuality: CLEARTYPE_QUALITY, ..Default::default() };
+    for (d, c) in lf.lfFaceName.iter_mut().take(31).zip(face.encode_utf16()) {
         *d = c;
     }
-    CreateFontIndirectW(&lf)
+    lf
+}
+
+// GDI silently substitutes missing faces, so ask what it actually picked.
+unsafe fn font_exists(face: &str) -> bool {
+    let f = CreateFontIndirectW(&logfont(face, 12));
+    let dc = GetDC(None);
+    let old = SelectObject(dc, f.into());
+    let mut buf = [0u16; 64];
+    let n = GetTextFaceW(dc, Some(&mut buf)).max(0) as usize;
+    SelectObject(dc, old);
+    ReleaseDC(None, dc);
+    _ = DeleteObject(f.into());
+    String::from_utf16_lossy(&buf[..n.min(64)]).trim_end_matches('\0').eq_ignore_ascii_case(face)
+}
+
+unsafe fn ui_face(pref: &str) -> String {
+    let faces = [pref, "Pretendard", "Pretendard Variable", "Segoe UI Variable Text", "Malgun Gothic"];
+    faces.into_iter().find(|f| !f.is_empty() && font_exists(f)).unwrap_or("Segoe UI").to_string()
+}
+
+// Fonts dropped into `fonts\` next to the exe work without installing (portable).
+unsafe fn load_private_fonts() {
+    let entries = std::fs::read_dir(ini_path().with_file_name("fonts")).into_iter().flatten().flatten();
+    for p in entries.map(|e| e.path()) {
+        let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if ["ttf", "otf", "ttc"].contains(&ext.as_str()) {
+            AddFontResourceExW(&HSTRING::from(p.to_string_lossy().as_ref()), FR_PRIVATE, None);
+        }
+    }
+}
+
+// (Re)creates the UI + icon fonts for the current face/size/DPI and pushes them to every control.
+unsafe fn apply_font() {
+    let (pref, pt, dpi) = app(|a| (a.s.font.clone(), a.s.font_pt, a.dpi));
+    let font = CreateFontIndirectW(&logfont(&ui_face(&pref), (pt * dpi + 36) / 72));
+    let icons = if font_exists("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" };
+    let icon_font = CreateFontIndirectW(&logfont(icons, 16 * dpi / 96));
+    let dc = GetDC(None);
+    let old = SelectObject(dc, font.into());
+    let mut tm = TEXTMETRICW::default();
+    _ = GetTextMetricsW(dc, &mut tm);
+    SelectObject(dc, old);
+    ReleaseDC(None, dc);
+    let (old, old_icon, panes, tree) = app(|a| {
+        a.fh = tm.tmHeight;
+        let old = std::mem::replace(&mut a.font, font);
+        let old_icon = std::mem::replace(&mut a.icon_font, icon_font);
+        (old, old_icon, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.tree_hwnd)
+    });
+    let set = |h: HWND| _ = SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    for p in panes {
+        for id in [ID_EDIT, ID_FILTER] {
+            if let Ok(c) = GetDlgItem(Some(p), id) {
+                set(c);
+            }
+        }
+    }
+    if let Ok(tv) = FindWindowExW(Some(tree), None, w!("SysTreeView32"), PCWSTR::null()) {
+        set(tv);
+    }
+    for f in [old, old_icon].into_iter().filter(|f| !f.is_invalid()) {
+        _ = DeleteObject(f.into());
+    }
+    relayout();
+    redraw_all();
+}
+
+unsafe fn pick_font() {
+    let (main, pref, pt) = app(|a| (a.main, a.s.font.clone(), a.s.font_pt));
+    let mut lf = logfont(&ui_face(&pref), (pt * GetDpiForSystem() as i32 + 36) / 72);
+    let mut cf = CHOOSEFONTW {
+        lStructSize: size_of::<CHOOSEFONTW>() as u32,
+        hwndOwner: main,
+        lpLogFont: &mut lf,
+        Flags: CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_NOVERTFONTS | CF_FORCEFONTEXIST | CF_NOSCRIPTSEL,
+        ..Default::default()
+    };
+    if ChooseFontW(&mut cf).as_bool() {
+        let face = String::from_utf16_lossy(&lf.lfFaceName).trim_end_matches('\0').to_string();
+        app(|a| (a.s.font, a.s.font_pt) = (face, (cf.iPointSize / 10).clamp(7, 24)));
+        apply_font();
+    }
+}
+
+// ---------- drawing ----------
+
+fn cref(rgb: u32) -> COLORREF {
+    COLORREF((rgb & 0xFF) << 16 | (rgb & 0xFF00) | (rgb >> 16 & 0xFF))
+}
+
+fn argb(rgb: u32, a: u8) -> u32 {
+    (a as u32) << 24 | rgb
+}
+
+/// RECT as (x, y, w, h), shrunk by `inset` on every side (negative grows it).
+fn rf(r: RECT, inset: f32) -> (f32, f32, f32, f32) {
+    let (w, h) = ((r.right - r.left) as f32, (r.bottom - r.top) as f32);
+    (r.left as f32 + inset, r.top as f32 + inset, w - 2.0 * inset, h - 2.0 * inset)
+}
+
+unsafe fn fill(dc: HDC, r: RECT, rgb: u32) {
+    let b = CreateSolidBrush(cref(rgb));
+    FillRect(dc, &r, b);
+    _ = DeleteObject(b.into());
+}
+
+unsafe fn text(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, align: DRAW_TEXT_FORMAT) {
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    if w.is_empty() {
+        return; // an empty Vec's dangling pointer crashes DrawTextW even with length 0
+    }
+    let old = SelectObject(dc, font.into());
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, cref(rgb));
+    DrawTextW(dc, &mut w, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, old);
+}
+
+/// Anti-aliased shapes via GDI+ (plain GDI can't do smooth rounded corners or alpha).
+struct Gfx(*mut GpGraphics);
+
+impl Gfx {
+    unsafe fn new(dc: HDC) -> Gfx {
+        let mut g = std::ptr::null_mut();
+        GdipCreateFromHDC(dc, &mut g);
+        GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+        GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+        Gfx(g)
+    }
+
+    unsafe fn round(&self, (x, y, w, h): (f32, f32, f32, f32), rad: f32, fill: Option<u32>, stroke: Option<(u32, f32)>) {
+        let d = (rad * 2.0).min(w).min(h).max(0.1);
+        let mut p = std::ptr::null_mut();
+        GdipCreatePath(FillModeAlternate, &mut p);
+        GdipAddPathArc(p, x, y, d, d, 180.0, 90.0);
+        GdipAddPathArc(p, x + w - d, y, d, d, 270.0, 90.0);
+        GdipAddPathArc(p, x + w - d, y + h - d, d, d, 0.0, 90.0);
+        GdipAddPathArc(p, x, y + h - d, d, d, 90.0, 90.0);
+        GdipClosePathFigure(p);
+        if let Some(c) = fill {
+            let mut b = std::ptr::null_mut();
+            GdipCreateSolidFill(c, &mut b);
+            GdipFillPath(self.0, b.cast(), p);
+            GdipDeleteBrush(b.cast());
+        }
+        if let Some((c, width)) = stroke {
+            let mut pen = std::ptr::null_mut();
+            GdipCreatePen1(c, width, UnitPixel, &mut pen);
+            GdipDrawPath(self.0, pen, p);
+            GdipDeletePen(pen);
+        }
+        GdipDeletePath(p);
+    }
+
+    /// Soft drop shadow: fading 1px rings just outside the plate, nudged down.
+    unsafe fn shadow(&self, r: RECT, rad: f32) {
+        for (i, a) in [20u8, 14, 10, 7, 4, 2].into_iter().enumerate() {
+            let k = i as f32 + 1.0;
+            let (x, y, w, h) = rf(r, 0.5 - k);
+            self.round((x, y + 1.5, w, h), rad + k, None, Some((argb(SHADOW, a), 1.0)));
+        }
+    }
+}
+
+impl Drop for Gfx {
+    fn drop(&mut self) {
+        unsafe { GdipDeleteGraphics(self.0) };
+    }
+}
+
+// Paints into an off-screen buffer and blits once: no flicker while plates are redrawn during a drag.
+unsafe fn buffered(h: HWND, hdc: HDC, draw: impl FnOnce(HDC, RECT)) {
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let mut mem = HDC::default();
+    let pb = BeginBufferedPaint(hdc, &rc, BPBF_TOPDOWNDIB, None, &mut mem);
+    if pb == 0 {
+        return draw(hdc, rc);
+    }
+    draw(mem, rc);
+    _ = EndBufferedPaint(pb, true);
+}
+
+unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
+    let (hover, dpi, font, icon_font, main) = app(|a| (a.hover, a.dpi, a.font, a.icon_font, a.main));
+    let on_main = GetParent(d.hwndItem).is_ok_and(|p| p == main);
+    let (dc, rc, id) = (d.hDC, d.rcItem, d.CtlID as i32);
+    let pressed = d.itemState.0 & ODS_SELECTED.0 != 0;
+    let hot = hover == d.hwndItem;
+    fill(dc, rc, if on_main { BG } else { CARD });
+    if pressed || hot {
+        let shade = match (on_main, pressed) {
+            (true, true) => 0xD8DCE2,
+            (true, false) => 0xE2E5EA,
+            (false, true) => 0xE2E5EA,
+            (false, false) => 0xEDEFF3,
+        };
+        Gfx::new(dc).round(rf(rc, 0.0), (8 * dpi / 96) as f32, Some(argb(shade, 255)), None);
+    }
+    let fg = if hot || pressed { TEXT } else { SUB };
+    if !on_main {
+        return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
+    }
+    let s = |v: i32| v * dpi / 96;
+    let icon = RECT { left: rc.left + s(8), right: rc.left + s(30), ..rc };
+    text(dc, icon, glyph(id), icon_font, fg, DT_CENTER);
+    text(dc, RECT { left: icon.right + s(4), ..rc }, &text_of(d.hwndItem), font, TEXT, DT_LEFT);
+}
+
+// Hover highlight for owner-drawn buttons (they have no hot state of their own).
+unsafe fn set_hover(h: HWND) {
+    let old = app(|a| std::mem::replace(&mut a.hover, h));
+    if old == h {
+        return;
+    }
+    for w in [old, h].into_iter().filter(|w| !w.0.is_null()) {
+        _ = InvalidateRect(Some(w), None, false);
+    }
+    if !h.0.is_null() {
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
+    }
+}
+
+unsafe fn is_icon_button(h: HWND) -> bool {
+    let mut c = [0u16; 16];
+    let n = GetClassNameW(h, &mut c) as usize;
+    String::from_utf16_lossy(&c[..n]).eq_ignore_ascii_case("Button")
+        && GetWindowLongPtrW(h, GWL_STYLE) as i32 & 0xF == BS_OWNERDRAW
+}
+
+unsafe fn add_tip(btn: HWND, tip: PCWSTR) {
+    let ti = TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: GetParent(btn).unwrap_or_default(),
+        uId: btn.0 as usize,
+        lpszText: PWSTR(tip.0 as *mut u16),
+        ..Default::default()
+    };
+    SendMessageW(app(|a| a.tip), TTM_ADDTOOLW, None, Some(LPARAM(&ti as *const _ as isize)));
 }
 
 unsafe fn pwstr(p: PWSTR) -> String {
@@ -721,13 +1076,18 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     let (main, font) = app(|a| (a.main, a.font));
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
     let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("QDirPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
-    let (btn, plain, sunk) = (BS_PUSHBUTTON as u32, WINDOW_EX_STYLE(0), WS_EX_CLIENTEDGE);
-    child(h, w!("BUTTON"), w!("←"), btn, plain, ID_BACK, font);
-    child(h, w!("BUTTON"), w!("→"), btn, plain, ID_FWD, font);
-    child(h, w!("BUTTON"), w!("↑"), btn, plain, ID_UP, font);
-    child(h, w!("BUTTON"), w!("⇄"), btn, plain, ID_OPEN_IN, font);
-    child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, sunk, ID_EDIT, font);
-    let f = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, sunk, ID_FILTER, font);
+    let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
+    let buttons = [
+        (ID_BACK, w!("뒤로"), w!("뒤로  (Alt+←)")),
+        (ID_FWD, w!("앞으로"), w!("앞으로  (Alt+→)")),
+        (ID_UP, w!("상위 폴더"), w!("상위 폴더  (Alt+↑)")),
+        (ID_OPEN_IN, w!("다른 패널에서 열기"), w!("다른 패널에서 열기")),
+    ];
+    for (id, name, tip) in buttons {
+        add_tip(child(h, w!("BUTTON"), name, btn, plain, id, font), tip);
+    }
+    child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_EDIT, font);
+    let f = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
     SendMessageW(f, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(w!("필터  Ctrl+F").as_ptr() as isize)));
 
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
@@ -794,42 +1154,55 @@ unsafe fn layout_pane(h: HWND) {
     let Some((eb, dpi)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi))) else {
         return;
     };
+    let fh = app(|a| a.fh) + 2;
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
     let s = |v: i32| v * dpi / 96;
-    let (b, bar, bw) = (s(2), s(24), s(28));
-    let rect = |x: i32, w: i32| RECT { left: x, top: b, right: x + w.max(0), bottom: b + bar };
-    let x = b + 4 * bw + s(2);
-    let fw = s(150).min((rc.right - x) / 3);
-    let mut moves = Vec::new();
-    for (k, id) in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].into_iter().enumerate() {
-        moves.push((GetDlgItem(Some(h), id).unwrap_or_default(), rect(b + k as i32 * bw, bw)));
-    }
-    moves.push((GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), rect(x, rc.right - b - x - fw - s(2))));
-    moves.push((GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), rect(rc.right - b - fw, fw)));
-    let view = RECT { left: b, top: b + bar + b, right: rc.right - b, bottom: rc.bottom - b };
-    move_all(&moves, Some((&eb, view)));
+    let pg = pane_geo(rc.right, rc.bottom, dpi);
+    // borderless edit, vertically centred inside its pill
+    let inside = |p: RECT, l: i32, r: i32| {
+        let top = p.top + (p.bottom - p.top - fh) / 2;
+        RECT { left: p.left + l, top, right: (p.right - r).max(p.left + l), bottom: top + fh }
+    };
+    let ctl = |id: i32| GetDlgItem(Some(h), id).unwrap_or_default();
+    let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
+    moves.push((ctl(ID_EDIT), inside(pg.addr, s(14), s(12))));
+    moves.push((ctl(ID_FILTER), inside(pg.filt, s(32), s(12))));
+    move_all(&moves, Some((&eb, pg.view)));
 }
 
 unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves)) = app(|a| {
+    let Some((main, moves, label)) = app(|a| {
         if a.main.0.is_null() {
             return None;
         }
         let g = geo(a);
-        let mut moves = vec![(a.tree_hwnd, RECT { left: 0, top: 0, right: g.side, bottom: g.h })];
+        let s = |v: i32| v * a.dpi / 96;
+        let sr = side_rect(&g);
+        let tree = RECT { left: sr.left + s(6), top: sr.top + s(8), right: sr.right - s(6), bottom: sr.bottom - s(6) };
+        let mut moves = vec![(a.tree_hwnd, tree)];
+        let mut x = g.pad;
+        for (id, w) in [(ID_TB_LAYOUT, s(92)), (ID_TB_SESS, s(76)), (ID_TB_VIEW, s(76))] {
+            let b = unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
+            moves.push((b, RECT { left: x, top: s(9), right: x + w, bottom: s(9) + s(32) }));
+            x += w + s(4);
+        }
         for (i, p) in a.panes.iter().enumerate().take(a.s.rows * a.s.cols) {
             if let Some(p) = p {
-                let ((x0, x1), (y0, y1)) = (g.xs[i % a.s.cols], g.ys[i / a.s.cols]);
-                moves.push((p.hwnd, RECT { left: x0, top: y0, right: x1, bottom: y1 }));
+                moves.push((p.hwnd, cell_rect(&g, i, a.s.cols)));
             }
         }
-        Some((a.main, moves))
+        Some((a.main, moves, format!("{} × {}", a.s.rows, a.s.cols)))
     }) else {
         return;
     };
     move_all(&moves, None);
+    if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
+        if text_of(b) != label {
+            _ = SetWindowTextW(b, &HSTRING::from(label));
+        }
+    }
     _ = InvalidateRect(Some(main), None, true);
     // Paint now: WM_PAINT is only generated once the message queue is empty, which never happens
     // while the mouse keeps moving, so mid-drag the views would keep showing the previous frame.
@@ -845,13 +1218,13 @@ unsafe fn redraw_all() {
 }
 
 unsafe fn set_active(i: usize) {
-    let (old, hs) = app(|a| {
+    let (old, hs, main) = app(|a| {
         let old = std::mem::replace(&mut a.s.active, i);
-        (old, [old, i].map(|k| a.panes[k].as_ref().map(|p| p.hwnd)))
+        (old, [old, i].map(|k| a.panes[k].as_ref().map(|p| p.hwnd)), a.main)
     });
     if old != i {
-        for h in hs.into_iter().flatten() {
-            _ = InvalidateRect(Some(h), None, true);
+        for h in hs.into_iter().flatten().chain([main]) {
+            _ = InvalidateRect(Some(h), None, false); // pane ring + the glow around it on the main window
         }
     }
 }
@@ -1048,22 +1421,186 @@ unsafe fn update_status() {
     _ = InvalidateRect(Some(main), Some(&rc), true);
 }
 
-unsafe fn paint_status(h: HWND) {
+// ---------- painting ----------
+
+// Ground, plate shadows, the sidebar plate, the active plate's glow and the status line.
+// The pane plates themselves are child windows painted by paint_pane.
+unsafe fn paint_main(h: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(h, &mut ps);
-    let (text, rc, font, pad) = app(|a| (a.status.clone(), status_rect(&geo(a)), a.font, 8 * a.dpi / 96));
-    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
-    let old = SelectObject(hdc, font.into());
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
-    let mut r = RECT { left: rc.left + pad, ..rc };
-    let mut w: Vec<u16> = text.encode_utf16().collect();
-    if !w.is_empty() {
-        // an empty Vec's dangling pointer crashes DrawTextW even with length 0
-        DrawTextW(hdc, &mut w, &mut r, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
-    SelectObject(hdc, old);
+    let (g, cards, active, status, font, dpi) = app(|a| {
+        let g = geo(a);
+        let n = a.s.rows * a.s.cols;
+        let cards: Vec<RECT> = (0..n).filter(|&i| a.panes[i].is_some()).map(|i| cell_rect(&g, i, a.s.cols)).collect();
+        let active = (a.s.active < n).then(|| cell_rect(&g, a.s.active, a.s.cols));
+        (g, cards, active, a.status.clone(), a.font, a.dpi)
+    });
+    buffered(h, hdc, |dc, rc| {
+        let rad = (12 * dpi / 96) as f32;
+        fill(dc, rc, BG);
+        let gfx = Gfx::new(dc);
+        let side = side_rect(&g);
+        gfx.shadow(side, rad);
+        gfx.round(rf(side, 0.5), rad, Some(argb(CARD, 255)), Some((argb(LINE, 255), 1.0)));
+        for c in &cards {
+            gfx.shadow(*c, rad);
+        }
+        if let Some(c) = active {
+            gfx.round(rf(c, -2.0), rad + 2.0, None, Some((argb(ACCENT, 0x38), 4.0)));
+        }
+        drop(gfx);
+        let st = status_rect(&g);
+        text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, SUB, DT_LEFT);
+    });
     _ = EndPaint(h, &ps);
+}
+
+// One white rounded plate per pane: a single accent ring when active, pill fields in the top bar.
+unsafe fn paint_pane(h: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(h, &mut ps);
+    let (active, dpi, icon_font) = app(|a| (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), a.dpi, a.icon_font));
+    let focus = GetFocus();
+    let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
+    let (addr_on, filt_on) = (focused(ID_EDIT), focused(ID_FILTER));
+    buffered(h, hdc, |dc, rc| {
+        let s = |v: i32| v * dpi / 96;
+        let rad = s(12) as f32;
+        let pg = pane_geo(rc.right, rc.bottom, dpi);
+        fill(dc, rc, BG);
+        let gfx = Gfx::new(dc);
+        gfx.round(rf(rc, 0.5), rad, Some(argb(CARD, 255)), Some((argb(LINE, 255), 1.0)));
+        if active {
+            gfx.round(rf(rc, 1.0), rad - 0.5, None, Some((argb(ACCENT, 255), 2.0)));
+        }
+        for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
+            let r = rf(p, 0.0);
+            gfx.round(r, r.3 / 2.0, Some(argb(PILL, 255)), on.then_some((argb(ACCENT, 0xB0), 1.5)));
+        }
+        drop(gfx);
+        fill(dc, RECT { left: pg.view.left + s(8), top: pg.view.top - 1, right: pg.view.right - s(8), bottom: pg.view.top }, LINE);
+        let icon = RECT { left: pg.filt.left + s(10), right: pg.filt.left + s(28), ..pg.filt };
+        text(dc, icon, ICON_SEARCH, icon_font, SUB, DT_CENTER);
+    });
+    _ = EndPaint(h, &ps);
+}
+
+// ---------- layout picker (hover a rows x cols block, click) ----------
+
+fn grid_metrics(dpi: i32) -> (i32, i32, i32, i32) {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, cell, gap) = (s(14), s(26), s(6));
+    let w = 2 * pad + 4 * cell + 3 * gap;
+    (w, w + s(18), cell, gap) // extra room below for the label
+}
+
+fn grid_cell(r: usize, c: usize, dpi: i32) -> RECT {
+    let (_, _, cell, gap) = grid_metrics(dpi);
+    let pad = 14 * dpi / 96;
+    let (x, y) = (pad + c as i32 * (cell + gap), pad + r as i32 * (cell + gap));
+    RECT { left: x, top: y, right: x + cell, bottom: y + cell }
+}
+
+unsafe fn open_grid() {
+    let (main, dpi, open, closed, cur) =
+        app(|a| (a.main, a.dpi, a.grid, a.grid_closed, (a.s.rows - 1, a.s.cols - 1)));
+    // a click on the button first deactivates (closes) the popup; don't reopen it right away
+    if !open.0.is_null() || closed.is_some_and(|t| t.elapsed().as_millis() < 300) {
+        return;
+    }
+    let mut rc = RECT::default();
+    if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
+        _ = GetWindowRect(b, &mut rc);
+    }
+    let (w, h, _, _) = grid_metrics(dpi);
+    app(|a| a.grid_hover = cur);
+    let style = WS_POPUP | WS_VISIBLE;
+    let y = rc.bottom + 6 * dpi / 96;
+    let Ok(g) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("QDirGrid"), w!(""), style, rc.left, y, w, h, Some(main), None, None, None) else {
+        return;
+    };
+    let round = DWMWCP_ROUND;
+    _ = DwmSetWindowAttribute(g, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, 4);
+    app(|a| a.grid = g);
+}
+
+unsafe fn paint_grid(h: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(h, &mut ps);
+    let ((hr, hc), (cr, cc), dpi, font) = app(|a| (a.grid_hover, (a.s.rows - 1, a.s.cols - 1), a.dpi, a.font));
+    buffered(h, hdc, |dc, rc| {
+        fill(dc, rc, CARD);
+        let gfx = Gfx::new(dc);
+        for r in 0..4 {
+            for c in 0..4 {
+                let col = if r <= hr && c <= hc {
+                    ACCENT
+                } else if r <= cr && c <= cc {
+                    ACCENT_SOFT
+                } else {
+                    PILL
+                };
+                gfx.round(rf(grid_cell(r, c, dpi), 0.0), (6 * dpi / 96) as f32, Some(argb(col, 255)), None);
+            }
+        }
+        drop(gfx);
+        let label = RECT { top: grid_cell(3, 0, dpi).bottom, bottom: rc.bottom - 4 * dpi / 96, ..rc };
+        text(dc, label, &format!("{}행 × {}열", hr + 1, hc + 1), font, TEXT, DT_CENTER);
+    });
+    _ = EndPaint(h, &ps);
+}
+
+extern "system" fn grid_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let set = |r: usize, c: usize| {
+            if app(|a| std::mem::replace(&mut a.grid_hover, (r.min(3), c.min(3)))) != (r.min(3), c.min(3)) {
+                _ = InvalidateRect(Some(h), None, false);
+            }
+        };
+        match msg {
+            WM_PAINT => paint_grid(h),
+            WM_ERASEBKGND => return LRESULT(1),
+            WM_MOUSEMOVE => {
+                let (x, y) = xy(lp);
+                let (dpi, (_, _, cell, gap)) = app(|a| (a.dpi, grid_metrics(a.dpi)));
+                let at = |v: i32| ((v - 14 * dpi / 96).max(0) / (cell + gap)) as usize;
+                set(at(y), at(x));
+            }
+            WM_LBUTTONUP => {
+                let (r, c) = app(|a| a.grid_hover);
+                _ = DestroyWindow(h);
+                set_layout(r + 1, c + 1);
+            }
+            WM_KEYDOWN => {
+                let (r, c) = app(|a| a.grid_hover);
+                match VIRTUAL_KEY(wp.0 as u16) {
+                    VK_LEFT => set(r, c.saturating_sub(1)),
+                    VK_RIGHT => set(r, c + 1),
+                    VK_UP => set(r.saturating_sub(1), c),
+                    VK_DOWN => set(r + 1, c),
+                    VK_RETURN => {
+                        _ = DestroyWindow(h);
+                        set_layout(r + 1, c + 1);
+                    }
+                    VK_ESCAPE => _ = DestroyWindow(h),
+                    _ => {}
+                }
+            }
+            WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
+            WM_DESTROY => app(|a| (a.grid, a.grid_closed) = (HWND::default(), Some(Instant::now()))),
+            _ => return DefWindowProcW(h, msg, wp, lp),
+        }
+        LRESULT(0)
+    }
+}
+
+unsafe fn popup_menu(menu: HMENU, id: i32) {
+    let main = app(|a| a.main);
+    let mut rc = RECT::default();
+    if let Ok(b) = GetDlgItem(Some(main), id) {
+        _ = GetWindowRect(b, &mut rc);
+    }
+    _ = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom + 4, None, main, None);
 }
 
 // ---------- keyboard ----------
@@ -1118,6 +1655,16 @@ unsafe fn pre_translate(m: &MSG) -> bool {
         app(|a| a.tree_input |= a.tree_hwnd == m.hwnd || IsChild(a.tree_hwnd, m.hwnd).as_bool());
     }
     match m.message {
+        WM_MOUSEMOVE => {
+            set_hover(if is_icon_button(m.hwnd) { m.hwnd } else { HWND::default() });
+            false
+        }
+        WM_MOUSELEAVE => {
+            if app(|a| a.hover == m.hwnd) {
+                set_hover(HWND::default());
+            }
+            false
+        }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             if let Some(i) = pane_of(m.hwnd) {
                 set_active(i);
@@ -1156,7 +1703,12 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 app(|a| a.sizing = false);
                 redraw_all();
             }
-            WM_PAINT => paint_status(h),
+            WM_PAINT => paint_main(h),
+            WM_ERASEBKGND => return LRESULT(1), // paint_main covers everything
+            WM_DRAWITEM => {
+                draw_button(&*(lp.0 as *const DRAWITEMSTRUCT));
+                return LRESULT(1);
+            }
             WM_TIMER if wp.0 == TIMER_STATUS => update_status(),
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
@@ -1228,8 +1780,11 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 redraw_all();
             }
             WM_COMMAND => match wp.0 & 0xffff {
-                id @ ID_LAYOUT..=1015 => set_layout((id - ID_LAYOUT) / 4 + 1, (id - ID_LAYOUT) % 4 + 1),
+                id if id == ID_TB_LAYOUT as usize => open_grid(),
+                id if id == ID_TB_SESS as usize => popup_menu(app(|a| a.sess_menu), ID_TB_SESS),
+                id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
                 ID_HIDDEN => toggle_hidden(),
+                ID_FONT => pick_font(),
                 ID_KEYS => _ = MessageBoxW(Some(h), &HSTRING::from(KEYS_HELP), w!("단축키"), MB_OK),
                 ID_SESS_SAVE => _ = save_session_as(),
                 ID_SESS_DIR => {
@@ -1248,13 +1803,8 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 if HMENU(wp.0 as _) == app(|a| a.sess_menu) {
                     fill_sessions(HMENU(wp.0 as _));
                 }
-                let menu = GetMenu(h);
-                let cur = app(|a| (a.s.rows - 1) * 4 + a.s.cols - 1);
-                let check = |on: bool| (MF_BYCOMMAND | if on { MF_CHECKED } else { MF_UNCHECKED }).0;
-                for k in 0..16 {
-                    CheckMenuItem(menu, (ID_LAYOUT + k) as u32, check(k == cur));
-                }
-                CheckMenuItem(menu, ID_HIDDEN as u32, check(hidden()));
+                let check = if hidden() { MF_CHECKED } else { MF_UNCHECKED };
+                CheckMenuItem(app(|a| a.view_menu), ID_HIDDEN as u32, (MF_BYCOMMAND | check).0);
             }
             WM_COPYDATA => {
                 let cd = &*(lp.0 as *const CopyData);
@@ -1268,20 +1818,11 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             WM_DPICHANGED => {
                 let dpi = (wp.0 & 0xffff) as i32;
-                let (old, panes, font) = app(|a| {
+                app(|a| {
                     a.s.side = a.s.side * dpi / a.dpi;
                     a.dpi = dpi;
-                    let old = std::mem::replace(&mut a.font, make_font(dpi));
-                    (old, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.font)
                 });
-                for p in panes {
-                    for id in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN, ID_EDIT, ID_FILTER] {
-                        if let Ok(c) = GetDlgItem(Some(p), id) {
-                            SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-                        }
-                    }
-                }
-                _ = DeleteObject(old.into());
+                apply_font();
                 let r = &*(lp.0 as *const RECT);
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
@@ -1314,14 +1855,22 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
         };
         match msg {
             WM_SIZE => layout_pane(h),
-            WM_ERASEBKGND => {
-                let act = app(|a| a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h));
-                let mut rc = RECT::default();
-                _ = GetClientRect(h, &mut rc);
-                FillRect(HDC(wp.0 as _), &rc, GetSysColorBrush(if act { COLOR_HIGHLIGHT } else { COLOR_BTNFACE }));
+            WM_PAINT => paint_pane(h),
+            WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
+            WM_DRAWITEM => {
+                draw_button(&*(lp.0 as *const DRAWITEMSTRUCT));
                 return LRESULT(1);
             }
+            // borderless edits sit on the pill colour
+            WM_CTLCOLOREDIT => {
+                let dc = HDC(wp.0 as _);
+                SetBkColor(dc, cref(PILL));
+                SetTextColor(dc, cref(TEXT));
+                return LRESULT(app(|a| a.pill_brush).0 as isize);
+            }
             WM_COMMAND => match ((wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32) {
+                // pill gets an accent outline while its edit has focus
+                (ID_EDIT | ID_FILTER, EN_SETFOCUS | EN_KILLFOCUS) => _ = InvalidateRect(Some(h), None, false),
                 (ID_BACK, _) => nav(SBSP_NAVIGATEBACK),
                 (ID_FWD, _) => nav(SBSP_NAVIGATEFORWARD),
                 (ID_UP, _) => nav(SBSP_PARENT),
@@ -1352,28 +1901,18 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
     }
 }
 
-unsafe fn make_menu() -> Result<(HMENU, HMENU)> {
-    let bar = CreateMenu()?;
-    let lay = CreatePopupMenu()?;
-    // 4 menu columns (MF_MENUBARBREAK) so the items form a rows x cols grid.
-    for c in 1..=4 {
-        for r in 1..=4 {
-            let brk = if r == 1 && c > 1 { MF_MENUBARBREAK } else { MENU_ITEM_FLAGS(0) };
-            let id = ID_LAYOUT + (r - 1) * 4 + (c - 1);
-            AppendMenuW(lay, MF_STRING | brk, id, &HSTRING::from(format!("{r} × {c}")))?;
-        }
-    }
+// Popups opened from the top toolbar (no classic menu bar).
+unsafe fn make_menus() -> Result<(HMENU, HMENU)> {
     let sess = CreatePopupMenu()?;
     AppendMenuW(sess, MF_STRING, ID_SESS_SAVE, w!("현재 세션 저장..."))?;
     AppendMenuW(sess, MF_STRING, ID_SESS_DIR, w!("세션 폴더 열기"))?;
     AppendMenuW(sess, MF_SEPARATOR, 0, PCWSTR::null())?; // saved sessions are listed below on open
     let view = CreatePopupMenu()?;
     AppendMenuW(view, MF_STRING, ID_HIDDEN, w!("숨김 파일 표시\tCtrl+H"))?;
+    AppendMenuW(view, MF_STRING, ID_FONT, w!("글꼴..."))?;
+    AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
     AppendMenuW(view, MF_STRING, ID_KEYS, w!("단축키..."))?;
-    AppendMenuW(bar, MF_POPUP, lay.0 as usize, w!("레이아웃 (행×열)"))?;
-    AppendMenuW(bar, MF_POPUP, sess.0 as usize, w!("세션"))?;
-    AppendMenuW(bar, MF_POPUP, view.0 as usize, w!("보기"))?;
-    Ok((bar, sess))
+    Ok((sess, view))
 }
 
 fn main() -> Result<()> {
@@ -1401,6 +1940,11 @@ fn main() -> Result<()> {
             None => apply_args(&mut s, args),
         }
 
+        let mut token = 0usize;
+        GdiplusStartup(&mut token, &GdiplusStartupInput { GdiplusVersion: 1, ..Default::default() }, std::ptr::null_mut());
+        _ = BufferedPaintInit();
+        load_private_fonts();
+
         let hinst: HINSTANCE = GetModuleHandleW(None)?.into();
         let arrow = LoadCursorW(None, IDC_ARROW)?;
         RegisterClassW(&WNDCLASSW {
@@ -1408,19 +1952,26 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(main_proc),
             hInstance: hinst,
             hCursor: arrow,
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
             lpszClassName: w!("QDirMain"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW, // repaint the active border on every resize
+            style: CS_HREDRAW | CS_VREDRAW, // the plate is drawn to the window size
             lpfnWndProc: Some(pane_proc),
             hInstance: hinst,
             hCursor: arrow,
             lpszClassName: w!("QDirPane"),
             ..Default::default()
         });
-        let (menu, sess_menu) = make_menu()?;
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DROPSHADOW,
+            lpfnWndProc: Some(grid_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("QDirGrid"),
+            ..Default::default()
+        });
+        let (sess_menu, view_menu) = make_menus()?;
         let main = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("QDirMain"),
@@ -1431,22 +1982,32 @@ fn main() -> Result<()> {
             1400,
             900,
             None,
-            Some(menu),
+            None,
             Some(hinst),
             None,
         )?;
+        // caption in the ground colour, so title bar and toolbar read as one surface
+        let caption = cref(BG);
+        _ = DwmSetWindowAttribute(main, DWMWA_CAPTION_COLOR, &caption as *const _ as _, 4);
         let dpi = GetDpiForWindow(main) as i32;
         if s.side <= 0 {
             s.side = 240 * dpi / 96;
         }
         let win = s.win;
+        let tip_style = WS_POPUP | WINDOW_STYLE(0x01 | 0x02); // TTS_ALWAYSTIP | TTS_NOPREFIX
+        let tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, tip_style, 0, 0, 0, 0, Some(main), None, None, None)?;
         app(|a| {
-            (a.s, a.main, a.dpi, a.sess_menu) = (s, main, dpi, sess_menu);
-            a.font = make_font(dpi);
+            (a.s, a.main, a.dpi, a.sess_menu, a.view_menu, a.tip) = (s, main, dpi, sess_menu, view_menu, tip);
+            a.pill_brush = CreateSolidBrush(cref(PILL));
         });
+        let tb = [(ID_TB_LAYOUT, w!(""), w!("레이아웃 (행×열)")), (ID_TB_SESS, w!("세션"), w!("세션 저장·불러오기")), (ID_TB_VIEW, w!("보기"), w!("보기·글꼴·단축키"))];
+        for (id, label, hint) in tb {
+            add_tip(child(main, w!("BUTTON"), label, BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0), id, HFONT::default()), hint);
+        }
         if let Ok((t, th)) = create_tree(main) {
             app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
         }
+        apply_font();
         match win {
             Some([l, t, r, b, max]) => {
                 let wp = WINDOWPLACEMENT {
@@ -1480,7 +2041,8 @@ mod tests {
 
     #[test]
     fn session_layout_args() {
-        let mut s = Session { rows: 2, cols: 3, colr: vec![0.25, 0.25, 0.5], side: 200, active: 4, ..Default::default() };
+        let mut s = Session { rows: 2, cols: 3, colr: vec![0.25, 0.25, 0.5], side: 200, active: 4, font_pt: 11, ..Default::default() };
+        s.font = "Pretendard".into();
         s.win = Some([1, 2, 300, 400, 1]);
         s.paths[1] = r"C:\a=b\폴더".into();
         s.views[1] = (4, 16);
@@ -1512,5 +2074,13 @@ mod tests {
 
         assert_eq!(filter_spec(" pdf; *.TXT ;"), "*pdf*;*.TXT");
         assert_eq!((human(10), human(1536), human(5 << 30)), ("10 B".into(), "1.5 KB".into(), "5.0 GB".into()));
+
+        // pane top bar: back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
+        for (w, dpi) in [(800, 96), (260, 96), (1200, 144)] {
+            let p = pane_geo(w, 500, dpi);
+            let row = [p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt];
+            assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
+            assert!(p.filt.right <= w && p.view.top >= p.btn[0].bottom);
+        }
     }
 }
