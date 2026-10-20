@@ -1,0 +1,5 @@
+/target
+*.exe
+qdir.ini
+sessions/
+fonts/
