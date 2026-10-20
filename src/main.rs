@@ -612,6 +612,7 @@ struct App {
     tip: HWND,
     bars: [HWND; 2], // splitter guide bars (vertical, horizontal)
     grid: HWND,      // layout picker popup while open
+    reveal_tries: u8, // sidebar reveal passes left
     grid_preview: Vec<usize>,       // layout shown in the picker
     grid_drag: Option<Vec<usize>>, // press-and-drag in progress
     grid_preset: Option<usize>,    // preset tile under the mouse
@@ -649,6 +650,7 @@ thread_local! {
         tip: HWND::default(),
         bars: [HWND::default(); 2],
         grid: HWND::default(),
+        reveal_tries: 0,
         grid_preview: Vec::new(),
         grid_drag: None,
         grid_preset: None,
@@ -827,14 +829,10 @@ unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         // ★ filled (gray, or the header ink when tinted) in a favourite folder, otherwise ☆ with a small +
         let fav = app(|a| a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == parent)).is_some_and(|i| a.s.is_fav(&a.s.paths[i])));
         if fav {
-            return text(dc, rc, "\u{E735}", icon_font, if tinted { ink } else { pal().sub }, DT_CENTER);
+            return draw_star(dc, rc, if tinted { ink } else { pal().sub }, Star::Filled, dpi);
         }
-        // ☆ exactly where ★ goes, with a small + drawn inside it (lines, so it stays crisp)
-        let s = |v: i32| v * dpi / 96;
-        text(dc, rc, "\u{E734}", icon_font, fg, DT_CENTER);
-        let (cx, cy, arm, t) = ((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2 + s(1), s(2), s(1).max(1));
-        fill(dc, RECT { left: cx - arm, top: cy - t / 2, right: cx + arm + 1, bottom: cy - t / 2 + t }, fg);
-        return fill(dc, RECT { left: cx - t / 2, top: cy - arm, right: cx - t / 2 + t, bottom: cy + arm + 1 }, fg);
+        // ☆ exactly where ★ goes, with a + at its exact centre
+        return draw_star(dc, rc, fg, Star::Plus, dpi);
     }
     if !on_main {
         return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
@@ -847,11 +845,129 @@ unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         return text(dc, RECT { left: icon.right + s(4), ..rc }, &text_of(d.hwndItem), font, pal().text, DT_LEFT);
     }
     // icon only, names live in the tooltips; save turns green with a dot while the layout differs
+    if id == ID_TB_FAV {
+        return draw_star(dc, rc, fg, Star::Outline, dpi);
+    }
     let dirty = id == ID_TB_SAVE && app(|a| a.dirty);
     text(dc, rc, glyph(id), icon_font, if dirty { GREEN } else { fg }, DT_CENTER);
     if dirty {
         fill(dc, RECT { left: rc.right - s(10), top: rc.top + s(4), right: rc.right - s(4), bottom: rc.top + s(10) }, GREEN);
     }
+}
+
+// A chubby five-point star (inner radius 0.56 of the outer one) with softly rounded tips, as 0..=255
+// coverage per pixel of an n×n box. Font stars are too sharp, so it's computed: 4×4 samples per pixel.
+#[derive(Clone, Copy, PartialEq)]
+enum Star {
+    Outline,
+    Filled,
+    Plus, // outline with a + in its exact centre (add to favourites)
+}
+
+fn star_coverage(n: i32, kind: Star) -> Vec<u8> {
+    let filled = kind == Star::Filled;
+    let (c, r_out) = (n as f32 / 2.0, n as f32 / 2.0 - 0.5);
+    let pt = |k: i32, r: f32| {
+        let a = (-90.0 + 36.0 * k as f32).to_radians();
+        (c + r * a.cos(), c + r * a.sin())
+    };
+    let poly: Vec<(f32, f32)> = (0..10).map(|k| pt(k, if k % 2 == 0 { r_out } else { r_out * 0.56 })).collect();
+    let (stroke, round) = ((n as f32 * 0.11).max(1.2), r_out * 0.17);
+    // each tip is replaced by a circle tangent to both of its edges
+    let tips: Vec<((f32, f32), f32)> = (0..5)
+        .map(|i| {
+            let (t, v1, v2) = (poly[2 * i], poly[(2 * i + 9) % 10], poly[2 * i + 1]);
+            let (a, b) = ((v1.0 - t.0, v1.1 - t.1), (v2.0 - t.0, v2.1 - t.1));
+            let half = ((a.0 * b.0 + a.1 * b.1) / (a.0.hypot(a.1) * b.0.hypot(b.1))).acos() / 2.0; // half the tip angle
+            let d = round / half.sin();
+            let (ux, uy) = ((t.0 - c) / r_out, (t.1 - c) / r_out);
+            ((t.0 - ux * d, t.1 - uy * d), d)
+        })
+        .collect();
+    let inside_dist = |x: f32, y: f32| -> Option<f32> {
+        for (i, &((cx, cy), d)) in tips.iter().enumerate() {
+            let (ux, uy) = ((poly[2 * i].0 - c) / r_out, (poly[2 * i].1 - c) / r_out);
+            if (x - cx) * ux + (y - cy) * uy > 0.0 && (x - poly[2 * i].0).hypot(y - poly[2 * i].1) < 2.0 * d {
+                let e = round - (x - cx).hypot(y - cy);
+                return (e >= 0.0).then_some(e);
+            }
+        }
+        let mut inside = false;
+        let mut edge = f32::MAX;
+        for k in 0..10 {
+            let ((x1, y1), (x2, y2)) = (poly[k], poly[(k + 1) % 10]);
+            if (y1 > y) != (y2 > y) && x < x1 + (y - y1) * (x2 - x1) / (y2 - y1) {
+                inside = !inside;
+            }
+            let (dx, dy) = (x2 - x1, y2 - y1);
+            let t = (((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            edge = edge.min((x - x1 - t * dx).hypot(y - y1 - t * dy));
+        }
+        inside.then_some(edge)
+    };
+    let mut out = vec![0u8; (n * n) as usize];
+    for py in 0..n {
+        for px in 0..n {
+            let mut hit = 0;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let (x, y) = (px as f32 + (sx as f32 + 0.5) / 4.0, py as f32 + (sy as f32 + 0.5) / 4.0);
+                    hit += inside_dist(x, y).is_some_and(|e| filled || e < stroke) as u32;
+                }
+            }
+            out[(py * n + px) as usize] = (hit * 255 / 16) as u8;
+        }
+    }
+    if kind == Star::Plus {
+        // whole pixels, with the same parity as n so the + is centred exactly on the star's centre,
+        // and arms short enough to float in the hollow without touching the outline
+        let mut t = (n / 12).max(1);
+        if (n - t) % 2 != 0 {
+            t += 1;
+        }
+        let hollow = r_out * 0.516 - stroke; // centre to the inside of the outline, at its nearest
+        let len = t + 2 * ((hollow - 0.4 - t as f32 / 2.0) as i32).max(1);
+        let (a, b) = ((n - t) / 2, (n - len) / 2);
+        for i in b..b + len {
+            for j in a..a + t {
+                out[(j * n + i) as usize] = 255;
+                out[(i * n + j) as usize] = 255;
+            }
+        }
+    }
+    out
+}
+
+unsafe fn draw_star(dc: HDC, rc: RECT, rgb: u32, kind: Star, dpi: i32) {
+    let n = 15 * dpi / 96;
+    let cov = star_coverage(n, kind);
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: n,
+            biHeight: -n,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let Ok(bmp) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else { return };
+    let px = std::slice::from_raw_parts_mut(bits as *mut u8, (n * n * 4) as usize);
+    for (i, &a) in cov.iter().enumerate() {
+        let pre = |ch: u32| ((ch & 0xFF) * a as u32 / 255) as u8; // premultiplied BGRA
+        px[i * 4..i * 4 + 4].copy_from_slice(&[pre(rgb), pre(rgb >> 8), pre(rgb >> 16), a]);
+    }
+    let mem = CreateCompatibleDC(Some(dc));
+    let old = SelectObject(mem, bmp.into());
+    let (x, y) = ((rc.left + rc.right - n) / 2, (rc.top + rc.bottom - n) / 2);
+    let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+    _ = AlphaBlend(dc, x, y, n, n, mem, 0, 0, n, n, blend);
+    SelectObject(mem, old);
+    _ = DeleteDC(mem);
+    _ = DeleteObject(bmp.into());
 }
 
 // Repaints the save icon and puts the session name / unsaved state into its tooltip.
@@ -1382,7 +1498,7 @@ unsafe fn relayout() {
         return;
     };
     move_all(&moves, None);
-    SetTimer(Some(main), TIMER_REVEAL, 120, None); // sidebar size may have changed: keep its selection in view
+    start_reveal(main); // sidebar size may have changed: keep its selection in view
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
         if text_of(b) != label {
             _ = SetWindowTextW(b, &HSTRING::from(label));
@@ -1471,11 +1587,20 @@ unsafe fn repaint_header(pane: HWND) {
 // The sidebar follows the active pane: expand down to its folder and select it.
 // (Programmatic selection doesn't navigate: OnSelectionChanged only follows user input.)
 unsafe fn sync_tree(item: &IShellItem) {
-    let Some((t, main)) = app(|a| a.tree.clone().map(|t| (t, a.main))) else { return };
+    let Some((t, main, th)) = app(|a| a.tree.clone().map(|t| (t, a.main, a.tree_hwnd))) else { return };
+    // the tree scrolls on its own when it selects; hide that and paint once, after the reveal
+    let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).ok();
+    if let Some(tv) = tv {
+        SendMessageW(tv, WM_SETREDRAW, Some(WPARAM(0)), None);
+    }
     _ = t.EnsureItemVisible(item);
     _ = t.SetItemState(item, NSTCIS_SELECTED.0 as u32, NSTCIS_SELECTED.0 as u32);
-    // scroll it into view once the tree has finished expanding down to it
-    SetTimer(Some(main), TIMER_REVEAL, 120, None);
+    reveal_tree_selection(); // turns redraw back on
+    if let Some(tv) = tv {
+        SendMessageW(tv, WM_SETREDRAW, Some(WPARAM(1)), None);
+        _ = InvalidateRect(Some(tv), None, true);
+    }
+    start_reveal(main); // and again while the tree finishes expanding
 }
 
 // Scrolls the tree so the selected folder is on screen: vertically, and sideways when deep nesting
@@ -1487,7 +1612,6 @@ unsafe fn reveal_tree_selection() {
     if item == 0 {
         return;
     }
-    SendMessageW(tv, TVM_ENSUREVISIBLE, None, Some(LPARAM(item)));
     let label = || {
         let mut r = RECT::default();
         *(&mut r as *mut RECT as *mut isize) = item; // TVM_GETITEMRECT takes the item in the RECT
@@ -1500,15 +1624,35 @@ unsafe fn reveal_tree_selection() {
         return; // not laid out yet; relayout asks again
     }
     let margin = 16 * dpi / 96;
-    // sideways: from the far left, step right until the name fits or starts at the margin
-    // (stepping avoids guessing the tree's scroll units)
-    SendMessageW(tv, WM_HSCROLL, Some(WPARAM(6)), None); // SB_LEFT
+    // all the scrolling happens unseen, then one repaint if anything moved
+    let pos = || (GetScrollPos(tv, SB_HORZ), GetScrollPos(tv, SB_VERT));
+    let before = pos();
+    SendMessageW(tv, WM_SETREDRAW, Some(WPARAM(0)), None);
+    SendMessageW(tv, TVM_ENSUREVISIBLE, None, Some(LPARAM(item)));
+    // sideways, a line at a time (avoids guessing the tree's scroll units): the selected folder's name
+    // wins over the roots on the left, which may get cut off. One direction only, so a name wider than
+    // the sidebar can't bounce between the two rules.
+    let left = label().is_some_and(|r| r.left < margin);
     for _ in 0..300 {
         match label() {
-            Some(r) if r.right > c.right && r.left > margin => _ = SendMessageW(tv, WM_HSCROLL, Some(WPARAM(1)), None), // SB_LINERIGHT
+            Some(r) if left && r.left < margin && GetScrollPos(tv, SB_HORZ) > 0 => _ = SendMessageW(tv, WM_HSCROLL, Some(WPARAM(0)), None), // SB_LINELEFT
+            Some(r) if !left && r.right > c.right && r.left > margin => _ = SendMessageW(tv, WM_HSCROLL, Some(WPARAM(1)), None), // SB_LINERIGHT
             _ => break,
         }
     }
+    if !left && label().is_some_and(|r| r.left < margin) {
+        SendMessageW(tv, WM_HSCROLL, Some(WPARAM(0)), None); // overshot: back one, so the next pass is a no-op
+    }
+    SendMessageW(tv, WM_SETREDRAW, Some(WPARAM(1)), None);
+    if pos() != before {
+        _ = InvalidateRect(Some(tv), None, true);
+    }
+}
+
+// The tree expands down to a new folder asynchronously, so the reveal runs a few times as it settles.
+unsafe fn start_reveal(main: HWND) {
+    app(|a| a.reveal_tries = 3);
+    SetTimer(Some(main), TIMER_REVEAL, 120, None);
 }
 
 unsafe fn set_accent(c: u32) {
@@ -2542,6 +2686,13 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_TIMER if wp.0 == TIMER_REVEAL => {
                 _ = KillTimer(Some(h), TIMER_REVEAL);
                 reveal_tree_selection();
+                let left = app(|a| {
+                    a.reveal_tries = a.reveal_tries.saturating_sub(1);
+                    a.reveal_tries
+                });
+                if left > 0 {
+                    SetTimer(Some(h), TIMER_REVEAL, if left == 2 { 330 } else { 550 }, None);
+                }
             }
             WM_TIMER if wp.0 == TIMER_STATUS => {
                 update_status();
@@ -2948,6 +3099,17 @@ mod tests {
         cur.colr = vec![0.3, 0.7];
         assert!(layout_differs(&cur, &base));
         assert!(!s.snapshot().contains("win=") && !s.snapshot().contains("session="));
+        // the drawn star: solid middle and empty corners when filled; hollow middle as an outline
+        let (full, ring) = (star_coverage(15, Star::Filled), star_coverage(15, Star::Outline));
+        assert_eq!((full[7 * 15 + 7], full[0], full[14 * 15 + 14]), (255, 0, 0));
+        assert!(ring[8 * 15 + 7] == 0 && ring.iter().any(|&a| a == 255));
+        for n in [15, 22] {
+            // the + (what Plus adds to the outline) sits exactly on the box centre in both directions
+            let (plus, ring) = (star_coverage(n, Star::Plus), star_coverage(n, Star::Outline));
+            let added: Vec<(i32, i32)> = (0..n * n).filter(|&k| plus[k as usize] != ring[k as usize]).map(|k| (k % n, k / n)).collect();
+            let span = |f: fn(&(i32, i32)) -> i32| added.iter().map(f).min().unwrap() + added.iter().map(f).max().unwrap();
+            assert_eq!((span(|p| p.0), span(|p| p.1)), (n - 1, n - 1), "{n}");
+        }
         // favourites: kept in grids.ini, case-insensitive, never in a named session
         let mut f = Session { favs: vec![r"C:\Work".into(), r"D:\".into()], ..Default::default() };
         f = Session::parse(&f.to_ini());
