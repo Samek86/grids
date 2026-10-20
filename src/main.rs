@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Graphics::GdiPlus::{
     FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreatePen1,
@@ -103,10 +103,11 @@ F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 마우스로 행×열을 고르고 클릭 (방향키+Enter도 가능)\n\
 ⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기\n\
 세션: 레이아웃+폴더를 .qdr로 저장 / 불러오기\n\
-보기 → 글꼴: exe 옆 fonts 폴더의 글꼴(예: Pretendard)도 설치 없이 사용\n\
+보기 → 글꼴: 기본은 내장 Pretendard, exe 옆 fonts 폴더의 글꼴도 설치 없이 사용\n\
 스플리터 더블클릭: 균등 분할\n\
 실행 인자: qdir.exe C:\\a D:\\b ... 또는 qdir.exe 작업.qdr\n\
-이미 실행 중이면 그 창에서 엽니다.";
+이미 실행 중이면 그 창에서 엽니다.\n\n\
+글꼴 Pretendard © Kil Hyung-jin, SIL Open Font License 1.1";
 
 // ---------- session (qdir.ini next to the exe; named sessions are the same format as .qdr) ----------
 
@@ -138,7 +139,7 @@ impl Default for Session {
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
             font: String::new(),
-            font_pt: 10,
+            font_pt: 9,
         }
     }
 }
@@ -182,7 +183,7 @@ impl Session {
                 "rowr" => s.rowr = nums(v),
                 "active" => s.active = v.parse().unwrap_or(0),
                 "font" => s.font = v.trim().to_string(),
-                "font_pt" => s.font_pt = v.parse().unwrap_or(10).clamp(7, 24),
+                "font_size" => s.font_pt = v.parse().unwrap_or(9).clamp(7, 24),
                 _ => {
                     if let Some(i) = slot('p') {
                         s.paths[i] = v.to_string();
@@ -207,7 +208,7 @@ impl Session {
         }
         o += &format!("side={}\ngrid={},{}\n", self.side, self.rows, self.cols);
         o += &format!("colr={}\nrowr={}\nactive={}\n", join(&self.colr), join(&self.rowr), self.active);
-        o += &format!("font={}\nfont_pt={}\n", self.font, self.font_pt);
+        o += &format!("font={}\nfont_size={}\n", self.font, self.font_pt);
         for i in 0..MAXP {
             if !self.paths[i].is_empty() {
                 o += &format!("p{i}={}\n", self.paths[i]);
@@ -336,8 +337,8 @@ fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
-    let (pad, gap, top) = (s(12), s(10), s(50));
-    let bot = (rc.bottom - s(30)).max(top);
+    let (pad, gap, top) = (s(8), s(8), s(34));
+    let bot = (rc.bottom - s(24)).max(top);
     let side = a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120)));
     let gx = pad + side + gap;
     Geo {
@@ -377,19 +378,19 @@ struct PaneGeo {
 
 fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     let s = |v: i32| v * dpi / 96;
-    let (bar, bh, b, pad) = (s(46), s(30), s(30), s(8));
+    let (bar, bh, b, pad) = (s(30), s(22), s(24), s(4));
     let y = (bar - bh) / 2;
     let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
-    let fw = s(180).min((w - 2 * pad - 4 * b) / 3).max(0);
+    let fw = s(150).min((w - 2 * pad - 4 * b) / 3).max(0);
     let filt = r(w - pad - fw, fw);
-    let open = r(filt.left - s(4) - b, b);
-    let addr_x = pad + 3 * b + s(6);
+    let open = r(filt.left - s(2) - b, b);
+    let addr_x = pad + 3 * b + s(4);
     PaneGeo {
         btn: [r(pad, b), r(pad + b, b), r(pad + 2 * b, b), open],
-        addr: r(addr_x, open.left - s(6) - addr_x),
+        addr: r(addr_x, open.left - s(4) - addr_x),
         filt,
-        // inset so the square list sits inside the plate's rounded corners
-        view: RECT { left: s(6), top: bar, right: w - s(6), bottom: h - s(6) },
+        // 2px in, so the active ring stays visible around the list
+        view: RECT { left: s(2), top: bar, right: w - s(2), bottom: h - s(2) },
     }
 }
 
@@ -536,10 +537,18 @@ unsafe fn ui_face(pref: &str) -> String {
     faces.into_iter().find(|f| !f.is_empty() && font_exists(f)).unwrap_or("Segoe UI").to_string()
 }
 
-// Fonts dropped into `fonts\` next to the exe work without installing (portable).
+// Pretendard (SIL OFL 1.1, assets/Pretendard-LICENSE.txt) ships inside the exe, so it looks the same on PCs
+// without it installed. Loaded from a temp copy rather than from memory so the font dialog lists it too.
+static PRETENDARD: &[u8] = include_bytes!("../assets/Pretendard-Regular.otf");
+
+// The bundled font, plus anything dropped into `fonts\` next to the exe; private to this process, no install.
 unsafe fn load_private_fonts() {
+    let tmp = std::env::temp_dir().join("qdir-Pretendard-Regular.otf");
+    if std::fs::metadata(&tmp).map(|m| m.len()).ok() != Some(PRETENDARD.len() as u64) {
+        _ = std::fs::write(&tmp, PRETENDARD);
+    }
     let entries = std::fs::read_dir(ini_path().with_file_name("fonts")).into_iter().flatten().flatten();
-    for p in entries.map(|e| e.path()) {
+    for p in std::iter::once(tmp).chain(entries.map(|e| e.path())) {
         let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
         if ["ttf", "otf", "ttc"].contains(&ext.as_str()) {
             AddFontResourceExW(&HSTRING::from(p.to_string_lossy().as_ref()), FR_PRIVATE, None);
@@ -552,7 +561,7 @@ unsafe fn apply_font() {
     let (pref, pt, dpi) = app(|a| (a.s.font.clone(), a.s.font_pt, a.dpi));
     let font = CreateFontIndirectW(&logfont(&ui_face(&pref), (pt * dpi + 36) / 72));
     let icons = if font_exists("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" };
-    let icon_font = CreateFontIndirectW(&logfont(icons, 16 * dpi / 96));
+    let icon_font = CreateFontIndirectW(&logfont(icons, 14 * dpi / 96));
     let dc = GetDC(None);
     let old = SelectObject(dc, font.into());
     let mut tm = TEXTMETRICW::default();
@@ -675,7 +684,7 @@ impl Gfx {
         for (i, a) in [20u8, 14, 10, 7, 4, 2].into_iter().enumerate() {
             let k = i as f32 + 1.0;
             let (x, y, w, h) = rf(r, 0.5 - k);
-            self.round((x, y + 1.5, w, h), rad + k, None, Some((argb(SHADOW, a), 1.0)));
+            self.round((x, y + 1.5, w, h), rad, None, Some((argb(SHADOW, a), 1.0)));
         }
     }
 }
@@ -713,14 +722,14 @@ unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
             (false, true) => 0xE2E5EA,
             (false, false) => 0xEDEFF3,
         };
-        Gfx::new(dc).round(rf(rc, 0.0), (8 * dpi / 96) as f32, Some(argb(shade, 255)), None);
+        fill(dc, rc, shade);
     }
     let fg = if hot || pressed { TEXT } else { SUB };
     if !on_main {
         return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
     }
     let s = |v: i32| v * dpi / 96;
-    let icon = RECT { left: rc.left + s(8), right: rc.left + s(30), ..rc };
+    let icon = RECT { left: rc.left + s(4), right: rc.left + s(22), ..rc };
     text(dc, icon, glyph(id), icon_font, fg, DT_CENTER);
     text(dc, RECT { left: icon.right + s(4), ..rc }, &text_of(d.hwndItem), font, TEXT, DT_LEFT);
 }
@@ -1166,8 +1175,8 @@ unsafe fn layout_pane(h: HWND) {
     };
     let ctl = |id: i32| GetDlgItem(Some(h), id).unwrap_or_default();
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
-    moves.push((ctl(ID_EDIT), inside(pg.addr, s(14), s(12))));
-    moves.push((ctl(ID_FILTER), inside(pg.filt, s(32), s(12))));
+    moves.push((ctl(ID_EDIT), inside(pg.addr, s(8), s(6))));
+    moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     move_all(&moves, Some((&eb, pg.view)));
 }
 
@@ -1180,12 +1189,12 @@ unsafe fn relayout() {
         let g = geo(a);
         let s = |v: i32| v * a.dpi / 96;
         let sr = side_rect(&g);
-        let tree = RECT { left: sr.left + s(6), top: sr.top + s(8), right: sr.right - s(6), bottom: sr.bottom - s(6) };
+        let tree = RECT { left: sr.left + s(2), top: sr.top + s(4), right: sr.right - s(2), bottom: sr.bottom - s(2) };
         let mut moves = vec![(a.tree_hwnd, tree)];
         let mut x = g.pad;
-        for (id, w) in [(ID_TB_LAYOUT, s(92)), (ID_TB_SESS, s(76)), (ID_TB_VIEW, s(76))] {
+        for (id, w) in [(ID_TB_LAYOUT, s(70)), (ID_TB_SESS, s(58)), (ID_TB_VIEW, s(58))] {
             let b = unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
-            moves.push((b, RECT { left: x, top: s(9), right: x + w, bottom: s(9) + s(32) }));
+            moves.push((b, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
             x += w + s(4);
         }
         for (i, p) in a.panes.iter().enumerate().take(a.s.rows * a.s.cols) {
@@ -1436,7 +1445,7 @@ unsafe fn paint_main(h: HWND) {
         (g, cards, active, a.status.clone(), a.font, a.dpi)
     });
     buffered(h, hdc, |dc, rc| {
-        let rad = (12 * dpi / 96) as f32;
+        let rad = 0.0;
         fill(dc, rc, BG);
         let gfx = Gfx::new(dc);
         let side = side_rect(&g);
@@ -1446,7 +1455,7 @@ unsafe fn paint_main(h: HWND) {
             gfx.shadow(*c, rad);
         }
         if let Some(c) = active {
-            gfx.round(rf(c, -2.0), rad + 2.0, None, Some((argb(ACCENT, 0x38), 4.0)));
+            gfx.round(rf(c, -2.0), rad, None, Some((argb(ACCENT, 0x38), 4.0)));
         }
         drop(gfx);
         let st = status_rect(&g);
@@ -1465,21 +1474,21 @@ unsafe fn paint_pane(h: HWND) {
     let (addr_on, filt_on) = (focused(ID_EDIT), focused(ID_FILTER));
     buffered(h, hdc, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
-        let rad = s(12) as f32;
+        let rad = 0.0;
         let pg = pane_geo(rc.right, rc.bottom, dpi);
         fill(dc, rc, BG);
         let gfx = Gfx::new(dc);
         gfx.round(rf(rc, 0.5), rad, Some(argb(CARD, 255)), Some((argb(LINE, 255), 1.0)));
         if active {
-            gfx.round(rf(rc, 1.0), rad - 0.5, None, Some((argb(ACCENT, 255), 2.0)));
+            gfx.round(rf(rc, 1.0), rad, None, Some((argb(ACCENT, 255), 2.0)));
         }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
             let r = rf(p, 0.0);
-            gfx.round(r, r.3 / 2.0, Some(argb(PILL, 255)), on.then_some((argb(ACCENT, 0xB0), 1.5)));
+            gfx.round(r, 0.0, Some(argb(PILL, 255)), on.then_some((argb(ACCENT, 0xB0), 1.0)));
         }
         drop(gfx);
-        fill(dc, RECT { left: pg.view.left + s(8), top: pg.view.top - 1, right: pg.view.right - s(8), bottom: pg.view.top }, LINE);
-        let icon = RECT { left: pg.filt.left + s(10), right: pg.filt.left + s(28), ..pg.filt };
+        fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, LINE);
+        let icon = RECT { left: pg.filt.left + s(4), right: pg.filt.left + s(22), ..pg.filt };
         text(dc, icon, ICON_SEARCH, icon_font, SUB, DT_CENTER);
     });
     _ = EndPaint(h, &ps);
@@ -1519,8 +1528,8 @@ unsafe fn open_grid() {
     let Ok(g) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("QDirGrid"), w!(""), style, rc.left, y, w, h, Some(main), None, None, None) else {
         return;
     };
-    let round = DWMWCP_ROUND;
-    _ = DwmSetWindowAttribute(g, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, 4);
+    let square = DWMWCP_DONOTROUND;
+    _ = DwmSetWindowAttribute(g, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
     app(|a| a.grid = g);
 }
 
@@ -1540,7 +1549,7 @@ unsafe fn paint_grid(h: HWND) {
                 } else {
                     PILL
                 };
-                gfx.round(rf(grid_cell(r, c, dpi), 0.0), (6 * dpi / 96) as f32, Some(argb(col, 255)), None);
+                gfx.round(rf(grid_cell(r, c, dpi), 0.0), 0.0, Some(argb(col, 255)), None);
             }
         }
         drop(gfx);
@@ -1989,6 +1998,8 @@ fn main() -> Result<()> {
         // caption in the ground colour, so title bar and toolbar read as one surface
         let caption = cref(BG);
         _ = DwmSetWindowAttribute(main, DWMWA_CAPTION_COLOR, &caption as *const _ as _, 4);
+        let square = DWMWCP_DONOTROUND;
+        _ = DwmSetWindowAttribute(main, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
         let dpi = GetDpiForWindow(main) as i32;
         if s.side <= 0 {
             s.side = 240 * dpi / 96;
