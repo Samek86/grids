@@ -4,9 +4,9 @@ A fast, lightweight multi-pane file manager for Windows. Up to 16 Explorer panes
 
 [한국어](README.ko.md)
 
-<!-- demo: uncomment once docs/demo.gif exists (docs/motion/PLAN.md)
-![Grids in motion](docs/demo.gif)
--->
+[![Grids in motion](docs/demo.gif)](docs/demo.mp4)
+
+▶ [Watch the full launch video with sound](docs/demo.mp4) (35 s)
 
 ![Grids, light theme](docs/screenshot-light.png)
 
