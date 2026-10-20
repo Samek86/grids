@@ -4,6 +4,10 @@ A fast, lightweight multi-pane file manager for Windows. Up to 16 Explorer panes
 
 [한국어](README.ko.md)
 
+<!-- demo: uncomment once docs/demo.gif exists (docs/motion/PLAN.md)
+![Grids in motion](docs/demo.gif)
+-->
+
 ![Grids, light theme](docs/screenshot-light.png)
 
 Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails, rename and copy progress all work exactly as they do in Explorer.

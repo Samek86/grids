@@ -4,6 +4,10 @@ Windows용 빠르고 가벼운 다중 패널 파일 관리자입니다. 한 창�
 
 [English](README.md)
 
+<!-- demo: uncomment once docs/demo.gif exists (docs/motion/PLAN.md)
+![Grids 데모](docs/demo.gif)
+-->
+
 ![Grids 라이트 테마](docs/screenshot-light.png)
 
 각 패널이 실제 Windows 탐색기 화면이라 우클릭 메뉴, 끌어다 놓기, 썸네일, 이름 바꾸기, 복사 진행 표시가 탐색기와 똑같이 동작합니다.
