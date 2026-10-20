@@ -7,9 +7,9 @@ Q-Dir 스타일 다중 패널 파일 관리자 (Rust, Win32). 각 패널이 Wind
 - 세션 자동 저장, 이름 붙인 세션(.qdr), 단일 인스턴스, 상태바
 - 조약돌 테마: 연회색 바탕에 직각 흰 플레이트 + 그림자, 활성 패널은 액센트 테두리 하나, 레이아웃은 그리드 피커로 선택
 - 글꼴: Pretendard Regular를 exe에 내장해 설치 안 된 PC에서도 같은 모양. 보기 → 글꼴로 변경, exe 옆 `fonts\`에 넣은 글꼴도 설치 없이 사용
+- 단축키: 보기 → 단축키
 
 Pretendard © Kil Hyung-jin, [SIL Open Font License 1.1](assets/Pretendard-LICENSE.txt).
-- 단축키: 보기 → 단축키
 
 ## 빌드
 
