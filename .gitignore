@@ -1,5 +1,4 @@
 /target
 *.exe
-qdir.ini
+*.ini
 sessions/
-fonts/
