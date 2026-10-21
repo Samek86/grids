@@ -42,6 +42,8 @@ pub(crate) struct Desk {
     pub(crate) font: HFONT,
     pub(crate) icon_font: HFONT,
     pub(crate) bold_font: HFONT, // favourite group labels; created on first paint, freed on DPI change and close
+    pub(crate) group_brush: HBRUSH, // favourite group wash; rebuilt when the accent or theme changes
+    pub(crate) group_brush_rgb: u32,
     pub(crate) fh: i32, // UI font line height in px
     pub(crate) dpi: i32,
     pub(crate) panes: Vec<Option<Pane>>,
@@ -133,6 +135,8 @@ pub(crate) fn blank_desk() -> Desk {
         font: HFONT::default(),
         icon_font: HFONT::default(),
         bold_font: HFONT::default(),
+        group_brush: HBRUSH::default(),
+        group_brush_rgb: 0,
         fh: 16,
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
@@ -322,6 +326,10 @@ pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HFONT, HMENU) {
         }
         let i = a.cur.min(a.desks.len() - 1);
         let d = a.desks.remove(i);
+        let brush = d.group_brush;
+        if !brush.is_invalid() {
+            unsafe { _ = DeleteObject(brush.into()) };
+        }
         if a.desks.is_empty() {
             a.cur = 0;
         } else {
