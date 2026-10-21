@@ -15,10 +15,10 @@ use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, 
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::*;
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
-use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::*;
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
 use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -198,6 +198,7 @@ Alt+↓\tRecent folders (all panes, newest first)\n\
 Ctrl+L, Alt+D, F4\tAddress bar\n\
 Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
 Ctrl+Shift+M\tMaximize / restore the active pane (or double-click its header)\n\
+Ctrl+Shift+C\tCopy the full path of the selected items (or of the current folder)\n\
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
@@ -219,6 +220,7 @@ Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
 Ctrl+L, Alt+D, F4\t주소창\n\
 Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
 Ctrl+Shift+M\t선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능)\n\
+Ctrl+Shift+C\t선택한 항목(없으면 현재 폴더)의 전체 경로 복사\n\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
@@ -752,6 +754,7 @@ struct App {
     grid_preset: Option<usize>,    // preset tile under the mouse
     grid_closed: Option<Instant>,
     zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
+    note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
 }
 
 thread_local! {
@@ -793,6 +796,7 @@ thread_local! {
         grid_preset: None,
         grid_closed: None,
         zoom: None,
+        note: None,
     });
 }
 
@@ -2760,7 +2764,10 @@ unsafe fn update_status() {
     let Some(rc) = app(|a| {
         let (head, size, tail) = &a.status_base;
         let size = size.map(|(f, d, p)| size_text(ko, f, d, job, p)).unwrap_or_default();
-        let status = format!("{head}{size}{tail}");
+        // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
+        a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
+        let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
+        let status = format!("{note}{head}{size}{tail}");
         (a.status != status).then(|| {
             a.status = status;
             status_rect(&geo(a))
@@ -3510,6 +3517,54 @@ fn collect_all(n: u32, mut get: impl FnMut(u32) -> Option<String>) -> std::resul
     }
 }
 
+// Ctrl+Shift+C in a file list: the selected items' paths (or the folder's), quoted, one per line.
+// Virtual items without a file path are skipped. The clipboard is only touched once the text is ready.
+unsafe fn copy_paths(a: usize) {
+    let Some(fv) = view_of::<IFolderView2>(a) else { return };
+    let path = |it: IShellItem| it.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p));
+    let mut paths: Vec<String> = Vec::new();
+    if let Ok(arr) = fv.GetSelection(false) {
+        paths = (0..arr.GetCount().unwrap_or(0)).filter_map(|k| path(arr.GetItemAt(k).ok()?)).collect();
+    }
+    if fv.ItemCount(SVGIO_SELECTION).unwrap_or(0) == 0 {
+        paths = fv.GetFolder::<IShellItem>().ok().and_then(path).into_iter().collect();
+    }
+    if paths.is_empty() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let text: Vec<u16> = paths.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join("\r\n").encode_utf16().chain([0]).collect();
+    let main = app(|x| x.main);
+    let mut ok = false;
+    if let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, text.len() * 2) {
+        let p = GlobalLock(h) as *mut u16;
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), p, text.len());
+            _ = GlobalUnlock(h);
+            if OpenClipboard(Some(main)).is_ok() {
+                ok = EmptyClipboard().is_ok() && SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(h.0))).is_ok();
+                _ = CloseClipboard();
+            }
+        }
+        if !ok {
+            _ = GlobalFree(Some(h)); // after a successful SetClipboardData the system owns it
+        }
+    }
+    if !ok {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let n = paths.len();
+    let note = match (KO.load(Ordering::Relaxed), n) {
+        (true, 1) => "경로 복사함".into(),
+        (true, n) => format!("경로 {n}개 복사함"),
+        (false, 1) => "Copied path".into(),
+        (false, n) => format!("Copied {n} paths"),
+    };
+    app(|x| x.note = Some((note, Instant::now())));
+    update_status();
+}
+
 // Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Grids stays usable.
 // Cut, links, virtual items and anything else stay with the shell.
 unsafe fn try_paste(a: usize) -> bool {
@@ -3636,6 +3691,7 @@ unsafe fn key(m: &MSG) -> bool {
             focus_view(a);
         }
         _ if addr || filt => return false,
+        VK_C if ctrl && shift && !alt && list() => copy_paths(a),
         VK_DOWN if alt && !ctrl && !shift => recent_menu(a),
         VK_F5 if list() => {
             resum_sizes();
