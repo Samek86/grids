@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use windows::core::*;
@@ -15,11 +15,13 @@ use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, 
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::*;
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
-use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows::Win32::UI::Controls::{
     SetWindowTheme, BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
@@ -2349,14 +2351,16 @@ unsafe fn update_status() {
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
     let sel = fv.ItemCount(SVGIO_SELECTION).unwrap_or(0);
     let spec = filter_of(i);
-    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}", fv.GetFocusedItem().unwrap_or(-1));
+    // while a background copy runs, the disk is left alone (size and free space come back after)
+    let busy = COPYING.load(Ordering::Relaxed) > 0;
+    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}", fv.GetFocusedItem().unwrap_or(-1));
     if app(|a| a.status_key == key) {
         return;
     }
     let ko = KO.load(Ordering::Relaxed);
     let mut parts = vec![if ko { format!("항목 {n}개") } else { format!("{n} items") }];
     if sel > 0 {
-        let size = match selected_size(&fv) {
+        let size = match if busy { 0 } else { selected_size(&fv) } {
             0 => String::new(),
             size => format!(" ({})", human(size)),
         };
@@ -2366,7 +2370,9 @@ unsafe fn update_status() {
         parts.push(format!("{} {spec}", tr("Filter", "필터")));
     }
     let drive = path.get(1..2) == Some(":");
-    if drive || path.starts_with(r"\\") {
+    if busy {
+        parts.push(tr("Copying…", "복사 중…").into());
+    } else if drive || path.starts_with(r"\\") {
         // ponytail: a dead network share can stall this call once per change
         let (mut free, mut total) = (0, 0);
         if GetDiskFreeSpaceExW(&HSTRING::from(&path), Some(&mut free), Some(&mut total), None).is_ok() {
@@ -2957,6 +2963,113 @@ unsafe fn popup_menu(menu: HMENU, id: i32) {
     _ = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom + 4, None, main, None);
 }
 
+// ---------- background paste ----------
+
+// Copies running on worker threads; the status line says so and skips its disk calls meanwhile.
+static COPYING: AtomicUsize = AtomicUsize::new(0);
+
+struct Busy;
+
+impl Busy {
+    fn new() -> Busy {
+        COPYING.fetch_add(1, Ordering::Relaxed);
+        Busy
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        COPYING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+thread_local! {
+    // joined after the message loop so closing Grids doesn't cut a copy short
+    static JOBS: RefCell<Vec<std::thread::JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
+}
+
+// Ctrl+V in a file list: a held key's repeats are swallowed; the first press starts a copy, or goes
+// to the shell when `start` can't take it. True = handled, don't pass it on.
+fn paste_key(repeat: bool, start: impl FnOnce() -> bool) -> bool {
+    repeat || start()
+}
+
+// Some(true): every source sits in `dst` (copy with "- Copy" names), Some(false): none does,
+// None: empty, not a file system path or mixed (left to the shell).
+fn paste_mode(srcs: &[String], dst: &str) -> Option<bool> {
+    let dst = dst.trim_end_matches('\\').to_lowercase();
+    let parent = |p: &String| Some(p.trim_end_matches('\\').rsplit_once('\\')?.0.trim_end_matches('\\').to_lowercase());
+    let same: Vec<bool> = srcs.iter().map(|p| if is_fs(p) { parent(p).map(|d| d == dst) } else { None }).collect::<Option<_>>()?;
+    match (same.iter().all(|&s| s), same.iter().any(|&s| s)) {
+        _ if same.is_empty() => None,
+        (true, _) => Some(true),
+        (false, false) => Some(false),
+        _ => None,
+    }
+}
+
+// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Grids stays usable.
+// Cut, links, virtual items and anything else stay with the shell.
+unsafe fn try_paste(a: usize) -> bool {
+    let (dst, main) = app(|x| (x.s.paths[a].clone(), x.main));
+    if !is_fs(&dst) || OpenClipboard(Some(main)).is_err() {
+        return false;
+    }
+    let mut srcs = Vec::new();
+    if let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) {
+        let drop = HDROP(h.0);
+        for k in 0..DragQueryFileW(drop, u32::MAX, None) {
+            let mut buf = vec![0u16; DragQueryFileW(drop, k, None) as usize + 1];
+            let n = DragQueryFileW(drop, k, Some(&mut buf)) as usize;
+            srcs.push(String::from_utf16_lossy(&buf[..n]));
+        }
+    }
+    let mut effect = None;
+    if let Ok(h) = GetClipboardData(RegisterClipboardFormatW(w!("Preferred DropEffect"))) {
+        let p = GlobalLock(HGLOBAL(h.0)) as *const u32;
+        if !p.is_null() {
+            effect = Some(*p);
+            _ = GlobalUnlock(HGLOBAL(h.0));
+        }
+    }
+    _ = CloseClipboard();
+    let copy = effect.is_none_or(|e| e & DROPEFFECT_MOVE.0 == 0 && e & DROPEFFECT_COPY.0 != 0);
+    let Some(rename) = paste_mode(&srcs, &dst).filter(|_| copy) else { return false };
+    let busy = Busy::new();
+    let job = std::thread::Builder::new().spawn(move || {
+        let _busy = busy;
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        if let Err(e) = run_copy(&srcs, &dst, rename) {
+            if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
+                let text = HSTRING::from(format!("{}{}", tr("Copying failed: ", "복사하지 못했습니다: "), e.message()));
+                MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+            }
+        }
+        if com {
+            CoUninitialize();
+        }
+    });
+    let Ok(job) = job else { return false };
+    JOBS.with_borrow_mut(|j| {
+        j.retain(|j| !j.is_finished());
+        j.push(job);
+    });
+    true
+}
+
+// No owner window: the progress and conflict dialogs belong to the worker thread.
+unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool) -> Result<()> {
+    let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+    let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOFX_ADDUNDORECORD;
+    op.SetOperationFlags(if rename { flags | FOF_RENAMEONCOLLISION } else { flags })?;
+    let to: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(dst), None)?;
+    for s in srcs {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
+        op.CopyItem(&item, &to, PCWSTR::null(), None)?;
+    }
+    op.PerformOperations()
+}
+
 // ---------- keyboard ----------
 
 unsafe fn key(m: &MSG) -> bool {
@@ -2968,6 +3081,13 @@ unsafe fn key(m: &MSG) -> bool {
     let a = app(|a| a.s.active);
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
+    // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
+    let shell = || {
+        let Some(sv) = view_of::<IShellView>(a) else { return false };
+        let svh = sv.GetWindow().unwrap_or_default();
+        (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
+    };
+    let list = || view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     match VIRTUAL_KEY(m.wParam.0 as u16) {
         VK_TAB if ctrl => cycle(if shift { -1 } else { 1 }),
         VK_LEFT if alt => browse(a, SBSP_NAVIGATEBACK),
@@ -2996,12 +3116,12 @@ unsafe fn key(m: &MSG) -> bool {
             focus_view(a);
         }
         _ if addr || filt => return false,
-        _ => {
-            // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
-            let Some(sv) = view_of::<IShellView>(a) else { return false };
-            let svh = sv.GetWindow().unwrap_or_default();
-            return (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK;
+        VK_V if ctrl && !shift && !alt && list() => {
+            if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
+                return shell();
+            }
         }
+        _ => return shell(),
     }
     true
 }
@@ -3495,6 +3615,15 @@ fn main() -> Result<()> {
                 }
             }
         }
+        // The window is gone; copies still running finish first. Waiting keeps COM calls and messages
+        // moving, in case a shell extension calls back into this apartment.
+        for job in JOBS.take() {
+            if !job.is_finished() {
+                let h = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(&job));
+                _ = CoWaitForMultipleHandles((COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES).0 as u32, INFINITE, &[h]);
+            }
+            _ = job.join();
+        }
     }
     Ok(())
 }
@@ -3520,6 +3649,33 @@ mod tests {
         cur.paths[0] = r"C:\b".into();
         assert!(layout_differs(&cur, &base));
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
+    }
+
+    #[test]
+    fn paste() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt"]), r"C:\"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"c:\X\a.txt", r"C:\x\b\"]), r"C:\X\"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt"]), r"D:\x"), Some(false));
+        assert_eq!(paste_mode(&v(&[r"\\srv\share\a.txt"]), r"\\SRV\share"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"\\srv\share\a.txt"]), r"C:\x"), Some(false));
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt", r"D:\b.txt"]), r"C:\"), None); // mixed
+        assert_eq!(paste_mode(&[], r"C:\"), None);
+        assert_eq!(paste_mode(&v(&["::{x}", r"C:\a"]), r"D:\"), None);
+        assert_eq!(paste_mode(&v(&[r"C:\"]), r"D:\"), None); // a drive itself has no parent
+
+        // (tries, shell): first press starts one copy, no shell; a held key's repeat: neither; unsupported: shell
+        let run = |repeat: bool, ok: bool| {
+            let mut tries = 0;
+            let handled = paste_key(repeat, || {
+                tries += 1;
+                ok
+            });
+            (tries, !handled)
+        };
+        assert_eq!(run(false, true), (1, false));
+        assert_eq!(run(true, true), (0, false));
+        assert_eq!(run(false, false), (1, true));
     }
 
     #[test]
