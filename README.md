@@ -54,6 +54,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Ctrl+H | Show hidden files |
 | Ctrl+S | Save the current session |
 | Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
+| Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
 | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).

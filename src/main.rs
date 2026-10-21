@@ -196,6 +196,7 @@ Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Ctrl+L, Alt+D, F4\tAddress bar\n\
 Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
+Ctrl+Shift+M\tMaximize / restore the active pane (or double-click its header)\n\
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
@@ -215,6 +216,7 @@ Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Ctrl+L, Alt+D, F4\t주소창\n\
 Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
+Ctrl+Shift+M\t선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능)\n\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
@@ -567,6 +569,7 @@ struct Geo {
     gx: i32,   // grid left
     xs: Vec<(i32, i32)>,
     ys: Vec<Vec<(i32, i32)>>, // per column
+    zoom: bool, // one pane fills the grid: no splitters
 }
 
 fn geo(a: &App) -> Geo {
@@ -588,6 +591,7 @@ fn geo(a: &App) -> Geo {
         gap,
         side,
         gx,
+        zoom: a.zoom.is_some(),
     }
 }
 
@@ -652,7 +656,7 @@ fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if x >= g.pad + g.side && x < g.gx {
         return Some(Hit::Side);
     }
-    if x < g.gx {
+    if x < g.gx || g.zoom {
         return None;
     }
     let between = |v: &[(i32, i32)], p: i32| v.windows(2).position(|w| p >= w[0].1 && p < w[1].0);
@@ -712,6 +716,7 @@ struct App {
     grid_drag: Option<Vec<usize>>, // press-and-drag in progress
     grid_preset: Option<usize>,    // preset tile under the mouse
     grid_closed: Option<Instant>,
+    zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
 }
 
 thread_local! {
@@ -751,6 +756,7 @@ thread_local! {
         grid_drag: None,
         grid_preset: None,
         grid_closed: None,
+        zoom: None,
     });
 }
 
@@ -1830,9 +1836,12 @@ unsafe fn layout_pane(h: HWND) {
 
 unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label)) = app(|a| {
+    let Some((main, moves, label, shown)) = app(|a| {
         if a.main.0.is_null() {
             return None;
+        }
+        if a.zoom.is_some_and(|z| z != a.s.active || z >= a.s.panes()) {
+            a.zoom = None;
         }
         let g = geo(a);
         let s = |v: i32| v * a.dpi / 96;
@@ -1847,16 +1856,22 @@ unsafe fn relayout() {
         }
         let right = g.w - g.pad; // the theme toggle sits at the far right
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
+        let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
+        let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
             if let Some(p) = p {
-                moves.push((p.hwnd, cell_rect(&g, &a.s.heights, i)));
+                moves.push((p.hwnd, if a.zoom == Some(i) { full } else { cell_rect(&g, &a.s.heights, i) }));
+                shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights)))
+        Some((a.main, moves, layout_label(&a.s.heights), shown))
     }) else {
         return;
     };
     move_all(&moves, None);
+    for (h, on) in shown {
+        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
+    }
     start_reveal(main); // sidebar size may have changed: keep its selection in view
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
         if text_of(b) != label {
@@ -1925,6 +1940,10 @@ unsafe fn set_active(i: usize) {
         (old, [old, i].map(|k| a.panes[k].as_ref().map(|p| p.hwnd)))
     });
     if old != i {
+        if app(|a| a.zoom.take()).is_some() {
+            relayout();
+            redraw_all();
+        }
         for h in hs.into_iter().flatten() {
             repaint_header(h);
         }
@@ -2233,8 +2252,25 @@ unsafe fn cycle(d: i32) {
     focus_view(i);
 }
 
+// Like tmux's pane zoom: the active pane takes the whole grid until toggled back or another pane is picked.
+unsafe fn toggle_zoom() {
+    if app(|a| a.drag.is_some() || a.s.panes() <= 1) {
+        return;
+    }
+    let i = app(|a| {
+        a.zoom = if a.zoom.is_some() { None } else { Some(a.s.active) };
+        a.s.active
+    });
+    relayout();
+    redraw_all();
+    focus_view(i);
+}
+
 unsafe fn set_layout(h: Vec<usize>) {
-    app(|a| a.s.set_heights(h));
+    app(|a| {
+        a.zoom = None;
+        a.s.set_heights(h);
+    });
     relayout();
     redraw_all();
 }
@@ -2331,6 +2367,7 @@ unsafe fn load_session_file(path: &Path) {
     let other = Session::parse(&text);
     app(|a| {
         a.s.take_layout(&other);
+        a.zoom = None;
         a.s.file = path.to_string_lossy().into_owned();
         (a.base, a.dirty) = (Some(a.s.clone()), false);
     });
@@ -2344,6 +2381,10 @@ unsafe fn load_session_file(path: &Path) {
 unsafe fn open_args(args: Vec<String>) {
     if let Some(f) = session_arg(&args) {
         return load_session_file(Path::new(f));
+    }
+    if app(|x| x.zoom.take()).is_some() {
+        relayout();
+        redraw_all();
     }
     let (a, n) = app(|x| (x.s.active, x.s.panes()));
     for (k, p) in args.iter().take(n).enumerate() {
@@ -2397,7 +2438,8 @@ unsafe fn update_status() {
     let spec = filter_of(i);
     // while a background copy runs, the disk is left alone (size and free space come back after)
     let busy = COPYING.load(Ordering::Relaxed) > 0;
-    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}", fv.GetFocusedItem().unwrap_or(-1));
+    let zoom = app(|a| a.zoom);
+    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}", fv.GetFocusedItem().unwrap_or(-1));
     if app(|a| a.status_key == key) {
         return;
     }
@@ -2427,6 +2469,14 @@ unsafe fn update_status() {
             let label = if drive { &path[..2] } else { tr("Network", "네트워크") };
             parts.push(format!("{label} {} {} / {}", tr("free", "여유"), human(free), human(total)));
         }
+    }
+    if let Some(z) = zoom {
+        let z = z + 1;
+        parts.push(if ko {
+            format!("패널 {z} 크게 보는 중 · Ctrl+Shift+M 또는 머리줄 더블클릭으로 복원")
+        } else {
+            format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore")
+        });
     }
     let rc = app(|a| {
         (a.status_key, a.status) = (key, parts.join("     ·     "));
@@ -3199,6 +3249,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_H if ctrl => toggle_hidden(),
         VK_S if ctrl => save_current(),
         VK_B if ctrl && !shift && !alt => open_favs(),
+        VK_M if ctrl && shift && !alt => toggle_zoom(),
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
         VK_RETURN if filt => {
@@ -3436,6 +3487,12 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
             WM_SIZE => layout_pane(h),
+            WM_LBUTTONDBLCLK => {
+                if let Some(i) = pane_of(h) {
+                    set_active(i);
+                    toggle_zoom();
+                }
+            }
             WM_PAINT => paint_pane(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
             WM_DRAWITEM => {
@@ -3603,7 +3660,7 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW, // the plate is drawn to the window size
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, // the plate is drawn to the window size
             lpfnWndProc: Some(pane_proc),
             hInstance: hinst,
             hCursor: arrow,
