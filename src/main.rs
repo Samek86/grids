@@ -1664,7 +1664,7 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
         if path.is_empty() {
             return Err(E_NOTIMPL.into());
         }
-        let menu: IContextMenu = FavCtx { inner: inner.clone(), path, cmd: Cell::new(u32::MAX) }.into();
+        let menu: IContextMenu = FavCtx { inner: inner.clone(), path, cmd: Cell::new(u32::MAX), item: Cell::new(usize::MAX), popup: Cell::new(0) }.into();
         unsafe {
             *ppv = std::ptr::null_mut();
             if menu.query(riid, ppv).is_ok() && !(*ppv).is_null() {
@@ -2902,6 +2902,9 @@ unsafe fn fav_anchor_pos(menu: HMENU, cm: &IContextMenu, id_first: u32, id_last:
     }
     let mut properties = None;
     for i in start.min(n as u32)..n as u32 {
+        if menu_sep(menu, i) {
+            continue;
+        }
         let id = GetMenuItemID(menu, i as i32);
         if id == u32::MAX || id < id_first || id >= id_last {
             continue;
@@ -2914,7 +2917,53 @@ unsafe fn fav_anchor_pos(menu: HMENU, cm: &IContextMenu, id_first: u32, id_last:
     fav_anchor(properties, n)
 }
 
-/// Favourites command directly above `at`, with one separator above it so it doesn't glue to the items there.
+/// Separators often have a zero id, so GetMenuItemID cannot tell them from a command. MFT_SEPARATOR can.
+unsafe fn menu_sep(menu: HMENU, pos: u32) -> bool {
+    let mut info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_FTYPE,
+        ..Default::default()
+    };
+    GetMenuItemInfoW(menu, pos, true, &mut info).is_ok() && info.fType.0 & MFT_SEPARATOR.0 != 0
+}
+
+unsafe fn menu_index(menu: HMENU, id: usize) -> Option<u32> {
+    let n = GetMenuItemCount(Some(menu)).max(0);
+    (0..n).find(|&i| GetMenuItemID(menu, i) as usize == id).map(|i| i as u32)
+}
+
+/// Exactly one separator above the favourites command, and none between it and Properties.
+/// Run after the shell menu is filled (and again on WM_INITMENUPOPUP, once merged items exist).
+unsafe fn tidy_fav_item(menu: HMENU, id: usize) {
+    if id == usize::MAX {
+        return;
+    }
+    loop {
+        let Some(fav) = menu_index(menu, id) else { return };
+        let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+        if fav + 1 >= n || !menu_sep(menu, fav + 1) {
+            break;
+        }
+        if DeleteMenu(menu, fav + 1, MF_BYPOSITION).is_err() {
+            break;
+        }
+    }
+    loop {
+        let Some(fav) = menu_index(menu, id) else { return };
+        if fav < 2 || !menu_sep(menu, fav - 1) || !menu_sep(menu, fav - 2) {
+            break;
+        }
+        if DeleteMenu(menu, fav - 1, MF_BYPOSITION).is_err() {
+            break;
+        }
+    }
+    let Some(fav) = menu_index(menu, id) else { return };
+    if fav > 0 && !menu_sep(menu, fav - 1) {
+        _ = InsertMenuW(menu, fav, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+    }
+}
+
+/// Favourites command at `at` (directly above Properties, or the last item). The separator is decided afterwards.
 unsafe fn insert_fav(menu: HMENU, at: u32, id: usize, label: &str) {
     let n = GetMenuItemCount(Some(menu)).max(0) as u32;
     let label = HSTRING::from(label);
@@ -2922,14 +2971,8 @@ unsafe fn insert_fav(menu: HMENU, at: u32, id: usize, label: &str) {
         _ = AppendMenuW(menu, MF_STRING, id, &label);
         return;
     }
-    let at = at.min(n - 1);
-    let prev_sep = at > 0 && GetMenuItemID(menu, (at - 1) as i32) == u32::MAX;
-    if at == 0 || prev_sep {
-        _ = InsertMenuW(menu, at, MF_STRING | MF_BYPOSITION, id, &label);
-    } else {
-        _ = InsertMenuW(menu, at, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
-        _ = InsertMenuW(menu, at + 1, MF_STRING | MF_BYPOSITION, id, &label);
-    }
+    _ = InsertMenuW(menu, at.min(n - 1), MF_STRING | MF_BYPOSITION, id, &label);
+    tidy_fav_item(menu, id);
 }
 
 fn wnd_class(h: HWND) -> String {
@@ -2954,6 +2997,7 @@ struct MenuBridge {
 
 thread_local! {
     static MENU_BRIDGE: RefCell<Option<MenuBridge>> = const { RefCell::new(None) };
+    static CTX_MENU: Cell<isize> = const { Cell::new(0) }; // HMENU we inserted into; submenus are left alone
 }
 
 static CTX_OPEN: AtomicBool = AtomicBool::new(false);
@@ -2962,6 +3006,7 @@ struct ClearBridge;
 impl Drop for ClearBridge {
     fn drop(&mut self) {
         MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
+        CTX_MENU.with(|m| m.set(0));
         CTX_OPEN.store(false, Ordering::Release);
     }
 }
@@ -3133,6 +3178,7 @@ unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
     });
+    CTX_MENU.with(|m| m.set(menu.0 as isize));
     let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, owner, None).0;
     MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
     if cmd == ID_CTX_FAV as i32 {
@@ -3159,7 +3205,17 @@ unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
 }
 
 unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT {
-    if matches!(msg, WM_INITMENUPOPUP | WM_UNINITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
+    if msg == WM_INITMENUPOPUP {
+        // The shell may insert its own separator while the menu opens. Collapse after that.
+        let lr = forward_menu(msg, wp, lp);
+        let popup = HMENU(wp.0 as _);
+        if CTX_MENU.with(|m| m.get() != 0 && m.get() == popup.0 as isize) {
+            tidy_fav_item(popup, ID_CTX_FAV as usize);
+        }
+        if let Some(lr) = lr {
+            return lr;
+        }
+    } else if matches!(msg, WM_UNINITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
         if let Some(lr) = forward_menu(msg, wp, lp) {
             return lr;
         }
@@ -3190,6 +3246,8 @@ struct FavCtx {
     inner: IContextMenu,
     path: String,
     cmd: Cell<u32>,
+    item: Cell<usize>, // menu id of the favourites command
+    popup: Cell<isize>, // HMENU that command was inserted into
 }
 
 impl IContextMenu_Impl for FavCtx_Impl {
@@ -3206,8 +3264,11 @@ impl IContextMenu_Impl for FavCtx_Impl {
                 return hr;
             }
             self.cmd.set(offset);
+            let item = (idcmdfirst + offset) as usize;
+            self.item.set(item);
+            self.popup.set(hmenu.0 as isize);
             let at = fav_anchor_pos(hmenu, &self.inner, idcmdfirst, idcmdlast.saturating_add(1), indexmenu);
-            insert_fav(hmenu, at, (idcmdfirst + offset) as usize, fav_menu_label(std::slice::from_ref(&self.path)));
+            insert_fav(hmenu, at, item, fav_menu_label(std::slice::from_ref(&self.path)));
             HRESULT((offset + 1) as i32)
         }
     }
@@ -3232,25 +3293,36 @@ impl IContextMenu_Impl for FavCtx_Impl {
 impl IContextMenu2_Impl for FavCtx_Impl {
     fn HandleMenuMsg(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> Result<()> {
         unsafe {
-            if let Ok(m) = self.inner.cast::<IContextMenu2>() {
-                return m.HandleMenuMsg(umsg, wparam, lparam);
+            let result = if let Ok(m) = self.inner.cast::<IContextMenu2>() { m.HandleMenuMsg(umsg, wparam, lparam) } else { Ok(()) };
+            if umsg == WM_INITMENUPOPUP {
+                tidy_fav_popup(self.popup.get(), self.item.get(), HMENU(wparam.0 as _));
             }
+            result
         }
-        Ok(())
     }
 }
 
 impl IContextMenu3_Impl for FavCtx_Impl {
     fn HandleMenuMsg2(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM, plresult: *mut LRESULT) -> Result<()> {
         unsafe {
-            if let Ok(m) = self.inner.cast::<IContextMenu3>() {
-                return m.HandleMenuMsg2(umsg, wparam, lparam, Some(plresult));
+            let result = if let Ok(m) = self.inner.cast::<IContextMenu3>() {
+                m.HandleMenuMsg2(umsg, wparam, lparam, Some(plresult))
+            } else if let Ok(m) = self.inner.cast::<IContextMenu2>() {
+                m.HandleMenuMsg(umsg, wparam, lparam)
+            } else {
+                Ok(())
+            };
+            if umsg == WM_INITMENUPOPUP {
+                tidy_fav_popup(self.popup.get(), self.item.get(), HMENU(wparam.0 as _));
             }
-            if let Ok(m) = self.inner.cast::<IContextMenu2>() {
-                return m.HandleMenuMsg(umsg, wparam, lparam);
-            }
+            result
         }
-        Ok(())
+    }
+}
+
+unsafe fn tidy_fav_popup(popup: isize, item: usize, menu: HMENU) {
+    if popup != 0 && popup == menu.0 as isize {
+        tidy_fav_item(menu, item);
     }
 }
 
