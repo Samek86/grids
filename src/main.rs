@@ -195,7 +195,7 @@ Ctrl+1 … Ctrl+9\tGo to pane 1–9 (the number at the left of each pane header;
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Alt+↓\tRecent folders (all panes, newest first)\n\
-Ctrl+L, Alt+D, F4\tAddress bar\n\
+Ctrl+L, Alt+D, F4\tAddress bar: also .. or a subfolder name, a file to open, or a command such as cmd, wt, powershell (runs in this pane's folder)\n\
 Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
 Ctrl+Shift+M\tMaximize / restore the active pane (or double-click its header)\n\
 Ctrl+Shift+C\tCopy the full path of the selected items (or of the current folder)\n\
@@ -217,7 +217,7 @@ Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, �
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
-Ctrl+L, Alt+D, F4\t주소창\n\
+Ctrl+L, Alt+D, F4\t주소창: .. 이나 하위 폴더 이름, 열 파일, cmd·wt·powershell 같은 명령도 가능(이 패널 폴더에서 실행)\n\
 Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
 Ctrl+Shift+M\t선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능)\n\
 Ctrl+Shift+C\t선택한 항목(없으면 현재 폴더)의 전체 경로 복사\n\
@@ -1267,12 +1267,85 @@ unsafe fn focus_ctl(i: usize, id: i32) -> bool {
     true
 }
 
+// Address bar input as (a path, a program and its arguments); either may be missing. Unpaired quotes: nothing.
+fn addr_parts(raw: &str) -> Option<(Option<&str>, Option<(&str, &str)>)> {
+    let quotes = raw.matches('"').count();
+    if quotes % 2 == 1 {
+        return None;
+    }
+    let path = match quotes {
+        0 => Some(raw),
+        2 if raw.len() > 1 && raw.starts_with('"') && raw.ends_with('"') => Some(&raw[1..raw.len() - 1]),
+        _ => None,
+    };
+    let cmd = if let Some(q) = raw.strip_prefix('"') {
+        let (prog, rest) = q.split_once('"')?;
+        (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| (prog, rest.trim()))
+    } else {
+        let (prog, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+        (!prog.contains(['\\', '/', ':', '"'])).then(|| (prog, rest.trim()))
+    };
+    Some((path, cmd.filter(|(prog, _)| !prog.is_empty())))
+}
+
+fn is_rel(p: &str) -> bool {
+    !p.contains(':') && !p.starts_with(['\\', '/'])
+}
+
+unsafe fn addr_reset(i: usize, e: HWND) {
+    let disp = app(|x| x.panes[i].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
+    _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+    focus_view(i);
+    show_path_end(e, &disp);
+}
+
+// Enter in the address bar: a folder (relative to this pane's) is browsed to, a file opened, else a command
+// (cmd, wt, powershell ...) runs in this pane's folder.
 unsafe fn go_edit(i: usize) {
     let Some(e) = pane_ctl(i, ID_EDIT) else { return };
-    if navigate(i, text_of(e).trim().trim_matches('"')) {
-        focus_view(i);
-    } else {
+    let raw = text_of(e);
+    let Some((path, cmd)) = addr_parts(raw.trim()) else {
         _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    // none inside a zip or in a shell place; metadata (not GetFileAttributes) also takes a bare \\server\share
+    let cur = app(|a| a.s.paths[i].clone());
+    let cur = (is_fs(&cur) && std::fs::metadata(&cur).is_ok_and(|m| m.is_dir())).then_some(cur);
+    let dir = cur.as_deref().map(HSTRING::from);
+    let run = |mut sei: SHELLEXECUTEINFOW| {
+        sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.lpDirectory = dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr()));
+        sei.nShow = SW_SHOWNORMAL.0;
+        ShellExecuteExW(&mut sei).is_ok()
+    };
+    // Some(true) = browsed, Some(false) = opened or ran
+    let done = 'go: {
+        if let Some(p) = path {
+            // std::path::absolute is GetFullPathNameW: folds `..` and `.`
+            let full = cur.as_ref().filter(|_| is_rel(p)).and_then(|c| std::path::absolute(Path::new(c).join(p)).ok());
+            let target = full.filter(|f| std::fs::metadata(f).is_ok()).map_or(p.to_string(), |f| f.to_string_lossy().into_owned());
+            let (mut pidl, mut sfgao) = (std::ptr::null_mut(), 0u32);
+            if SHParseDisplayName(&HSTRING::from(target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() {
+                let r = if sfgao & SFGAO_FOLDER.0 != 0 {
+                    eb_of(i).is_some_and(|eb| eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok()).then_some(true)
+                } else {
+                    run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
+                };
+                CoTaskMemFree(Some(pidl as _));
+                break 'go r;
+            }
+        }
+        let Some((prog, args)) = cmd else { break 'go None };
+        // wt opens in its own default folder unless told; lpDirectory makes `.` this pane's
+        let wt = prog.eq_ignore_ascii_case("wt") || prog.eq_ignore_ascii_case("wt.exe");
+        let args = if wt && args.is_empty() && cur.is_some() { "-d ." } else { args };
+        let (prog, args) = (HSTRING::from(prog), HSTRING::from(args));
+        run(SHELLEXECUTEINFOW { fMask: SEE_MASK_FLAG_NO_UI, lpFile: PCWSTR(prog.as_ptr()), lpParameters: PCWSTR(args.as_ptr()), ..Default::default() }).then_some(false)
+    };
+    match done {
+        Some(true) => focus_view(i),
+        Some(false) => addr_reset(i, e),
+        None => _ = MessageBeep(MB_ICONWARNING),
     }
 }
 
@@ -3679,12 +3752,7 @@ unsafe fn key(m: &MSG) -> bool {
             apply_filter(a);
             focus_view(a);
         }
-        VK_ESCAPE if addr => {
-            let disp = app(|x| x.panes[a].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
-            _ = SetWindowTextW(m.hwnd, &HSTRING::from(disp.as_str()));
-            focus_view(a);
-            show_path_end(m.hwnd, &disp);
-        }
+        VK_ESCAPE if addr => addr_reset(a, m.hwnd),
         VK_ESCAPE if filt => {
             _ = SetWindowTextW(m.hwnd, w!(""));
             apply_filter(a);
@@ -4245,6 +4313,21 @@ mod tests {
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
         let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
         assert_eq!(titles, ["Downloads - Grids", "Grids", "C: - Grids"]);
+    }
+
+    #[test]
+    fn addr() {
+        let x = r"C:\Program Files\x.exe";
+        assert_eq!(addr_parts("cmd"), Some((Some("cmd"), Some(("cmd", "")))));
+        assert_eq!(addr_parts("powershell -NoExit").unwrap().1, Some(("powershell", "-NoExit")));
+        assert_eq!(addr_parts(r#""C:\Program Files\x.exe" -a"#), Some((None, Some((x, "-a")))));
+        assert_eq!(addr_parts(r#""C:\Program Files\x.exe""#), Some((Some(x), Some((x, "")))));
+        assert_eq!(addr_parts(r#""C:\Windows\notepad.exe"#), None);
+        assert_eq!(addr_parts(r"C:\Program Files\x.exe -a").unwrap().1, None);
+        assert_eq!(addr_parts(r#"cmd /k "echo hi""#), Some((None, Some(("cmd", r#"/k "echo hi""#)))));
+        assert_eq!(addr_parts(r#""a"b"#), Some((None, None)));
+        assert!(is_rel("..") && is_rel(r"sub\x"));
+        assert!(!is_rel(r"C:\") && !is_rel(r"\\srv\s") && !is_rel("shell:Downloads") && !is_rel("::{GUID}"));
     }
 
     #[test]

@@ -50,7 +50,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Alt+← / Alt+→ | Back / forward |
 | Alt+↑ | Parent folder |
 | Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
-| Ctrl+L, Alt+D, F4 | Address bar |
+| Ctrl+L, Alt+D, F4 | Address bar: also `..` or a subfolder name, a file to open, or a command such as `cmd`, `wt`, `powershell` (runs in this pane's folder) |
 | Ctrl+F | Name filter |
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
