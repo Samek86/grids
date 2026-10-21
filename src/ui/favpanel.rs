@@ -40,6 +40,40 @@ fn chevron_hit(x: i32, row: &FavRow, dpi: i32) -> bool {
     x < s(4) + s(14) * row.depth.min(8) as i32 + s(18)
 }
 
+/// Throw away every window's group wash. The next paint builds a brush for the accent in effect then.
+pub(crate) unsafe fn drop_group_brushes() {
+    let old = app(|a| {
+        a.desks.iter_mut().map(|d| {
+            d.group_brush_rgb = 0;
+            std::mem::replace(&mut d.group_brush, HBRUSH::default())
+        }).collect::<Vec<_>>()
+    });
+    for b in old {
+        if !b.is_invalid() {
+            _ = DeleteObject(b.into());
+        }
+    }
+}
+
+unsafe fn group_wash_brush(rgb: u32) -> HBRUSH {
+    let cached = app(|a| (!a.group_brush.is_invalid() && a.group_brush_rgb == rgb).then_some(a.group_brush));
+    if let Some(b) = cached {
+        return b;
+    }
+    let brush = CreateSolidBrush(cref(rgb));
+    if brush.is_invalid() {
+        return brush;
+    }
+    let old = app(|a| {
+        a.group_brush_rgb = rgb;
+        std::mem::replace(&mut a.group_brush, brush)
+    });
+    if !old.is_invalid() && old != brush {
+        _ = DeleteObject(old.into());
+    }
+    brush
+}
+
 pub(crate) unsafe fn paint_side(h: HWND) {
     let list = rows();
     let (dpi, font, icon, hot, sel, scroll, drop, accent) = app(|a| {
@@ -54,19 +88,30 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
             return;
         }
-        let bold = if list.iter().any(|f| f.group) { bold_ui_font() } else { font };
+        let any_group = list.iter().any(|f| f.group);
+        let bold = if any_group { bold_ui_font() } else { font };
+        let wash = if any_group {
+            group_wash_brush(group_tint(accent, pal().card, DARK_ON.load(Ordering::Relaxed)))
+        } else {
+            HBRUSH::default()
+        };
         for (i, f) in list.iter().enumerate() {
             let y = i as i32 * rh - scroll;
             if y + rh < 0 || y >= rc.bottom {
                 continue;
             }
             let r = RECT { left: 0, top: y, right: rc.right, bottom: y + rh };
+            let into = drop.is_some_and(|(row, zone)| row == i && zone == 1);
+            if f.group && !wash.is_invalid() {
+                FillRect(dc, &r, wash);
+            }
+            // Selection and hover replace the wash. The selected fill is mostly accent, so it wins.
             if sel == Some(i) {
                 fill(dc, r, blend(accent, pal().card, 0.16));
             } else if hot == Some(i) {
                 fill(dc, r, blend(pal().bg, pal().card, 0.35));
             }
-            if drop.is_some_and(|(row, zone)| row == i && zone == 1) {
+            if into {
                 fill(dc, r, blend(accent, pal().card, 0.28));
             }
             let indent = s(14) * f.depth.min(8) as i32;
@@ -78,7 +123,12 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
             let glyph = if f.file { "\u{E8A5}" } else { "\u{E8B7}" };
             let ir = RECT { left: x, top: y, right: x + s(18), bottom: y + rh };
-            text(dc, ir, glyph, icon, pal().sub, DT_CENTER);
+            let glyph_ink = if f.group {
+                if sel == Some(i) || into { on_color(accent) } else { accent }
+            } else {
+                pal().sub
+            };
+            text(dc, ir, glyph, icon, glyph_ink, DT_CENTER);
             let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
             let label_font = if f.group { bold } else { font };
             text(dc, RECT { left: ir.right + s(4), right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);

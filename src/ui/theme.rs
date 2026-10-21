@@ -52,6 +52,12 @@ pub(crate) fn blend(a: u32, b: u32, t: f32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
+/// Favourite group row wash: accent mixed into the panel. Light keeps about 18% accent.
+/// Dark uses a smaller share so a bright accent stays a dim tint rather than a glow.
+pub(crate) fn group_tint(accent: u32, ground: u32, dark: bool) -> u32 {
+    blend(ground, accent, if dark { 0.12 } else { 0.18 })
+}
+
 // Text/icons on a coloured fill: near-black on light colours, white on dark ones (black accent -> white text).
 pub(crate) fn on_color(bg: u32) -> u32 {
     let l = 0.2126 * (bg >> 16 & 0xFF) as f32 + 0.7152 * (bg >> 8 & 0xFF) as f32 + 0.0722 * (bg & 0xFF) as f32;
@@ -59,5 +65,39 @@ pub(crate) fn on_color(bg: u32) -> u32 {
         INK
     } else {
         0xFFFFFF
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dist(a: u32, b: u32) -> u32 {
+        let d = |s: u32| (a >> s & 0xFF).abs_diff(b >> s & 0xFF) as u32;
+        d(16) + d(8) + d(0)
+    }
+
+    fn lum(c: u32) -> f32 {
+        0.2126 * (c >> 16 & 0xFF) as f32 + 0.7152 * (c >> 8 & 0xFF) as f32 + 0.0722 * (c & 0xFF) as f32
+    }
+
+    #[test]
+    fn group_tint_is_a_light_wash_and_selection_is_stronger() {
+        let accent = 0x0067C0;
+        let tint = group_tint(accent, LIGHT.card, false);
+        let sel = blend(accent, LIGHT.card, 0.16);
+        let hot = blend(LIGHT.bg, LIGHT.card, 0.35);
+        assert_eq!(tint, blend(LIGHT.card, accent, 0.18));
+        assert_ne!(tint, hot);
+        assert!(dist(sel, LIGHT.card) > dist(tint, LIGHT.card) * 2);
+
+        let accent_d = 0x4CC2FF;
+        let tint_d = group_tint(accent_d, DARK.card, true);
+        let sel_d = blend(accent_d, DARK.card, 0.16);
+        let hot_d = blend(DARK.bg, DARK.card, 0.35);
+        assert_eq!(tint_d, blend(DARK.card, accent_d, 0.12));
+        assert!(lum(tint_d) < lum(tint));
+        assert_ne!(tint_d, hot_d);
+        assert!(dist(sel_d, DARK.card) > dist(tint_d, DARK.card) * 2);
     }
 }
