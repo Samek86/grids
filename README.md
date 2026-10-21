@@ -25,7 +25,7 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 - **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted.
 - **Single instance**: running `grids.exe C:\a D:\b` or opening a `.grids` session file reuses the open window.
 - **Portable**: settings live in `grids.ini` next to the exe, named sessions in the `sessions` folder beside it.
-- **English or Korean** (View menu). The Explorer parts inside each pane, such as column names and right-click menus, follow your Windows display language.
+- **Settings**: the gear on the toolbar, or View → Settings. Language is Auto (Windows display language), English, 한국어, or 日本語, stored as `lang=auto|en|ko|ja`. An older `lang=ko` still loads as Korean. The Explorer parts inside each pane, such as column names and right-click menus, follow your Windows display language.
 
 | Layout picker | Sessions | Favourites |
 | --- | --- | --- |
