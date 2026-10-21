@@ -1,0 +1,693 @@
+// Settings file: %APPDATA%\grids\grids.json, or next to the exe when portable.txt is there.
+// Named .grids sessions stay in the ini shape. A leftover grids.ini is read once and renamed to grids.ini.bak.
+
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use windows::core::HSTRING;
+use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+
+use super::{fav_path, fix, Lang, Session, MAXP, RECENT};
+
+fn v1() -> u32 {
+    1
+}
+fn yes() -> bool {
+    true
+}
+fn accent_light() -> String {
+    "0067C0".into()
+}
+fn accent_dark() -> String {
+    "4CC2FF".into()
+}
+fn theme_auto() -> String {
+    "auto".into()
+}
+fn lang_auto() -> String {
+    "auto".into()
+}
+fn view_details() -> i32 {
+    4
+}
+fn two_by_two() -> Vec<usize> {
+    vec![2, 2]
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct WinJson {
+    #[serde(default)]
+    left: i32,
+    #[serde(default)]
+    top: i32,
+    #[serde(default)]
+    right: i32,
+    #[serde(default)]
+    bottom: i32,
+    #[serde(default)]
+    maximized: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct LayoutJson {
+    #[serde(default = "two_by_two")]
+    columns: Vec<usize>,
+    #[serde(default)]
+    colr: Vec<f64>,
+    #[serde(default)]
+    rowr: Vec<Vec<f64>>,
+    #[serde(default)]
+    active: usize,
+}
+
+impl Default for LayoutJson {
+    fn default() -> Self {
+        serde_json::from_str("{}").unwrap_or(LayoutJson { columns: two_by_two(), colr: Vec::new(), rowr: Vec::new(), active: 0 })
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct PaneJson {
+    #[serde(default)]
+    index: usize,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    view: Vec<i32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    columns: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct FavJson {
+    path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    name: String,
+}
+
+/// Version 1. `tabs`, `keybindings` and `favorites_tree` are reserved.
+/// Unknown keys land in `extra` and are written back.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct SettingsFile {
+    #[serde(default = "v1")]
+    version: u32,
+    #[serde(default)]
+    window: Option<WinJson>,
+    #[serde(default)]
+    side: i32,
+    #[serde(default)]
+    layout: LayoutJson,
+    #[serde(default)]
+    panes: Vec<PaneJson>,
+    #[serde(default = "accent_light")]
+    accent: String,
+    #[serde(default = "accent_dark")]
+    accent_dark: String,
+    #[serde(default)]
+    dark: bool,
+    #[serde(default = "theme_auto")]
+    theme: String,
+    #[serde(default)]
+    font: u8,
+    #[serde(default = "yes")]
+    bar: bool,
+    #[serde(default = "yes")]
+    stat: bool,
+    #[serde(default = "view_details")]
+    view_new: i32,
+    #[serde(default)]
+    start: u8,
+    #[serde(default)]
+    start_path: String,
+    #[serde(default = "yes")]
+    ext: bool,
+    #[serde(default = "yes")]
+    tree: bool,
+    #[serde(default = "yes")]
+    edge: bool,
+    #[serde(default = "yes")]
+    confirm: bool,
+    #[serde(default)]
+    del: u8,
+    #[serde(default)]
+    new_name: String,
+    #[serde(default)]
+    drop: u8,
+    #[serde(default)]
+    boot: u8,
+    #[serde(default)]
+    boot_file: String,
+    #[serde(default)]
+    autosave: bool,
+    #[serde(default = "yes")]
+    dot: bool,
+    #[serde(default = "yes")]
+    dblup: bool,
+    #[serde(default = "lang_auto")]
+    lang: String,
+    #[serde(default = "yes")]
+    single: bool,
+    #[serde(default)]
+    session: String,
+    #[serde(default)]
+    favorites: Vec<FavJson>,
+    #[serde(default)]
+    recent: Vec<String>,
+    #[serde(default)]
+    tabs: Vec<Value>,
+    #[serde(default)]
+    keybindings: Map<String, Value>,
+    #[serde(default)]
+    favorites_tree: Vec<Value>,
+    #[serde(default, flatten)]
+    extra: Map<String, Value>,
+}
+
+impl Default for SettingsFile {
+    fn default() -> Self {
+        serde_json::from_str("{}").unwrap_or_else(|_| SettingsFile::blank())
+    }
+}
+
+impl SettingsFile {
+    fn blank() -> Self {
+        SettingsFile {
+            version: 1,
+            window: None,
+            side: 0,
+            layout: LayoutJson::default(),
+            panes: Vec::new(),
+            accent: accent_light(),
+            accent_dark: accent_dark(),
+            dark: false,
+            theme: theme_auto(),
+            font: 0,
+            bar: true,
+            stat: true,
+            view_new: 4,
+            start: 0,
+            start_path: String::new(),
+            ext: true,
+            tree: true,
+            edge: true,
+            confirm: true,
+            del: 0,
+            new_name: String::new(),
+            drop: 0,
+            boot: 0,
+            boot_file: String::new(),
+            autosave: false,
+            dot: true,
+            dblup: true,
+            lang: lang_auto(),
+            single: true,
+            session: String::new(),
+            favorites: Vec::new(),
+            recent: Vec::new(),
+            tabs: Vec::new(),
+            keybindings: Map::new(),
+            favorites_tree: Vec::new(),
+            extra: Map::new(),
+        }
+    }
+
+    fn from_session(s: &Session) -> Self {
+        let mut panes = Vec::new();
+        for i in 0..MAXP {
+            if s.paths[i].is_empty() && s.views[i] == (0, 0) && s.cols[i].is_empty() {
+                continue;
+            }
+            panes.push(PaneJson {
+                index: i,
+                path: s.paths[i].clone(),
+                view: if s.views[i].0 == 0 { Vec::new() } else { vec![s.views[i].0, s.views[i].1] },
+                columns: s.cols[i].clone(),
+            });
+        }
+        let favorites = s.favs.iter().map(|f| {
+            let path = fav_path(f).to_string();
+            let name = f.split_once('\t').map(|(_, n)| n.to_string()).unwrap_or_default();
+            FavJson { path, name }
+        }).collect();
+        SettingsFile {
+            version: 1,
+            window: s.win.map(|w| WinJson { left: w[0], top: w[1], right: w[2], bottom: w[3], maximized: w[4] != 0 }),
+            side: s.side,
+            layout: LayoutJson { columns: s.heights.clone(), colr: s.colr.clone(), rowr: s.rowr.clone(), active: s.active },
+            panes,
+            accent: format!("{:06X}", s.accent & 0xFFFFFF),
+            accent_dark: format!("{:06X}", s.accent_dark & 0xFFFFFF),
+            dark: s.dark,
+            theme: ["auto", "light", "dark"][s.theme.min(2) as usize].into(),
+            font: s.font.min(2),
+            bar: s.bar,
+            stat: s.stat,
+            view_new: s.view_new,
+            start: s.start_new.min(2),
+            start_path: s.start_path.clone(),
+            ext: s.ext,
+            tree: s.tree_on,
+            edge: s.edge,
+            confirm: s.confirm,
+            del: s.del,
+            new_name: s.new_name.clone(),
+            drop: s.dropm.min(2),
+            boot: s.boot.min(2),
+            boot_file: s.boot_file.clone(),
+            autosave: s.autosave,
+            dot: s.dot,
+            dblup: s.dblup,
+            lang: s.lang.ini().into(),
+            single: s.single,
+            session: s.file.clone(),
+            favorites,
+            recent: s.recent.clone(),
+            tabs: Vec::new(),
+            keybindings: Map::new(),
+            favorites_tree: Vec::new(),
+            extra: Map::new(),
+        }
+    }
+
+    /// Keep a newer file's version and any keys this build does not edit.
+    fn merge_forward(&mut self, previous: &SettingsFile) {
+        if previous.version >= 1 {
+            self.version = previous.version;
+        }
+        self.tabs = previous.tabs.clone();
+        self.keybindings = previous.keybindings.clone();
+        self.favorites_tree = previous.favorites_tree.clone();
+        self.extra = previous.extra.clone();
+    }
+
+    fn to_session(&self) -> Session {
+        let mut s = Session::default();
+        if let Some(w) = &self.window {
+            s.win = Some([w.left, w.top, w.right, w.bottom, w.maximized as i32]);
+        }
+        s.side = self.side;
+        let heights: Vec<usize> = self.layout.columns.iter().take(4).copied().map(|n| n.clamp(1, 4)).collect();
+        s.heights = if heights.is_empty() { vec![2, 2] } else { heights };
+        s.colr = fix(self.layout.colr.clone(), s.heights.len());
+        let rowr = &self.layout.rowr;
+        let group = |c: usize| if rowr.len() == s.heights.len() { rowr.get(c) } else { rowr.first() };
+        s.rowr = s.heights.iter().enumerate().map(|(c, &n)| fix(group(c).cloned().unwrap_or_default(), n)).collect();
+        s.active = self.layout.active;
+        if s.active >= s.panes() {
+            s.active = 0;
+        }
+        s.paths = vec![String::new(); MAXP];
+        s.views = vec![(0, 0); MAXP];
+        s.cols = vec![String::new(); MAXP];
+        for p in &self.panes {
+            if p.index >= MAXP {
+                continue;
+            }
+            s.paths[p.index] = p.path.clone();
+            if p.view.len() >= 2 {
+                s.views[p.index] = (p.view[0], p.view[1]);
+            } else if let Some(m) = p.view.first() {
+                s.views[p.index] = (*m, 0);
+            }
+            s.cols[p.index] = p.columns.clone();
+        }
+        s.accent = parse_color(&self.accent).unwrap_or(s.accent);
+        s.accent_dark = parse_color(&self.accent_dark).unwrap_or(s.accent_dark);
+        s.dark = self.dark;
+        s.theme = match self.theme.as_str() {
+            "light" => 1,
+            "dark" => 2,
+            _ => 0,
+        };
+        s.font = self.font.min(2);
+        s.bar = self.bar;
+        s.stat = self.stat;
+        s.view_new = match self.view_new {
+            3 => 3,
+            1 => 1,
+            _ => 4,
+        };
+        s.start_new = self.start.min(2);
+        s.start_path = self.start_path.clone();
+        s.ext = self.ext;
+        s.tree_on = self.tree;
+        s.edge = self.edge;
+        s.confirm = self.confirm;
+        s.del = if self.del == 1 { 1 } else { 0 };
+        s.new_name = self.new_name.clone();
+        s.dropm = self.drop.min(2);
+        s.boot = self.boot.min(2);
+        s.boot_file = self.boot_file.clone();
+        s.autosave = self.autosave;
+        s.dot = self.dot;
+        s.dblup = self.dblup;
+        s.lang = Lang::from_ini(&self.lang);
+        s.single = self.single;
+        s.file = self.session.clone();
+        s.favs = self.favorites.iter().filter(|f| !f.path.trim().is_empty()).map(|f| {
+            if f.name.trim().is_empty() { f.path.trim().to_string() } else { format!("{}\t{}", f.path.trim(), f.name.trim()) }
+        }).collect();
+        s.recent = self.recent.iter().filter(|r| !r.trim().is_empty()).take(RECENT).cloned().collect();
+        s
+    }
+}
+
+fn parse_color(v: &str) -> Option<u32> {
+    let t = v.trim().trim_start_matches('#');
+    if t.is_empty() {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok().map(|n| n & 0xFFFFFF)
+}
+
+fn pretty(file: &SettingsFile) -> String {
+    let mut s = serde_json::to_string_pretty(file).unwrap_or_else(|_| "{}".into());
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+thread_local! {
+    static SETTINGS_KEEP: RefCell<SettingsFile> = RefCell::new(SettingsFile::default());
+}
+
+fn remember(file: SettingsFile) {
+    SETTINGS_KEEP.with(|k| *k.borrow_mut() = file);
+}
+
+fn adopt(text: &str) -> Option<Session> {
+    let file: SettingsFile = serde_json::from_str(text).ok()?;
+    let s = file.to_session();
+    remember(file);
+    Some(s)
+}
+
+/// Serialize `s`, keeping version and unknown fields from the file that was loaded.
+pub(crate) fn sync_text(s: &Session) -> String {
+    let mut file = SettingsFile::from_session(s);
+    let prev = SETTINGS_KEEP.with(|k| k.borrow().clone());
+    file.merge_forward(&prev);
+    let text = pretty(&file);
+    remember(file);
+    text
+}
+
+pub(crate) fn current_text() -> String {
+    SETTINGS_KEEP.with(|k| pretty(&k.borrow()))
+}
+
+/// A leading `{` is JSON. Anything else is a legacy ini. Invalid JSON is refused.
+pub(crate) fn import_text(text: &str) -> Result<Session, ()> {
+    if text.trim_start().starts_with('{') {
+        adopt(text).ok_or(())
+    } else {
+        let s = Session::parse(text);
+        remember(SettingsFile::from_session(&s));
+        Ok(s)
+    }
+}
+
+pub(crate) fn exe_dir() -> PathBuf {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn portable_mode() -> bool {
+    exe_dir().join("portable.txt").is_file()
+}
+
+fn roaming_appdata() -> Option<PathBuf> {
+    unsafe {
+        let p = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None).ok()?;
+        let path = p.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(p.0 as _));
+        if path.is_empty() { None } else { Some(PathBuf::from(path)) }
+    }
+}
+
+pub(crate) fn config_dir() -> PathBuf {
+    if portable_mode() {
+        return exe_dir();
+    }
+    match roaming_appdata() {
+        Some(p) => p.join("grids"),
+        None => std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(exe_dir).join("grids"),
+    }
+}
+
+pub(crate) fn settings_path() -> PathBuf {
+    config_dir().join("grids.json")
+}
+
+fn legacy_candidates(exe: &Path, cfg: &Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    for p in [exe.join("grids.ini"), cfg.join("grids.ini"), exe.join("qdir.ini")] {
+        if !v.iter().any(|e| e == &p) {
+            v.push(p);
+        }
+    }
+    v
+}
+
+fn bak_path(ini: &Path) -> PathBuf {
+    ini.with_extension("ini.bak")
+}
+
+/// Load grids.json from `cfg`, or migrate the first legacy ini and rename it to grids.ini.bak.
+pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
+    let _ = std::fs::create_dir_all(cfg);
+    let json_path = cfg.join("grids.json");
+    if json_path.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&json_path) {
+            if let Some(s) = adopt(&text) {
+                return s;
+            }
+        }
+        remember(SettingsFile::default());
+        return Session::default();
+    }
+    for cand in legacy_candidates(exe, cfg) {
+        let Ok(text) = std::fs::read_to_string(&cand) else { continue };
+        let s = Session::parse(&text);
+        let file = SettingsFile::from_session(&s);
+        if write_atomic(&json_path, pretty(&file).as_bytes()).is_ok() {
+            remember(file);
+            let bak = bak_path(&cand);
+            if bak.exists() {
+                let _ = std::fs::remove_file(&bak);
+            }
+            let _ = std::fs::rename(&cand, bak);
+            return s;
+        }
+    }
+    let s = Session::default();
+    remember(SettingsFile::from_session(&s));
+    s
+}
+
+pub(crate) fn load() -> Session {
+    let cfg = config_dir();
+    let _ = std::fs::create_dir_all(&cfg);
+    load_at(&exe_dir(), &cfg)
+}
+
+pub(crate) fn write_settings(text: &str) -> std::io::Result<()> {
+    write_atomic(&settings_path(), text.as_bytes())
+}
+
+/// Write `bytes` to a temp file in the same directory, then replace `path`.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut tmp = path.to_path_buf();
+    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "grids.json".into());
+    tmp.set_file_name(format!("{name}.tmp"));
+    std::fs::write(&tmp, bytes)?;
+    let src = HSTRING::from(tmp.to_string_lossy().as_ref());
+    let dst = HSTRING::from(path.to_string_lossy().as_ref());
+    let moved = unsafe { MoveFileExW(&src, &dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
+    if moved.is_ok() {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(path);
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("grids-json-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn sample() -> Session {
+        let mut s = Session::default();
+        s.win = Some([10, 20, 900, 700, 1]);
+        s.side = 260;
+        s.set_heights(vec![1, 3]);
+        s.colr = vec![0.25, 0.75];
+        s.rowr = vec![vec![1.0], vec![0.5, 0.25, 0.25]];
+        s.active = 2;
+        s.paths[1] = "C:\\a=b\\폴더".into();
+        s.views[1] = (4, 16);
+        s.cols[1] = "{guid}/10=220;{guid}/12=-1".into();
+        s.accent = 0xA8624A;
+        s.accent_dark = 0x4CC2FF;
+        s.dark = true;
+        s.dblup = false;
+        s.file = "C:\\s\\work.grids".into();
+        s.favs = vec!["C:\\WORK\tWork".into(), "D:\\Photos".into(), "E:\\\tLater".into()];
+        s.recent = vec!["D:\\Photos".into(), "C:\\WORK".into()];
+        s.lang = Lang::Ko;
+        s.single = false;
+        s.theme = 0;
+        s.font = 2;
+        s.bar = false;
+        s.stat = false;
+        s.view_new = 1;
+        s.start_new = 2;
+        s.start_path = "C:\\Work".into();
+        s.ext = false;
+        s.tree_on = false;
+        s.edge = false;
+        s.confirm = false;
+        s.del = 1;
+        s.new_name = "note.txt".into();
+        s.dropm = 2;
+        s.boot = 1;
+        s.boot_file = "C:\\s.grids".into();
+        s.autosave = true;
+        s.dot = false;
+        s
+    }
+
+    #[test]
+    fn json_round_trip_keeps_settings_and_forward_fields() {
+        let parsed = Session::parse(&sample().to_ini());
+        let text = pretty(&SettingsFile::from_session(&parsed));
+        let back = adopt(&text).unwrap();
+        assert_eq!(back, parsed);
+        assert_eq!(adopt("{}").unwrap(), Session::default());
+
+        let mut file = SettingsFile::from_session(&parsed);
+        file.version = 2;
+        file.tabs = vec![serde_json::json!({"id": "later"})];
+        file.keybindings.insert("copy".into(), serde_json::json!("Ctrl+C"));
+        file.favorites_tree = vec![serde_json::json!("group")];
+        file.extra.insert("future".into(), serde_json::json!({"keep": true}));
+        let loaded = adopt(&pretty(&file)).unwrap();
+        assert_eq!(loaded, parsed);
+        let saved: Value = serde_json::from_str(&sync_text(&loaded)).unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["tabs"][0]["id"], "later");
+        assert_eq!(saved["keybindings"]["copy"], "Ctrl+C");
+        assert_eq!(saved["favorites_tree"][0], "group");
+        assert_eq!(saved["future"]["keep"], true);
+        assert_eq!(saved["lang"], "ko");
+        assert_eq!(saved["favorites"][0]["name"], "Work");
+        assert_eq!(saved["favorites"][1]["path"], "D:\\Photos");
+        assert!(saved["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\a=b\\폴더" && p["columns"] == "{guid}/10=220;{guid}/12=-1"));
+
+        let ini = import_text(&parsed.to_ini()).unwrap();
+        assert_eq!(ini, parsed);
+        assert!(import_text("{").is_err());
+    }
+
+    #[test]
+    fn ini_migrates_to_json_and_is_renamed() {
+        let root = scratch("migrate");
+        let exe = root.join("exe");
+        let cfg = root.join("appdata").join("grids");
+        std::fs::create_dir_all(&exe).unwrap();
+        let parsed = Session::parse(&sample().to_ini());
+        std::fs::write(exe.join("grids.ini"), parsed.to_ini()).unwrap();
+        std::fs::create_dir_all(exe.join("sessions")).unwrap();
+        std::fs::write(exe.join("sessions").join("work.grids"), parsed.snapshot()).unwrap();
+
+        let loaded = load_at(&exe, &cfg);
+        assert_eq!(loaded, parsed);
+        assert!(!exe.join("grids.ini").exists());
+        assert!(exe.join("grids.ini.bak").is_file());
+        let json = std::fs::read_to_string(cfg.join("grids.json")).unwrap();
+        assert!(json.contains("\"version\": 1"));
+        assert_eq!(adopt(&json).unwrap(), parsed);
+        assert_eq!(std::fs::read_to_string(exe.join("sessions").join("work.grids")).unwrap(), parsed.snapshot());
+
+        // A second launch reads the json and leaves the backup alone.
+        let again = load_at(&exe, &cfg);
+        assert_eq!(again, parsed);
+        assert!(exe.join("grids.ini.bak").is_file());
+
+        // An ini that only exists in the config dir is the one that moves.
+        let root2 = scratch("appdata-ini");
+        let exe2 = root2.join("exe");
+        let cfg2 = root2.join("cfg");
+        std::fs::create_dir_all(&exe2).unwrap();
+        std::fs::create_dir_all(&cfg2).unwrap();
+        std::fs::write(cfg2.join("grids.ini"), "lang=ja\n").unwrap();
+        assert_eq!(load_at(&exe2, &cfg2).lang, Lang::Ja);
+        assert!(cfg2.join("grids.json").is_file());
+        assert!(cfg2.join("grids.ini.bak").is_file());
+        assert!(!cfg2.join("grids.ini").exists());
+
+        // The exe ini wins when both exist, and an existing json is not replaced.
+        let root3 = scratch("keep-json");
+        let exe3 = root3.join("exe");
+        let cfg3 = root3.join("cfg");
+        std::fs::create_dir_all(&exe3).unwrap();
+        std::fs::create_dir_all(&cfg3).unwrap();
+        std::fs::write(exe3.join("grids.ini"), "lang=en\n").unwrap();
+        std::fs::write(cfg3.join("grids.json"), pretty(&SettingsFile::from_session(&Session { lang: Lang::Ko, ..Session::default() }))).unwrap();
+        assert_eq!(load_at(&exe3, &cfg3).lang, Lang::Ko);
+        assert!(exe3.join("grids.ini").is_file());
+
+        // qdir.ini is the older name, used when grids.ini is absent.
+        let root4 = scratch("qdir");
+        let exe4 = root4.join("exe");
+        let cfg4 = root4.join("cfg");
+        std::fs::create_dir_all(&exe4).unwrap();
+        std::fs::write(exe4.join("qdir.ini"), "lang=en\nsingle=0\n").unwrap();
+        let q = load_at(&exe4, &cfg4);
+        assert_eq!((q.lang, q.single), (Lang::En, false));
+        assert!(exe4.join("qdir.ini.bak").is_file());
+    }
+
+    #[test]
+    fn portable_json_sits_beside_the_exe() {
+        let dir = scratch("portable");
+        std::fs::write(dir.join("portable.txt"), b"").unwrap();
+        std::fs::write(dir.join("grids.ini"), sample().to_ini()).unwrap();
+        let loaded = load_at(&dir, &dir);
+        assert_eq!(loaded, Session::parse(&sample().to_ini()));
+        assert!(dir.join("grids.json").is_file());
+        assert!(dir.join("grids.ini.bak").is_file());
+        assert!(!dir.join("grids.json.tmp").exists());
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_file() {
+        let dir = scratch("atomic");
+        let path = dir.join("grids.json");
+        write_atomic(&path, b"{\"version\":1}\n").unwrap();
+        write_atomic(&path, b"{\"version\":1,\"lang\":\"ja\"}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"version\":1,\"lang\":\"ja\"}\n");
+        assert!(!dir.join("grids.json.tmp").exists());
+    }
+}

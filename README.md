@@ -24,8 +24,8 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 - **Folder sizes**: the status line also shows the total size of selected folders, summed in the background (F5 sums again; "partial" when some items couldn't be read).
 - **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted.
 - **Single instance**: running `grids.exe C:\a D:\b` or opening a `.grids` session file reuses the open window.
-- **Portable**: settings live in `grids.ini` next to the exe, named sessions in the `sessions` folder beside it.
-- **Settings**: the gear on the toolbar, or View → Settings. Language is Auto (Windows display language), English, 한국어, or 日本語, stored as `lang=auto|en|ko|ja`. An older `lang=ko` still loads as Korean. The Explorer parts inside each pane, such as column names and right-click menus, follow your Windows display language.
+- **Portable**: settings live in `%APPDATA%\grids\grids.json`. Put a file named `portable.txt` next to `grids.exe` to keep `grids.json` beside the exe instead. An existing `grids.ini` is read once and renamed to `grids.ini.bak`. Named sessions stay `.grids` files in the `sessions` folder next to the exe.
+- **Settings**: the gear on the toolbar, or View → Settings. Language is Auto (Windows display language), English, 한국어, or 日本語, stored as `"lang": "auto"`, `"en"`, `"ko"`, or `"ja"`. An older `lang=ko` in `grids.ini` still loads as Korean. The Explorer parts inside each pane, such as column names and right-click menus, follow your Windows display language.
 
 | Layout picker | Sessions | Favourites |
 | --- | --- | --- |

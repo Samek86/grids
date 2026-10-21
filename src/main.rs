@@ -40,6 +40,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 mod settings;
+mod store;
 
 const MAXP: usize = 16;
 const THIS_PC: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
@@ -335,7 +336,7 @@ F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
 すでに起動している場合は、そのウィンドウで開きます。";
 
-// ---------- session (grids.ini next to the exe; named sessions are the same format as .grids) ----------
+// ---------- session (settings live in grids.json; named sessions stay .grids files in the ini shape) ----------
 
 #[derive(Debug, PartialEq, Clone)]
 struct Session {
@@ -741,12 +742,8 @@ fn apply_args(s: &mut Session, args: Vec<String>) {
     s.active = 0;
 }
 
-fn ini_path() -> PathBuf {
-    std::env::current_exe().unwrap_or_default().with_file_name("grids.ini")
-}
-
 fn sessions_dir() -> PathBuf {
-    ini_path().with_file_name("sessions")
+    store::exe_dir().join("sessions")
 }
 
 fn human(b: u64) -> String {
@@ -3047,13 +3044,13 @@ unsafe fn save_session() {
     }
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
     _ = GetWindowPlacement(main, &mut wp);
-    let ini = app(|a| {
+    let text = app(|a| {
         let r = wp.rcNormalPosition;
         let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
         a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
-        a.s.to_ini()
+        store::sync_text(&a.s)
     });
-    _ = std::fs::write(ini_path(), ini);
+    _ = store::write_settings(&text);
 }
 
 // Save button / Ctrl+S: overwrite the current session file; the first time, ask for a name.
@@ -3137,7 +3134,7 @@ unsafe fn open_args(args: Vec<String>) {
     focus_view(a);
 }
 
-// Window of a running copy of this same exe. Portable copies elsewhere have their own ini and stay separate.
+// Window of a running copy of this same exe. A portable.txt copy keeps its own grids.json.
 unsafe fn running_instance() -> Option<HWND> {
     let me = std::env::current_exe().ok()?.to_string_lossy().to_lowercase();
     let mut h = None;
@@ -4393,10 +4390,6 @@ unsafe fn pick_open(owner: HWND) -> Option<String> {
     file_dialog(owner, false)
 }
 
-unsafe fn pick_save(owner: HWND) -> Option<String> {
-    file_dialog(owner, true)
-}
-
 unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
     use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
     let mut buf = [0u16; 520];
@@ -4413,6 +4406,46 @@ unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
         lpstrFile: PWSTR(buf.as_mut_ptr()),
         nMaxFile: buf.len() as u32,
         Flags: if save { OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST } else { OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST },
+        ..Default::default()
+    };
+    let ok = if save { GetSaveFileNameW(&mut ofn) } else { GetOpenFileNameW(&mut ofn) };
+    ok.as_bool().then(|| {
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..n])
+    })
+}
+
+fn settings_filter() -> Vec<u16> {
+    let mut s = String::new();
+    for (label, spec) in [(tr("JSON", "JSON", "JSON"), "*.json"), (tr("Settings", "설정", "設定"), "*.json;*.ini"), (tr("All", "모두", "すべて"), "*.*")] {
+        s.push_str(label);
+        s.push('\0');
+        s.push_str(spec);
+        s.push('\0');
+    }
+    s.push('\0');
+    s.encode_utf16().collect()
+}
+
+/// Export / import picker. Save defaults to grids.json. Open accepts JSON and a legacy ini.
+unsafe fn pick_settings(owner: HWND, save: bool) -> Option<String> {
+    use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut buf = [0u16; 520];
+    if save {
+        for (d, c) in buf.iter_mut().zip("grids.json".encode_utf16()) {
+            *d = c;
+        }
+    }
+    let filter = settings_filter();
+    let def = w!("json");
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(buf.as_mut_ptr()),
+        nMaxFile: buf.len() as u32,
+        Flags: if save { OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST } else { OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST },
+        lpstrDefExt: if save { def } else { PCWSTR::null() },
         ..Default::default()
     };
     let ok = if save { GetSaveFileNameW(&mut ofn) } else { GetOpenFileNameW(&mut ofn) };
@@ -4455,9 +4488,10 @@ unsafe fn reset_prefs() {
     settings::refresh();
 }
 
-unsafe fn import_ini(text: &str) {
+/// JSON replaces the settings. A file that is not JSON is read as a legacy ini.
+unsafe fn import_settings(text: &str) -> bool {
+    let Ok(mut s) = store::import_text(text) else { return false };
     let (win, lang_now) = app(|a| (a.s.win, a.s.lang));
-    let mut s = Session::parse(text);
     s.win = win;
     s.dark = resolve_dark(s.theme);
     let lang = s.lang;
@@ -4472,6 +4506,7 @@ unsafe fn import_ini(text: &str) {
     relayout();
     save_session();
     settings::refresh();
+    true
 }
 
 fn apply_boot(s: &mut Session) {
@@ -4971,10 +5006,9 @@ unsafe fn make_menus() -> Result<HMENU> {
 fn main() -> Result<()> {
     unsafe {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
-        // qdir.ini: settings from before the rename, read once until grids.ini exists.
         // Read first so single=0 can opt out of handing arguments to the running window.
-        let ini = std::fs::read_to_string(ini_path()).or_else(|_| std::fs::read_to_string(ini_path().with_file_name("qdir.ini")));
-        let mut s = ini.map(|t| Session::parse(&t)).unwrap_or_default();
+        // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
+        let mut s = store::load();
         if session_arg(&args).is_none() && args.is_empty() {
             apply_boot(&mut s);
         }
