@@ -67,6 +67,7 @@ const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
 const TIMER_REVEAL: usize = 3;
 const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
+const TIMER_NEWF: usize = 5; // on a pane: select and rename a folder just created
 // tree-view messages (the sidebar's SysTreeView32)
 const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_ENSUREVISIBLE: u32 = 0x1114;
@@ -190,6 +191,7 @@ Ctrl+L, Alt+D, F4\tAddress bar\n\
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
+Ctrl+Shift+N\tNew folder (then rename)\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
@@ -207,6 +209,7 @@ Ctrl+L, Alt+D, F4\t주소창\n\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
+Ctrl+Shift+N\t새 폴더 (이어서 이름 바꾸기)\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
@@ -743,6 +746,29 @@ thread_local! {
 
 // Per-pane filter spec. Not in APP: the shell view may call IncludeObject from its own thread.
 static FILTERS: Mutex<[String; MAXP]> = Mutex::new([const { String::new() }; MAXP]);
+
+// Folder created by Ctrl+Shift+N, waiting for the view to list it so it can be selected and renamed.
+struct PendingNew {
+    pane: usize,
+    name: String,
+    left: u8,
+}
+static PENDING_NEW: Mutex<Option<PendingNew>> = Mutex::new(None);
+
+/// "New folder", then "New folder (2)", "New folder (3)", … The first free name wins.
+fn fresh_folder(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    let mut n = 2u32;
+    loop {
+        let name = format!("{base} ({n})");
+        if !taken(&name) || n == 9999 {
+            return name;
+        }
+        n += 1;
+    }
+}
 
 fn filter_of(i: usize) -> String {
     FILTERS.lock().map(|f| f[i].clone()).unwrap_or_default()
@@ -2946,6 +2972,55 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
     }
 }
 
+// Ctrl+Shift+N: a new folder in the active pane, then the shell's own rename (F2) once it shows up.
+unsafe fn new_folder(i: usize) {
+    let dir = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    if !is_fs(&dir) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let base = tr("New folder", "새 폴더");
+    let name = fresh_folder(base, |n| Path::new(&dir).join(n).exists());
+    if std::fs::create_dir(Path::new(&dir).join(&name)).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let full = Path::new(&dir).join(&name);
+    let wide: Vec<u16> = full.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+    SHChangeNotify(SHCNE_MKDIR, SHCNF_PATHW, Some(wide.as_ptr() as _), None);
+    if let Some(sv) = view_of::<IShellView>(i) {
+        _ = sv.Refresh();
+    }
+    if let Ok(mut p) = PENDING_NEW.lock() {
+        *p = Some(PendingNew { pane: i, name, left: 8 });
+    }
+    if let Some(h) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)) {
+        SetTimer(Some(h), TIMER_NEWF, 40, None);
+    }
+    focus_view(i);
+}
+
+// The view lists the new folder a moment after Refresh. Select it and start the shell rename.
+unsafe fn select_new_folder(i: usize, name: &str) -> bool {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return false };
+    let Ok(folder) = fv.GetFolder::<IShellFolder>() else { return false };
+    let mut pidl = std::ptr::null_mut();
+    let parsed = folder.ParseDisplayName(HWND::default(), None, &HSTRING::from(name), None, &mut pidl, std::ptr::null_mut());
+    if parsed.is_err() || pidl.is_null() {
+        return false;
+    }
+    let Some(sv) = view_of::<IShellView>(i) else {
+        CoTaskMemFree(Some(pidl as _));
+        return false;
+    };
+    // SVSI_EDIT is the shell's rename. If this view won't edit, selecting is enough.
+    let edit = (SVSI_EDIT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32;
+    let ok = sv.SelectItem(pidl, edit).is_ok()
+        || sv.SelectItem(pidl, (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32).is_ok();
+    CoTaskMemFree(Some(pidl as _));
+    ok
+}
+
 unsafe fn popup_menu(menu: HMENU, id: i32) {
     let main = app(|a| a.main);
     let mut rc = RECT::default();
@@ -2977,6 +3052,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
         VK_S if ctrl => save_current(),
+        VK_N if ctrl && shift && !alt && !addr && !filt => new_folder(a),
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
         VK_RETURN if filt => {
@@ -3212,6 +3288,30 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
         };
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
+            WM_TIMER if wp.0 == TIMER_NEWF => {
+                let job = PENDING_NEW.lock().ok().and_then(|mut p| {
+                    let cur = p.as_mut()?;
+                    if pane_of(h) != Some(cur.pane) {
+                        return None;
+                    }
+                    cur.left = cur.left.saturating_sub(1);
+                    let (pane, name, left) = (cur.pane, cur.name.clone(), cur.left);
+                    if left == 0 {
+                        *p = None;
+                    }
+                    Some((pane, name, left))
+                });
+                if let Some((pane, name, left)) = job {
+                    if select_new_folder(pane, &name) || left == 0 {
+                        if let Ok(mut p) = PENDING_NEW.lock() {
+                            *p = None;
+                        }
+                        _ = KillTimer(Some(h), TIMER_NEWF);
+                    }
+                } else {
+                    _ = KillTimer(Some(h), TIMER_NEWF);
+                }
+            }
             WM_SIZE => layout_pane(h),
             WM_PAINT => paint_pane(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
@@ -3590,6 +3690,9 @@ mod tests {
         assert_eq!((session_arg(&["a.GRIDS".into()]), session_arg(&["old.qdr".into()])), (Some("a.GRIDS"), Some("old.qdr")));
         assert_eq!(session_arg(&["a.grids".into(), "b".into()]), None);
 
+        assert_eq!(fresh_folder("New folder", |_| false), "New folder");
+        assert_eq!(fresh_folder("New folder", |n| n == "New folder"), "New folder (2)");
+        assert_eq!(fresh_folder("New folder", |n| n == "New folder" || n == "New folder (2)"), "New folder (3)");
         assert_eq!(filter_spec(" pdf; *.TXT ;"), "*pdf*;*.TXT");
         assert_eq!((human(10), human(1536), human(5 << 30)), ("10 B".into(), "1.5 KB".into(), "5.0 GB".into()));
 
