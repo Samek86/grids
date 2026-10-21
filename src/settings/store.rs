@@ -540,6 +540,14 @@ pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
     if json_path.is_file() {
         if let Ok(text) = std::fs::read_to_string(&json_path) {
             if let Some(s) = adopt(&text) {
+                // The activity-bar choice is retired. Drop it once so the next launch does not see it.
+                let had_panel = serde_json::from_str::<Value>(&text).ok().is_some_and(|v| v.get("panel").is_some());
+                if had_panel {
+                    let migrated = current_text();
+                    if migrated != text {
+                        let _ = write_atomic(&json_path, migrated.as_bytes());
+                    }
+                }
                 return s;
             }
         }
@@ -903,5 +911,23 @@ mod tests {
         assert!(dropped.get("panel").is_none());
         let wide = adopt(r#"{"side_split":9}"#).unwrap();
         assert!((wide.side_split - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn load_drops_a_retired_panel_key_once() {
+        let root = scratch("drop-panel");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("grids.json"), "{\"version\":1,\"panel\":\"fav\",\"side_split\":0.25,\"lang\":\"en\"}\n").unwrap();
+        let s = load_at(&exe, &cfg);
+        assert!((s.side_split - 0.25).abs() < 1e-9);
+        let json = std::fs::read_to_string(cfg.join("grids.json")).unwrap();
+        assert!(!json.contains("\"panel\""));
+        assert!(json.contains("0.25"));
+        let again = load_at(&exe, &cfg);
+        assert!((again.side_split - 0.25).abs() < 1e-9);
+        assert_eq!(std::fs::read_to_string(cfg.join("grids.json")).unwrap(), json);
     }
 }
