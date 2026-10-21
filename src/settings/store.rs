@@ -96,7 +96,7 @@ struct FavJson {
 }
 
 /// Version 1. `tabs` is the focused window. `windows` is every window, focused first.
-/// `keybindings` and `favorites_tree` stay reserved. Unknown keys land in `extra` and are written back.
+/// `favorites_tree` is the favourites tree. Unknown keys land in `extra` and are written back.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SettingsFile {
     #[serde(default = "v1")]
@@ -172,7 +172,7 @@ struct SettingsFile {
     windows: Vec<Value>,
     #[serde(default)]
     keybindings: Map<String, Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     favorites_tree: Vec<Value>,
     #[serde(default, flatten)]
     extra: Map<String, Value>,
@@ -246,7 +246,9 @@ impl SettingsFile {
                 filter,
             });
         }
-        let favorites = s.favs.iter().map(|f| {
+        let tree = if s.tree.is_empty() { crate::tree_from_flat(&s.favs) } else { s.tree.clone() };
+        let flat = if s.tree.is_empty() { s.favs.clone() } else { crate::flat_favs(&s.tree) };
+        let favorites = flat.iter().map(|f| {
             let path = fav_path(f).to_string();
             let name = f.split_once('\t').map(|(_, n)| n.to_string()).unwrap_or_default();
             FavJson { path, name }
@@ -288,7 +290,7 @@ impl SettingsFile {
             tabs: serde_json::from_str(&crate::tabs_json(&shown, at)).unwrap_or_default(),
             windows: crate::take_snaps(),
             keybindings: crate::keys::bindings_json(),
-            favorites_tree: Vec::new(),
+            favorites_tree: crate::tree_to_values(&tree),
             extra: Map::new(),
         }
     }
@@ -308,7 +310,6 @@ impl SettingsFile {
             kb.entry(k.clone()).or_insert_with(|| v.clone());
         }
         self.keybindings = kb;
-        self.favorites_tree = previous.favorites_tree.clone();
         // An empty list means this save did not see live windows (a test, or a build that
         // does not write them). A real save always has the window that is still open.
         if self.windows.is_empty() {
@@ -388,9 +389,16 @@ impl SettingsFile {
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
         s.file = self.session.clone();
-        s.favs = self.favorites.iter().filter(|f| !f.path.trim().is_empty()).map(|f| {
-            if f.name.trim().is_empty() { f.path.trim().to_string() } else { format!("{}\t{}", f.path.trim(), f.name.trim()) }
-        }).collect();
+        let parsed_tree = crate::tree_from_values(&self.favorites_tree);
+        if !parsed_tree.is_empty() {
+            s.tree = parsed_tree;
+            s.favs = crate::flat_favs(&s.tree);
+        } else {
+            s.favs = self.favorites.iter().filter(|f| !f.path.trim().is_empty()).map(|f| {
+                if f.name.trim().is_empty() { f.path.trim().to_string() } else { format!("{}\t{}", f.path.trim(), f.name.trim()) }
+            }).collect();
+            s.tree = crate::tree_from_flat(&s.favs);
+        }
         s.recent = self.recent.iter().filter(|r| !r.trim().is_empty()).take(RECENT).cloned().collect();
         if self.tabs.is_empty() {
             s.tabs.clear();
@@ -660,7 +668,8 @@ mod tests {
         assert_eq!(saved["tabs"][0]["layout"]["columns"][1], 3);
         assert!(saved["tabs"][0]["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\a=b\\폴더"));
         assert_eq!(saved["keybindings"]["copy"], "Ctrl+C");
-        assert_eq!(saved["favorites_tree"][0], "group");
+        assert_eq!(saved["favorites_tree"][0]["path"], "C:\\WORK");
+        assert_eq!(saved["favorites_tree"][0]["name"], "Work");
         assert_eq!(saved["future"]["keep"], true);
         assert_eq!(saved["lang"], "ko");
         assert_eq!(saved["favorites"][0]["name"], "Work");
@@ -670,6 +679,29 @@ mod tests {
         let ini = import_text(&parsed.to_ini()).unwrap();
         assert_eq!(ini, parsed);
         assert!(import_text("{").is_err());
+    }
+
+    #[test]
+    fn favorites_tree_nests_files_and_migrates_a_flat_list() {
+        let old = r#"{"version":1,"favorites":[{"path":"C:\\Work","name":"Work"},{"path":"D:\\Photos"}]}"#;
+        let migrated = adopt(old).unwrap();
+        assert_eq!(migrated.favs.len(), 2);
+        assert_eq!(migrated.tree.len(), 2);
+        assert!(migrated.is_fav(r"c:\work"));
+        let again: Value = serde_json::from_str(&sync_text(&migrated)).unwrap();
+        assert_eq!(again["favorites_tree"][0]["name"], "Work");
+        assert!(again["favorites_tree"][1].get("name").is_none());
+
+        let mut s = Session::default();
+        s.tree.push(crate::FavNode::group("Jobs"));
+        s.tree[0].children.push(crate::FavNode::leaf(r"C:\a\note.txt", "note", true));
+        s.tree.push(crate::FavNode::leaf(r"D:\Photos", "", false));
+        s.sync_favs();
+        let back = adopt(&sync_text(&s)).unwrap();
+        assert_eq!(back.tree, s.tree);
+        assert_eq!(back.favs, vec![r"C:\a\note.txt".to_string() + "\tnote", r"D:\Photos".into()]);
+        assert!(back.is_fav(r"C:\a\note.txt"));
+        assert!(back.tree[0].children[0].file);
     }
 
     #[test]
