@@ -1,9 +1,11 @@
+mod activity;
 mod draw;
 mod font;
 mod layout;
 mod tabs;
 mod theme;
 
+pub(crate) use activity::*;
 pub(crate) use draw::*;
 pub(crate) use font::*;
 pub(crate) use layout::*;

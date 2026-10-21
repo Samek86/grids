@@ -111,6 +111,21 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(act_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsAct"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(side_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsSide"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
             style: CS_DBLCLKS,
             lpfnWndProc: Some(tabs_proc),
             hInstance: hinst,

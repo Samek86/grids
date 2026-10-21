@@ -95,7 +95,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let g = geo(a);
                     let min = 60 * a.dpi / 96;
                     match d {
-                        Hit::Side => a.s.side = x - g.pad - g.gap / 2,
+                        Hit::Side => a.s.side = x - g.act - g.gap / 2,
                         Hit::Col(k) => drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, g.w - g.pad - g.gx, g.gap, min),
                         Hit::Row(c, k) => drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, g.bot - g.top, g.gap, min),
                     }
