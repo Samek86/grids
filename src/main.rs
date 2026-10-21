@@ -74,6 +74,7 @@ const TIMER_FILTER: usize = 2;
 const TIMER_REVEAL: usize = 3;
 const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
 const TIMER_NEWF: usize = 5; // on a pane: select and rename a folder just created
+const TIMER_NEWFILE: usize = 6; // on a pane: select and rename a file just created
 // tree-view messages (the sidebar's SysTreeView32)
 const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_ENSUREVISIBLE: u32 = 0x1114;
@@ -206,6 +207,7 @@ Ctrl+Shift+C\tCopy the full path of the selected items (or of the current folder
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
+Ctrl+Alt+N\tNew text file (then rename)\n\
 Ctrl+Shift+N\tNew folder (then rename)\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
@@ -230,6 +232,7 @@ Ctrl+Shift+C\t선택한 항목(없으면 현재 폴더)의 전체 경로 복사\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
+Ctrl+Alt+N\t새 텍스트 문서 (이어서 이름 바꾸기)\n\
 Ctrl+Shift+N\t새 폴더 (이어서 이름 바꾸기)\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
@@ -843,6 +846,11 @@ fn filter_of(i: usize) -> String {
 
 fn app<R>(f: impl FnOnce(&mut App) -> R) -> R {
     APP.with(|a| f(&mut a.borrow_mut()))
+}
+
+/// Pane that commands act on. A tab strip would return the active tab's pane from here.
+fn active_pane() -> usize {
+    app(|a| a.s.active)
 }
 
 fn eb_of(i: usize) -> Option<IExplorerBrowser> {
@@ -4575,13 +4583,89 @@ unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result
 
 // ---------- keyboard ----------
 
+// "New Text Document.txt", then "New Text Document (2).txt", … The number sits before the extension.
+fn fresh_file(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (base, String::new()),
+    };
+    let mut n = 2u32;
+    loop {
+        let name = format!("{stem} ({n}){ext}");
+        if !taken(&name) || n == 9999 {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+// File created by Ctrl+Alt+N, waiting for the view to list it so it can be selected and renamed.
+struct PendingFile {
+    pane: usize,
+    name: String,
+    left: u8,
+}
+static PENDING_FILE: Mutex<Option<PendingFile>> = Mutex::new(None);
+
+// Ctrl+Alt+N: an empty text file in the active pane, then the shell's own rename (F2) once it shows up.
+unsafe fn new_file(i: usize) {
+    let dir = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    if !is_fs(&dir) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let base = tr("New Text Document.txt", "새 텍스트 문서.txt");
+    let name = fresh_file(base, |n| Path::new(&dir).join(n).exists());
+    let full = Path::new(&dir).join(&name);
+    if std::fs::OpenOptions::new().write(true).create_new(true).open(&full).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let wide: Vec<u16> = full.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+    SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, Some(wide.as_ptr() as _), None);
+    if let Some(sv) = view_of::<IShellView>(i) {
+        _ = sv.Refresh();
+    }
+    if let Ok(mut p) = PENDING_FILE.lock() {
+        *p = Some(PendingFile { pane: i, name, left: 8 });
+    }
+    if let Some(h) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)) {
+        SetTimer(Some(h), TIMER_NEWFILE, 40, None);
+    }
+    focus_view(i);
+}
+
+// The view lists the new file a moment after Refresh. Select it and start the shell rename.
+unsafe fn select_new_file(i: usize, name: &str) -> bool {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return false };
+    let Ok(folder) = fv.GetFolder::<IShellFolder>() else { return false };
+    let mut pidl = std::ptr::null_mut();
+    let parsed = folder.ParseDisplayName(HWND::default(), None, &HSTRING::from(name), None, &mut pidl, std::ptr::null_mut());
+    if parsed.is_err() || pidl.is_null() {
+        return false;
+    }
+    let Some(sv) = view_of::<IShellView>(i) else {
+        CoTaskMemFree(Some(pidl as _));
+        return false;
+    };
+    // SVSI_EDIT is the shell's rename (the same one F2 uses). If this view won't edit, selecting is enough.
+    let edit = (SVSI_EDIT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32;
+    let ok = sv.SelectItem(pidl, edit).is_ok()
+        || sv.SelectItem(pidl, (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32).is_ok();
+    CoTaskMemFree(Some(pidl as _));
+    ok
+}
+
 unsafe fn key(m: &MSG) -> bool {
     let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
     let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
     if let Some(i) = pane_of(m.hwnd) {
         set_active(i);
     }
-    let a = app(|a| a.s.active);
+    let a = active_pane();
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
     // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
@@ -4615,6 +4699,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_S if ctrl => save_current(),
         VK_B if ctrl && !shift && !alt => open_favs(),
         VK_M if ctrl && shift && !alt => toggle_zoom(),
+        VK_N if ctrl && alt && !shift && !addr && !filt => new_file(a),
         VK_N if ctrl && shift && !alt && !addr && !filt => new_folder(a),
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
@@ -4853,6 +4938,30 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
         };
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
+            WM_TIMER if wp.0 == TIMER_NEWFILE => {
+                let job = PENDING_FILE.lock().ok().and_then(|mut p| {
+                    let cur = p.as_mut()?;
+                    if pane_of(h) != Some(cur.pane) {
+                        return None;
+                    }
+                    cur.left = cur.left.saturating_sub(1);
+                    let (pane, name, left) = (cur.pane, cur.name.clone(), cur.left);
+                    if left == 0 {
+                        *p = None;
+                    }
+                    Some((pane, name, left))
+                });
+                if let Some((pane, name, left)) = job {
+                    if select_new_file(pane, &name) || left == 0 {
+                        if let Ok(mut p) = PENDING_FILE.lock() {
+                            *p = None;
+                        }
+                        _ = KillTimer(Some(h), TIMER_NEWFILE);
+                    }
+                } else {
+                    _ = KillTimer(Some(h), TIMER_NEWFILE);
+                }
+            }
             WM_TIMER if wp.0 == TIMER_NEWF => {
                 let job = PENDING_NEW.lock().ok().and_then(|mut p| {
                     let cur = p.as_mut()?;
@@ -5429,6 +5538,9 @@ mod tests {
         assert_eq!((s.heights.clone(), s.paths[4].as_str()), (vec![2, 2, 2], "::{x4}"));
         assert_eq!((session_arg(&["a.GRIDS".into()]), session_arg(&["old.qdr".into()])), (Some("a.GRIDS"), Some("old.qdr")));
         assert_eq!(session_arg(&["a.grids".into(), "b".into()]), None);
+        assert_eq!(fresh_file("New Text Document.txt", |_| false), "New Text Document.txt");
+        assert_eq!(fresh_file("New Text Document.txt", |n| n == "New Text Document.txt"), "New Text Document (2).txt");
+        assert_eq!(fresh_file("새 텍스트 문서.txt", |n| n == "새 텍스트 문서.txt" || n == "새 텍스트 문서 (2).txt"), "새 텍스트 문서 (3).txt");
 
         assert_eq!(fresh_folder("New folder", |_| false), "New folder");
         assert_eq!(fresh_folder("New folder", |n| n == "New folder"), "New folder (2)");

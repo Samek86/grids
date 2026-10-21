@@ -59,6 +59,7 @@ Windows용 빠르고 가벼운 다중 패널 파일 관리자입니다. 한 창�
 | Ctrl+B | 즐겨찾기 목록 (↑/↓, Enter 열기, Del 빼기) |
 | Ctrl+Shift+M | 선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능) |
 | Ctrl+Shift+C | 선택한 항목(없으면 현재 폴더)의 전체 경로 복사 |
+| Ctrl+Alt+N | 새 텍스트 문서 |
 | Ctrl+Shift+N | 새 폴더 |
 | F2, Del, Ctrl+C / X / V, F5 | 탐색기와 동일 |
 
