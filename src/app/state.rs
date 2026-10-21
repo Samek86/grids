@@ -41,6 +41,7 @@ pub(crate) struct Desk {
     pub(crate) tree_input: bool, // a click/key reached the tree since its last selection change
     pub(crate) font: HFONT,
     pub(crate) icon_font: HFONT,
+    pub(crate) bold_font: HFONT, // favourite group labels; created on first paint, freed on DPI change and close
     pub(crate) fh: i32, // UI font line height in px
     pub(crate) dpi: i32,
     pub(crate) panes: Vec<Option<Pane>>,
@@ -131,6 +132,7 @@ pub(crate) fn blank_desk() -> Desk {
         tree_input: false,
         font: HFONT::default(),
         icon_font: HFONT::default(),
+        bold_font: HFONT::default(),
         fh: 16,
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
@@ -313,10 +315,10 @@ pub(crate) fn bind_hwnd(h: HWND) -> bool {
 }
 
 /// Drop the current desk. Loads the neighbour's filters. Fonts and the view menu go back to the caller.
-pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HMENU) {
+pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HFONT, HMENU) {
     app(|a| {
         if a.desks.is_empty() {
-            return (HFONT::default(), HFONT::default(), HFONT::default(), HMENU::default());
+            return (HFONT::default(), HFONT::default(), HFONT::default(), HFONT::default(), HMENU::default());
         }
         let i = a.cur.min(a.desks.len() - 1);
         let d = a.desks.remove(i);
@@ -330,12 +332,12 @@ pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HMENU) {
                 *f = a.desks[a.cur].live_filters.clone();
             }
         }
-        (d.font, d.icon_font, d.small_font, d.view_menu)
+        (d.font, d.icon_font, d.small_font, d.bold_font, d.view_menu)
     })
 }
 
-pub(crate) unsafe fn release_desk_handles(font: HFONT, icon: HFONT, small: HFONT, menu: HMENU) {
-    for f in [font, icon, small] {
+pub(crate) unsafe fn release_desk_handles(font: HFONT, icon: HFONT, small: HFONT, bold: HFONT, menu: HMENU) {
+    for f in [font, icon, small, bold] {
         if !f.0.is_null() {
             _ = DeleteObject(f.into());
         }

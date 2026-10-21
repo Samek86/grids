@@ -54,6 +54,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
             return;
         }
+        let bold = if list.iter().any(|f| f.group) { bold_ui_font() } else { font };
         for (i, f) in list.iter().enumerate() {
             let y = i as i32 * rh - scroll;
             if y + rh < 0 || y >= rc.bottom {
@@ -79,10 +80,19 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             let ir = RECT { left: x, top: y, right: x + s(18), bottom: y + rh };
             text(dc, ir, glyph, icon, pal().sub, DT_CENTER);
             let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
-            text(dc, RECT { left: ir.right + s(4), right: rc.right - s(6), ..r }, &label, font, if f.group { pal().text } else { pal().text }, DT_LEFT);
-            if drop.is_some_and(|(row, zone)| row == i && zone != 1) {
-                let line_y = if drop.unwrap().1 == 0 { r.top } else { r.bottom - s(2) };
-                fill(dc, RECT { left: s(8) + indent, top: line_y, right: rc.right - s(8), bottom: line_y + s(2) }, accent);
+            let label_font = if f.group { bold } else { font };
+            text(dc, RECT { left: ir.right + s(4), right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);
+        }
+        if let Some((row, zone)) = drop {
+            if zone != 1 {
+                if let Some(f) = list.get(row) {
+                    let at = if zone == 0 { row } else { after_row(&list, row) };
+                    let line_y = if zone == 0 { row as i32 * rh - scroll } else { at as i32 * rh - scroll + rh - s(2) };
+                    let indent = s(14) * f.depth.min(8) as i32;
+                    if line_y + s(2) >= 0 && line_y < rc.bottom {
+                        fill(dc, RECT { left: s(8) + indent, top: line_y, right: rc.right - s(8), bottom: line_y + s(2) }, accent);
+                    }
+                }
             }
         }
     });
@@ -214,6 +224,21 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
     }
 }
 
+fn track_drop(y: i32) -> bool {
+    let Some(i) = row_at(y) else { return false };
+    let list = rows();
+    let (dpi, scroll) = app(|a| (a.dpi, a.side_scroll));
+    let rh = row_h(dpi);
+    let top = i as i32 * rh - scroll;
+    let zone = list.get(i).map(|r| drop_zone(r.group, y - top, rh)).unwrap_or(2);
+    app(|a| {
+        let next = Some((i, zone));
+        let paint = a.side_drop != next;
+        a.side_drop = next;
+        paint
+    })
+}
+
 fn finish_drop() {
     let list = rows();
     let (from, onto) = app(|a| {
@@ -227,13 +252,16 @@ fn finish_drop() {
     });
     let (Some(from), Some((onto, zone))) = (from, onto) else { return };
     let moved = app(|a| {
-        let ok = apply_drop(&mut a.s.tree, &from, &onto, zone);
-        if ok {
+        let id = apply_drop(&mut a.s.tree, &from, &onto, zone);
+        if id.is_some() {
+            reveal_drop(&mut a.s.tree, &from, &onto, zone);
             a.s.sync_favs();
         }
-        ok
+        id
     });
-    if moved {
+    if let Some(id) = moved {
+        let i = rows().iter().position(|r| r.id == id);
+        app(|a| a.side_sel = i);
         changed();
     } else {
         let h = app(|a| a.side_hwnd);
@@ -254,26 +282,17 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let hot = row_at(y);
                 let dragging = app(|a| a.side_drag.is_some());
                 if dragging {
-                    if let Some(i) = hot {
-                        let list = rows();
-                        let rh = row_h(app(|a| a.dpi));
-                        let scroll = app(|a| a.side_scroll);
-                        let top = i as i32 * rh - scroll;
-                        let zone = list.get(i).map(|r| drop_zone(r.group, y - top, rh)).unwrap_or(2);
-                        let paint = app(|a| {
-                            let next = Some((i, zone));
-                            let paint = a.side_drop != next;
-                            a.side_drop = next;
-                            paint
-                        });
-                        if paint {
-                            _ = InvalidateRect(Some(h), None, false);
-                        }
+                    if track_drop(y) {
+                        _ = InvalidateRect(Some(h), None, false);
                     }
                 } else if let Some((px, py, i)) = app(|a| a.side_press) {
                     if (x - px).abs() + (y - py).abs() > 4 {
-                        let id = rows().get(i).map(|r| r.id.clone());
-                        app(|a| a.side_drag = id);
+                        if let Some(id) = rows().get(i).map(|r| r.id.clone()) {
+                            app(|a| a.side_drag = Some(id));
+                            if track_drop(y) {
+                                _ = InvalidateRect(Some(h), None, false);
+                            }
+                        }
                     }
                 } else {
                     let paint = app(|a| {
@@ -327,8 +346,10 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_LBUTTONUP => {
+                let y = xy(lp).1;
                 let dragged = app(|a| a.side_drag.is_some());
                 if dragged {
+                    _ = track_drop(y);
                     finish_drop();
                 } else {
                     app(|a| {
