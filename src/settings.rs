@@ -68,6 +68,30 @@ fn tx(t: [&'static str; 3]) -> &'static str {
     tr(t[0], t[1], t[2])
 }
 
+const CHROME_LIGHT: u32 = 0x0067C0;
+const CHROME_DARK: u32 = 0x4CC2FF;
+const WHITE: u32 = 0xFFFFFF;
+
+/// Accent used by this window. A chosen colour is used as-is. The old built-in gray
+/// selection colour reads as no accent, so that default is Windows blue (#0067c0 / #4cc2ff).
+fn chrome() -> u32 {
+    let (c, dark) = app(|a| (a.s.accent_now(), a.s.dark));
+    let plain = if dark { super::DARK.accents[1].1 } else { super::LIGHT.accents[1].1 };
+    if c == plain {
+        if dark { CHROME_DARK } else { CHROME_LIGHT }
+    } else {
+        c
+    }
+}
+
+fn on_chrome(c: u32) -> u32 {
+    if c == CHROME_LIGHT {
+        WHITE
+    } else {
+        super::on_color(c)
+    }
+}
+
 const fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static str; 3] {
     [en, ko, ja]
 }
@@ -384,10 +408,11 @@ fn right_box(card: RECT, w: i32, h: i32, pad: i32) -> RECT {
 }
 
 fn card_h(spec: &Spec, dpi: i32) -> i32 {
+    // 12px vertical padding, 14px label, optional 12px description.
     if spec.desc[0].is_empty() {
-        sc(dpi, 52)
+        sc(dpi, 48)
     } else {
-        sc(dpi, 70)
+        sc(dpi, 64)
     }
 }
 
@@ -397,7 +422,7 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
     let foot_h = sc(dpi, 56);
     let footer = RECT { left: 0, top: rc.bottom - foot_h, right: rc.right, bottom: rc.bottom };
     let content = RECT { left: nav_w, top: 0, right: rc.right, bottom: footer.top };
-    let search = RECT { left: sc(dpi, 8), top: sc(dpi, 8), right: nav_w - sc(dpi, 8), bottom: sc(dpi, 40) };
+    let search = RECT { left: sc(dpi, 8), top: sc(dpi, 12), right: nav_w - sc(dpi, 8), bottom: sc(dpi, 44) };
     let close = right_box(footer, sc(dpi, 88), sc(dpi, 32), sc(dpi, 16));
     let hint = RECT { left: sc(dpi, 16), top: footer.top, right: close.left - sc(dpi, 8), bottom: footer.bottom };
     let q = sn.query.as_str();
@@ -461,8 +486,8 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     let right = g.content.right - pad - right_pad;
     let start = g.content.top + sc(dpi, 16);
     let mut y = start - sn.scroll;
-    g.title = RECT { left, top: y, right, bottom: y + sc(dpi, 36) };
-    y += sc(dpi, 36) + sc(dpi, 8);
+    g.title = RECT { left, top: y, right, bottom: y + sc(dpi, 32) };
+    y += sc(dpi, 32) + sc(dpi, 16);
     let page = sn.page;
     let rq = row_q(&sn.query, page);
     let gap = sc(dpi, 4);
@@ -629,7 +654,7 @@ pub unsafe fn open(owner: HWND) {
         return;
     }
     let dpi = GetDpiForWindow(owner) as i32;
-    let (ww, hh) = (sc(dpi.max(96), 1040), sc(dpi.max(96), 720));
+    let (ww, hh) = (sc(dpi.max(96), 1000), sc(dpi.max(96), 640));
     let mut orc = RECT::default();
     let _ = GetWindowRect(owner, &mut orc);
     let x = orc.left + (orc.right - orc.left - ww) / 2;
@@ -720,10 +745,15 @@ fn make_font(face: &str, px: i32, weight: i32, dpi: i32) -> HFONT {
 fn rebuild_fonts() {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let face = super::ui_face();
+    let (title_face, title_w) = match super::ui() {
+        1 => ("Malgun Gothic", 700), // no semibold; bold is the Korean title face
+        2 => ("Yu Gothic UI", 700),
+        _ => ("Segoe UI Semibold", 600),
+    };
     let new = (
         make_font(face, 14, 400, dpi),
         make_font(face, 12, 400, dpi),
-        make_font(face, 22, 600, dpi),
+        make_font(title_face, 24, title_w, dpi),
         make_font("Consolas", 12, 400, dpi),
         make_font("Segoe MDL2 Assets", 14, 400, dpi),
     );
@@ -856,6 +886,9 @@ unsafe fn cue(h: HWND, id: i32, text: &str) {
     let c = ctl(h, id);
     let hs = HSTRING::from(text);
     SendMessageW(c, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(hs.as_ptr() as isize)));
+    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+    let m = sc(dpi, 8) as isize;
+    SendMessageW(c, 0x00D3, Some(WPARAM(3)), Some(LPARAM(m | (m << 16)))); // EM_SETMARGINS
 }
 
 fn ctl(parent: HWND, id: i32) -> HWND {
@@ -903,7 +936,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     }
-    move_to(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 6)), true);
+    move_to(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 2)), true);
     move_to(ctl(h, S_CLOSE), g.close, true);
     let content = g.content;
     for item in &g.items {
@@ -923,7 +956,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 }
             }
             Item::KeyBar { edit, reset } => {
-                move_to(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 6)), intersects(*edit, content));
+                move_to(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
             Item::FavRow { i, btn, .. } if *i != usize::MAX && btn.right > btn.left => {
@@ -969,10 +1002,10 @@ unsafe fn paint(h: HWND) {
 
 unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     let dpi = sn.dpi.max(96);
-    let accent = app(|a| a.s.accent_now());
+    let accent = chrome();
     super::fill(dc, rc, super::pal().bg);
     super::fill(dc, RECT { bottom: g.footer.top + 1, top: g.footer.top, ..g.footer }, super::pal().line);
-    rfill(dc, g.search, sc(dpi, 8), super::pal().card, Some(super::pal().line));
+    rfill(dc, g.search, sc(dpi, 4), super::pal().card, Some(super::pal().line));
     if !g.show.iter().any(|s| *s) {
         super::text(dc, RECT { left: sc(dpi, 16), top: g.search.bottom + sc(dpi, 12), right: g.nav_w - sc(dpi, 8), bottom: g.search.bottom + sc(dpi, 40) }, tx(NONE), sn.font, super::pal().sub, DT_LEFT);
     }
@@ -983,11 +1016,11 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
         let r = g.nav[i];
         let on = i == sn.page;
         if on || sn.hot == Some(i) {
-            let t = if on { 0.10 } else { 0.05 };
-            rfill(dc, r, sc(dpi, 8), super::blend(super::pal().bg, super::pal().text, t), None);
+            let t = if on { 0.08 } else { 0.04 };
+            rfill(dc, r, sc(dpi, 4), super::blend(super::pal().bg, super::pal().text, t), None);
         }
         if on {
-            let bar = RECT { left: r.left, top: r.top + sc(dpi, 8), right: r.left + sc(dpi, 3), bottom: r.bottom - sc(dpi, 8) };
+            let bar = RECT { left: r.left, top: r.top + sc(dpi, 10), right: r.left + sc(dpi, 3), bottom: r.bottom - sc(dpi, 10) };
             rfill(dc, bar, sc(dpi, 2), accent, None);
         }
         super::text(dc, RECT { left: r.left + sc(dpi, 14), ..r }, tx(PAGES[i]), sn.font, super::pal().text, DT_LEFT);
@@ -1001,7 +1034,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
         match item {
             Item::Card(c) => draw_card(dc, c, sn, accent),
             Item::Head(r, t) => super::text(dc, *r, tx(*t), sn.font, super::pal().text, DT_LEFT),
-            Item::Table(r) => rfill(dc, *r, sc(dpi, 12), super::pal().card, Some(super::pal().line)),
+            Item::Table(r) => rfill(dc, *r, sc(dpi, 6), super::pal().card, Some(super::pal().line)),
             Item::FavHead(r) => {
                 super::text(dc, RECT { left: r.left + sc(dpi, 40), right: r.left + (r.right - r.left) * 32 / 100, ..*r }, tx(s("Name", "이름", "名前")), sn.small, super::pal().sub, DT_LEFT);
                 super::text(dc, RECT { left: r.left + (r.right - r.left) * 32 / 100, ..*r }, tx(s("Path", "경로", "パス")), sn.small, super::pal().sub, DT_LEFT);
@@ -1009,7 +1042,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
             }
             Item::FavRow { i, rect, .. } => draw_fav_row(dc, *i, *rect, sn),
             Item::Note(r, t) => super::text(dc, *r, tx(*t), sn.small, super::pal().sub, DT_LEFT),
-            Item::KeyBar { edit, .. } => rfill(dc, *edit, sc(dpi, 8), super::pal().card, Some(super::pal().line)),
+            Item::KeyBar { edit, .. } => rfill(dc, *edit, sc(dpi, 4), super::pal().card, Some(super::pal().line)),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
                 super::text(dc, a, tx(s("Category", "분류", "分類")), sn.small, super::pal().sub, DT_LEFT);
@@ -1035,23 +1068,24 @@ fn key_cols(r: RECT) -> (RECT, i32) {
 
 unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
-    rfill(dc, c.rect, sc(dpi, 12), super::pal().card, Some(super::pal().line));
+    // Disabled rows stay on a white (or dark-theme card) ground; only the label grays.
+    rfill(dc, c.rect, sc(dpi, 6), super::pal().card, Some(super::pal().line));
     let color = if c.spec.live { super::pal().text } else { super::pal().sub };
     let title = if c.spec.ctl == Ctl::About {
         format!("grids v{}", env!("CARGO_PKG_VERSION"))
     } else {
         tx(c.spec.title).to_string()
     };
-    let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 8), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 8) };
-    let title_line = if c.spec.desc[0].is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 24), ..text_r } };
+    let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 12), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 12) };
+    let title_line = if c.spec.desc[0].is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
     super::text(dc, title_line, &title, sn.font, color, DT_LEFT);
     if c.spec.badge {
         let bw = text_w(dc, sn.small, tx(NEW)) + sc(dpi, 10);
         let tw = text_w(dc, sn.font, &title);
         let br = RECT { left: title_line.left + tw + sc(dpi, 8), top: (title_line.top + title_line.bottom) / 2 - sc(dpi, 8), right: title_line.left + tw + sc(dpi, 8) + bw, bottom: (title_line.top + title_line.bottom) / 2 + sc(dpi, 8) };
         if br.right < text_r.right {
-            rfill(dc, br, sc(dpi, 6), accent, None);
-            super::text(dc, br, tx(NEW), sn.small, super::on_color(accent), DT_CENTER);
+            rfill(dc, br, sc(dpi, 3), accent, None);
+            super::text(dc, br, tx(NEW), sn.small, on_chrome(accent), DT_CENTER);
         }
     }
     if !c.spec.desc[0].is_empty() {
@@ -1062,7 +1096,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         Ctl::CopyEng => super::text(dc, c.ctl, "IFileOperation", sn.small, super::pal().sub, DT_RIGHT),
         Ctl::Accent => {
             let colors = super::pal().accents;
-            let cur = accent;
+            let cur = app(|a| a.s.accent_now());
             for (i, r) in c.sw.iter().enumerate() {
                 let col = colors.get(i).map(|(_, c)| *c).unwrap_or(0);
                 if col == cur {
@@ -1076,14 +1110,14 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
 }
 
 unsafe fn draw_toggle(dc: HDC, r: RECT, on: bool, enabled: bool, accent: u32, dpi: i32) {
-    let (fill, border, knob) = if !enabled {
-        (super::blend(super::pal().card, super::pal().sub, 0.25), super::pal().sub, super::pal().card)
-    } else if on {
-        (accent, accent, super::on_color(accent))
-    } else {
+    // 40×20 pill. Off and disabled stay an outlined gray track on the white card.
+    let (fill, border, knob) = if !enabled || !on {
         (super::pal().card, super::pal().sub, super::pal().sub)
+    } else {
+        (accent, accent, on_chrome(accent))
     };
-    rfill(dc, r, r.bottom - r.top, fill, Some(border));
+    let rad = (r.bottom - r.top).max(1);
+    rfill(dc, r, rad, fill, Some(border));
     let k = sc(dpi, 12);
     let pad = sc(dpi, 3);
     let x = if on { r.right - pad - k } else { r.left + pad };
@@ -1191,24 +1225,26 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let hot = app(|a| a.hover) == d.hwndItem;
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let font = ST.with(|s| s.borrow().font);
-    let accent = app(|a| a.s.accent_now());
+    let accent = chrome();
     let on_card = id != S_CLOSE && id != S_RESET;
     let ground = if on_card { super::pal().card } else { super::pal().bg };
     super::fill(dc_of(d), d.rcItem, ground);
     let (fill, border, ink) = if id == S_CLOSE && !dis {
-        (accent, accent, super::on_color(accent))
+        (accent, accent, on_chrome(accent))
     } else if dis {
         (super::blend(ground, super::pal().sub, 0.12), super::pal().line, super::pal().sub)
     } else if pressed {
         (super::blend(ground, super::pal().text, 0.08), super::pal().line, super::pal().text)
     } else if hot {
         (super::blend(ground, accent, 0.12), accent, super::pal().text)
+    } else if id == S_ACCENT && app(|a| !super::pal().accents.iter().any(|(_, c)| *c == a.s.accent_now())) {
+        (ground, accent, super::pal().text)
     } else if id == S_ADV_RESET {
         (ground, super::pal().line, 0xC42B1C)
     } else {
         (ground, super::pal().line, super::pal().text)
     };
-    rfill(dc_of(d), d.rcItem, sc(dpi, 8), fill, Some(border));
+    rfill(dc_of(d), d.rcItem, sc(dpi, 4), fill, Some(border));
     let label = super::text_of(d.hwndItem);
     super::text(dc_of(d), d.rcItem, &label, font, ink, DT_CENTER);
 }
