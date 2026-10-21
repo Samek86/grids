@@ -10,7 +10,7 @@ A fast, lightweight multi-pane file manager for Windows. Up to 16 Explorer panes
 
 ![Grids, light theme](docs/screenshot-light.png)
 
-Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails and rename work as they do in Explorer. Clipboard copy and move run in the background, with progress in the status bar.
+Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails and rename work as they do in Explorer. Paste and move use Explorer's own progress dialog, with conflict prompts, pause, cancel and undo, and the window stays responsive.
 
 ## Features
 
@@ -53,7 +53,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Ctrl+H | Show hidden files |
 | Ctrl+S | Save the current session |
 | F2, Del, F5 | Same as Explorer |
-| Ctrl+C / X / V | Copy, cut, and paste. Paste and move keep the window responsive |
+| Ctrl+C / X / V | Copy, cut, and paste. Paste and move use Explorer's progress dialog |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).
 
