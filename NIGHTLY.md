@@ -24,3 +24,9 @@ Claude가 제안하고 gpt-6.1-sol이 동의한 개선을 사람 확인 없이 �
 | #23 | 2026-10-21 11:58 | UX | Ctrl+1~9로 해당 번호 패널로 바로 이동 | Ctrl+1부터 Ctrl+9까지 누르면 해당 번호 패널이 바로 활성화되고 포커스가 그 목록으로 옮겨 갑니다. 번호는 ⇄ 메뉴의 '패널 N'과 같습니다. 단축키 창과 README에도 새 키가 나옵니다. | 3 files changed, 9 insertions(+) |
 | #17 | 2026-10-21 11:59 | UX | Keep the current folder's name visible in narrow address bars | In small panes the address bar now shows the end of the path, the folder you're in, instead of the drive and the first few folders. You can tell 9 or 16 panes apart at a glance. Typing in the address bar and Ctrl+L work as before. | 1 file changed, 23 insertions(+), 3 deletions(-) |
 | #21 | 2026-10-21 12:00 | UX | Open and use the favourites list from the keyboard (Ctrl+B, ↑/↓, Enter, Del), and put focus back where it was on Esc | Ctrl+B opens the favourites list. ↑/↓ moves through it, Enter opens the folder in the active pane, Del removes the highlighted entry, and Esc closes the list and puts the cursor back where it was. The shortcut also appears in the tooltip, the shortcut list and the README. | 3 files changed, 59 insertions(+), 22 deletions(-) |
+
+## 릴리즈 R4 · 2026-10-21 12:06 KST · 업데이트 1개
+
+| # | 구현 시각(KST) | 분류 | 업데이트 | 사용자에게 달라지는 것 | 변경 |
+|---|---|---|---|---|---|
+| #26 | 2026-10-21 12:06 | 디자인 | 다크 테마에서 툴팁·파일 정보 말풍선도 어둡게 | 다크 테마에서 버튼에 마우스를 올렸을 때 뜨는 이름 말풍선, 파일 위에 뜨는 정보 말풍선, 트리의 잘린 폴더 이름 말풍선이 흰 상자 대신 어두운 색으로 나옵니다. 라이트 테마로 바꾸면 원래대로 돌아옵니다. | 1 file changed, 16 insertions(+), 1 deletion(-) |
