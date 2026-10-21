@@ -27,9 +27,7 @@ pub(crate) struct Desk {
     pub(crate) main: HWND,
     pub(crate) tree: Option<INameSpaceTreeControl>,
     pub(crate) tree_hwnd: HWND,
-    pub(crate) act_hwnd: HWND,  // activity bar
-    pub(crate) side_hwnd: HWND, // favourites list in the left panel
-    pub(crate) act_hot: Option<u8>,
+    pub(crate) side_hwnd: HWND, // favourites list, bottom of the left panel
     pub(crate) side_hot: Option<usize>,
     pub(crate) side_sel: Option<usize>,
     pub(crate) side_scroll: i32,
@@ -120,9 +118,7 @@ pub(crate) fn blank_desk() -> Desk {
         main: HWND::default(),
         tree: None,
         tree_hwnd: HWND::default(),
-        act_hwnd: HWND::default(),
         side_hwnd: HWND::default(),
-        act_hot: None,
         side_hot: None,
         side_sel: None,
         side_scroll: 0,
@@ -368,7 +364,6 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.start_path = src.start_path.clone();
     dst.ext = src.ext;
     dst.tree_on = src.tree_on;
-    dst.panel = src.panel;
     dst.edge = src.edge;
     dst.confirm = src.confirm;
     dst.del = src.del;

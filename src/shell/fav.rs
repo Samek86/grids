@@ -21,7 +21,8 @@ pub(crate) unsafe fn set_favs(paths: &[String], add: bool) {
     set_entries(&items, add);
 }
 
-/// Add or remove folders and files. Files are marked so a double-click opens them.
+/// Add or remove folders and files on the favourites tree (the bottom of the left panel).
+/// Files are marked so a double-click opens them. The folder tree is left alone.
 pub(crate) unsafe fn set_entries(items: &[(String, bool)], add: bool) {
     if items.is_empty() {
         return;

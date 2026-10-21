@@ -61,6 +61,7 @@ pub(crate) fn window_value(s: &Session) -> Value {
         m.insert("window".into(), win_json(w));
     }
     m.insert("side".into(), Value::from(s.side));
+    m.insert("side_split".into(), Value::from(s.side_split));
     if !s.file.is_empty() {
         m.insert("session".into(), Value::String(s.file.clone()));
     }
@@ -92,6 +93,9 @@ pub(crate) fn session_from_window(v: &Value, base: &Session) -> Session {
     }
     if let Some(side) = obj.get("side").and_then(|n| n.as_i64()) {
         s.side = side as i32;
+    }
+    if let Some(split) = obj.get("side_split").and_then(|n| n.as_f64()) {
+        s.side_split = sane_split(split);
     }
     if let Some(file) = obj.get("session").and_then(|x| x.as_str()) {
         s.file = file.to_string();
@@ -242,9 +246,8 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     if let Ok((t, th)) = create_tree(main) {
         app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
     }
-    let act = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsAct"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
-    app(|a| (a.act_hwnd, a.side_hwnd) = (act, side));
+    app(|a| a.side_hwnd = side);
     prime_theme(app(|a| a.s.dark));
     apply_theme_desk();
     apply_font();
@@ -512,12 +515,14 @@ mod tests {
         let mut a = Session::default();
         a.paths[0] = "C:\\one".into();
         a.side = 180;
+        a.side_split = 0.25;
         a.win = Some([1, 2, 300, 200, 0]);
         a.accent = 0x112233;
         a.anchor();
         let mut b = Session::default();
         b.paths[0] = "D:\\two".into();
         b.side = 90;
+        b.side_split = 0.75;
         b.win = Some([40, 50, 800, 600, 1]);
         b.file = "C:\\s\\b.grids".into();
         b.accent = 0xAABBCC;
@@ -527,11 +532,13 @@ mod tests {
         assert_eq!(back_b.paths[0], "D:\\two");
         assert_eq!(back_b.win, Some([40, 50, 800, 600, 1]));
         assert_eq!(back_b.side, 90);
+        assert_eq!(back_b.side_split, 0.75);
         assert_eq!(back_b.file, "C:\\s\\b.grids");
         assert_eq!(back_b.accent, a.accent);
         assert_ne!(back_b.paths[0], a.paths[0]);
         let back_a = session_from_window(&snaps[0], &a);
         assert_eq!(back_a.paths[0], "C:\\one");
+        assert_eq!(back_a.side_split, 0.25);
         assert_eq!(back_a.tabs[0].name, "1");
     }
 }

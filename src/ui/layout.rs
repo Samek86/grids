@@ -30,15 +30,44 @@ pub(crate) fn drag_ratio(r: &mut [f64], k: usize, pos: i32, start: i32, len: i32
     (r[k], r[k + 1]) = (t, pair - t);
 }
 
+/// Minimum height of the folder tree and of the favourites list, in px at this DPI.
+pub(crate) fn side_min(dpi: i32) -> i32 {
+    80 * dpi.max(1) / 96
+}
+
+/// Pixel heights of the folder tree and the favourites list inside a plate of `height` px.
+/// `ratio` is the tree's share of the space left after the `gap` px splitter.
+/// Each part keeps at least `min` px when the plate is tall enough.
+pub(crate) fn split_heights(height: i32, ratio: f64, gap: i32, min: i32) -> (i32, i32) {
+    let avail = (height - gap).max(0);
+    if avail == 0 {
+        return (0, 0);
+    }
+    let min = min.clamp(0, avail / 2);
+    let tree = ((avail as f64) * sane_split(ratio)).round() as i32;
+    let tree = tree.clamp(min, avail - min);
+    (tree, avail - tree)
+}
+
+/// Ratio that places the splitter so its top edge is at `pos`. Both parts stay at least `min` px.
+pub(crate) fn split_ratio_at(pos: i32, top: i32, height: i32, gap: i32, min: i32) -> f64 {
+    let avail = (height - gap).max(1);
+    let raw = (pos - top).clamp(0, avail) as f64 / avail as f64;
+    let (tree, _) = split_heights(height, raw, gap, min);
+    tree as f64 / avail as f64
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Hit {
     Side,
+    SideSplit,         // horizontal divider between the folder tree and favourites
     Col(usize),        // boundary after column k
     Row(usize, usize), // (column, boundary after row k in it)
 }
 
 // Main window: toolbar on top, status line at the bottom, plates (sidebar + grid) in between.
 // The gaps between plates are the splitters.
+#[derive(Clone)]
 pub(crate) struct Geo {
     pub(crate) w: i32,
     pub(crate) h: i32,   // client height
@@ -46,9 +75,9 @@ pub(crate) struct Geo {
     pub(crate) bot: i32, // plates bottom = status line top
     pub(crate) pad: i32,
     pub(crate) gap: i32,
-    pub(crate) act: i32,  // activity bar width, always on the far left
-    pub(crate) side: i32, // sidebar plate width
-    pub(crate) gx: i32,   // grid left
+    pub(crate) side: i32,   // sidebar plate width
+    pub(crate) tree_h: i32, // folder-tree height inside the plate; favourites sit below the gap
+    pub(crate) gx: i32,     // grid left
     pub(crate) xs: Vec<(i32, i32)>,
     pub(crate) ys: Vec<Vec<(i32, i32)>>, // per column
     pub(crate) zoom: bool, // one pane fills the grid: no splitters
@@ -59,11 +88,12 @@ pub(crate) fn geo(a: &App) -> Geo {
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
     let (pad, gap) = (s(8), s(8));
-    let act = s(36);
-    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - act - gap - pad - s(240)).max(s(120))) } else { 0 };
-    let gx = if a.s.tree_on { act + side + gap } else { act + pad };
+    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - gap - pad - s(240)).max(s(120))) } else { 0 };
+    let gx = if a.s.tree_on { side + gap } else { pad };
     let top = (if a.s.bar { s(34) } else { 0 }) + s(32); // toolbar, then the tab strip
     let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
+    let plate = (bot - top).max(0);
+    let tree_h = if side > 0 { split_heights(plate, a.s.side_split, gap, side_min(a.dpi)).0 } else { 0 };
     Geo {
         xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
         ys: a.s.rowr.iter().map(|r| cells(top, bot - top, r, gap)).collect(),
@@ -73,19 +103,15 @@ pub(crate) fn geo(a: &App) -> Geo {
         bot,
         pad,
         gap,
-        act,
         side,
+        tree_h,
         gx,
         zoom: a.zoom.is_some(),
     }
 }
 
 pub(crate) fn side_rect(g: &Geo) -> RECT {
-    RECT { left: g.act, top: g.top, right: g.act + g.side, bottom: g.bot }
-}
-
-pub(crate) fn act_rect(g: &Geo) -> RECT {
-    RECT { left: 0, top: g.top, right: g.act, bottom: g.bot }
+    RECT { left: 0, top: g.top, right: g.side, bottom: g.bot }
 }
 
 pub(crate) fn status_rect(g: &Geo) -> RECT {
@@ -148,7 +174,13 @@ pub(crate) fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if y < g.top || y >= g.bot {
         return None;
     }
-    if g.side > 0 && x >= g.act + g.side && x < g.gx {
+    if g.side > 0 && x >= 0 && x < g.side {
+        let y0 = g.top + g.tree_h;
+        if y >= y0 && y < y0 + g.gap {
+            return Some(Hit::SideSplit);
+        }
+    }
+    if g.side > 0 && x >= g.side && x < g.gx {
         return Some(Hit::Side);
     }
     if x < g.gx || g.zoom {
@@ -356,6 +388,60 @@ pub(crate) extern "system" fn grid_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn split_keeps_a_minimum_and_defaults_to_even() {
+        assert_eq!(split_heights(400, 0.5, 8, 80), (196, 196));
+        assert_eq!(split_heights(400, 0.0, 8, 80), (80, 312));
+        assert_eq!(split_heights(400, 1.0, 8, 80), (312, 80));
+        assert_eq!(split_heights(400, f64::NAN, 8, 80), (196, 196));
+        // shorter than two minimums: the plate is shared, and neither part vanishes
+        let (top, bot) = split_heights(100, 0.9, 8, 80);
+        assert!(top >= 1 && bot >= 1);
+        assert_eq!(top + bot, 92);
+        assert!(side_min(96) == 80 && side_min(192) == 160);
+    }
+
+    #[test]
+    fn drag_ratio_stops_at_the_minimum_and_double_click_is_even() {
+        assert!(near(split_ratio_at(0, 0, 400, 8, 80), 80.0 / 392.0));
+        assert!(near(split_ratio_at(400, 0, 400, 8, 80), 312.0 / 392.0));
+        assert!(near(split_ratio_at(196, 0, 400, 8, 80), 196.0 / 392.0));
+        let again = split_heights(400, split_ratio_at(50, 0, 400, 8, 80), 8, 80);
+        assert_eq!(again.0, 80);
+    }
+
+    #[test]
+    fn side_split_hit_is_the_gap_inside_the_plate() {
+        let g = Geo {
+            w: 1000,
+            h: 800,
+            top: 66,
+            bot: 700,
+            pad: 8,
+            gap: 8,
+            side: 240,
+            tree_h: 300,
+            gx: 248,
+            xs: vec![(248, 600), (608, 992)],
+            ys: vec![vec![(66, 700)], vec![(66, 700)]],
+            zoom: false,
+        };
+        assert_eq!(hit(&g, 100, 66 + 300 + 3), Some(Hit::SideSplit));
+        assert_eq!(hit(&g, 100, 66 + 200), None);
+        assert_eq!(hit(&g, 244, 66 + 300 + 3), Some(Hit::Side));
+        let closed = Geo { side: 0, tree_h: 0, gx: 8, ..g };
+        assert_eq!(hit(&closed, 4, 400), None);
     }
 }
 

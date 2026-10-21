@@ -76,7 +76,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 };
                 let c = match d {
                     Hit::Side | Hit::Col(_) => IDC_SIZEWE,
-                    Hit::Row(..) => IDC_SIZENS,
+                    Hit::Row(..) | Hit::SideSplit => IDC_SIZENS,
                 };
                 SetCursor(LoadCursorW(None, c).ok());
                 return LRESULT(1);
@@ -95,7 +95,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let g = geo(a);
                     let min = 60 * a.dpi / 96;
                     match d {
-                        Hit::Side => a.s.side = x - g.act - g.gap / 2,
+                        Hit::Side => a.s.side = x - g.gap / 2,
+                        Hit::SideSplit => a.s.side_split = split_ratio_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi)),
                         Hit::Col(k) => drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, g.w - g.pad - g.gx, g.gap, min),
                         Hit::Row(c, k) => drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, g.bot - g.top, g.gap, min),
                     }
@@ -116,10 +117,14 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let d = app(|a| hit(&geo(a), x, y));
                 app(|a| match d {
                     Some(Hit::Side) => a.s.side = 240 * a.dpi / 96,
+                    Some(Hit::SideSplit) => a.s.side_split = 0.5,
                     Some(Hit::Col(_)) => a.s.colr = even(a.s.heights.len()),
                     Some(Hit::Row(c, _)) => a.s.rowr[c] = even(a.s.heights[c]),
                     None => {}
                 });
+                if matches!(d, Some(Hit::SideSplit)) {
+                    note_save();
+                }
                 relayout();
                 redraw_all();
             }
