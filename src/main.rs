@@ -6,11 +6,12 @@
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, Once};
 use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::Win32::Globalization::GetUserDefaultUILanguage;
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -38,6 +39,8 @@ use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST, STRRET};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+mod settings;
+
 const MAXP: usize = 16;
 const THIS_PC: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
 // child ids inside a pane
@@ -55,11 +58,17 @@ const ID_TB_LOAD: i32 = 204;
 const ID_TB_THEME: i32 = 205;
 const ID_TB_FAV: i32 = 206;
 const ID_TB_VIEW: i32 = 203;
+const ID_TB_SET: i32 = 207; // gear: settings window
 // menu ids
 const ID_HIDDEN: usize = 1100;
 const ID_KEYS: usize = 1101;
 const ID_DBLUP: usize = 1103;
-const ID_LANG: usize = 1104;
+const ID_LANG_AUTO: usize = 1110;
+const ID_LANG_EN: usize = 1111;
+const ID_LANG_KO: usize = 1112;
+const ID_LANG_JA: usize = 1113;
+const ID_SETTINGS: usize = 1114;
+const ID_NEWFILE: usize = 1115;
 const ID_HELP: usize = 1105;
 const ID_ABOUT: usize = 1106;
 const HOME: &str = "https://github.com/efww/grids";
@@ -134,18 +143,79 @@ const DARK: Palette = Palette {
 };
 
 static DARK_ON: AtomicBool = AtomicBool::new(false);
-static KO: AtomicBool = AtomicBool::new(false);
+// Resolved UI language: 0 English, 1 Korean, 2 Japanese. The preference (including Auto) lives on the session.
+static UI: AtomicU8 = AtomicU8::new(0);
 
-/// UI text: English unless Korean is picked in the view menu (the Explorer parts follow Windows).
-fn tr(en: &'static str, ko: &'static str) -> &'static str {
-    if KO.load(Ordering::Relaxed) {
-        ko
-    } else {
-        en
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Lang {
+    Auto,
+    En,
+    Ko,
+    Ja,
+}
+
+impl Lang {
+    fn from_ini(v: &str) -> Self {
+        match v.trim() {
+            "en" => Lang::En,
+            "ko" => Lang::Ko, // also the old on/off value
+            "ja" => Lang::Ja,
+            _ => Lang::Auto,
+        }
+    }
+
+    fn ini(self) -> &'static str {
+        match self {
+            Lang::Auto => "auto",
+            Lang::En => "en",
+            Lang::Ko => "ko",
+            Lang::Ja => "ja",
+        }
+    }
+
+    /// Auto follows the Windows UI language: Korean, Japanese, otherwise English.
+    fn resolve(self) -> u8 {
+        match self {
+            Lang::En => 0,
+            Lang::Ko => 1,
+            Lang::Ja => 2,
+            Lang::Auto => {
+                let prim = unsafe { GetUserDefaultUILanguage() } & 0x3FF;
+                if prim == 0x12 {
+                    1
+                } else if prim == 0x11 {
+                    2
+                } else {
+                    0
+                }
+            }
+        }
+    }
+}
+
+fn ui() -> u8 {
+    UI.load(Ordering::Relaxed)
+}
+
+/// UI text. Explorer's own strings (column names, shell menus) stay with Windows.
+fn tr(en: &'static str, ko: &'static str, ja: &'static str) -> &'static str {
+    match ui() {
+        1 => ko,
+        2 => ja,
+        _ => en,
+    }
+}
+
+fn ui_face() -> &'static str {
+    match ui() {
+        1 => "Malgun Gothic",
+        2 => "Yu Gothic UI",
+        _ => "Segoe UI",
     }
 }
 
 const ACCENT_EN: [&str; 6] = ["Sky", "Gray", "Lavender", "Sage", "Peach", "Rose"];
+const ACCENT_JA: [&str; 6] = ["空", "グレー", "ラベンダー", "セージ", "ピーチ", "ローズ"];
 
 fn pal() -> &'static Palette {
     if DARK_ON.load(Ordering::Relaxed) {
@@ -188,6 +258,7 @@ fn glyph(id: i32) -> &'static str {
         ID_TB_SAVE => "\u{E74E}",
         ID_TB_LOAD => "\u{E838}",
         ID_TB_FAV => "\u{E734}",
+        ID_TB_SET => "\u{E713}",
         ID_TB_THEME if DARK_ON.load(Ordering::Relaxed) => "\u{E706}", // sun: back to light
         ID_TB_THEME => "\u{E708}",                                     // moon: go dark
         _ => "\u{E890}",
@@ -209,6 +280,7 @@ Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
 Ctrl+Alt+N\tNew text file (then rename)\n\
 Ctrl+Shift+N\tNew folder (then rename)\n\
+Ctrl+,\tSettings\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
@@ -234,6 +306,7 @@ Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
 Ctrl+Alt+N\t새 텍스트 문서 (이어서 이름 바꾸기)\n\
 Ctrl+Shift+N\t새 폴더 (이어서 이름 바꾸기)\n\
+Ctrl+,\t설정\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
@@ -243,6 +316,32 @@ F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 스플리터 더블클릭: 균등 분할\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
 이미 실행 중이면 그 창에서 엽니다.";
+
+const KEYS_JA: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t次 / 前のペイン\n\
+Ctrl+1 … Ctrl+9\tペイン 1〜9 へ移動（各ペインヘッダー左の番号。非常に狭いペインでは非表示）\n\
+Alt+Shift+← / → / ↑ / ↓\t左 / 右 / 上 / 下のペイン\n\
+Alt+← / Alt+→\t戻る / 進む\n\
+Alt+↑\t上のフォルダー\n\
+Alt+↓\t最近のフォルダー（すべてのペイン、新しい順）\n\
+Ctrl+L, Alt+D, F4\tアドレスバー: .. やサブフォルダー名、開くファイル、cmd・wt・powershell などのコマンド（このペインのフォルダーで実行）\n\
+Ctrl+B\tお気に入り一覧（↑/↓ で選択、Enter で開く、Del で削除）\n\
+Ctrl+Shift+M\tアクティブなペインを最大化 / 元に戻す（ヘッダーのダブルクリックでも可）\n\
+Ctrl+Shift+C\t選択項目（なければ現在のフォルダー）のフルパスをコピー\n\
+Ctrl+F\tフィルター（*.pdf;*.txt または名前の一部。フォルダーは常に表示）\n\
+Enter / Esc\tアドレスまたはフィルターを適用 / キャンセル\n\
+Ctrl+H\t隠しファイルを表示\n\
+Ctrl+Alt+N\t新しいテキスト ファイル（続けて名前を変更）\n\
+Ctrl+Shift+N\t新しいフォルダー（続けて名前を変更）\n\
+Ctrl+,\t設定\n\
+F1\tヘルプ（GitHub の README を開く）\n\
+F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n\
+レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
+⇄ ボタン: 選択したフォルダー（なければ現在のフォルダー）を別ペインで開く。列の順序・幅・並べ替えも引き継ぐ。または選択したファイルを別ペインのフォルダーへコピー / 移動（最大 10,000 個）\n\
+保存 (Ctrl+S): 現在のセッション ファイルに上書き。緑の点 = 未保存のレイアウト変更（フォルダー移動は含まない）\n\
+読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
+スプリッターをダブルクリック: 均等に分割\n\
+引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
+すでに起動している場合は、そのウィンドウで開きます。";
 
 // ---------- session (grids.ini next to the exe; named sessions are the same format as .grids) ----------
 
@@ -263,8 +362,27 @@ struct Session {
     file: String,           // named session (.grids) the layout was last loaded from / saved to
     favs: Vec<String>,      // favourite folders (parsing names), app-wide
     recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
-    ko: bool,               // Korean UI
+    lang: Lang,             // UI language preference; Auto follows Windows
+    single: bool,           // a second launch hands its arguments to the running window
     cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
+    theme: u8,              // 0 follow Windows, 1 light, 2 dark
+    font: u8,               // 0 default, 1 large, 2 larger
+    bar: bool,              // toolbar
+    stat: bool,             // status line
+    view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
+    start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
+    start_path: String,
+    ext: bool,              // show file extensions (the Windows Explorer setting)
+    tree_on: bool,          // left folder tree
+    edge: bool,             // accent border on the active pane
+    confirm: bool,          // ask before delete
+    del: u8,                // 0 recycle bin, 1 permanent
+    new_name: String,       // empty = the name for the display language
+    dropm: u8,              // 0 Windows rules, 1 always copy, 2 always ask (the ⇄ menu)
+    boot: u8,               // 0 restore last layout, 1 open boot_file, 2 default 2×2
+    boot_file: String,
+    autosave: bool,         // write the named session on exit
+    dot: bool,              // green unsaved mark on the save button
 }
 
 impl Default for Session {
@@ -278,16 +396,47 @@ impl Default for Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
-            accent: LIGHT.accents[1].1, // gray
-            accent_dark: DARK.accents[1].1,
+            accent: 0x0067C0, // Windows Settings blue; a chosen swatch replaces it
+            accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
             file: String::new(),
             favs: Vec::new(),
             recent: Vec::new(),
-            ko: false,
+            lang: Lang::Auto,
+            single: true,
             cols: vec![String::new(); MAXP],
+            theme: 0,
+            font: 0,
+            bar: true,
+            stat: true,
+            view_new: 4,
+            start_new: 0,
+            start_path: String::new(),
+            ext: true,
+            tree_on: true,
+            edge: true,
+            confirm: true,
+            del: 0,
+            new_name: String::new(),
+            dropm: 0,
+            boot: 0,
+            boot_file: String::new(),
+            autosave: false,
+            dot: true,
         }
+    }
+}
+
+/// Favourite entries are `path` or `path<tab>display name`. The path is what gets opened.
+fn fav_path(f: &str) -> &str {
+    f.split('\t').next().unwrap_or(f)
+}
+
+fn fav_label(f: &str) -> String {
+    match f.split_once('\t') {
+        Some((_, n)) if !n.is_empty() => n.to_string(),
+        _ => short_name(fav_path(f)),
     }
 }
 
@@ -344,6 +493,7 @@ impl Session {
     fn parse(text: &str) -> Session {
         let mut s = Session::default();
         let mut rowr: Vec<Vec<f64>> = Vec::new();
+        let (mut saw_theme, mut saw_dark) = (false, false);
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let slot = |p: char| k.strip_prefix(p).and_then(|n| n.parse::<usize>().ok()).filter(|&i| i < MAXP);
@@ -367,9 +517,43 @@ impl Session {
                 "active" => s.active = v.parse().unwrap_or(0),
                 "accent" => s.accent = u32::from_str_radix(v.trim().trim_start_matches('#'), 16).unwrap_or(s.accent) & 0xFFFFFF,
                 "accent_dark" => s.accent_dark = u32::from_str_radix(v.trim(), 16).unwrap_or(s.accent_dark) & 0xFFFFFF,
-                "dark" => s.dark = v.trim() == "1",
+                "dark" => {
+                    s.dark = v.trim() == "1";
+                    saw_dark = true;
+                }
+                "theme" => {
+                    s.theme = match v.trim() {
+                        "light" => 1,
+                        "dark" => 2,
+                        "auto" => 0,
+                        _ => s.theme,
+                    };
+                    saw_theme = true;
+                }
+                "font" => s.font = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "bar" => s.bar = v.trim() != "0",
+                "stat" => s.stat = v.trim() != "0",
+                "viewnew" => s.view_new = match v.trim() {
+                    "3" | "list" => 3,
+                    "1" | "icon" => 1,
+                    _ => 4,
+                },
+                "start" => s.start_new = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "startp" => s.start_path = v.trim().to_string(),
+                "ext" => s.ext = v.trim() != "0",
+                "tree" => s.tree_on = v.trim() != "0",
+                "edge" => s.edge = v.trim() != "0",
+                "confirm" => s.confirm = v.trim() != "0",
+                "del" => s.del = if v.trim() == "1" { 1 } else { 0 },
+                "newname" => s.new_name = v.trim().to_string(),
+                "drop" => s.dropm = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "boot" => s.boot = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "bootf" => s.boot_file = v.trim().to_string(),
+                "autosave" => s.autosave = v.trim() == "1",
+                "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
-                "lang" => s.ko = v.trim() == "ko",
+                "lang" => s.lang = Lang::from_ini(v),
+                "single" => s.single = v.trim() != "0",
                 "session" => s.file = v.trim().to_string(),
                 "fav" if !v.trim().is_empty() => s.favs.push(v.trim().to_string()),
                 "recent" if !v.trim().is_empty() && s.recent.len() < RECENT => s.recent.push(v.trim().to_string()),
@@ -391,6 +575,10 @@ impl Session {
         if s.active >= s.panes() {
             s.active = 0;
         }
+        // An older ini has dark= and no theme=. That stays an explicit light or dark choice.
+        if !saw_theme && saw_dark {
+            s.theme = if s.dark { 2 } else { 1 };
+        }
         s
     }
 
@@ -403,7 +591,23 @@ impl Session {
         o += &format!("side={}\ncols={}\n", self.side, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
-        o += &format!("dblup={}\nlang={}\n", self.dblup as u8, if self.ko { "ko" } else { "en" });
+        let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
+        o += &format!("theme={theme}\nfont={}\nbar={}\nstat={}\n", self.font, self.bar as u8, self.stat as u8);
+        o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
+        if !self.start_path.is_empty() {
+            o += &format!("startp={}\n", self.start_path);
+        }
+        o += &format!("ext={}\ntree={}\nedge={}\n", self.ext as u8, self.tree_on as u8, self.edge as u8);
+        o += &format!("confirm={}\ndel={}\n", self.confirm as u8, self.del);
+        if !self.new_name.is_empty() {
+            o += &format!("newname={}\n", self.new_name);
+        }
+        o += &format!("drop={}\nboot={}\n", self.dropm, self.boot);
+        if !self.boot_file.is_empty() {
+            o += &format!("bootf={}\n", self.boot_file);
+        }
+        o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
+        o += &format!("dblup={}\nlang={}\nsingle={}\n", self.dblup as u8, self.lang.ini(), self.single as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
@@ -428,7 +632,15 @@ impl Session {
     }
 
     fn is_fav(&self, path: &str) -> bool {
-        !path.is_empty() && self.favs.iter().any(|f| f.eq_ignore_ascii_case(path))
+        !path.is_empty() && self.favs.iter().any(|f| fav_path(f).eq_ignore_ascii_case(path))
+    }
+
+    fn default_view(&self) -> (i32, i32) {
+        match self.view_new {
+            3 => (3, 16),
+            1 => (1, 96),
+            _ => (4, 16),
+        }
     }
 
     /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
@@ -616,10 +828,11 @@ fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
-    let (pad, gap, top) = (s(8), s(8), s(34));
-    let bot = (rc.bottom - s(24)).max(top);
-    let side = a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120)));
-    let gx = pad + side + gap;
+    let (pad, gap) = (s(8), s(8));
+    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120))) } else { 0 };
+    let gx = if a.s.tree_on { pad + side + gap } else { pad };
+    let top = if a.s.bar { s(34) } else { 0 };
+    let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     Geo {
         xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
         ys: a.s.rowr.iter().map(|r| cells(top, bot - top, r, gap)).collect(),
@@ -910,7 +1123,13 @@ unsafe fn apply_font() {
     let mut ncm = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
     let sys = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, ncm.cbSize, Some(&mut ncm as *mut _ as _), 0, dpi as u32);
     let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont("Segoe UI", 12 * dpi / 96) };
-    lf.lfFaceName = logfont("Segoe UI", 0).lfFaceName; // system size, but the Korean UI font draws '\\' in paths as '₩'
+    lf.lfFaceName = logfont(ui_face(), 0).lfFaceName; // Segoe UI / Malgun Gothic / Yu Gothic UI
+    let scale = match app(|a| a.s.font) {
+        1 => 125,
+        2 => 150,
+        _ => 100,
+    };
+    lf.lfHeight = lf.lfHeight * scale / 100;
     let font = CreateFontIndirectW(&lf);
     let small = CreateFontIndirectW(&LOGFONTW { lfHeight: lf.lfHeight * 85 / 100, ..lf });
     let icon_font = CreateFontIndirectW(&logfont("Segoe MDL2 Assets", 14 * dpi / 96));
@@ -1174,13 +1393,14 @@ unsafe fn refresh_save_button() {
     let (main, tip, file, dirty) = app(|a| (a.main, a.tip, a.s.file.clone(), a.dirty));
     let Ok(b) = GetDlgItem(Some(main), ID_TB_SAVE) else { return };
     _ = InvalidateRect(Some(b), None, false);
-    let mut hint = match Path::new(&file).file_stem() {
-        Some(n) if KO.load(Ordering::Relaxed) => format!("'{}'에 저장 (Ctrl+S)", n.to_string_lossy()),
-        Some(n) => format!("Save to '{}' (Ctrl+S)", n.to_string_lossy()),
-        None => tr("Save session (Ctrl+S)", "세션 저장 (Ctrl+S)").into(),
+    let mut hint = match (ui(), Path::new(&file).file_stem()) {
+        (_, None) => tr("Save session (Ctrl+S)", "세션 저장 (Ctrl+S)", "セッションを保存 (Ctrl+S)").into(),
+        (1, Some(n)) => format!("'{}'에 저장 (Ctrl+S)", n.to_string_lossy()),
+        (2, Some(n)) => format!("'{}' に保存 (Ctrl+S)", n.to_string_lossy()),
+        (_, Some(n)) => format!("Save to '{}' (Ctrl+S)", n.to_string_lossy()),
     };
     if dirty {
-        hint += tr(" · unsaved layout changes", " · 저장 안 된 배치 변경");
+        hint += tr(" · unsaved layout changes", " · 저장 안 된 배치 변경", " · 未保存のレイアウト変更");
     }
     let hint = HSTRING::from(hint);
     let ti = TTTOOLINFOW {
@@ -1207,7 +1427,7 @@ unsafe fn check_dirty() {
                 }
             }
         }
-        let d = a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
+        let d = a.s.dot && a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
         std::mem::replace(&mut a.dirty, d) != d
     });
     if changed {
@@ -1422,34 +1642,38 @@ unsafe fn open_in_menu(h: HWND, src: usize) {
     let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
     let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
-    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:")));
+    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:", "選択したフォルダー（なければ現在のフォルダー）を開くペイン:")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     for (k, disp, _) in &items {
-        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
     }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     match &picked {
         Ok(srcs) => {
             let n = srcs.len();
             let titles = [
-                (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사").replace("{n}", &n.to_string())),
-                (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동").replace("{n}", &n.to_string())),
+                (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사", "選択した {n} 個をコピー").replace("{n}", &n.to_string())),
+                (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동", "選択した {n} 個を移動").replace("{n}", &n.to_string())),
             ];
+            let dropm = app(|a| a.s.dropm);
             for (mv, base, title) in titles {
+                if mv && dropm == 1 {
+                    continue; // always copy: the move submenu stays hidden
+                }
                 let Ok(sub) = CreatePopupMenu() else { continue };
                 for (k, disp, path) in &items {
                     let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
                     let flags = if ok { MF_STRING } else { MF_STRING | MF_GRAYED };
-                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
                 }
                 _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
             }
         }
         Err(why) => {
             let text = match why {
-                Pick::TooMany => tr("Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V", "복사·이동: 선택이 10,000개를 넘습니다 — Ctrl+C / Ctrl+V를 쓰세요"),
-                Pick::Unreadable => tr("Copy / move: some selected items aren't regular files", "복사·이동: 일반 파일이 아닌 항목이 섞여 있습니다"),
-                Pick::Empty => tr("Copy / move: select files first", "복사·이동: 먼저 파일을 고르세요"),
+                Pick::TooMany => tr("Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V", "복사·이동: 선택이 10,000개를 넘습니다 — Ctrl+C / Ctrl+V를 쓰세요", "コピー / 移動: 選択が 10,000 個を超えています — Ctrl+C / Ctrl+V を使ってください"),
+                Pick::Unreadable => tr("Copy / move: some selected items aren't regular files", "복사·이동: 일반 파일이 아닌 항목이 섞여 있습니다", "コピー / 移動: 通常のファイルでない項目が含まれています"),
+                Pick::Empty => tr("Copy / move: select files first", "복사·이동: 먼저 파일을 고르세요", "コピー / 移動: 先にファイルを選択してください"),
             };
             _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(text));
         }
@@ -1485,7 +1709,7 @@ unsafe fn recent_menu(i: usize) {
     let items = app(|a| recent_items(&a.s.recent, &a.s.paths[i]));
     let Ok(menu) = CreatePopupMenu() else { return };
     if items.is_empty() {
-        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No recent folders yet", "최근 폴더가 아직 없습니다")));
+        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No recent folders yet", "최근 폴더가 아직 없습니다", "最近のフォルダーはまだありません")));
     }
     for (k, p) in items.iter().enumerate() {
         // "name<tab>parent"; drive roots and share roots show whole
@@ -2094,11 +2318,11 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
-        (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더")),
-        (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더")),
-        (ID_UP, tr("Parent folder", "상위 폴더"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)")),
-        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동")),
-        (ID_FAV, tr("Favourite", "즐겨찾기"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)")),
+        (ID_BACK, tr("Back", "뒤로", "戻る"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더", "戻る  (Alt+←) · 右クリック: 最近のフォルダー")),
+        (ID_FWD, tr("Forward", "앞으로", "進む"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더", "進む  (Alt+→) · 右クリック: 最近のフォルダー")),
+        (ID_UP, tr("Parent folder", "상위 폴더", "上のフォルダー"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)", "上のフォルダー  (Alt+↑)")),
+        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기", "別のペインで開く"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동", "別のペインで開く / コピー・移動")),
+        (ID_FAV, tr("Favourite", "즐겨찾기", "お気に入り"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)", "お気に入りに追加（塗りつぶしの星: 削除）")),
     ];
     for (id, name, tip) in buttons {
         add_tip(child(h, w!("BUTTON"), PCWSTR(HSTRING::from(name).as_ptr()), btn, plain, id, font), tip);
@@ -2160,7 +2384,13 @@ unsafe fn sync_panes() {
             app(|a| a.panes[i] = Some(p));
             let path = app(|a| a.s.paths[i].clone());
             if path.is_empty() || !navigate(i, &path) {
-                navigate(i, THIS_PC);
+                let start = app(|a| {
+                    if a.s.views[i].0 == 0 {
+                        a.s.views[i] = a.s.default_view();
+                    }
+                    start_folder(&a.s)
+                });
+                navigate(i, &start);
             }
         } else if i >= n && has {
             destroy_pane(i);
@@ -2208,7 +2438,7 @@ unsafe fn layout_pane(h: HWND) {
 
 unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label, shown)) = app(|a| {
+    let Some((main, moves, label, shown, show_bar, show_tree, tree_h)) = app(|a| {
         if a.main.0.is_null() {
             return None;
         }
@@ -2226,8 +2456,13 @@ unsafe fn relayout() {
             moves.push((tb(id), RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
             x += w + s(4);
         }
-        let right = g.w - g.pad; // the theme toggle sits at the far right
+        let right = g.w - g.pad; // theme, then the settings gear, at the far right
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
+        let gear = right - s(32) - s(4) - s(32);
+        moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
+        let show_bar = a.s.bar;
+        let show_tree = a.s.tree_on;
+        let tree_h = a.tree_hwnd;
         let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
         let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
@@ -2236,11 +2471,19 @@ unsafe fn relayout() {
                 shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights), shown))
+        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_tree, tree_h))
     }) else {
         return;
     };
     move_all(&moves, None);
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_VIEW, ID_TB_FAV, ID_TB_THEME, ID_TB_SET] {
+        if let Ok(b) = GetDlgItem(Some(main), id) {
+            _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    if !tree_h.0.is_null() {
+        _ = ShowWindow(tree_h, if show_tree { SW_SHOW } else { SW_HIDE });
+    }
     for (h, on) in shown {
         _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
     }
@@ -2421,6 +2664,7 @@ unsafe fn set_accent(c: u32) {
     for p in panes {
         repaint_header(p); // all of them: inactive panes show the accent in their filter badge
     }
+    settings::redraw();
 }
 
 // The hosted Explorer list ignores the app-wide dark mode, so its (new, per folder) list view is dyed here.
@@ -2550,8 +2794,63 @@ unsafe fn uxtheme(ordinal: usize) -> FARPROC {
     GetProcAddress(m, PCSTR(ordinal as *const u8))
 }
 
+/// AppsUseLightTheme = 0 means Windows is in dark app mode.
+unsafe fn windows_dark() -> bool {
+    use windows::Win32::System::Registry::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD};
+    let mut key = HKEY::default();
+    if RegOpenKeyExW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), None, KEY_READ, &mut key).is_err() {
+        return false;
+    }
+    let mut data = [0u8; 4];
+    let mut n = 4u32;
+    let mut typ = REG_DWORD;
+    let ok = RegQueryValueExW(key, w!("AppsUseLightTheme"), None, Some(&mut typ), Some(data.as_mut_ptr()), Some(&mut n));
+    _ = RegCloseKey(key);
+    ok.is_ok() && u32::from_le_bytes(data) == 0
+}
+
+fn resolve_dark(theme: u8) -> bool {
+    match theme {
+        2 => true,
+        1 => false,
+        _ => unsafe { windows_dark() },
+    }
+}
+
+unsafe fn start_folder(s: &Session) -> String {
+    match s.start_new {
+        1 => {
+            let Ok(p) = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) else { return THIS_PC.into() };
+            let path = p.to_string().unwrap_or_default();
+            CoTaskMemFree(Some(p.0 as _));
+            if path.is_empty() { THIS_PC.into() } else { path }
+        }
+        2 if !s.start_path.is_empty() => s.start_path.clone(),
+        _ => THIS_PC.into(),
+    }
+}
+
+/// Show or hide extensions for the hosted Explorer views. This is Windows' own HideFileExt value.
+unsafe fn apply_ext(show: bool) {
+    use windows::Win32::System::Registry::{RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_DWORD};
+    let mut key = HKEY::default();
+    if RegOpenKeyExW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"), None, KEY_SET_VALUE, &mut key).is_err() {
+        return;
+    }
+    let data = [(!show) as u8, 0, 0, 0];
+    _ = RegSetValueExW(key, w!("HideFileExt"), None, REG_DWORD, Some(&data));
+    _ = RegCloseKey(key);
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    for i in 0..MAXP {
+        if let Some(sv) = view_of::<IShellView>(i) {
+            _ = sv.Refresh();
+        }
+    }
+}
+
 // Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
 unsafe fn apply_theme() {
+    app(|a| a.s.dark = resolve_dark(a.s.theme));
     let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
     // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
     let tip_theme = |t: HWND| {
@@ -2586,6 +2885,7 @@ unsafe fn apply_theme() {
     }
     relayout();
     redraw_all();
+    settings::refresh();
 }
 
 unsafe fn pick_accent() {
@@ -2791,6 +3091,7 @@ unsafe fn toggle_hidden() {
             _ = sv.Refresh();
         }
     }
+    settings::redraw();
 }
 
 // ---------- sessions ----------
@@ -2842,10 +3143,10 @@ unsafe fn save_session_as() -> Result<()> {
     let dir = sessions_dir();
     _ = std::fs::create_dir_all(&dir);
     let dlg: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
-    let kind = HSTRING::from(tr("Grids session (*.grids)", "Grids 세션 (*.grids)"));
+    let kind = HSTRING::from(tr("Grids session (*.grids)", "Grids 세션 (*.grids)", "Grids セッション (*.grids)"));
     dlg.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(kind.as_ptr()), pszSpec: w!("*.grids") }])?;
     dlg.SetDefaultExtension(w!("grids"))?;
-    dlg.SetTitle(&HSTRING::from(tr("Save session", "세션 저장")))?;
+    dlg.SetTitle(&HSTRING::from(tr("Save session", "세션 저장", "セッションを保存")))?;
     if let Ok(f) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.to_string_lossy().as_ref()), None) {
         dlg.SetFolder(&f)?;
     }
@@ -2959,7 +3260,7 @@ unsafe fn selected_size(fv: &IFolderView2) -> Sel {
 }
 
 // The " (…)" after "n selected". dirs: the folder total so far (bytes, done, partial), None = not started.
-fn size_text(ko: bool, file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool, bool)>, collect_partial: bool) -> String {
+fn size_text(file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool, bool)>, collect_partial: bool) -> String {
     let (b, done, partial) = match dirs {
         _ if !has_dirs => (0, true, false),
         Some(d) => d,
@@ -2968,14 +3269,14 @@ fn size_text(ko: bool, file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool,
     let (bytes, partial) = (file_bytes + b, partial || collect_partial);
     if !done {
         return match bytes {
-            0 => (if ko { " (계산 중…)" } else { " (calculating…)" }).into(),
+            0 => tr(" (calculating…)", " (계산 중…)", " (計算中…)").into(),
             b => format!(" ({}…)", human(b)),
         };
     }
     match (bytes, partial) {
         (0, false) if !has_dirs => String::new(),
-        (0, true) if !has_dirs => (if ko { " (크기 모름)" } else { " (size unknown)" }).into(),
-        (b, true) => format!(" ({}, {})", human(b), if ko { "일부만" } else { "partial" }),
+        (0, true) if !has_dirs => tr(" (size unknown)", " (크기 모름)", " (サイズ不明)").into(),
+        (b, true) => format!(" ({}, {})", human(b), tr("partial", "일부만", "一部のみ")),
         (b, false) => format!(" ({})", human(b)),
     }
 }
@@ -3140,10 +3441,9 @@ unsafe fn update_status() {
         let j = size_job();
         (!j.target.is_empty()).then_some((j.bytes, j.done, j.partial))
     };
-    let ko = KO.load(Ordering::Relaxed);
     let Some(rc) = app(|a| {
         let (head, size, tail) = &a.status_base;
-        let size = size.map(|(f, d, p)| size_text(ko, f, d, job, p)).unwrap_or_default();
+        let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
         // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
         a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
         let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
@@ -3164,8 +3464,11 @@ unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i3
     if text_of(main) != title {
         _ = SetWindowTextW(main, &HSTRING::from(title));
     }
-    let ko = KO.load(Ordering::Relaxed);
-    let mut parts = vec![if ko { format!("항목 {n}개") } else { format!("{n} items") }];
+    let mut parts = vec![match ui() {
+        1 => format!("항목 {n}개"),
+        2 => format!("項目 {n} 個"),
+        _ => format!("{n} items"),
+    }];
     let mut size = None;
     let mut dirs = Vec::new();
     if sel > 0 {
@@ -3174,31 +3477,35 @@ unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i3
             size = Some((s.file_bytes, !s.dirs.is_empty(), s.partial));
             dirs = s.dirs;
         }
-        parts.push(if ko { format!("{sel}개 선택") } else { format!("{sel} selected") });
+        parts.push(match ui() {
+            1 => format!("{sel}개 선택"),
+            2 => format!("{sel} 個を選択"),
+            _ => format!("{sel} selected"),
+        });
     }
     want_size(&dirs, busy);
     let head = parts.join("     ·     ");
     let mut parts = vec![String::new()];
     if !spec.is_empty() {
-        parts.push(format!("{} {spec}", tr("Filter", "필터")));
+        parts.push(format!("{} {spec}", tr("Filter", "필터", "フィルター")));
     }
     let drive = path.get(1..2) == Some(":");
     if busy {
-        parts.push(tr("Copying / moving…", "복사·이동 중…").into());
+        parts.push(tr("Copying / moving…", "복사·이동 중…", "コピー / 移動中…").into());
     } else if drive || path.starts_with(r"\\") {
         // ponytail: a dead network share can stall this call once per change
         let (mut free, mut total) = (0, 0);
         if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
-            let label = if drive { &path[..2] } else { tr("Network", "네트워크") };
-            parts.push(format!("{label} {} {} / {}", tr("free", "여유"), human(free), human(total)));
+            let label = if drive { &path[..2] } else { tr("Network", "네트워크", "ネットワーク") };
+            parts.push(format!("{label} {} {} / {}", tr("free", "여유", "空き"), human(free), human(total)));
         }
     }
     if let Some(z) = zoom {
         let z = z + 1;
-        parts.push(if ko {
-            format!("패널 {z} 크게 보는 중 · Ctrl+Shift+M 또는 머리줄 더블클릭으로 복원")
-        } else {
-            format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore")
+        parts.push(match ui() {
+            1 => format!("패널 {z} 크게 보는 중 · Ctrl+Shift+M 또는 머리줄 더블클릭으로 복원"),
+            2 => format!("ペイン {z} を最大化中 · Ctrl+Shift+M またはヘッダーのダブルクリックで戻す"),
+            _ => format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore"),
         });
     }
     app(|a| a.status_base = (head, size, parts.join("     ·     ")));
@@ -3211,11 +3518,15 @@ unsafe fn paint_main(h: HWND) {
     let (g, status, font, dpi) = app(|a| (geo(a), a.status.clone(), a.font, a.dpi));
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().bg);
-        let side = side_rect(&g);
-        fill(dc, side, pal().card);
-        frame(dc, side, 1, pal().line);
-        let st = status_rect(&g);
-        text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, pal().sub, DT_LEFT);
+        if g.side > 0 {
+            let side = side_rect(&g);
+            fill(dc, side, pal().card);
+            frame(dc, side, 1, pal().line);
+        }
+        if g.bot < g.h {
+            let st = status_rect(&g);
+            text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, pal().sub, DT_LEFT);
+        }
     });
 }
 
@@ -3238,7 +3549,8 @@ unsafe fn paint_pane(h: HWND) {
         fill(dc, rc, pal().card);
         // active: header bar in the selection colour, same colour as the border
         fill(dc, RECT { bottom: pg.view.top, ..rc }, head);
-        if active {
+        let edge = app(|a| a.s.edge);
+        if active && edge {
             frame(dc, rc, s(2), accent);
         } else {
             frame(dc, rc, 1, pal().line);
@@ -3356,10 +3668,14 @@ unsafe fn paint_grid(h: HWND) {
                 fill(dc, pick_cell(&g, r, c), col);
             }
         }
-        let label = match preview.iter().all(|&n| n == preview[0]) {
-            true if KO.load(Ordering::Relaxed) => format!("{}행 × {}열", preview[0], preview.len()),
-            true => format!("{} × {}", preview[0], preview.len()),
-            false => format!("{}  {}", tr("Per column", "열마다"), layout_label(&preview)),
+        let label = if preview.iter().all(|&n| n == preview[0]) {
+            match ui() {
+                1 => format!("{}행 × {}열", preview[0], preview.len()),
+                2 => format!("{} 行 × {} 列", preview[0], preview.len()),
+                _ => format!("{} × {}", preview[0], preview.len()),
+            }
+        } else {
+            format!("{}  {}", tr("Per column", "열마다", "列ごと"), layout_label(&preview))
         };
         text(dc, g.label, &label, font, pal().text, DT_CENTER);
         // preset thumbnails: the panes of each layout on a tile
@@ -3490,7 +3806,7 @@ fn load_geo(n: usize, dpi: i32) -> LoadGeo {
 
 fn short_name(path: &str) -> String {
     if path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
-        return tr("This PC", "내 PC").into();
+        return tr("This PC", "내 PC", "PC").into();
     }
     let t = path.trim_end_matches('\\');
     t.rsplit('\\').next().filter(|x| !x.starts_with("::")).unwrap_or(t).to_string()
@@ -3504,10 +3820,10 @@ fn window_title(disp: &str) -> String {
 fn ago(t: std::time::SystemTime) -> String {
     let m = t.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
     match m {
-        0 => tr("just now", "방금").into(),
-        1..=59 => format!("{m}{}", tr(" min ago", "분 전")),
-        60..=1439 => format!("{}{}", m / 60, tr(" h ago", "시간 전")),
-        _ => format!("{}{}", m / 1440, tr(" d ago", "일 전")),
+        0 => tr("just now", "방금", "たった今").into(),
+        1..=59 => format!("{m}{}", tr(" min ago", "분 전", " 分前")),
+        60..=1439 => format!("{}{}", m / 60, tr(" h ago", "시간 전", " 時間前")),
+        _ => format!("{}{}", m / 1440, tr(" d ago", "일 전", " 日前")),
     }
 }
 
@@ -3576,7 +3892,7 @@ unsafe fn paint_load(h: HWND) {
         frame(dc, rc, 1, pal().line);
         if cards.is_empty() {
             let r = RECT { bottom: g.save_as.top, ..rc };
-            text(dc, r, tr("No saved sessions", "저장된 세션이 없습니다"), font, pal().sub, DT_CENTER);
+            text(dc, r, tr("No saved sessions", "저장된 세션이 없습니다", "保存されたセッションはありません"), font, pal().sub, DT_CENTER);
         }
         for (k, ((path, sess, when), (card, thumb))) in cards.iter().zip(&g.cards).enumerate() {
             if hot == Some(k) {
@@ -3596,8 +3912,8 @@ unsafe fn paint_load(h: HWND) {
         let link = |r: RECT, label: &str, k: usize, align| {
             text(dc, r, label, font, if hot == Some(k) { pal().text } else { accent }, align);
         };
-        link(g.save_as, tr("+ Save as new", "+ 새 이름으로 저장"), LOAD_SAVE_AS, DT_LEFT);
-        link(g.folder, tr("Open sessions folder", "세션 폴더 열기"), LOAD_FOLDER, DT_RIGHT);
+        link(g.save_as, tr("+ Save as new", "+ 새 이름으로 저장", "+ 新しい名前で保存"), LOAD_SAVE_AS, DT_LEFT);
+        link(g.folder, tr("Open sessions folder", "세션 폴더 열기", "セッション フォルダーを開く"), LOAD_FOLDER, DT_RIGHT);
     });
 }
 
@@ -3676,7 +3992,7 @@ unsafe fn set_favs(paths: &[String], add: bool) {
             if add && !on {
                 a.s.favs.push(path.clone());
             } else if !add && on {
-                a.s.favs.retain(|f| !f.eq_ignore_ascii_case(path));
+                a.s.favs.retain(|f| !fav_path(f).eq_ignore_ascii_case(path));
             }
         }
     });
@@ -3693,6 +4009,7 @@ unsafe fn set_favs(paths: &[String], add: bool) {
             _ = InvalidateRect(Some(pop), None, false);
         }
     }
+    settings::refresh();
 }
 
 unsafe fn toggle_fav(i: usize) {
@@ -3708,9 +4025,9 @@ fn fav_removes(paths: &[&str], is_fav: impl Fn(&str) -> bool) -> bool {
 fn fav_menu_label(paths: &[String]) -> &'static str {
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     if fav_removes(&refs, |p| app(|a| a.s.is_fav(p))) {
-        tr("Remove from favourites", "즐겨찾기에서 빼기")
+        tr("Remove from favourites", "즐겨찾기에서 빼기", "お気に入りから削除")
     } else {
-        tr("Add to favourites", "즐겨찾기에 추가")
+        tr("Add to favourites", "즐겨찾기에 추가", "お気に入りに追加")
     }
 }
 
@@ -4237,7 +4554,7 @@ unsafe fn paint_favs(h: HWND) {
         fill(dc, rc, pal().card);
         frame(dc, rc, 1, pal().line);
         if favs.is_empty() {
-            text(dc, rc, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가"), font, pal().sub, DT_CENTER);
+            text(dc, rc, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", "お気に入りはまだありません · ペインヘッダーの ☆+ で追加"), font, pal().sub, DT_CENTER);
         }
         for (k, (f, (row, remove))) in favs.iter().zip(&g.rows).enumerate() {
             if hot.is_some_and(|(i, _)| i == k) {
@@ -4248,8 +4565,8 @@ unsafe fn paint_favs(h: HWND) {
             let icon = RECT { left: row.left + s(6), right: row.left + s(28), ..*row };
             text(dc, icon, "\u{E8B7}", icon_font, pal().sub, DT_CENTER);
             let line = |top: i32, hgt: i32| RECT { left: icon.right + s(6), right: remove.left - s(4), top, bottom: top + hgt };
-            text(dc, line(row.top + s(3), s(19)), &short_name(f), font, pal().text, DT_LEFT);
-            text(dc, line(row.top + s(21), s(16)), f, small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
+            text(dc, line(row.top + s(3), s(19)), &fav_label(f), font, pal().text, DT_LEFT);
+            text(dc, line(row.top + s(21), s(16)), fav_path(f), small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
         }
     });
 }
@@ -4276,16 +4593,19 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 // ✕ / Del: drop it and shrink the list in place
                 let remove = |k: usize| {
                     app(|a| {
-                        a.s.favs.remove(k);
+                        if k < a.s.favs.len() {
+                            a.s.favs.remove(k);
+                        }
                         a.fav_hot = None;
                     });
                     let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
                     _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                     _ = InvalidateRect(Some(h), None, false);
                     repaint_fav_buttons();
+                    settings::refresh();
                 };
                 let open = |k: usize| {
-                    let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    let (i, path) = app(|a| (a.s.active, fav_path(&a.s.favs[k]).to_string()));
                     _ = DestroyWindow(h);
                     if !navigate(i, &path) {
                         _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
@@ -4342,7 +4662,7 @@ unsafe fn new_folder(i: usize) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
-    let base = tr("New folder", "새 폴더");
+    let base = tr("New folder", "새 폴더", "新しいフォルダー");
     let name = fresh_folder(base, |n| Path::new(&dir).join(n).exists());
     if std::fs::create_dir(Path::new(&dir).join(&name)).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
@@ -4499,11 +4819,13 @@ unsafe fn copy_paths(a: usize) {
         return;
     }
     let n = paths.len();
-    let note = match (KO.load(Ordering::Relaxed), n) {
-        (true, 1) => "경로 복사함".into(),
-        (true, n) => format!("경로 {n}개 복사함"),
-        (false, 1) => "Copied path".into(),
-        (false, n) => format!("Copied {n} paths"),
+    let note = match (ui(), n) {
+        (1, 1) => "경로 복사함".into(),
+        (1, n) => format!("경로 {n}개 복사함"),
+        (2, 1) => "パスをコピーしました".into(),
+        (2, n) => format!("パスを {n} 個コピーしました"),
+        (_, 1) => "Copied path".into(),
+        (_, n) => format!("Copied {n} paths"),
     };
     app(|x| x.note = Some((note, Instant::now())));
     update_status();
@@ -4547,7 +4869,7 @@ unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> 
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
-                let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ") };
+                let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ", "移動できませんでした: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ", "コピーできませんでした: ") };
                 let text = HSTRING::from(format!("{what}{}", e.message()));
                 MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
             }
@@ -4579,6 +4901,216 @@ unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result
         }
     }
     op.PerformOperations()
+}
+
+unsafe fn delete_selection(i: usize, shift: bool) {
+    let arr = view_of::<IFolderView2>(i).and_then(|fv| fv.GetSelection(false).ok());
+    let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
+    let Ok(paths) = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) }) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    if paths.is_empty() {
+        return;
+    }
+    let (ask, permanent) = app(|a| (a.s.confirm, shift || a.s.del == 1));
+    if ask {
+        let n = paths.len();
+        let verb = if permanent {
+            tr("Permanently delete", "완전히 삭제", "完全に削除")
+        } else {
+            tr("Move to the Recycle Bin", "휴지통으로 이동", "ごみ箱へ移動")
+        };
+        let text = HSTRING::from(format!("{verb} ({n})"));
+        let owner = app(|a| a.main);
+        if MessageBoxW(Some(owner), &text, w!("Grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+            return;
+        }
+    }
+    start_delete(paths, permanent);
+}
+
+unsafe fn start_delete(srcs: Vec<String>, permanent: bool) -> bool {
+    let busy = Busy::new();
+    let job = std::thread::Builder::new().spawn(move || {
+        let _busy = busy;
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        if let Err(e) = run_delete(&srcs, permanent) {
+            if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
+                let text = HSTRING::from(format!("{}{}", tr("Delete failed: ", "삭제하지 못했습니다: ", "削除できませんでした: "), e.message()));
+                _ = MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+            }
+        }
+        if com {
+            CoUninitialize();
+        }
+    });
+    let Ok(job) = job else { return false };
+    JOBS.with_borrow_mut(|j| {
+        j.retain(|j| !j.is_finished());
+        j.push(job);
+    });
+    true
+}
+
+unsafe fn run_delete(srcs: &[String], permanent: bool) -> Result<()> {
+    let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+    let mut flags = FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR;
+    if !permanent {
+        flags |= FOF_ALLOWUNDO | FOFX_ADDUNDORECORD;
+    }
+    op.SetOperationFlags(flags)?;
+    for s in srcs {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
+        op.DeleteItem(&item, None)?;
+    }
+    op.PerformOperations()
+}
+
+fn default_new_name() -> String {
+    tr("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt").into()
+}
+
+unsafe fn create_text_file() {
+    let i = app(|a| a.s.active);
+    let dir = app(|a| a.s.paths[i].clone());
+    if !is_fs(&dir) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let base = app(|a| if a.s.new_name.trim().is_empty() { default_new_name() } else { a.s.new_name.clone() });
+    let dirp = PathBuf::from(&dir);
+    let mut path = dirp.join(&base);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut n = 2u32;
+    while path.exists() && n < 1000 {
+        let name = if ext.is_empty() { format!("{stem} ({n})") } else { format!("{stem} ({n}).{ext}") };
+        path = dirp.join(name);
+        n += 1;
+    }
+    if std::fs::write(&path, b"").is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    if let Some(sv) = view_of::<IShellView>(i) {
+        _ = sv.Refresh();
+    }
+}
+
+unsafe fn pick_folder(owner: HWND) -> Option<String> {
+    let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let opts = dlg.GetOptions().unwrap_or_default();
+    dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST).ok()?;
+    dlg.Show(Some(owner)).ok()?;
+    let name = dlg.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    Some(pwstr(name))
+}
+
+unsafe fn pick_open(owner: HWND) -> Option<String> {
+    file_dialog(owner, false)
+}
+
+unsafe fn pick_save(owner: HWND) -> Option<String> {
+    file_dialog(owner, true)
+}
+
+unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
+    use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut buf = [0u16; 520];
+    if save {
+        for (d, c) in buf.iter_mut().zip("grids.ini".encode_utf16()) {
+            *d = c;
+        }
+    }
+    let filter: Vec<u16> = "Settings\0*.ini\0All\0*.*\0\0".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(buf.as_mut_ptr()),
+        nMaxFile: buf.len() as u32,
+        Flags: if save { OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST } else { OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST },
+        ..Default::default()
+    };
+    let ok = if save { GetSaveFileNameW(&mut ofn) } else { GetOpenFileNameW(&mut ofn) };
+    ok.as_bool().then(|| {
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..n])
+    })
+}
+
+unsafe fn reset_prefs() {
+    let fresh = Session::default();
+    app(|a| {
+        a.s.theme = fresh.theme;
+        a.s.font = fresh.font;
+        a.s.bar = fresh.bar;
+        a.s.stat = fresh.stat;
+        a.s.view_new = fresh.view_new;
+        a.s.start_new = fresh.start_new;
+        a.s.start_path.clear();
+        a.s.ext = fresh.ext;
+        a.s.tree_on = fresh.tree_on;
+        a.s.edge = fresh.edge;
+        a.s.confirm = fresh.confirm;
+        a.s.del = fresh.del;
+        a.s.new_name.clear();
+        a.s.dropm = fresh.dropm;
+        a.s.boot = fresh.boot;
+        a.s.boot_file.clear();
+        a.s.autosave = fresh.autosave;
+        a.s.dot = fresh.dot;
+        a.s.single = fresh.single;
+        a.s.dblup = fresh.dblup;
+        a.s.accent = fresh.accent;
+        a.s.accent_dark = fresh.accent_dark;
+    });
+    set_language(Lang::Auto);
+    apply_ext(true);
+    relayout();
+    save_session();
+    settings::refresh();
+}
+
+unsafe fn import_ini(text: &str) {
+    let (win, lang_now) = app(|a| (a.s.win, a.s.lang));
+    let mut s = Session::parse(text);
+    s.win = win;
+    s.dark = resolve_dark(s.theme);
+    let lang = s.lang;
+    app(|a| a.s = s);
+    if lang != lang_now {
+        set_language(lang);
+    } else {
+        apply_theme();
+        apply_font();
+    }
+    apply_ext(app(|a| a.s.ext));
+    relayout();
+    save_session();
+    settings::refresh();
+}
+
+fn apply_boot(s: &mut Session) {
+    match s.boot {
+        2 => {
+            s.set_heights(vec![2, 2]);
+            s.paths = vec![String::new(); MAXP];
+            s.views = vec![(0, 0); MAXP];
+            s.cols = vec![String::new(); MAXP];
+            s.active = 0;
+            s.file.clear();
+        }
+        1 if !s.boot_file.is_empty() => {
+            if let Ok(t) = std::fs::read_to_string(&s.boot_file) {
+                let file = s.boot_file.clone();
+                s.take_layout(&Session::parse(&t));
+                s.file = file;
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------- keyboard ----------
@@ -4617,8 +5149,8 @@ unsafe fn new_file(i: usize) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
-    let base = tr("New Text Document.txt", "새 텍스트 문서.txt");
-    let name = fresh_file(base, |n| Path::new(&dir).join(n).exists());
+    let base = app(|a| if a.s.new_name.trim().is_empty() { default_new_name() } else { a.s.new_name.clone() });
+    let name = fresh_file(&base, |n| Path::new(&dir).join(n).exists());
     let full = Path::new(&dir).join(&name);
     if std::fs::OpenOptions::new().write(true).create_new(true).open(&full).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
@@ -4662,6 +5194,14 @@ unsafe fn select_new_file(i: usize, name: &str) -> bool {
 unsafe fn key(m: &MSG) -> bool {
     let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
     let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
+    // Typing in Settings must not fire pane shortcuts. Esc closes the window.
+    if settings::captures(m.hwnd) {
+        if !ctrl && !alt && VIRTUAL_KEY(m.wParam.0 as u16) == VK_ESCAPE {
+            settings::close();
+            return true;
+        }
+        return false;
+    }
     if let Some(i) = pane_of(m.hwnd) {
         set_active(i);
     }
@@ -4696,6 +5236,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F4 if !alt => return focus_ctl(a, ID_EDIT),
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
+        VK_OEM_COMMA if ctrl && !shift && !alt => settings::open(app(|a| a.main)),
         VK_S if ctrl => save_current(),
         VK_B if ctrl && !shift && !alt => open_favs(),
         VK_M if ctrl && shift && !alt => toggle_zoom(),
@@ -4720,6 +5261,7 @@ unsafe fn key(m: &MSG) -> bool {
             resum_sizes();
             return shell();
         }
+        VK_DELETE if !ctrl && !alt && list() => delete_selection(a, shift),
         VK_V if ctrl && !shift && !alt && list() => {
             if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
                 return shell();
@@ -4865,26 +5407,40 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 id if id == ID_TB_LOAD as usize => open_load(),
                 id if id == ID_TB_FAV as usize => open_favs(),
                 id if id == ID_TB_THEME as usize => {
-                    app(|a| a.s.dark ^= true);
+                    let dark = app(|a| a.s.dark);
+                    app(|a| a.s.theme = if dark { 1 } else { 2 });
                     apply_theme();
+                    save_session();
                 }
+                ID_NEWFILE => create_text_file(),
+                id if id == ID_TB_SET as usize => settings::open(h),
                 id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
                 ID_HIDDEN => toggle_hidden(),
-                ID_DBLUP => app(|a| a.s.dblup ^= true),
-                ID_LANG => set_language(!KO.load(Ordering::Relaxed)),
+                ID_DBLUP => {
+                    app(|a| a.s.dblup ^= true);
+                    settings::redraw();
+                }
+                ID_SETTINGS => settings::open(h),
+                ID_LANG_AUTO => set_language(Lang::Auto),
+                ID_LANG_EN => set_language(Lang::En),
+                ID_LANG_KO => set_language(Lang::Ko),
+                ID_LANG_JA => set_language(Lang::Ja),
                 ID_HELP => open_help(),
                 ID_ABOUT => about(h),
                 id @ ID_ACCENT..=1405 => set_accent(pal().accents[id - ID_ACCENT].1),
                 ID_ACCENT_PICK => pick_accent(),
-                ID_KEYS => _ = MessageBoxW(Some(h), &HSTRING::from(tr(KEYS_EN, KEYS_KO)), &HSTRING::from(tr("Keyboard shortcuts", "단축키")), MB_OK),
+                ID_KEYS => _ = MessageBoxW(Some(h), &HSTRING::from(tr(KEYS_EN, KEYS_KO, KEYS_JA)), &HSTRING::from(tr("Keyboard shortcuts", "단축키", "ショートカット キー")), MB_OK),
                 _ => {}
             },
             WM_INITMENUPOPUP => {
-                let (menu, dblup, accent) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now()));
+                let (menu, dblup, accent, lang) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now(), a.s.lang));
                 let check = |id: usize, on: bool| CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | if on { MF_CHECKED } else { MF_UNCHECKED }).0);
                 check(ID_HIDDEN, hidden());
                 check(ID_DBLUP, dblup);
-                check(ID_LANG, KO.load(Ordering::Relaxed));
+                check(ID_LANG_AUTO, lang == Lang::Auto);
+                check(ID_LANG_EN, lang == Lang::En);
+                check(ID_LANG_KO, lang == Lang::Ko);
+                check(ID_LANG_JA, lang == Lang::Ja);
                 for (k, (_, c)) in pal().accents.iter().enumerate() {
                     check(ID_ACCENT + k, *c == accent);
                 }
@@ -4910,6 +5466,10 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             WM_CLOSE => {
+                if app(|a| a.s.autosave && !a.s.file.is_empty()) {
+                    let path = app(|a| a.s.file.clone());
+                    write_session(Path::new(&path));
+                }
                 save_session();
                 _ = DestroyWindow(h);
             }
@@ -5070,7 +5630,7 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
 
 // The README on GitHub, in the UI language.
 unsafe fn open_help() {
-    let url = format!("{HOME}/blob/main/{}", tr("README.md", "README.ko.md"));
+    let url = format!("{HOME}/blob/main/{}", tr("README.md", "README.ko.md", "README.md"));
     ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
 }
 
@@ -5078,32 +5638,33 @@ unsafe fn about(owner: HWND) {
     let text = format!(
         "Grids {}\n{}\n\n{}\n{HOME}\n\n{}",
         env!("CARGO_PKG_VERSION"),
-        tr("Fast multi-pane file manager for Windows", "Windows용 빠른 다중 패널 파일 관리자"),
-        tr("MIT License · © 2026 efww", "MIT 라이선스 · © 2026 efww"),
-        tr("Open the project page?", "프로젝트 페이지를 열까요?"),
+        tr("Fast multi-pane file manager for Windows", "Windows용 빠른 다중 패널 파일 관리자", "Windows 向けの高速マルチペイン ファイル マネージャー"),
+        tr("MIT License · © 2026 efww", "MIT 라이선스 · © 2026 efww", "MIT ライセンス · © 2026 efww"),
+        tr("Open the project page?", "프로젝트 페이지를 열까요?", "プロジェクト ページを開きますか?"),
     );
-    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr("About Grids", "Grids 정보")), MB_YESNO | MB_ICONINFORMATION) == IDYES {
+    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr("About Grids", "Grids 정보", "Grids のバージョン情報")), MB_YESNO | MB_ICONINFORMATION) == IDYES {
         ShellExecuteW(None, w!("open"), &HSTRING::from(HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
     }
 }
 
 // Toolbar buttons: id, accessible name, tooltip.
-fn toolbar_tips() -> [(i32, &'static str, &'static str); 6] {
+fn toolbar_tips() -> [(i32, &'static str, &'static str); 7] {
     [
-        (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수")),
-        (ID_TB_SAVE, tr("Save session", "세션 저장"), ""), // tooltip set by refresh_save_button
-        (ID_TB_LOAD, tr("Load", "불러오기"), tr("Load a session", "세션 불러오기")),
-        (ID_TB_VIEW, tr("View", "보기"), tr("View: hidden files · colours · language · help", "보기: 숨김 파일 · 선택 색 · 언어 · 도움말")),
-        (ID_TB_FAV, tr("Favourites", "즐겨찾기"), tr("Favourite folders (Ctrl+B; open in the active pane)", "즐겨찾기 폴더 (Ctrl+B, 선택한 패널에서 열기)")),
-        (ID_TB_THEME, tr("Theme", "테마"), tr("Light / dark theme", "라이트 / 다크 테마")),
+        (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수", "レイアウト: クリック = 均等、ドラッグ = 列ごとの行数")),
+        (ID_TB_SAVE, tr("Save session", "세션 저장", "セッションを保存"), ""), // tooltip set by refresh_save_button
+        (ID_TB_LOAD, tr("Load", "불러오기", "読み込み"), tr("Load a session", "세션 불러오기", "セッションを読み込む")),
+        (ID_TB_VIEW, tr("View", "보기", "表示"), tr("View: hidden files · colours · language · settings · help", "보기: 숨김 파일 · 선택 색 · 언어 · 설정 · 도움말", "表示: 隠しファイル · 色 · 言語 · 設定 · ヘルプ")),
+        (ID_TB_FAV, tr("Favourites", "즐겨찾기", "お気に入り"), tr("Favourite folders (Ctrl+B; open in the active pane)", "즐겨찾기 폴더 (Ctrl+B, 선택한 패널에서 열기)", "お気に入りフォルダー (Ctrl+B、アクティブなペインで開く)")),
+        (ID_TB_THEME, tr("Theme", "테마", "テーマ"), tr("Light / dark theme", "라이트 / 다크 테마", "ライト / ダーク テーマ")),
+        (ID_TB_SET, tr("Settings", "설정", "設定"), tr("Settings", "설정", "設定")),
     ]
 }
 
-// Switches the UI language now: menu, toolbar tooltips, and the panes (rebuilt with their tooltips).
-unsafe fn set_language(ko: bool) {
-    KO.store(ko, Ordering::Relaxed);
+// Switches the UI language now: menus, fonts, toolbar tooltips, panes, and an open settings window.
+unsafe fn set_language(lang: Lang) {
+    UI.store(lang.resolve(), Ordering::Relaxed);
     let (main, old) = app(|a| {
-        a.s.ko = ko;
+        a.s.lang = lang;
         (a.main, a.view_menu)
     });
     if let Ok(m) = make_menus() {
@@ -5117,53 +5678,68 @@ unsafe fn set_language(ko: bool) {
     }
     refresh_save_button();
     app(|a| a.status_key.clear());
+    apply_font();
     apply_theme();
+    save_session();
 }
 
 // The view popup opened from the top toolbar (no classic menu bar).
 unsafe fn make_menus() -> Result<HMENU> {
     let view = CreatePopupMenu()?;
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
-    item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H"))?;
-    item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로"))?;
+    item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
+    item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
+    item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
     for (k, (name, _)) in LIGHT.accents.iter().enumerate() {
-        item(colors, MF_STRING, ID_ACCENT + k, tr(ACCENT_EN[k], name))?;
+        item(colors, MF_STRING, ID_ACCENT + k, tr(ACCENT_EN[k], name, ACCENT_JA[k]))?;
     }
     AppendMenuW(colors, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(colors, MF_STRING, ID_ACCENT_PICK, tr("Custom...", "직접 선택..."))?;
-    item(view, MF_POPUP, colors.0 as usize, tr("Selection colour", "선택 색"))?;
+    item(colors, MF_STRING, ID_ACCENT_PICK, tr("Custom...", "직접 선택...", "カスタム..."))?;
+    item(view, MF_POPUP, colors.0 as usize, tr("Selection colour", "선택 색", "選択色"))?;
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(view, MF_STRING, ID_LANG, "한국어 (Korean)")?;
+    item(view, MF_STRING, ID_SETTINGS, tr("Settings...", "설정...", "設定..."))?;
+    let langs = CreatePopupMenu()?;
+    item(langs, MF_STRING, ID_LANG_AUTO, tr("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う"))?;
+    item(langs, MF_STRING, ID_LANG_EN, "English")?;
+    item(langs, MF_STRING, ID_LANG_KO, "한국어")?;
+    item(langs, MF_STRING, ID_LANG_JA, "日本語")?;
+    item(view, MF_POPUP, langs.0 as usize, tr("Language", "언어", "言語"))?;
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(view, MF_STRING, ID_KEYS, tr("Keyboard shortcuts...", "단축키..."))?;
-    item(view, MF_STRING, ID_HELP, tr("Help (online)\tF1", "도움말 (온라인)\tF1"))?;
-    item(view, MF_STRING, ID_ABOUT, tr("About Grids", "Grids 정보"))?;
+    item(view, MF_STRING, ID_KEYS, tr("Keyboard shortcuts...", "단축키...", "ショートカット キー..."))?;
+    item(view, MF_STRING, ID_HELP, tr("Help (online)\tF1", "도움말 (온라인)\tF1", "ヘルプ (オンライン)\tF1"))?;
+    item(view, MF_STRING, ID_ABOUT, tr("About Grids", "Grids 정보", "Grids のバージョン情報"))?;
     Ok(view)
 }
 
 fn main() -> Result<()> {
     unsafe {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
-        // Single instance: hand the arguments to the running window and leave.
-        if let Some(prev) = running_instance() {
-            if !args.is_empty() {
-                let data: Vec<u16> = args.join("\n").encode_utf16().collect();
-                let cd = CopyData { dw: COPY_ID, cb: (data.len() * 2) as u32, lp: data.as_ptr() as _ };
-                let lp = LPARAM(&cd as *const CopyData as isize);
-                SendMessageTimeoutW(prev, WM_COPYDATA, WPARAM(0), lp, SMTO_ABORTIFHUNG, 5000, None);
+        // qdir.ini: settings from before the rename, read once until grids.ini exists.
+        // Read first so single=0 can opt out of handing arguments to the running window.
+        let ini = std::fs::read_to_string(ini_path()).or_else(|_| std::fs::read_to_string(ini_path().with_file_name("qdir.ini")));
+        let mut s = ini.map(|t| Session::parse(&t)).unwrap_or_default();
+        if session_arg(&args).is_none() && args.is_empty() {
+            apply_boot(&mut s);
+        }
+        s.dark = resolve_dark(s.theme);
+        if s.single {
+            if let Some(prev) = running_instance() {
+                if !args.is_empty() {
+                    let data: Vec<u16> = args.join("\n").encode_utf16().collect();
+                    let cd = CopyData { dw: COPY_ID, cb: (data.len() * 2) as u32, lp: data.as_ptr() as _ };
+                    let lp = LPARAM(&cd as *const CopyData as isize);
+                    SendMessageTimeoutW(prev, WM_COPYDATA, WPARAM(0), lp, SMTO_ABORTIFHUNG, 5000, None);
+                }
+                if IsIconic(prev).as_bool() {
+                    _ = ShowWindow(prev, SW_RESTORE);
+                }
+                _ = SetForegroundWindow(prev);
+                return Ok(());
             }
-            if IsIconic(prev).as_bool() {
-                _ = ShowWindow(prev, SW_RESTORE);
-            }
-            _ = SetForegroundWindow(prev);
-            return Ok(());
         }
 
         OleInitialize(None)?; // OLE (not just COM) for drag & drop
-        // qdir.ini: settings from before the rename, read once until grids.ini exists
-        let ini = std::fs::read_to_string(ini_path()).or_else(|_| std::fs::read_to_string(ini_path().with_file_name("qdir.ini")));
-        let mut s = ini.map(|t| Session::parse(&t)).unwrap_or_default();
         match session_arg(&args).and_then(|f| std::fs::read_to_string(f).ok()) {
             Some(t) => s.take_layout(&Session::parse(&t)),
             None => apply_args(&mut s, args),
@@ -5220,7 +5796,7 @@ fn main() -> Result<()> {
             lpszClassName: w!("GridsPicker"),
             ..Default::default()
         });
-        KO.store(s.ko, Ordering::Relaxed);
+        UI.store(s.lang.resolve(), Ordering::Relaxed);
         let view_menu = make_menus()?;
         let main = CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -5277,6 +5853,7 @@ fn main() -> Result<()> {
             None => _ = ShowWindow(main, SW_SHOWNORMAL),
         }
         relayout();
+        apply_ext(app(|a| a.s.ext));
         focus_view(app(|a| a.s.active));
         let file = app(|a| a.s.file.clone());
         let base = std::fs::read_to_string(&file).ok().map(|t| Session::parse(&t));
@@ -5318,6 +5895,53 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lang_ini() {
+        assert_eq!(Session::parse("").lang, Lang::Auto);
+        assert_eq!(Session::parse("lang=auto").lang, Lang::Auto);
+        assert_eq!(Session::parse("lang=en").lang, Lang::En);
+        assert_eq!(Session::parse("lang=ko").lang, Lang::Ko);
+        assert_eq!(Session::parse("lang=ja").lang, Lang::Ja);
+        assert!(Session::parse("dblup=1").single);
+        assert!(!Session::parse("single=0").single);
+        let fresh = Session::default();
+        let round = Session::parse(&fresh.to_ini());
+        assert_eq!(round.theme, 0);
+        assert_eq!((round.font, round.bar, round.stat, round.view_new, round.start_new), (0, true, true, 4, 0));
+        assert_eq!((round.ext, round.tree_on, round.edge, round.confirm, round.del), (true, true, true, true, 0));
+        assert_eq!((round.dropm, round.boot, round.autosave, round.dot), (0, 0, false, true));
+        assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
+        // An older file has dark= and no theme=. That stays an explicit choice, and new keys keep defaults.
+        let old = Session::parse("dark=1\ndblup=1\n");
+        assert_eq!(old.theme, 2);
+        assert!(old.dark && old.bar && old.dot);
+        let t = Session::parse("theme=auto\ndark=1\nfont=2\nbar=0\nstat=0\nviewnew=1\nstart=2\nstartp=C:\\Work\next=0\ntree=0\nedge=0\nconfirm=0\ndel=1\nnewname=note.txt\ndrop=1\nboot=1\nbootf=C:\\s.grids\nautosave=1\ndot=0\nfav=C:\\WORK\tWork\n");
+        assert_eq!(t.theme, 0);
+        assert!(t.dark);
+        assert_eq!(t.font, 2);
+        assert!(!t.bar && !t.stat && !t.ext && !t.tree_on && !t.edge && !t.confirm && !t.dot);
+        assert_eq!(t.view_new, 1);
+        assert_eq!(t.start_new, 2);
+        assert_eq!(t.start_path, "C:\\Work");
+        assert_eq!(t.del, 1);
+        assert_eq!(t.new_name, "note.txt");
+        assert_eq!(t.dropm, 1);
+        assert_eq!(t.boot, 1);
+        assert_eq!(t.boot_file, "C:\\s.grids");
+        assert!(t.autosave);
+        assert_eq!(fav_path(&t.favs[0]), "C:\\WORK");
+        assert_eq!(fav_label(&t.favs[0]), "Work");
+        let back = Session::parse(&t.to_ini());
+        assert_eq!((back.font, back.new_name, back.start_path, back.boot_file, back.favs), (t.font, t.new_name.clone(), t.start_path.clone(), t.boot_file.clone(), t.favs.clone()));
+        let mut s = Session::default();
+        s.lang = Lang::Ja;
+        s.single = false;
+        let back = Session::parse(&s.to_ini());
+        assert_eq!((back.lang, back.single), (Lang::Ja, false));
+        assert!(back.to_ini().contains("lang=ja\n"));
+        assert!(Session::parse("lang=ko").to_ini().contains("lang=ko\n"));
+    }
 
     #[test]
     fn neighbours() {
@@ -5724,19 +6348,24 @@ mod tests {
     #[test]
     fn folder_size_text() {
         let kb = human(1024);
-        assert_eq!(size_text(false, 0, true, None, false), " (calculating…)");
-        assert_eq!(size_text(false, 0, true, Some((0, false, false)), false), " (calculating…)");
-        assert_eq!(size_text(false, 1024, true, Some((1024, false, false)), false), format!(" ({}…)", human(2048)));
-        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), false), format!(" ({kb})"));
-        assert_eq!(size_text(false, 0, true, Some((1024, true, true)), false), format!(" ({kb}, partial)"));
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(size_text(0, true, None, false), " (calculating…)");
+        assert_eq!(size_text(0, true, Some((0, false, false)), false), " (calculating…)");
+        assert_eq!(size_text(1024, true, Some((1024, false, false)), false), format!(" ({}…)", human(2048)));
+        assert_eq!(size_text(0, true, Some((1024, true, false)), false), format!(" ({kb})"));
+        assert_eq!(size_text(0, true, Some((1024, true, true)), false), format!(" ({kb}, partial)"));
         // something missed while collecting the selection isn't shown as a full total
-        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), true), format!(" ({kb}, partial)"));
-        assert_eq!(size_text(true, 0, true, Some((1024, true, false)), true), format!(" ({kb}, 일부만)"));
-        assert_eq!(size_text(false, 1024, false, None, false), format!(" ({kb})"));
-        assert_eq!(size_text(false, 1024, false, None, true), format!(" ({kb}, partial)"));
-        assert_eq!(size_text(false, 0, false, None, false), "");
-        assert_eq!(size_text(false, 0, false, None, true), " (size unknown)");
-        assert_eq!(size_text(true, 0, false, None, true), " (크기 모름)");
+        assert_eq!(size_text(0, true, Some((1024, true, false)), true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(1024, false, None, false), format!(" ({kb})"));
+        assert_eq!(size_text(1024, false, None, true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(0, false, None, false), "");
+        assert_eq!(size_text(0, false, None, true), " (size unknown)");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(size_text(0, true, Some((1024, true, false)), true), format!(" ({kb}, 일부만)"));
+        assert_eq!(size_text(0, false, None, true), " (크기 모름)");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(size_text(0, false, None, true), " (サイズ不明)");
+        UI.store(0, Ordering::Relaxed);
     }
 
     #[test]
