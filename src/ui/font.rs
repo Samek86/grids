@@ -70,6 +70,8 @@ pub(crate) unsafe fn apply_font() {
     for f in [old, old_icon, old_bold].into_iter().filter(|f| !f.is_invalid()) {
         _ = DeleteObject(f.into());
     }
+    // The folder tree takes this font, so its item height (and the favourites rows) follow DPI and font scale.
+    super::sync_fav_metrics();
     relayout();
     redraw_all();
 }

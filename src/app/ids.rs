@@ -52,6 +52,7 @@ pub(crate) const TIMER_WINS: usize = 8; // after the first window is shown, open
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;
 pub(crate) const TVM_GETITEMRECT: u32 = 0x1104;
+pub(crate) const TVM_GETITEMHEIGHT: u32 = 0x111C;
 pub(crate) const TVGN_CARET: usize = 9;
 pub(crate) const TVM_SETBKCOLOR: u32 = 0x111D;
 pub(crate) const TVM_GETTOOLTIPS: u32 = 0x1119;
