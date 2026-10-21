@@ -53,6 +53,7 @@ const FILE: [&str; 3] = s("File", "파일", "ファイル");
 const SESS: [&str; 3] = s("Session", "세션", "セッション");
 const FAV: [&str; 3] = s("Favourites", "즐겨찾기", "お気に入り");
 const HELP: [&str; 3] = s("Help", "도움말", "ヘルプ");
+const WIN: [&str; 3] = s("Window", "창", "ウィンドウ");
 
 const CMDS: &[Cmd] = &[
     cmd("tab.new", TAB, s("New tab", "새 탭", "新しいタブ"), 0x54, true, false, false, false),
@@ -84,6 +85,7 @@ const CMDS: &[Cmd] = &[
     cmd("fav.list", FAV, s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), 0x42, true, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false),
     cmd("app.help", HELP, s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), 0x70, false, false, false, false),
+    cmd("win.new", WIN, s("New window", "새 창", "新しいウィンドウ"), 0x4E, true, false, false, false),
 ];
 
 struct KeyState {
@@ -488,7 +490,7 @@ Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout ch
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
-If Grids is already running, they open in that window.";
+If Grids is already running, a new window opens in that process.";
 
 const NOTES_KO: &str = "\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
@@ -497,7 +499,7 @@ const NOTES_KO: &str = "\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
-이미 실행 중이면 그 창에서 엽니다.";
+이미 실행 중이면 그 프로세스에 새 창이 열립니다.";
 
 const NOTES_JA: &str = "\
 レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
@@ -506,7 +508,7 @@ const NOTES_JA: &str = "\
 読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
 スプリッターをダブルクリック: 均等に分割\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
-すでに起動している場合は、そのウィンドウで開きます。";
+すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。";
 
 pub(crate) fn help_text() -> String {
     let mut s = String::new();
@@ -553,6 +555,7 @@ mod tests {
             ("app.settings", "Ctrl+,"),
             ("app.help", "F1"),
             ("view.zoom", "Ctrl+Shift+M"),
+            ("win.new", "Ctrl+N"),
         ];
         for (id, text) in want {
             let i = index(id).unwrap();
@@ -569,6 +572,9 @@ mod tests {
         assert_eq!(lookup(b'5' as u16, true, true, false), None);
         assert_eq!(lookup(0x25, false, true, true), index("pane.left"));
         assert_eq!(lookup(0x25, false, false, true), index("nav.back"));
+        assert_eq!(lookup(b'N' as u16, true, false, false), index("win.new"));
+        assert_eq!(lookup(b'N' as u16, true, false, true), index("file.new"));
+        assert_eq!(lookup(b'N' as u16, true, true, false), index("file.dir"));
     }
 
     #[test]

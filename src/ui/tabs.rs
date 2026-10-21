@@ -119,6 +119,7 @@ pub(crate) fn put_filters(f: &[String]) {
             g[i] = f.get(i).cloned().unwrap_or_default();
         }
     }
+    unsafe { sync_filter_hwnds() };
 }
 
 pub(crate) fn fit_park(a: &mut App) {
@@ -128,7 +129,8 @@ pub(crate) fn fit_park(a: &mut App) {
     } else if a.park.len() > n {
         a.park.truncate(n);
     }
-    a.park_lru.retain(|&i| i < a.park.len());
+    let npark = a.park.len();
+    a.park_lru.retain(|&i| i < npark);
 }
 
 pub(crate) fn lru_note(a: &mut App, i: usize) {
@@ -209,8 +211,9 @@ pub(crate) unsafe fn remember_tabs() {
     }
     let filters = pull_filters();
     app(|a| {
-        if a.s.tab < a.s.tabs.len() {
-            a.s.tabs[a.s.tab].filters = pad_filters(filters);
+        let tab = a.s.tab;
+        if tab < a.s.tabs.len() {
+            a.s.tabs[tab].filters = pad_filters(filters);
         }
         a.s.anchor();
     });
@@ -312,8 +315,9 @@ pub(crate) unsafe fn switch_tab(j: usize) {
     let filters = app(|a| {
         fit_park(a);
         let live = std::mem::replace(&mut a.panes, no_panes());
-        a.park[a.s.tab] = live;
-        lru_note(a, a.s.tab);
+        let tab = a.s.tab;
+        a.park[tab] = live;
+        lru_note(a, tab);
         a.panes = std::mem::take(&mut a.park[j]);
         if a.panes.len() != MAXP {
             a.panes = no_panes();
@@ -350,8 +354,9 @@ pub(crate) unsafe fn new_tab() {
     app(|a| {
         fit_park(a);
         let live = std::mem::replace(&mut a.panes, no_panes());
-        a.park[a.s.tab] = live;
-        lru_note(a, a.s.tab);
+        let tab = a.s.tab;
+        a.park[tab] = live;
+        lru_note(a, tab);
         let fresh = Session {
             heights: vec![2, 2],
             colr: even(2),
@@ -569,6 +574,7 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
     add(1, tr("Rename tab", "이름 변경", "タブ名の変更"), true);
     add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
     add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
+    add(6, tr("Move to new window", "새 창으로 이동", "新しいウィンドウへ移動"), true);
     add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
     add(5, tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存"), true);
     let Ok(colors) = CreatePopupMenu() else {
@@ -604,6 +610,7 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
             note_save();
         }
         3 => duplicate_tab(i),
+        6 => move_tab_to_new(i),
         4 => close_other_tabs(i),
         5 => save_tab_as_session(i),
         19 => set_tab_color(i, None),
@@ -710,6 +717,7 @@ pub(crate) unsafe fn tab_mouse(x: i32, y: i32) -> TabHit {
 
 pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
         match msg {
             WM_PAINT => paint_tabs(h),
             WM_ERASEBKGND => return LRESULT(1),
@@ -738,11 +746,16 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     (from, !same)
                 });
                 if let Some(from) = from {
-                    let lay = current_tab_lay();
-                    let to = lay.body.iter().position(|r| x < (r.left + r.right) / 2).unwrap_or(lay.body.len().saturating_sub(1));
-                    if to != from && to < app(|a| a.s.tabs.len()) {
-                        reorder_tab(from, to);
-                        app(|a| a.tab_drag = Some(to));
+                    let mut rc = RECT::default();
+                    _ = GetClientRect(h, &mut rc);
+                    // Reorder only while the pointer stays in this strip. Outside, mouse-up moves the tab.
+                    if y >= 0 && y < rc.bottom {
+                        let lay = current_tab_lay();
+                        let to = lay.body.iter().position(|r| x < (r.left + r.right) / 2).unwrap_or(lay.body.len().saturating_sub(1));
+                        if to != from && to < app(|a| a.s.tabs.len()) {
+                            reorder_tab(from, to);
+                            app(|a| a.tab_drag = Some(to));
+                        }
                     }
                 }
                 if paint || from.is_some() {
@@ -780,8 +793,10 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let press = app(|a| a.tab_press.take());
                 let dragged = app(|a| a.tab_drag.take());
                 _ = ReleaseCapture();
-                if let Some((i, _, _, on_close)) = press {
-                    if dragged.is_none() && on_close {
+                if let Some(from) = dragged {
+                    finish_tab_drag(h, from);
+                } else if let Some((i, _, _, on_close)) = press {
+                    if on_close {
                         if let TabHit::Close(j) = tab_mouse(x, y) {
                             if j == i {
                                 close_tab(i);

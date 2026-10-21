@@ -272,6 +272,7 @@ pub(crate) unsafe fn paint_grid(h: HWND) {
 
 pub(crate) extern "system" fn grid_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
         let g = pick_geo(app(|a| a.dpi));
         let show = |v: Vec<usize>, preset: Option<usize>| {
             let changed = app(|a| {
