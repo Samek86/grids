@@ -242,6 +242,9 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     if let Ok((t, th)) = create_tree(main) {
         app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
     }
+    let act = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsAct"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
+    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
+    app(|a| (a.act_hwnd, a.side_hwnd) = (act, side));
     prime_theme(app(|a| a.s.dark));
     apply_theme_desk();
     apply_font();
