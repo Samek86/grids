@@ -53,6 +53,11 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
     NAV_GEN.fetch_add(1, Ordering::SeqCst);
+    if let Some(sv) = view_of::<IShellView>(i) {
+        if let Ok(h) = sv.GetWindow() {
+            clear_filter_view(h);
+        }
+    }
     save_view(i);
     let (p, queued) = app(|a| {
         let p = a.panes[i].take();
@@ -551,24 +556,16 @@ pub(crate) unsafe fn apply_ext(show: bool) {
     _ = RegSetValueExW(key, w!("HideFileExt"), None, REG_DWORD, Some(&data));
     _ = RegCloseKey(key);
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
-    for i in 0..MAXP {
-        if let Some(sv) = view_of::<IShellView>(i) {
-            _ = sv.Refresh();
+    across_windows(|| {
+        for i in 0..MAXP {
+            if let Some(sv) = view_of::<IShellView>(i) {
+                _ = sv.Refresh();
+            }
         }
-    }
+    });
 }
 
-// Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
-pub(crate) unsafe fn apply_theme() {
-    app(|a| a.s.dark = resolve_dark(a.s.theme));
-    let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
-    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
-    let tip_theme = |t: HWND| {
-        if !t.0.is_null() {
-            _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
-        }
-    };
-    tip_theme(tip);
+pub(crate) unsafe fn prime_theme(dark: bool) {
     DARK_ON.store(dark, Ordering::Relaxed);
     if let Some(f) = uxtheme(135) {
         let set_preferred_app_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
@@ -578,6 +575,21 @@ pub(crate) unsafe fn apply_theme() {
         let flush_menu_themes: unsafe extern "system" fn() = std::mem::transmute(f);
         flush_menu_themes();
     }
+}
+
+/// One window: title bar, tree, and that window's Explorer panes.
+pub(crate) unsafe fn apply_theme_desk() {
+    let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
+    if main.0.is_null() {
+        return;
+    }
+    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
+    let tip_theme = |t: HWND| {
+        if !t.0.is_null() {
+            _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
+        }
+    };
+    tip_theme(tip);
     let on = BOOL::from(dark);
     _ = DwmSetWindowAttribute(main, DWMWINDOWATTRIBUTE(20), &on as *const _ as _, 4); // immersive dark title bar
     let caption = cref(pal().bg);
@@ -603,6 +615,15 @@ pub(crate) unsafe fn apply_theme() {
     relayout();
     sync_filter_edits();
     redraw_all();
+}
+
+// Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
+pub(crate) unsafe fn apply_theme() {
+    let dark = resolve_dark(app(|a| a.s.theme));
+    app(|a| a.s.dark = dark);
+    publish_shared();
+    prime_theme(dark);
+    across_windows(|| apply_theme_desk());
     settings::refresh();
 }
 

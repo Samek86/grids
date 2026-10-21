@@ -131,7 +131,7 @@ struct Spec {
 const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Lang },
     Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
-    Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("If it is already open, bring that window forward.", "이미 켜져 있으면 그 창을 앞으로 가져와요.", "すでに起動していれば、そのウィンドウを前面に出します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
+    Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process.", "다시 실행하면 이 프로세스에 새 창이 열려요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
 ];
 const LOOK: &[Spec] = &[

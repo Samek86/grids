@@ -22,6 +22,10 @@ pub(crate) unsafe fn cursor_for(h: HWND) -> Option<Hit> {
 
 pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
+        if window_count() == 0 {
+            return DefWindowProcW(h, msg, wp, lp);
+        }
         match msg {
             // While the user drags the window edge, lay the panes out once at the end (same cost reason as splitters).
             WM_SIZE => {
@@ -61,6 +65,10 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_TIMER if wp.0 == TIMER_SAVE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 save_session();
+            }
+            WM_TIMER if wp.0 == TIMER_WINS => {
+                _ = KillTimer(Some(h), TIMER_WINS);
+                open_stashed();
             }
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
@@ -161,12 +169,17 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_COPYDATA => {
                 let cd = &*(lp.0 as *const CopyData);
-                if cd.dw != COPY_ID || cd.lp.is_null() {
+                if cd.dw != COPY_ID {
                     return LRESULT(0);
                 }
                 // copy first: the sender's buffer is only valid during this call
-                let text = String::from_utf16_lossy(std::slice::from_raw_parts(cd.lp as *const u16, cd.cb as usize / 2));
-                open_args(text.split('\n').map(String::from).collect());
+                let args = if cd.cb == 0 || cd.lp.is_null() {
+                    Vec::new()
+                } else {
+                    let text = String::from_utf16_lossy(std::slice::from_raw_parts(cd.lp as *const u16, cd.cb as usize / 2));
+                    text.split('\n').filter(|s| !s.is_empty()).map(String::from).collect()
+                };
+                open_in_new_window(args);
                 return LRESULT(1);
             }
             WM_DPICHANGED => {
@@ -181,19 +194,40 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
+                _ = KillTimer(Some(h), TIMER_WINS);
                 if app(|a| a.s.autosave && !a.s.file.is_empty()) {
                     let path = app(|a| a.s.file.clone());
                     write_session(Path::new(&path));
                 }
-                save_session();
-                _ = DestroyWindow(h);
+                publish_shared();
+                let last = window_count() <= 1;
+                if last {
+                    // The last window stays in the file, so the next launch restores every window that was open.
+                    save_session();
+                    _ = DestroyWindow(h);
+                } else {
+                    destroy_every_pane();
+                    app(|a| a.tree = None);
+                    let handles = drop_current_desk();
+                    save_session();
+                    _ = DestroyWindow(h);
+                    release_desk_handles(handles.0, handles.1, handles.2, handles.3);
+                }
             }
             WM_DESTROY => {
                 _ = KillTimer(Some(h), TIMER_STATUS);
                 _ = KillTimer(Some(h), TIMER_SAVE);
-                destroy_every_pane();
-                app(|a| a.tree = None);
-                PostQuitMessage(0);
+                _ = KillTimer(Some(h), TIMER_WINS);
+                // A window that was not the last one already left the desk list in WM_CLOSE.
+                if bind_hwnd(h) {
+                    destroy_every_pane();
+                    app(|a| a.tree = None);
+                    let handles = drop_current_desk();
+                    release_desk_handles(handles.0, handles.1, handles.2, handles.3);
+                }
+                if window_count() == 0 {
+                    PostQuitMessage(0);
+                }
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
@@ -203,6 +237,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
 
 pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
         let nav = |flags: u32| {
             if let Some(i) = pane_of(h) {
                 set_active(i);
@@ -377,22 +412,28 @@ pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 7] {
 // Switches the UI language now: menus, fonts, toolbar tooltips, panes, and an open settings window.
 pub(crate) unsafe fn set_language(lang: Lang) {
     UI.store(lang.resolve(), Ordering::Relaxed);
-    let (main, old) = app(|a| {
-        a.s.lang = lang;
-        (a.main, a.view_menu)
-    });
-    if let Ok(m) = make_menus() {
-        app(|a| a.view_menu = m);
-        _ = DestroyMenu(old);
-    }
-    for (id, _, hint) in toolbar_tips() {
-        if let Ok(b) = GetDlgItem(Some(main), id) {
-            tip_text(b, hint, TTM_UPDATETIPTEXTW);
+    app(|a| a.s.lang = lang);
+    publish_shared();
+    across_windows(|| {
+        let (main, old) = app(|a| (a.main, a.view_menu));
+        if main.0.is_null() {
+            return;
         }
-    }
-    refresh_save_button();
-    app(|a| a.status_key.clear());
-    apply_font();
+        if let Ok(m) = make_menus() {
+            app(|a| a.view_menu = m);
+            if !old.0.is_null() {
+                _ = DestroyMenu(old);
+            }
+        }
+        for (id, _, hint) in toolbar_tips() {
+            if let Ok(b) = GetDlgItem(Some(main), id) {
+                tip_text(b, hint, TTM_UPDATETIPTEXTW);
+            }
+        }
+        refresh_save_button();
+        app(|a| a.status_key.clear());
+    });
+    apply_font_all();
     apply_theme();
     save_session();
 }

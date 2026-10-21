@@ -47,6 +47,7 @@ pub(crate) const SAVE_LATEST_MS: u128 = 30_000;
 pub(crate) const PARK_CACHE: usize = 1;
 pub(crate) const TIMER_NEWF: usize = 6; // on a pane: select and rename a folder just created
 pub(crate) const TIMER_NEWFILE: usize = 7; // on a pane: select and rename a file just created
+pub(crate) const TIMER_WINS: usize = 8; // after the first window is shown, open the other saved windows
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;

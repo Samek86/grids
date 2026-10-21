@@ -91,8 +91,8 @@ struct FavJson {
     name: String,
 }
 
-/// Version 1. `tabs` is the tab list (each tab is one pane grid). `keybindings` and
-/// `favorites_tree` stay reserved. Unknown keys land in `extra` and are written back.
+/// Version 1. `tabs` is the focused window. `windows` is every window, focused first.
+/// `keybindings` and `favorites_tree` stay reserved. Unknown keys land in `extra` and are written back.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SettingsFile {
     #[serde(default = "v1")]
@@ -161,6 +161,8 @@ struct SettingsFile {
     recent: Vec<String>,
     #[serde(default)]
     tabs: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    windows: Vec<Value>,
     #[serde(default)]
     keybindings: Map<String, Value>,
     #[serde(default)]
@@ -211,6 +213,7 @@ impl SettingsFile {
             favorites: Vec::new(),
             recent: Vec::new(),
             tabs: Vec::new(),
+            windows: Vec::new(),
             keybindings: Map::new(),
             favorites_tree: Vec::new(),
             extra: Map::new(),
@@ -274,6 +277,7 @@ impl SettingsFile {
             favorites,
             recent: s.recent.clone(),
             tabs: serde_json::from_str(&crate::tabs_json(&shown, at)).unwrap_or_default(),
+            windows: crate::take_snaps(),
             keybindings: crate::keys::bindings_json(),
             favorites_tree: Vec::new(),
             extra: Map::new(),
@@ -296,6 +300,11 @@ impl SettingsFile {
         }
         self.keybindings = kb;
         self.favorites_tree = previous.favorites_tree.clone();
+        // An empty list means this save did not see live windows (a test, or a build that
+        // does not write them). A real save always has the window that is still open.
+        if self.windows.is_empty() {
+            self.windows = previous.windows.clone();
+        }
         self.extra = previous.extra.clone();
     }
 
@@ -383,7 +392,14 @@ impl SettingsFile {
         } else {
             crate::adopt_tabs(&mut s, &self.tabs);
         }
-        s
+        if self.windows.is_empty() {
+            crate::stash_windows(Vec::new());
+            s
+        } else {
+            let first = crate::session_from_window(self.windows.first().unwrap(), &s);
+            crate::stash_windows(self.windows.iter().skip(1).cloned().collect());
+            first
+        }
     }
 }
 
@@ -780,5 +796,34 @@ mod tests {
         write_atomic(&path, b"{\"version\":1,\"lang\":\"ja\"}\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"version\":1,\"lang\":\"ja\"}\n");
         assert!(!dir.join("grids.json.tmp").exists());
+    }
+
+    #[test]
+    fn windows_round_trip_keeps_each_path_and_an_empty_save_does_not_wipe_them() {
+        let mut a = sample();
+        a.paths[0] = "C:\\win-a".into();
+        a.anchor();
+        let mut b = sample();
+        b.paths[0] = "D:\\win-b".into();
+        b.win = Some([40, 50, 800, 600, 0]);
+        b.file.clear();
+        b.anchor();
+        crate::set_snaps(vec![crate::window_value(&a), crate::window_value(&b)]);
+        let text = sync_text(&a);
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert!(saved["windows"][0]["tabs"][0]["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\win-a"));
+        assert!(saved["windows"][1]["tabs"][0]["panes"].as_array().unwrap().iter().any(|p| p["path"] == "D:\\win-b"));
+        assert!(saved["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\win-a"));
+        let loaded = adopt(&text).unwrap();
+        assert_eq!(loaded.paths[0], "C:\\win-a");
+        let rest = crate::take_stashed();
+        assert_eq!(rest.len(), 1);
+        let back = crate::session_from_window(&rest[0], &loaded);
+        assert_eq!(back.paths[0], "D:\\win-b");
+        assert_eq!(back.win, Some([40, 50, 800, 600, 0]));
+        assert_eq!(back.accent, loaded.accent);
+        // A save that did not snapshot windows must leave the stored list in place.
+        let kept: Value = serde_json::from_str(&sync_text(&loaded)).unwrap();
+        assert_eq!(kept["windows"].as_array().unwrap().len(), 2);
     }
 }

@@ -131,7 +131,7 @@ pub(crate) struct Session {
     pub(crate) favs: Vec<String>,      // favourite folders (parsing names), app-wide
     pub(crate) recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
     pub(crate) lang: Lang,             // UI language preference; Auto follows Windows
-    pub(crate) single: bool,           // a second launch hands its arguments to the running window
+    pub(crate) single: bool,           // a second launch opens a new window in this process
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger

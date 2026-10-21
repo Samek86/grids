@@ -1,10 +1,15 @@
+use std::ops::{Deref, DerefMut};
+
 use crate::imports::*;
 use super::*;
 use crate::ui::*;
 use crate::session::*;
 
 // ---------- app state ----------
-// Single UI thread. Rule: never call into Win32/COM that can re-enter our window procs while inside app().
+// Single UI thread, one or more top-level windows. `app()` is the window bound to the
+// message being handled. Rule: never call into Win32/COM that can re-enter our window procs while inside app().
+
+static NEXT_WIN: AtomicUsize = AtomicUsize::new(1);
 
 pub(crate) struct Pane {
     pub(crate) hwnd: HWND,
@@ -15,7 +20,9 @@ pub(crate) struct Pane {
     pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
 }
 
-pub(crate) struct App {
+pub(crate) struct Desk {
+    #[allow(dead_code)] // stable per window; reserved for later window targeting
+    pub(crate) id: u64,
     pub(crate) s: Session,
     pub(crate) main: HWND,
     pub(crate) tree: Option<INameSpaceTreeControl>,
@@ -69,10 +76,32 @@ pub(crate) struct App {
     pub(crate) tab_press: Option<(usize, i32, i32, bool)>, // tab, x, y, press landed on its close box
     pub(crate) tab_renaming: Option<usize>,
     pub(crate) tab_rename_skip: bool,
+    /// Filter text last seen while this window was current. `FILTERS` holds the current window.
+    pub(crate) live_filters: [String; MAXP],
 }
 
-thread_local! {
-    static APP: RefCell<App> = RefCell::new(App {
+pub(crate) struct App {
+    pub(crate) desks: Vec<Desk>,
+    pub(crate) cur: usize,
+}
+
+impl Deref for App {
+    type Target = Desk;
+    fn deref(&self) -> &Desk {
+        &self.desks[self.cur]
+    }
+}
+
+impl DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Desk {
+        let i = self.cur;
+        &mut self.desks[i]
+    }
+}
+
+pub(crate) fn blank_desk() -> Desk {
+    Desk {
+        id: NEXT_WIN.fetch_add(1, Ordering::Relaxed) as u64,
         s: Session::default(),
         main: HWND::default(),
         tree: None,
@@ -126,7 +155,12 @@ thread_local! {
         tab_press: None,
         tab_renaming: None,
         tab_rename_skip: false,
-    });
+        live_filters: [const { String::new() }; MAXP],
+    }
+}
+
+thread_local! {
+    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0 });
 }
 
 pub(crate) fn no_panes() -> Vec<Option<Pane>> {
@@ -161,6 +195,202 @@ pub(crate) fn fresh_folder(base: &str, taken: impl Fn(&str) -> bool) -> String {
 
 pub(crate) fn filter_of(i: usize) -> String {
     FILTERS.lock().map(|f| f[i].clone()).unwrap_or_default()
+}
+
+/// Shell-view hwnd → filter. IncludeObject can run off the UI thread, so this is not the current window's array.
+pub(crate) static FILTER_VIEWS: Mutex<Vec<(isize, String)>> = Mutex::new(Vec::new());
+
+pub(crate) fn note_filter_view(h: HWND, spec: &str) {
+    if h.0.is_null() {
+        return;
+    }
+    if let Ok(mut m) = FILTER_VIEWS.lock() {
+        m.retain(|(k, _)| *k != h.0 as isize);
+        if !spec.is_empty() {
+            m.push((h.0 as isize, spec.to_string()));
+        }
+    }
+}
+
+pub(crate) fn clear_filter_view(h: HWND) {
+    if h.0.is_null() {
+        return;
+    }
+    if let Ok(mut m) = FILTER_VIEWS.lock() {
+        m.retain(|(k, _)| *k != h.0 as isize);
+    }
+}
+
+pub(crate) fn filter_for_view(h: HWND) -> Option<String> {
+    if h.0.is_null() {
+        return None;
+    }
+    FILTER_VIEWS.lock().ok().and_then(|m| m.iter().find(|(k, _)| *k == h.0 as isize).map(|(_, s)| s.clone()))
+}
+
+pub(crate) unsafe fn sync_filter_hwnds() {
+    for i in 0..MAXP {
+        let spec = filter_of(i);
+        if let Some(sv) = view_of::<IShellView>(i) {
+            if let Ok(h) = sv.GetWindow() {
+                note_filter_view(h, &spec);
+            }
+        }
+    }
+}
+
+pub(crate) fn window_count() -> usize {
+    app(|a| a.desks.len())
+}
+
+/// Point `app()` at desk `i`, keeping each window's live filter text with that window.
+pub(crate) fn bind_index(i: usize) {
+    app(|a| {
+        if a.desks.is_empty() || i >= a.desks.len() || i == a.cur {
+            return;
+        }
+        if let Ok(mut f) = FILTERS.lock() {
+            let prev = a.cur;
+            a.desks[prev].live_filters = f.clone();
+            *f = a.desks[i].live_filters.clone();
+        }
+        a.cur = i;
+    });
+}
+
+fn desk_owns(d: &Desk, h: HWND) -> bool {
+    if h.0.is_null() || d.main.0.is_null() {
+        return false;
+    }
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || d.bars.contains(&h) {
+        return true;
+    }
+    unsafe { IsChild(d.main, h).as_bool() }
+}
+
+/// Make the window that owns `h` current. A settings window is not a child and does not switch.
+pub(crate) fn bind_hwnd(h: HWND) -> bool {
+    if h.0.is_null() {
+        return false;
+    }
+    let found = app(|a| {
+        if a.desks.is_empty() {
+            return None;
+        }
+        if a.cur < a.desks.len() && desk_owns(&a.desks[a.cur], h) {
+            return Some(a.cur);
+        }
+        a.desks.iter().position(|d| desk_owns(d, h))
+    });
+    if let Some(i) = found {
+        bind_index(i);
+        true
+    } else {
+        false
+    }
+}
+
+/// Drop the current desk. Loads the neighbour's filters. Fonts and the view menu go back to the caller.
+pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HMENU) {
+    app(|a| {
+        if a.desks.is_empty() {
+            return (HFONT::default(), HFONT::default(), HFONT::default(), HMENU::default());
+        }
+        let i = a.cur.min(a.desks.len() - 1);
+        let d = a.desks.remove(i);
+        if a.desks.is_empty() {
+            a.cur = 0;
+        } else {
+            if a.cur >= a.desks.len() {
+                a.cur = a.desks.len() - 1;
+            }
+            if let Ok(mut f) = FILTERS.lock() {
+                *f = a.desks[a.cur].live_filters.clone();
+            }
+        }
+        (d.font, d.icon_font, d.small_font, d.view_menu)
+    })
+}
+
+pub(crate) unsafe fn release_desk_handles(font: HFONT, icon: HFONT, small: HFONT, menu: HMENU) {
+    for f in [font, icon, small] {
+        if !f.0.is_null() {
+            _ = DeleteObject(f.into());
+        }
+    }
+    if !menu.0.is_null() {
+        _ = DestroyMenu(menu);
+    }
+}
+
+fn copy_shared(dst: &mut Session, src: &Session) {
+    dst.accent = src.accent;
+    dst.accent_dark = src.accent_dark;
+    dst.dark = src.dark;
+    dst.theme = src.theme;
+    dst.font = src.font;
+    dst.bar = src.bar;
+    dst.stat = src.stat;
+    dst.view_new = src.view_new;
+    dst.start_new = src.start_new;
+    dst.start_path = src.start_path.clone();
+    dst.ext = src.ext;
+    dst.tree_on = src.tree_on;
+    dst.edge = src.edge;
+    dst.confirm = src.confirm;
+    dst.del = src.del;
+    dst.new_name = src.new_name.clone();
+    dst.dropm = src.dropm;
+    dst.boot = src.boot;
+    dst.boot_file = src.boot_file.clone();
+    dst.autosave = src.autosave;
+    dst.dot = src.dot;
+    dst.dblup = src.dblup;
+    dst.lang = src.lang;
+    dst.single = src.single;
+    dst.favs = src.favs.clone();
+    dst.recent = src.recent.clone();
+}
+
+/// Copy process-wide preferences from the current window onto the others.
+pub(crate) fn publish_shared() {
+    app(|a| {
+        if a.desks.len() < 2 || a.cur >= a.desks.len() {
+            return;
+        }
+        let src = a.desks[a.cur].s.clone();
+        for (k, d) in a.desks.iter_mut().enumerate() {
+            if k != a.cur {
+                copy_shared(&mut d.s, &src);
+            }
+        }
+    });
+}
+
+static ACROSS: AtomicBool = AtomicBool::new(false);
+
+struct AcrossGuard;
+impl Drop for AcrossGuard {
+    fn drop(&mut self) {
+        ACROSS.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Run `f` once per window, on that window. A nested call runs only for the window already current.
+pub(crate) unsafe fn across_windows(mut f: impl FnMut()) {
+    if ACROSS.swap(true, Ordering::Relaxed) {
+        f();
+        return;
+    }
+    let _guard = AcrossGuard;
+    let (n, cur) = app(|a| (a.desks.len(), a.cur));
+    for i in 0..n {
+        bind_index(i);
+        f();
+    }
+    if cur < app(|a| a.desks.len()) {
+        bind_index(cur);
+    }
 }
 
 pub(crate) fn app<R>(f: impl FnOnce(&mut App) -> R) -> R {
