@@ -203,7 +203,7 @@ Ctrl+H\tShow hidden files\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
-⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns\n\
+⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns; or copy / move the selected files to another pane's folder (up to 10,000)\n\
 Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
@@ -223,7 +223,7 @@ Ctrl+H\t숨김 파일 표시\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
-⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께\n\
+⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개)\n\
 저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
@@ -1257,15 +1257,47 @@ unsafe fn open_in(src: usize, dst: usize) {
 }
 
 unsafe fn open_in_menu(h: HWND, src: usize) {
+    // (pane, shown name, folder it held when the menu opened)
     let items = app(|a| {
         let live = a.panes.iter().enumerate().take(a.s.panes());
-        live.filter(|(k, _)| *k != src).filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone()))).collect::<Vec<_>>()
+        let live = live.filter(|(k, _)| *k != src);
+        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone()))).collect::<Vec<_>>()
     });
+    let arr = view_of::<IFolderView2>(src).and_then(|fv| fv.GetSelection(false).ok());
+    let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
+    let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    for (k, disp) in &items {
+    for (k, disp, _) in &items {
         _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+    }
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    match &picked {
+        Ok(srcs) => {
+            let n = srcs.len();
+            let titles = [
+                (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사").replace("{n}", &n.to_string())),
+                (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동").replace("{n}", &n.to_string())),
+            ];
+            for (mv, base, title) in titles {
+                let Ok(sub) = CreatePopupMenu() else { continue };
+                for (k, disp, path) in &items {
+                    let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
+                    let flags = if ok { MF_STRING } else { MF_STRING | MF_GRAYED };
+                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+                }
+                _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
+            }
+        }
+        Err(why) => {
+            let text = match why {
+                Pick::TooMany => tr("Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V", "복사·이동: 선택이 10,000개를 넘습니다 — Ctrl+C / Ctrl+V를 쓰세요"),
+                Pick::Unreadable => tr("Copy / move: some selected items aren't regular files", "복사·이동: 일반 파일이 아닌 항목이 섞여 있습니다"),
+                Pick::Empty => tr("Copy / move: select files first", "복사·이동: 먼저 파일을 고르세요"),
+            };
+            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(text));
+        }
     }
     let mut rc = RECT::default();
     if let Some(b) = pane_ctl(src, ID_OPEN_IN) {
@@ -1273,8 +1305,22 @@ unsafe fn open_in_menu(h: HWND, src: usize) {
     }
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, None, h, None).0;
     _ = DestroyMenu(menu);
-    if pick > 0 {
-        open_in(src, pick as usize - 1);
+    match (pick as usize, picked) {
+        (0, _) => {}
+        (p @ 1..=100, _) => open_in(src, p - 1),
+        (p, Ok(srcs)) => {
+            // only to the folder the menu showed, and only the whole selection it counted
+            let (mv, k) = (p > 200, (p - 1) % 100);
+            let shown = items.iter().find(|(i, ..)| *i == k).map(|(.., path)| path.clone());
+            let sent = shown.filter(|s| *s == app(|a| a.s.paths[k].clone())).and_then(|dst| {
+                let rename = send_mode(&srcs, &dst, mv)?;
+                Some(start_copy(srcs, dst, rename, mv))
+            });
+            if sent != Some(true) {
+                _ = MessageBeep(MB_ICONWARNING);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1739,7 +1785,7 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
         (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←)", "뒤로  (Alt+←)")),
         (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→)", "앞으로  (Alt+→)")),
         (ID_UP, tr("Parent folder", "상위 폴더"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)")),
-        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in another pane", "다른 패널에서 열기")),
+        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동")),
         (ID_FAV, tr("Favourite", "즐겨찾기"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)")),
     ];
     for (id, name, tip) in buttons {
@@ -2461,7 +2507,7 @@ unsafe fn update_status() {
     }
     let drive = path.get(1..2) == Some(":");
     if busy {
-        parts.push(tr("Copying…", "복사 중…").into());
+        parts.push(tr("Copying / moving…", "복사·이동 중…").into());
     } else if drive || path.starts_with(r"\\") {
         // ponytail: a dead network share can stall this call once per change
         let (mut free, mut total) = (0, 0);
@@ -3152,6 +3198,29 @@ fn paste_mode(srcs: &[String], dst: &str) -> Option<bool> {
     }
 }
 
+// The ⇄ menu's copy / move: like a paste, but a move into the folder the files already sit in is refused.
+fn send_mode(srcs: &[String], dst: &str, mv: bool) -> Option<bool> {
+    paste_mode(srcs, dst).filter(|&same| !(mv && same))
+}
+
+// The ⇄ menu sends a whole selection or nothing: never a partial list from a capped or unreadable read.
+const SEND_MAX: u32 = 10_000;
+
+#[derive(Debug, PartialEq)]
+enum Pick {
+    Empty,
+    TooMany,
+    Unreadable,
+}
+
+fn collect_all(n: u32, mut get: impl FnMut(u32) -> Option<String>) -> std::result::Result<Vec<String>, Pick> {
+    match n {
+        0 => Err(Pick::Empty),
+        n if n > SEND_MAX => Err(Pick::TooMany),
+        n => (0..n).map(|k| get(k).ok_or(Pick::Unreadable)).collect(),
+    }
+}
+
 // Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Grids stays usable.
 // Cut, links, virtual items and anything else stay with the shell.
 unsafe fn try_paste(a: usize) -> bool {
@@ -3179,13 +3248,19 @@ unsafe fn try_paste(a: usize) -> bool {
     _ = CloseClipboard();
     let copy = effect.is_none_or(|e| e & DROPEFFECT_MOVE.0 == 0 && e & DROPEFFECT_COPY.0 != 0);
     let Some(rename) = paste_mode(&srcs, &dst).filter(|_| copy) else { return false };
+    start_copy(srcs, dst, rename, false)
+}
+
+// Copies (or, with `mv`, moves) `srcs` into `dst` on a worker thread. False = the thread didn't start.
+unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> bool {
     let busy = Busy::new();
     let job = std::thread::Builder::new().spawn(move || {
         let _busy = busy;
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-        if let Err(e) = run_copy(&srcs, &dst, rename) {
+        if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
-                let text = HSTRING::from(format!("{}{}", tr("Copying failed: ", "복사하지 못했습니다: "), e.message()));
+                let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ") };
+                let text = HSTRING::from(format!("{what}{}", e.message()));
                 MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
             }
         }
@@ -3202,14 +3277,18 @@ unsafe fn try_paste(a: usize) -> bool {
 }
 
 // No owner window: the progress and conflict dialogs belong to the worker thread.
-unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool) -> Result<()> {
+unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result<()> {
     let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
     let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOFX_ADDUNDORECORD;
     op.SetOperationFlags(if rename { flags | FOF_RENAMEONCOLLISION } else { flags })?;
     let to: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(dst), None)?;
     for s in srcs {
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
-        op.CopyItem(&item, &to, PCWSTR::null(), None)?;
+        if mv {
+            op.MoveItem(&item, &to, PCWSTR::null(), None)?;
+        } else {
+            op.CopyItem(&item, &to, PCWSTR::null(), None)?;
+        }
     }
     op.PerformOperations()
 }
@@ -3836,6 +3915,28 @@ mod tests {
         assert_eq!(run(false, true), (1, false));
         assert_eq!(run(true, true), (0, false));
         assert_eq!(run(false, false), (1, true));
+
+        // ⇄ copy / move: a move into the same folder and mixed paths are refused
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"C:\x", false), Some(true));
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"C:\x", true), None);
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"D:\y", true), Some(false));
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt", r"D:\y\b.txt"]), r"D:\y", false), None);
+
+        // the whole selection or nothing
+        let mut calls = 0;
+        let all = collect_all(10_000, |k| {
+            calls += 1;
+            Some(k.to_string())
+        });
+        assert_eq!((all.map(|v| v.len()), calls), (Ok(10_000), 10_000));
+        let mut calls = 0;
+        let many = collect_all(10_001, |k| {
+            calls += 1;
+            Some(k.to_string())
+        });
+        assert_eq!((many, calls), (Err(Pick::TooMany), 0));
+        assert_eq!(collect_all(0, |_| Some(String::new())), Err(Pick::Empty));
+        assert_eq!(collect_all(5, |k| (k != 2).then(|| k.to_string())), Err(Pick::Unreadable));
     }
 
     #[test]
