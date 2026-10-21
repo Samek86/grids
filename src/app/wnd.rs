@@ -211,7 +211,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let handles = drop_current_desk();
                     save_session();
                     _ = DestroyWindow(h);
-                    release_desk_handles(handles.0, handles.1, handles.2, handles.3);
+                    release_desk_handles(handles.0, handles.1, handles.2, handles.3, handles.4);
                 }
             }
             WM_DESTROY => {
@@ -223,7 +223,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     destroy_every_pane();
                     app(|a| a.tree = None);
                     let handles = drop_current_desk();
-                    release_desk_handles(handles.0, handles.1, handles.2, handles.3);
+                    release_desk_handles(handles.0, handles.1, handles.2, handles.3, handles.4);
                 }
                 if window_count() == 0 {
                     PostQuitMessage(0);

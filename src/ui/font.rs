@@ -40,7 +40,7 @@ pub(crate) unsafe fn apply_font() {
     _ = GetTextMetricsW(dc, &mut tm);
     SelectObject(dc, old);
     ReleaseDC(None, dc);
-    let (old, old_icon, panes, edit) = app(|a| {
+    let (old, old_icon, old_bold, panes, edit) = app(|a| {
         a.fh = tm.tmHeight;
         let old_small = std::mem::replace(&mut a.small_font, small);
         if !old_small.is_invalid() {
@@ -48,11 +48,14 @@ pub(crate) unsafe fn apply_font() {
         }
         let old = std::mem::replace(&mut a.font, font);
         let old_icon = std::mem::replace(&mut a.icon_font, icon_font);
+        // Group labels clone this face on the next paint. Drop the previous one now so a DPI
+        // or font-scale change cannot keep a bold font at the old size.
+        let old_bold = std::mem::replace(&mut a.bold_font, HFONT::default());
         let mut panes: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
         for set in &a.park {
             panes.extend(set.iter().flatten().map(|p| p.hwnd));
         }
-        (old, old_icon, panes, a.tab_edit)
+        (old, old_icon, old_bold, panes, a.tab_edit)
     });
     if !edit.0.is_null() {
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
@@ -64,10 +67,45 @@ pub(crate) unsafe fn apply_font() {
             }
         }
     }
-    for f in [old, old_icon].into_iter().filter(|f| !f.is_invalid()) {
+    for f in [old, old_icon, old_bold].into_iter().filter(|f| !f.is_invalid()) {
         _ = DeleteObject(f.into());
     }
     relayout();
     redraw_all();
+}
+
+/// Bold copy of the window's UI font. Built once, the first time a group row is painted,
+/// and thrown away by `apply_font` (DPI, font scale) or when the window closes.
+pub(crate) unsafe fn bold_ui_font() -> HFONT {
+    let cached = app(|a| a.bold_font);
+    if !cached.is_invalid() {
+        return cached;
+    }
+    let base = app(|a| a.font);
+    if base.is_invalid() {
+        return base;
+    }
+    let mut lf = LOGFONTW::default();
+    let n = GetObjectW(base.into(), size_of::<LOGFONTW>() as i32, Some(&mut lf as *mut LOGFONTW as *mut _));
+    if n < size_of::<LOGFONTW>() as i32 {
+        return base;
+    }
+    lf.lfWeight = FW_BOLD.0 as i32;
+    let font = CreateFontIndirectW(&lf);
+    if font.is_invalid() {
+        return base;
+    }
+    let stored = app(|a| {
+        if a.bold_font.is_invalid() {
+            a.bold_font = font;
+            font
+        } else {
+            a.bold_font
+        }
+    });
+    if stored != font {
+        _ = DeleteObject(font.into());
+    }
+    stored
 }
 
