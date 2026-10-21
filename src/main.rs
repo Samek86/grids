@@ -191,7 +191,7 @@ fn glyph(id: i32) -> &'static str {
 }
 
 const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
-Ctrl+1 … Ctrl+9\tGo to pane 1–9 (numbered down each column, left to right)\n\
+Ctrl+1 … Ctrl+9\tGo to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes)\n\
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Alt+↓\tRecent folders (all panes, newest first)\n\
@@ -212,7 +212,7 @@ Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, they open in that window.";
 
 const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
-Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (열마다 위에서 아래, 왼쪽 열부터)\n\
+Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, 아주 좁은 패널에서는 생략)\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
@@ -650,6 +650,7 @@ fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
 
 // Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; the Explorer view below.
 struct PaneGeo {
+    num: RECT,      // pane number (Ctrl+N); zero width when the pane is too narrow
     btn: [RECT; 4], // back, forward, up, open-in
     addr: RECT,
     filt: RECT,
@@ -666,9 +667,14 @@ fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     let fw = s(150).min((w - 2 * pad - 5 * b) / 3).max(0);
     let filt = r(fav.left - s(2) - fw, fw);
     let open = r(filt.left - s(2) - b, b);
-    let addr_x = pad + 3 * b + s(4);
+    // pane number at the far left, only while the address edit (pill minus its s(8)/s(6) insets) keeps s(32)
+    let nw = s(18);
+    let nw = if open.left - s(4) - (pad + 3 * b + s(4) + nw) >= s(8) + s(6) + s(32) { nw } else { 0 };
+    let x = pad + nw;
+    let addr_x = x + 3 * b + s(4);
     PaneGeo {
-        btn: [r(pad, b), r(pad + b, b), r(pad + 2 * b, b), open],
+        num: r(pad, nw),
+        btn: [r(x, b), r(x + b, b), r(x + 2 * b, b), open],
         addr: r(addr_x, open.left - s(4) - addr_x),
         filt,
         fav,
@@ -2606,9 +2612,9 @@ unsafe fn paint_main(h: HWND) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, accent) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, accent) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
-        (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), i, a.dpi, a.icon_font, a.s.accent_now())
+        (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
     });
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
@@ -2626,6 +2632,9 @@ unsafe fn paint_pane(h: HWND) {
         } else {
             frame(dc, rc, 1, pal().line);
             fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, pal().line);
+        }
+        if let Some(i) = i.filter(|_| pg.num.right > pg.num.left) {
+            text(dc, pg.num, &(i + 1).to_string(), small_font, if active { ink } else { pal().sub }, DT_CENTER);
         }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
             fill(dc, p, pal().pill);
@@ -4078,13 +4087,32 @@ mod tests {
         assert_eq!(filter_spec(" pdf; *.TXT ;"), "*pdf*;*.TXT");
         assert_eq!((human(10), human(1536), human(5 << 30)), ("10 B".into(), "1.5 KB".into(), "5.0 GB".into()));
 
-        // pane top bar: back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
+        // pane top bar: number, back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
         for (w, dpi) in [(800, 96), (260, 96), (1200, 144)] {
             let p = pane_geo(w, 500, dpi);
-            let row = [p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
+            let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
-            assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom);
+            assert!(p.num.right > p.num.left && p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
+        // the number only shows while the address edit keeps s(32); otherwise the bar is laid out as before
+        for dpi in [96, 144] {
+            let s = |v: i32| v * dpi / 96;
+            for w in 60..=600 {
+                let p = pane_geo(w, 500, dpi);
+                if p.num.right > p.num.left {
+                    let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
+                    assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
+                    assert!((p.addr.right - s(6)) - (p.addr.left + s(8)) >= s(32), "{w}@{dpi}");
+                } else {
+                    assert!(p.btn[0].left == s(4) && p.addr.left == s(4) + 3 * s(24) + s(4), "{w}@{dpi}");
+                }
+            }
+        }
+        let shown = |w, dpi| {
+            let p = pane_geo(w, 500, dpi);
+            p.num.right > p.num.left
+        };
+        assert!(!shown(240, 96) && shown(241, 96) && !shown(361, 144) && shown(362, 144));
     }
 
     #[test]
