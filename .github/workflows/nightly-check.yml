@@ -61,3 +61,56 @@ jobs:
           path: screen.png
           if-no-files-found: ignore
           retention-days: 3
+  # Behaviour checks. Informational: a failure here does not fail the run; the loop shows the
+  # BEHAVIOR lines to the reviewer, who rejects a change only if it breaks what the change was for.
+  behavior:
+    needs: build
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: grids-exe
+      - name: Double-click empty space goes to the parent folder
+        shell: pwsh
+        run: |
+          Add-Type @"
+          using System; using System.Runtime.InteropServices;
+          public static class U {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+          }
+          "@
+          function Click { [U]::mouse_event(2, 0, 0, 0, [IntPtr]::Zero); [U]::mouse_event(4, 0, 0, 0, [IntPtr]::Zero) }
+          $p = Start-Process -FilePath .\grids.exe -ArgumentList 'C:\Users\Public','C:\Windows' -PassThru
+          Start-Sleep -Seconds 10
+          $p.Refresh(); $h = $p.MainWindowHandle
+          [void][U]::ShowWindow($h, 3); [void][U]::SetForegroundWindow($h); Start-Sleep -Seconds 2
+          $r = New-Object U+RECT; [void][U]::GetWindowRect($h, [ref]$r)
+          # first pane's file list, below the few items of C:\Users\Public
+          $x = [int]($r.L + 0.40 * ($r.R - $r.L)); $y = [int]($r.T + 0.47 * ($r.B - $r.T))
+          [void][U]::SetCursorPos($x, $y); Start-Sleep -Milliseconds 300
+          Click; Start-Sleep -Seconds 1
+          $p.Refresh(); $before = $p.MainWindowTitle
+          Click; Start-Sleep -Milliseconds 80; Click
+          Start-Sleep -Seconds 3
+          $p.Refresh(); $after = $p.MainWindowTitle
+          $ok = $after -like 'Users*'
+          "BEHAVIOR dblup_empty_goes_up: $(if ($ok) { 'PASS' } else { 'FAIL' }) (at $x,$y; title before '$before', after '$after')"
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\behavior.png")
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: behavior
+          path: behavior.png
+          if-no-files-found: ignore
+          retention-days: 3
