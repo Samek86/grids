@@ -2357,6 +2357,10 @@ unsafe fn update_status() {
     if app(|a| a.status_key == key) {
         return;
     }
+    let title = window_title(&app(|a| a.panes[i].as_ref().map(|p| p.disp.clone()).unwrap_or_default()));
+    if text_of(main) != title {
+        _ = SetWindowTextW(main, &HSTRING::from(title));
+    }
     let ko = KO.load(Ordering::Relaxed);
     let mut parts = vec![if ko { format!("항목 {n}개") } else { format!("{n} items") }];
     if sel > 0 {
@@ -2661,6 +2665,11 @@ fn short_name(path: &str) -> String {
     }
     let t = path.trim_end_matches('\\');
     t.rsplit('\\').next().filter(|x| !x.starts_with("::")).unwrap_or(t).to_string()
+}
+
+// Title bar, taskbar and Alt+Tab follow the active pane's folder.
+fn window_title(disp: &str) -> String {
+    if disp.is_empty() { "Grids".into() } else { format!("{} - Grids", short_name(disp)) }
 }
 
 fn ago(t: std::time::SystemTime) -> String {
@@ -3649,6 +3658,8 @@ mod tests {
         cur.paths[0] = r"C:\b".into();
         assert!(layout_differs(&cur, &base));
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
+        let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
+        assert_eq!(titles, ["Downloads - Grids", "Grids", "C: - Grids"]);
     }
 
     #[test]
