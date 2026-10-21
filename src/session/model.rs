@@ -128,7 +128,8 @@ pub(crate) struct Session {
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
     pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
-    pub(crate) favs: Vec<String>,      // favourite folders (parsing names), app-wide
+    pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
+    pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
     pub(crate) recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
     pub(crate) lang: Lang,             // UI language preference; Auto follows Windows
     pub(crate) single: bool,           // a second launch opens a new window in this process
@@ -173,6 +174,7 @@ impl Default for Session {
             dblup: true,
             file: String::new(),
             favs: Vec::new(),
+            tree: Vec::new(),
             recent: Vec::new(),
             lang: Lang::Auto,
             single: true,
@@ -220,6 +222,7 @@ impl PartialEq for Session {
             && self.dblup == o.dblup
             && self.file == o.file
             && self.favs == o.favs
+            && self.tree == o.tree
             && self.recent == o.recent
             && self.lang == o.lang
             && self.single == o.single
@@ -464,6 +467,7 @@ impl Session {
         } else {
             s.publish();
         }
+        s.tree = super::tree_from_flat(&s.favs);
         s
     }
 
@@ -520,7 +524,8 @@ impl Session {
     }
 
     pub(crate) fn is_fav(&self, path: &str) -> bool {
-        !path.is_empty() && self.favs.iter().any(|f| fav_path(f).eq_ignore_ascii_case(path))
+        !path.is_empty()
+            && (super::contains_path(&self.tree, path) || self.favs.iter().any(|f| fav_path(f).eq_ignore_ascii_case(path)))
     }
 
     pub(crate) fn default_view(&self) -> (i32, i32) {
@@ -538,6 +543,7 @@ impl Session {
         c.win = None;
         c.file.clear();
         c.favs.clear();
+        c.tree.clear();
         c.recent.clear();
         c.to_ini()
     }

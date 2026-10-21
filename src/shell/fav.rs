@@ -17,38 +17,95 @@ pub(crate) unsafe fn repaint_fav_buttons() {
 }
 
 pub(crate) unsafe fn set_favs(paths: &[String], add: bool) {
-    if paths.is_empty() {
+    let items: Vec<(String, bool)> = paths.iter().cloned().map(|p| (p, false)).collect();
+    set_entries(&items, add);
+}
+
+/// Add or remove folders and files. Files are marked so a double-click opens them.
+pub(crate) unsafe fn set_entries(items: &[(String, bool)], add: bool) {
+    if items.is_empty() {
         return;
     }
     app(|a| {
-        for path in paths {
-            if path.is_empty() {
-                continue;
-            }
-            let on = a.s.is_fav(path);
-            if add && !on {
-                a.s.favs.push(path.clone());
-            } else if !add && on {
-                a.s.favs.retain(|f| !fav_path(f).eq_ignore_ascii_case(path));
+        a.s.ensure_fav_tree();
+        for (path, file) in items {
+            if add {
+                add_item(&mut a.s.tree, path, *file);
+            } else {
+                remove_path(&mut a.s.tree, path);
             }
         }
-    });
-    publish_shared();
-    repaint_fav_buttons();
-    // The Ctrl+B list reads the same favs. Resize it if it is already open.
-    let (pop, dpi, n) = app(|a| {
+        a.s.sync_favs();
         a.fav_hot = None;
-        (a.fav_popup, a.dpi, a.s.favs.len())
     });
-    if !pop.0.is_null() && unsafe { IsWindow(Some(pop)).as_bool() } {
-        let g = fav_geo(n, dpi);
-        unsafe {
-            _ = SetWindowPos(pop, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-            _ = InvalidateRect(Some(pop), None, false);
-        }
+    favs_changed();
+}
+
+/// The tree changed. Every window, the Ctrl+B list, and the settings page read it.
+pub(crate) unsafe fn favs_changed() {
+    publish_shared();
+    let (pop, dpi, n) = app(|a| (a.fav_popup, a.dpi, visible_rows(&a.s.tree).len()));
+    if !pop.0.is_null() && IsWindow(Some(pop)).as_bool() {
+        let g = fav_geo(n.max(1), dpi);
+        _ = SetWindowPos(pop, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        _ = InvalidateRect(Some(pop), None, false);
     }
     settings::refresh();
-    across_windows(|| repaint_fav_buttons());
+    across_windows(|| {
+        repaint_fav_buttons();
+        let h = app(|a| a.side_hwnd);
+        if !h.0.is_null() {
+            _ = InvalidateRect(Some(h), None, false);
+        }
+    });
+    note_save();
+}
+
+pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
+    if path.is_empty() {
+        return;
+    }
+    if file {
+        if shell_open(path) {
+            return;
+        }
+        if let Some(parent) = parent_of(path) {
+            let i = active_pane();
+            navigate(i, &parent);
+            focus_view(i);
+        } else {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+        return;
+    }
+    let i = active_pane();
+    if !navigate(i, path) {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    focus_view(i);
+}
+
+fn shell_open(path: &str) -> bool {
+    unsafe {
+        // A value above 32 is success. Smaller values are the old error codes.
+        let h = ShellExecuteW(None, w!("open"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        h.0 as isize > 32
+    }
+}
+
+/// Parent folder of a file path. `C:\a\b.txt` → `C:\a`, `C:\b.txt` → `C:\`.
+pub(crate) fn parent_of(path: &str) -> Option<String> {
+    let t = path.trim_end_matches(['\\', '/']);
+    let i = t.rfind(['\\', '/'])?;
+    let parent = &t[..i];
+    if parent.is_empty() {
+        return None;
+    }
+    if parent.ends_with(':') {
+        Some(format!("{parent}\\"))
+    } else {
+        Some(parent.to_string())
+    }
 }
 
 pub(crate) unsafe fn toggle_fav(i: usize) {
@@ -285,19 +342,19 @@ pub(crate) unsafe fn selection_pidls(i: usize) -> Vec<*mut ITEMIDLIST> {
     out
 }
 
-pub(crate) unsafe fn selected_folders(i: usize) -> Vec<String> {
+/// Selected folders and files. The bool is true for a file.
+pub(crate) unsafe fn selected_items(i: usize) -> Vec<(String, bool)> {
     let Some(fv) = view_of::<IFolderView2>(i) else { return Vec::new() };
     let Ok(arr) = fv.GetSelection(false) else { return Vec::new() };
     let n = arr.GetCount().unwrap_or(0).min(500);
     let mut out = Vec::new();
     for k in 0..n {
         let Ok(it) = arr.GetItemAt(k) else { continue };
-        if it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0) {
-            if let Ok(p) = it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
-                let p = pwstr(p);
-                if !p.is_empty() {
-                    out.push(p);
-                }
+        let file = !it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
+        if let Ok(p) = it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+            let p = pwstr(p);
+            if !p.is_empty() {
+                out.push((p, file));
             }
         }
     }
@@ -338,7 +395,8 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         return false;
     }
     select_clicked(i, pt);
-    let folders = selected_folders(i);
+    let items = selected_items(i);
+    let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let pidls = selection_pidls(i);
     let refs: Vec<*const ITEMIDLIST> = pidls.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
     let cm = if refs.is_empty() {
@@ -365,9 +423,9 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         _ = DestroyMenu(menu);
         return false;
     }
-    if !folders.is_empty() {
+    if !paths.is_empty() {
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
-        insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&folders));
+        insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&paths));
     }
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
@@ -376,8 +434,8 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, owner, None).0;
     MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
     if cmd == ID_CTX_FAV as i32 {
-        let remove = app(|a| folders.iter().all(|p| a.s.is_fav(p)));
-        set_favs(&folders, !remove);
+        let remove = app(|a| paths.iter().all(|p| a.s.is_fav(p)));
+        set_entries(&items, !remove);
     } else if cmd > 0 {
         let mut ici = CMINVOKECOMMANDINFO {
             cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
@@ -562,8 +620,18 @@ pub(crate) fn fav_geo(n: usize, dpi: i32) -> FavGeo {
     FavGeo { w, h: 2 * pad + n.max(1) as i32 * rh, rows }
 }
 
+fn fav_rows() -> Vec<FavRow> {
+    app(|a| {
+        a.s.ensure_fav_tree();
+        visible_rows(&a.s.tree)
+    })
+}
+
 pub(crate) unsafe fn open_favs() {
-    let (main, dpi, open, closed, n) = app(|a| (a.main, a.dpi, a.fav_popup, a.fav_closed, a.s.favs.len()));
+    let (main, dpi, open, closed, n) = app(|a| {
+        a.s.ensure_fav_tree();
+        (a.main, a.dpi, a.fav_popup, a.fav_closed, visible_rows(&a.s.tree).len())
+    });
     // a click on the button first deactivates (closes) the popup; don't reopen it right away
     if !open.0.is_null() || closed.is_some_and(|t| t.elapsed().as_millis() < 300) {
         return;
@@ -586,26 +654,37 @@ pub(crate) unsafe fn open_favs() {
 }
 
 pub(crate) unsafe fn paint_favs(h: HWND) {
-    let (favs, hot, dpi, font, small, icon_font) = app(|a| (a.s.favs.clone(), a.fav_hot, a.dpi, a.font, a.small_font, a.icon_font));
-    let g = fav_geo(favs.len(), dpi);
+    let (rows, hot, dpi, font, small, icon_font) = app(|a| {
+        a.s.ensure_fav_tree();
+        (visible_rows(&a.s.tree), a.fav_hot, a.dpi, a.font, a.small_font, a.icon_font)
+    });
+    let g = fav_geo(rows.len(), dpi);
     let s = |v: i32| v * dpi / 96;
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().card);
         frame(dc, rc, 1, pal().line);
-        if favs.is_empty() {
+        if rows.is_empty() {
             text(dc, rc, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", "お気に入りはまだありません · ペインヘッダーの ☆+ で追加"), font, pal().sub, DT_CENTER);
         }
-        for (k, (f, (row, remove))) in favs.iter().zip(&g.rows).enumerate() {
+        for (k, (f, (row, remove))) in rows.iter().zip(&g.rows).enumerate() {
             if hot.is_some_and(|(i, _)| i == k) {
                 fill(dc, *row, pal().pill);
                 let x_on = hot == Some((k, true));
                 text(dc, *remove, "\u{E711}", icon_font, if x_on { pal().text } else { pal().sub }, DT_CENTER);
             }
-            let icon = RECT { left: row.left + s(6), right: row.left + s(28), ..*row };
-            text(dc, icon, "\u{E8B7}", icon_font, pal().sub, DT_CENTER);
+            let indent = s(14) * f.depth.min(6) as i32;
+            let icon = RECT { left: row.left + s(6) + indent, right: row.left + s(28) + indent, ..*row };
+            let glyph = if f.file { "\u{E8A5}" } else { "\u{E8B7}" };
+            text(dc, icon, glyph, icon_font, pal().sub, DT_CENTER);
             let line = |top: i32, hgt: i32| RECT { left: icon.right + s(6), right: remove.left - s(4), top, bottom: top + hgt };
-            text(dc, line(row.top + s(3), s(19)), &fav_label(f), font, pal().text, DT_LEFT);
-            text(dc, line(row.top + s(21), s(16)), fav_path(f), small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
+            let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
+            text(dc, line(row.top + s(3), s(19)), &label, font, pal().text, DT_LEFT);
+            let sub = if f.group {
+                tr("Group", "그룹", "グループ")
+            } else {
+                f.path.as_str()
+            };
+            text(dc, line(row.top + s(21), s(16)), sub, small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
         }
     });
 }
@@ -618,7 +697,7 @@ pub(crate) fn fav_hit(g: &FavGeo, x: i32, y: i32) -> Option<(usize, bool)> {
 pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
-        let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
+        let g = fav_geo(fav_rows().len(), app(|a| a.dpi));
         match msg {
             WM_PAINT => paint_favs(h),
             WM_ERASEBKGND => return LRESULT(1),
@@ -632,25 +711,28 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             WM_LBUTTONUP | WM_KEYDOWN => {
                 // ✕ / Del: drop it and shrink the list in place
                 let remove = |k: usize| {
-                    app(|a| {
-                        if k < a.s.favs.len() {
-                            a.s.favs.remove(k);
-                        }
-                        a.fav_hot = None;
-                    });
-                    let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
-                    _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                    _ = InvalidateRect(Some(h), None, false);
-                    repaint_fav_buttons();
-                    settings::refresh();
+                    let id = fav_rows().get(k).map(|r| r.id.clone());
+                    if let Some(id) = id {
+                        app(|a| {
+                            delete_at(&mut a.s.tree, &id);
+                            a.s.sync_favs();
+                            a.fav_hot = None;
+                        });
+                        favs_changed();
+                    }
                 };
                 let open = |k: usize| {
-                    let (i, path) = app(|a| (a.s.active, fav_path(&a.s.favs[k]).to_string()));
-                    _ = DestroyWindow(h);
-                    if !navigate(i, &path) {
-                        _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+                    let row = fav_rows().get(k).cloned();
+                    let Some(row) = row else { return };
+                    if row.group {
+                        app(|a| {
+                            toggle_open(&mut a.s.tree, &row.id);
+                        });
+                        favs_changed();
+                        return;
                     }
-                    focus_view(i);
+                    _ = DestroyWindow(h);
+                    open_fav_target(&row.path, row.file);
                 };
                 if msg == WM_LBUTTONUP {
                     let (x, y) = xy(lp);
@@ -661,7 +743,7 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     }
                     return LRESULT(0);
                 }
-                let (n, cur) = app(|a| (a.s.favs.len(), a.fav_hot.map(|(k, _)| k)));
+                let (n, cur) = (fav_rows().len(), app(|a| a.fav_hot.map(|(k, _)| k)));
                 match VIRTUAL_KEY(wp.0 as u16) {
                     VK_ESCAPE => {
                         let (main, prev, active) = app(|a| (a.main, a.fav_prev, a.s.active));
@@ -742,6 +824,18 @@ pub(crate) unsafe fn select_new_folder(i: usize, name: &str) -> bool {
         || sv.SelectItem(pidl, (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32).is_ok();
     CoTaskMemFree(Some(pidl as _));
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parent_of;
+
+    #[test]
+    fn parent_of_a_file_keeps_the_drive_root() {
+        assert_eq!(parent_of(r"C:\a\note.txt").as_deref(), Some(r"C:\a"));
+        assert_eq!(parent_of(r"C:\note.txt").as_deref(), Some(r"C:\"));
+        assert_eq!(parent_of("note.txt"), None);
+    }
 }
 
 pub(crate) unsafe fn popup_menu(menu: HMENU, id: i32) {

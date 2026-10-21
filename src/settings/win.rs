@@ -825,21 +825,14 @@ fn flip(id: u8) {
 }
 
 unsafe fn delete_fav(k: usize) {
-    let (pop, dpi, n) = app(|a| {
-        if k < a.s.favs.len() {
-            a.s.favs.remove(k);
-        }
+    app(|a| {
+        a.s.ensure_fav_tree();
+        crate::remove_leaf(&mut a.s.tree, k);
+        a.s.sync_favs();
         a.fav_hot = None;
-        (a.fav_popup, a.dpi, a.s.favs.len())
     });
-    if !pop.0.is_null() && IsWindow(Some(pop)).as_bool() {
-        let g = crate::fav_geo(n, dpi);
-        let _ = SetWindowPos(pop, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        let _ = InvalidateRect(Some(pop), None, false);
-    }
-    crate::repaint_fav_buttons();
+    crate::favs_changed();
     crate::save_session();
-    refresh();
 }
 
 unsafe fn on_command(h: HWND, id: i32, code: u32) {
@@ -1048,14 +1041,12 @@ unsafe fn rename_fav(h: HWND, k: usize) {
         return;
     }
     app(|a| {
-        if let Some(f) = a.s.favs.get_mut(k) {
-            let path = crate::fav_path(f).to_string();
-            *f = format!("{path}\t{name}");
-        }
+        a.s.ensure_fav_tree();
+        crate::rename_leaf(&mut a.s.tree, k, &name);
+        a.s.sync_favs();
     });
+    crate::favs_changed();
     crate::save_session();
-    crate::repaint_fav_buttons();
-    refresh();
 }
 
 unsafe fn reset_keys(h: HWND) {
@@ -1280,9 +1271,9 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     });
                     if let Some(to) = to.filter(|to| *to != from) {
                         app(|a| {
-                            if from < a.s.favs.len() && to < a.s.favs.len() {
-                                let item = a.s.favs.remove(from);
-                                a.s.favs.insert(to, item);
+                            a.s.ensure_fav_tree();
+                            if crate::reorder_leaves(&mut a.s.tree, from, to) {
+                                a.s.sync_favs();
                             }
                         });
                         ST.with(|s| s.borrow_mut().fav_drag = Some(to));
@@ -1332,8 +1323,8 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     let _ = ReleaseCapture();
                 }
                 if fav.is_some() {
+                    crate::favs_changed();
                     crate::save_session();
-                    crate::repaint_fav_buttons();
                 }
             }
             WM_MOUSEWHEEL => {
