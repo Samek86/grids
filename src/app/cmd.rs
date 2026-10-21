@@ -118,6 +118,14 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return true;
     }
+    if m.hwnd == app(|a| a.side_edit) && !app(|a| a.side_edit_at.is_empty()) {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN => end_side_rename(true),
+            VK_ESCAPE => end_side_rename(false),
+            _ => return false,
+        }
+        return true;
+    }
     if let Some(i) = pane_of(m.hwnd) {
         set_active(i);
     }

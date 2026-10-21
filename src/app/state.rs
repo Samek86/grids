@@ -31,7 +31,13 @@ pub(crate) struct Desk {
     pub(crate) side_hwnd: HWND, // favourites list in the left panel
     pub(crate) act_hot: Option<u8>,
     pub(crate) side_hot: Option<usize>,
+    pub(crate) side_sel: Option<usize>,
     pub(crate) side_scroll: i32,
+    pub(crate) side_drag: Option<Vec<usize>>, // node being dragged
+    pub(crate) side_drop: Option<(usize, u8)>, // visible row, drop zone
+    pub(crate) side_press: Option<(i32, i32, usize)>,
+    pub(crate) side_edit: HWND,
+    pub(crate) side_edit_at: Vec<usize>,
     pub(crate) tree_input: bool, // a click/key reached the tree since its last selection change
     pub(crate) font: HFONT,
     pub(crate) icon_font: HFONT,
@@ -115,7 +121,13 @@ pub(crate) fn blank_desk() -> Desk {
         side_hwnd: HWND::default(),
         act_hot: None,
         side_hot: None,
+        side_sel: None,
         side_scroll: 0,
+        side_drag: None,
+        side_drop: None,
+        side_press: None,
+        side_edit: HWND::default(),
+        side_edit_at: Vec::new(),
         tree_input: false,
         font: HFONT::default(),
         icon_font: HFONT::default(),
@@ -360,6 +372,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.lang = src.lang;
     dst.single = src.single;
     dst.favs = src.favs.clone();
+    dst.tree = src.tree.clone();
     dst.recent = src.recent.clone();
 }
 
