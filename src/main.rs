@@ -6,6 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, Once};
 use std::time::Instant;
@@ -83,8 +84,13 @@ const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
 const TIMER_REVEAL: usize = 3;
 const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
-const TIMER_NEWF: usize = 5; // on a pane: select and rename a folder just created
-const TIMER_NEWFILE: usize = 6; // on a pane: select and rename a file just created
+const TIMER_SAVE: usize = 5; // debounced grids.json write
+const SAVE_SOON_MS: u32 = 1500;
+const SAVE_LATEST_MS: u128 = 30_000;
+/// Hidden tabs that still hold Explorer windows. Older hidden tabs keep only their saved grid.
+const PARK_CACHE: usize = 1;
+const TIMER_NEWF: usize = 6; // on a pane: select and rename a folder just created
+const TIMER_NEWFILE: usize = 7; // on a pane: select and rename a file just created
 // tree-view messages (the sidebar's SysTreeView32)
 const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_ENSUREVISIBLE: u32 = 0x1114;
@@ -248,6 +254,22 @@ fn on_color(bg: u32) -> u32 {
 // Segoe Fluent Icons / MDL2 Assets code points
 const ICON_SEARCH: &str = "\u{E721}";
 const ICON_FILTER: &str = "\u{E71C}";
+const ICON_LOCK: &str = "\u{E72E}";
+const ICON_CLOSE: &str = "\u{E711}";
+const ICON_PLUS: &str = "\u{E710}";
+/// Tab stripe colours, 0xRRGGBB. Chosen so a thin bar and a light tint read on both themes.
+const TAB_COLORS: [(u32, &str, &str, &str); 8] = [
+    (0xE15A4A, "Red", "빨강", "赤"),
+    (0xE8943A, "Orange", "주황", "オレンジ"),
+    (0xC49212, "Yellow", "노랑", "黄"),
+    (0x3EAE6E, "Green", "초록", "緑"),
+    (0x2A9D9A, "Teal", "청록", "ティール"),
+    (0x3D7EE0, "Blue", "파랑", "青"),
+    (0x8A5CD0, "Purple", "보라", "紫"),
+    (0xD45A8C, "Pink", "분홍", "ピンク"),
+];
+const CLOSED_KEEP: usize = 10;
+const ID_TAB_EDIT: i32 = 208;
 
 fn glyph(id: i32) -> &'static str {
     match id {
@@ -266,7 +288,11 @@ fn glyph(id: i32) -> &'static str {
     }
 }
 
-const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
+const KEYS_EN: &str = "Ctrl+T\tNew tab\n\
+Ctrl+W\tClose the tab (a locked tab stays)\n\
+Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous tab\n\
+Ctrl+Shift+T\tReopen the last closed tab\n\
+Ctrl+PageDown / Ctrl+PageUp\tNext / previous pane\n\
 Ctrl+1 … Ctrl+9\tGo to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes)\n\
 Alt+Shift+← / → / ↑ / ↓\tPane to the left / right / above / below\n\
 Alt+← / Alt+→\tBack / forward\n\
@@ -292,7 +318,11 @@ Double-click a splitter: split evenly\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, they open in that window.";
 
-const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
+const KEYS_KO: &str = "Ctrl+T\t새 탭\n\
+Ctrl+W\t탭 닫기 (잠긴 탭은 그대로)\n\
+Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 탭\n\
+Ctrl+Shift+T\t마지막으로 닫은 탭 다시 열기\n\
+Ctrl+PageDown / Ctrl+PageUp\t다음 / 이전 패널\n\
 Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, 아주 좁은 패널에서는 생략)\n\
 Alt+Shift+← / → / ↑ / ↓\t왼쪽·오른쪽·위·아래 패널로 이동\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
@@ -318,7 +348,11 @@ F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
 이미 실행 중이면 그 창에서 엽니다.";
 
-const KEYS_JA: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t次 / 前のペイン\n\
+const KEYS_JA: &str = "Ctrl+T\t新しいタブ\n\
+Ctrl+W\tタブを閉じる（ロックしたタブはそのまま）\n\
+Ctrl+Tab / Ctrl+Shift+Tab\t次 / 前のタブ\n\
+Ctrl+Shift+T\t最後に閉じたタブを開き直す\n\
+Ctrl+PageDown / Ctrl+PageUp\t次 / 前のペイン\n\
 Ctrl+1 … Ctrl+9\tペイン 1〜9 へ移動（各ペインヘッダー左の番号。非常に狭いペインでは非表示）\n\
 Alt+Shift+← / → / ↑ / ↓\t左 / 右 / 上 / 下のペイン\n\
 Alt+← / Alt+→\t戻る / 進む\n\
@@ -346,7 +380,114 @@ F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n\
 
 // ---------- session (settings live in grids.json; named sessions stay .grids files in the ini shape) ----------
 
-#[derive(Debug, PartialEq, Clone)]
+/// One tab: a whole pane grid (layout, folders, view, columns, filter). The active tab's grid
+/// also lives on the session fields the rest of the window already reads.
+#[derive(Debug, Clone, PartialEq)]
+struct Tab {
+    name: String,
+    locked: bool,
+    /// Stripe colour 0xRRGGBB. None draws the tab in the theme colours.
+    color: Option<u32>,
+    heights: Vec<usize>,
+    colr: Vec<f64>,
+    rowr: Vec<Vec<f64>>,
+    active: usize,
+    paths: Vec<String>,
+    views: Vec<(i32, i32)>,
+    cols: Vec<String>,
+    filters: Vec<String>,
+}
+
+fn pad_filters(mut f: Vec<String>) -> Vec<String> {
+    f.resize(MAXP, String::new());
+    f.truncate(MAXP);
+    f
+}
+
+impl Tab {
+    fn from_live(s: &Session, name: String, locked: bool, filters: Vec<String>) -> Self {
+        Tab {
+            name,
+            locked,
+            color: None,
+            heights: s.heights.clone(),
+            colr: s.colr.clone(),
+            rowr: s.rowr.clone(),
+            active: s.active,
+            paths: s.paths.clone(),
+            views: s.views.clone(),
+            cols: s.cols.clone(),
+            filters: pad_filters(filters),
+        }
+    }
+}
+
+/// The next default name: 1, then 2, skipping numbers already used.
+fn next_tab_name(tabs: &[Tab]) -> String {
+    let mut n = 1u32;
+    loop {
+        let s = n.to_string();
+        if !tabs.iter().any(|t| t.name == s) {
+            return s;
+        }
+        n += 1;
+        if n > 10_000 {
+            return s;
+        }
+    }
+}
+
+/// A copied tab keeps a numbered name as the next free number, and any other name as "Name (2)".
+fn duplicate_name(tabs: &[Tab], src: &str) -> String {
+    if !src.is_empty() && src.chars().all(|c| c.is_ascii_digit()) {
+        return next_tab_name(tabs);
+    }
+    let mut n = 2u32;
+    loop {
+        let s = format!("{src} ({n})");
+        if !tabs.iter().any(|t| t.name == s) {
+            return s;
+        }
+        n += 1;
+        if n > 1000 {
+            return s;
+        }
+    }
+}
+
+/// A locked tab, and the last remaining tab, stay open.
+fn can_close_tab(tabs: &[Tab], i: usize) -> bool {
+    tabs.len() > 1 && tabs.get(i).is_some_and(|t| !t.locked)
+}
+
+/// Indexes closed by "close other tabs": every unlocked tab except `keep`, low to high.
+fn close_other_indexes(tabs: &[Tab], keep: usize) -> Vec<usize> {
+    tabs.iter().enumerate().filter(|(i, t)| *i != keep && !t.locked).map(|(i, _)| i).collect()
+}
+
+fn reorder_vec<T>(v: &mut Vec<T>, from: usize, to: usize) {
+    if from == to || from >= v.len() || to >= v.len() {
+        return;
+    }
+    let item = v.remove(from);
+    v.insert(to, item);
+}
+
+/// Where the active index lands after a tab moves from `from` to `to`.
+fn moved_active(active: usize, from: usize, to: usize) -> usize {
+    if active == from {
+        return to;
+    }
+    if from < active && to >= active {
+        active - 1
+    } else if from > active && to <= active {
+        active + 1
+    } else {
+        active
+    }
+}
+
+#[derive(Debug, Clone)]
 struct Session {
     win: Option<[i32; 5]>, // normal rect l,t,r,b + maximized flag
     side: i32,             // sidebar width in px
@@ -384,11 +525,13 @@ struct Session {
     boot_file: String,
     autosave: bool,         // write the named session on exit
     dot: bool,              // green unsaved mark on the save button
+    tabs: Vec<Tab>,         // every tab's grid; the active one's grid is also the fields above
+    tab: usize,             // which tab is on screen
 }
 
 impl Default for Session {
     fn default() -> Self {
-        Session {
+        let mut s = Session {
             win: None,
             side: 0,
             heights: vec![2, 2],
@@ -425,7 +568,54 @@ impl Default for Session {
             boot_file: String::new(),
             autosave: false,
             dot: true,
-        }
+            tabs: Vec::new(),
+            tab: 0,
+        };
+        s.anchor();
+        s
+    }
+}
+
+impl PartialEq for Session {
+    fn eq(&self, o: &Self) -> bool {
+        self.win == o.win
+            && self.side == o.side
+            && self.heights == o.heights
+            && self.colr == o.colr
+            && self.rowr == o.rowr
+            && self.active == o.active
+            && self.paths == o.paths
+            && self.views == o.views
+            && self.accent == o.accent
+            && self.accent_dark == o.accent_dark
+            && self.dark == o.dark
+            && self.dblup == o.dblup
+            && self.file == o.file
+            && self.favs == o.favs
+            && self.recent == o.recent
+            && self.lang == o.lang
+            && self.single == o.single
+            && self.cols == o.cols
+            && self.theme == o.theme
+            && self.font == o.font
+            && self.bar == o.bar
+            && self.stat == o.stat
+            && self.view_new == o.view_new
+            && self.start_new == o.start_new
+            && self.start_path == o.start_path
+            && self.ext == o.ext
+            && self.tree_on == o.tree_on
+            && self.edge == o.edge
+            && self.confirm == o.confirm
+            && self.del == o.del
+            && self.new_name == o.new_name
+            && self.dropm == o.dropm
+            && self.boot == o.boot
+            && self.boot_file == o.boot_file
+            && self.autosave == o.autosave
+            && self.dot == o.dot
+            && self.tab == o.tab
+            && self.view_tabs() == o.view_tabs()
     }
 }
 
@@ -471,6 +661,59 @@ fn layout_label(h: &[usize]) -> String {
 }
 
 impl Session {
+    /// Tabs as saved: the active tab's grid is the live fields, its name and lock stay.
+    fn view_tabs(&self) -> Vec<Tab> {
+        let mut tabs = if self.tabs.is_empty() {
+            vec![Tab::from_live(self, "1".into(), false, vec![String::new(); MAXP])]
+        } else {
+            self.tabs.clone()
+        };
+        let i = self.tab.min(tabs.len() - 1);
+        let name = tabs[i].name.clone();
+        let locked = tabs[i].locked;
+        let color = tabs[i].color;
+        let filters = tabs[i].filters.clone();
+        tabs[i] = Tab::from_live(self, name, locked, filters);
+        tabs[i].color = color;
+        tabs
+    }
+
+    /// Write the live grid into the active tab. An empty list becomes one tab named 1.
+    fn anchor(&mut self) {
+        if self.tabs.is_empty() {
+            self.tabs.push(Tab::from_live(self, "1".into(), false, vec![String::new(); MAXP]));
+            self.tab = 0;
+            return;
+        }
+        if self.tab >= self.tabs.len() {
+            self.tab = 0;
+        }
+        let name = self.tabs[self.tab].name.clone();
+        let locked = self.tabs[self.tab].locked;
+        let color = self.tabs[self.tab].color;
+        let filters = pad_filters(std::mem::take(&mut self.tabs[self.tab].filters));
+        self.tabs[self.tab] = Tab::from_live(self, name, locked, filters);
+        self.tabs[self.tab].color = color;
+    }
+
+    /// Copy the active tab onto the live grid fields.
+    fn publish(&mut self) {
+        if self.tabs.is_empty() {
+            self.anchor();
+            return;
+        }
+        self.tab = self.tab.min(self.tabs.len() - 1);
+        let t = self.tabs[self.tab].clone();
+        self.heights = t.heights;
+        self.colr = t.colr;
+        self.rowr = t.rowr;
+        let n = self.heights.iter().sum::<usize>().max(1);
+        self.active = t.active.min(n - 1);
+        self.paths = t.paths;
+        self.views = t.views;
+        self.cols = t.cols;
+    }
+
     fn accent_now(&self) -> u32 {
         if self.dark {
             self.accent_dark
@@ -493,6 +736,7 @@ impl Session {
 
     fn parse(text: &str) -> Session {
         let mut s = Session::default();
+        s.tabs.clear();
         let mut rowr: Vec<Vec<f64>> = Vec::new();
         let (mut saw_theme, mut saw_dark) = (false, false);
         for line in text.lines() {
@@ -556,6 +800,12 @@ impl Session {
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
                 "session" => s.file = v.trim().to_string(),
+                "tabs" => {
+                    if let Some((tabs, active)) = tabs_from_json(v) {
+                        s.tabs = tabs;
+                        s.tab = active;
+                    }
+                }
                 "fav" if !v.trim().is_empty() => s.favs.push(v.trim().to_string()),
                 "recent" if !v.trim().is_empty() && s.recent.len() < RECENT => s.recent.push(v.trim().to_string()),
                 _ => {
@@ -579,6 +829,11 @@ impl Session {
         // An older ini has dark= and no theme=. That stays an explicit light or dark choice.
         if !saw_theme && saw_dark {
             s.theme = if s.dark { 2 } else { 1 };
+        }
+        if s.tabs.is_empty() {
+            s.anchor();
+        } else {
+            s.publish();
         }
         s
     }
@@ -629,6 +884,9 @@ impl Session {
                 o += &format!("c{i}={}\n", self.cols[i]);
             }
         }
+        let tabs = self.view_tabs();
+        let active = self.tab.min(tabs.len() - 1);
+        o += &format!("tabs={}\n", tabs_json(&tabs, active));
         o
     }
 
@@ -646,24 +904,221 @@ impl Session {
 
     /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
     fn snapshot(&self) -> String {
-        Session { win: None, file: String::new(), favs: Vec::new(), recent: Vec::new(), ..self.clone() }.to_ini()
+        let mut c = self.clone();
+        c.anchor();
+        c.win = None;
+        c.file.clear();
+        c.favs.clear();
+        c.recent.clear();
+        c.to_ini()
     }
 
-    /// Takes grid + folders from a named session; window position and sidebar width stay as they are.
+    /// Takes every tab from a named session; window position and sidebar width stay as they are.
     fn take_layout(&mut self, o: &Session) {
         (self.heights, self.colr, self.rowr) = (o.heights.clone(), o.colr.clone(), o.rowr.clone());
         (self.active, self.paths, self.views, self.cols) = (o.active, o.paths.clone(), o.views.clone(), o.cols.clone());
+        self.tabs = o.view_tabs();
+        self.tab = o.tab.min(self.tabs.len().saturating_sub(1));
     }
 }
 
-/// Layout changes worth a save prompt: grid, split ratios, view modes. Folder changes don't count.
+/// Named-session text for one tab: its grid only.
+fn tab_session_text(s: &Session, i: usize) -> Option<String> {
+    let t = s.view_tabs().get(i)?.clone();
+    let mut one = s.clone();
+    one.tabs = vec![t];
+    one.tab = 0;
+    one.publish();
+    Some(one.snapshot())
+}
+
+fn parse_tab_color(v: &str) -> Option<u32> {
+    let t = v.trim().trim_start_matches('#');
+    if t.len() != 6 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok().map(|n| n & 0xFFFFFF)
+}
+
+fn pane_json(t: &Tab) -> Vec<Value> {
+    let mut panes = Vec::new();
+    for i in 0..MAXP {
+        let filter = t.filters.get(i).cloned().unwrap_or_default();
+        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() {
+            continue;
+        }
+        let mut p = serde_json::Map::new();
+        p.insert("index".into(), Value::from(i));
+        if !t.paths[i].is_empty() {
+            p.insert("path".into(), Value::String(t.paths[i].clone()));
+        }
+        if t.views[i].0 != 0 {
+            p.insert("view".into(), Value::Array(vec![Value::from(t.views[i].0), Value::from(t.views[i].1)]));
+        }
+        if !t.cols[i].is_empty() {
+            p.insert("columns".into(), Value::String(t.cols[i].clone()));
+        }
+        if !filter.is_empty() {
+            p.insert("filter".into(), Value::String(filter));
+        }
+        panes.push(Value::Object(p));
+    }
+    panes
+}
+
+fn tabs_json(tabs: &[Tab], active: usize) -> String {
+    let v: Vec<Value> = tabs.iter().enumerate().map(|(i, t)| {
+        let mut obj = serde_json::json!({
+            "name": t.name,
+            "locked": t.locked,
+            "active": i == active,
+            "layout": { "columns": t.heights, "colr": t.colr, "rowr": t.rowr, "active": t.active },
+            "panes": pane_json(t),
+        });
+        if let Some(c) = t.color {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("color".into(), Value::String(format!("{c:06X}")));
+            }
+        }
+        obj
+    }).collect();
+    serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
+}
+
+/// A tab object needs a name, a layout, panes, or a lock. Anything else is left for a newer build.
+fn tab_from_value(v: &Value) -> Option<Tab> {
+    let obj = v.as_object()?;
+    if !obj.contains_key("name") && !obj.contains_key("layout") && !obj.contains_key("panes") && !obj.contains_key("locked") {
+        return None;
+    }
+    let name = obj.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().to_string();
+    let locked = obj.get("locked").and_then(|n| n.as_bool()).unwrap_or(false);
+    let color = obj.get("color").and_then(|c| c.as_str()).and_then(parse_tab_color);
+    let mut heights = vec![2, 2];
+    let mut colr = Vec::new();
+    let mut rowr: Vec<Vec<f64>> = Vec::new();
+    let mut active = 0usize;
+    if let Some(l) = obj.get("layout").and_then(|l| l.as_object()) {
+        if let Some(c) = l.get("columns").and_then(|c| c.as_array()) {
+            let h: Vec<usize> = c.iter().filter_map(|n| n.as_u64()).map(|n| (n as usize).clamp(1, 4)).take(4).collect();
+            if !h.is_empty() {
+                heights = h;
+            }
+        }
+        if let Some(c) = l.get("colr").and_then(|c| c.as_array()) {
+            colr = c.iter().filter_map(|n| n.as_f64()).collect();
+        }
+        if let Some(rows) = l.get("rowr").and_then(|c| c.as_array()) {
+            rowr = rows.iter().map(|r| r.as_array().map(|a| a.iter().filter_map(|n| n.as_f64()).collect()).unwrap_or_default()).collect();
+        }
+        active = l.get("active").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
+    }
+    colr = fix(colr, heights.len());
+    let group = |c: usize| if rowr.len() == heights.len() { rowr.get(c) } else { rowr.first() };
+    let rowr = heights.iter().enumerate().map(|(c, &n)| fix(group(c).cloned().unwrap_or_default(), n)).collect();
+    let n: usize = heights.iter().sum();
+    if active >= n {
+        active = 0;
+    }
+    let mut paths = vec![String::new(); MAXP];
+    let mut views = vec![(0i32, 0i32); MAXP];
+    let mut cols = vec![String::new(); MAXP];
+    let mut filters = vec![String::new(); MAXP];
+    if let Some(panes) = obj.get("panes").and_then(|p| p.as_array()) {
+        for p in panes {
+            let Some(o) = p.as_object() else { continue };
+            let i = o.get("index").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
+            if i >= MAXP {
+                continue;
+            }
+            if let Some(path) = o.get("path").and_then(|x| x.as_str()) {
+                paths[i] = path.to_string();
+            }
+            if let Some(view) = o.get("view").and_then(|x| x.as_array()) {
+                let m = view.first().and_then(|n| n.as_i64()).unwrap_or(0) as i32;
+                let z = view.get(1).and_then(|n| n.as_i64()).unwrap_or(0) as i32;
+                if m != 0 {
+                    views[i] = (m, z);
+                }
+            }
+            if let Some(c) = o.get("columns").and_then(|x| x.as_str()) {
+                cols[i] = c.to_string();
+            }
+            if let Some(f) = o.get("filter").and_then(|x| x.as_str()) {
+                filters[i] = f.to_string();
+            }
+        }
+    }
+    let name = if name.is_empty() { "1".into() } else { name };
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters })
+}
+
+fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
+    let values: Vec<Value> = serde_json::from_str(v).ok()?;
+    let mut tabs = Vec::new();
+    let mut active = None;
+    for val in &values {
+        let Some(t) = tab_from_value(val) else { continue };
+        if val.get("active").and_then(|a| a.as_bool()) == Some(true) && active.is_none() {
+            active = Some(tabs.len());
+        }
+        tabs.push(t);
+    }
+    if tabs.is_empty() {
+        return None;
+    }
+    let active = active.unwrap_or(0).min(tabs.len() - 1);
+    Some((tabs, active))
+}
+
+/// Put `values` on the session. Invalid entries are skipped; none left means one tab from the live grid.
+fn adopt_tabs(s: &mut Session, values: &[Value]) {
+    let mut tabs = Vec::new();
+    let mut active = None;
+    for v in values {
+        let Some(t) = tab_from_value(v) else { continue };
+        if v.get("active").and_then(|a| a.as_bool()) == Some(true) && active.is_none() {
+            active = Some(tabs.len());
+        }
+        tabs.push(t);
+    }
+    if tabs.is_empty() {
+        s.tabs.clear();
+        s.tab = 0;
+        s.anchor();
+        return;
+    }
+    s.tabs = tabs;
+    s.tab = active.unwrap_or(0).min(s.tabs.len() - 1);
+    s.publish();
+}
+
+/// Layout changes worth a save prompt: grid, split ratios, view modes, which tab is open. Folder changes don't count.
 fn layout_differs(cur: &Session, base: &Session) -> bool {
     let near = |x: &[f64], y: &[f64]| x.len() == y.len() && x.iter().zip(y).all(|(a, b)| (a - b).abs() < 0.005);
-    cur.heights != base.heights
-        || !near(&cur.colr, &base.colr)
-        || cur.rowr.iter().zip(&base.rowr).any(|(a, b)| !near(a, b))
-        || (0..cur.panes()).any(|i| base.views[i].0 != 0 && cur.views[i] != base.views[i])
-        || (0..cur.panes()).any(|i| !base.cols[i].is_empty() && cur.cols[i] != base.cols[i])
+    let grid = |c: &Session, b: &Session| {
+        c.heights != b.heights
+            || !near(&c.colr, &b.colr)
+            || c.rowr.len() != b.rowr.len()
+            || c.rowr.iter().zip(&b.rowr).any(|(a, b)| !near(a, b))
+            || (0..c.panes()).any(|i| b.views[i].0 != 0 && c.views[i] != b.views[i])
+            || (0..c.panes()).any(|i| !b.cols[i].is_empty() && c.cols[i] != b.cols[i])
+    };
+    if grid(cur, base) || cur.tab != base.tab || cur.tabs.len() != base.tabs.len() {
+        return true;
+    }
+    cur.tabs.iter().zip(&base.tabs).enumerate().any(|(i, (a, b))| {
+        if i == cur.tab {
+            return false;
+        }
+        let n = a.heights.iter().sum::<usize>().min(MAXP);
+        a.heights != b.heights
+            || !near(&a.colr, &b.colr)
+            || a.rowr.len() != b.rowr.len()
+            || a.rowr.iter().zip(&b.rowr).any(|(x, y)| !near(x, y))
+            || (0..n).any(|k| b.views.get(k).is_some_and(|v| v.0 != 0) && a.views.get(k) != b.views.get(k))
+            || (0..n).any(|k| b.cols.get(k).is_some_and(|c| !c.is_empty()) && a.cols.get(k) != b.cols.get(k))
+    })
 }
 
 // Drives, folders and shares; not shell places like This PC or the Recycle Bin, whose columns are their own.
@@ -748,6 +1203,7 @@ fn apply_args(s: &mut Session, args: Vec<String>) {
         s.set_heights(vec![n.div_ceil(c); c]);
     }
     s.active = 0;
+    s.anchor();
 }
 
 fn sessions_dir() -> PathBuf {
@@ -828,7 +1284,7 @@ fn geo(a: &App) -> Geo {
     let (pad, gap) = (s(8), s(8));
     let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120))) } else { 0 };
     let gx = if a.s.tree_on { pad + side + gap } else { pad };
-    let top = if a.s.bar { s(34) } else { 0 };
+    let top = (if a.s.bar { s(34) } else { 0 }) + s(32); // toolbar, then the tab strip
     let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     Geo {
         xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
@@ -977,6 +1433,19 @@ struct App {
     note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
     drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
     drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
+    park: Vec<Vec<Option<Pane>>>,             // hidden browsers, parallel to s.tabs; empty once evicted
+    park_lru: Vec<usize>,                     // parked tabs that still have browsers, oldest first
+    save_since: Option<Instant>,              // first unsaved change in this debounce window
+    closed: Vec<Tab>,                         // recently closed tabs, newest first (not saved)
+    tabs_hwnd: HWND,
+    tab_edit: HWND,
+    tab_hot: Option<usize>,
+    tab_hot_close: bool,
+    tab_hot_plus: bool,
+    tab_drag: Option<usize>,
+    tab_press: Option<(usize, i32, i32, bool)>, // tab, x, y, press landed on its close box
+    tab_renaming: Option<usize>,
+    tab_rename_skip: bool,
 }
 
 thread_local! {
@@ -1021,7 +1490,24 @@ thread_local! {
         note: None,
         drop_hover: HWND::default(),
         drop_open: None,
+        park: Vec::new(),
+        park_lru: Vec::new(),
+        save_since: None,
+        closed: Vec::new(),
+        tabs_hwnd: HWND::default(),
+        tab_edit: HWND::default(),
+        tab_hot: None,
+        tab_hot_close: false,
+        tab_hot_plus: false,
+        tab_drag: None,
+        tab_press: None,
+        tab_renaming: None,
+        tab_rename_skip: false,
     });
+}
+
+fn no_panes() -> Vec<Option<Pane>> {
+    (0..MAXP).map(|_| None).collect()
 }
 
 // Per-pane filter spec. Not in APP: the shell view may call IncludeObject from its own thread.
@@ -1136,7 +1622,7 @@ unsafe fn apply_font() {
     _ = GetTextMetricsW(dc, &mut tm);
     SelectObject(dc, old);
     ReleaseDC(None, dc);
-    let (old, old_icon, panes) = app(|a| {
+    let (old, old_icon, panes, edit) = app(|a| {
         a.fh = tm.tmHeight;
         let old_small = std::mem::replace(&mut a.small_font, small);
         if !old_small.is_invalid() {
@@ -1144,8 +1630,15 @@ unsafe fn apply_font() {
         }
         let old = std::mem::replace(&mut a.font, font);
         let old_icon = std::mem::replace(&mut a.icon_font, icon_font);
-        (old, old_icon, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>())
+        let mut panes: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
+        for set in &a.park {
+            panes.extend(set.iter().flatten().map(|p| p.hwnd));
+        }
+        (old, old_icon, panes, a.tab_edit)
     });
+    if !edit.0.is_null() {
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    }
     for p in panes {
         for id in [ID_EDIT, ID_FILTER] {
             if let Ok(c) = GetDlgItem(Some(p), id) {
@@ -1739,11 +2232,21 @@ unsafe fn apply_filter(i: usize) {
     if let (true, Some(pane)) = (changed, app(|a| a.panes[i].as_ref().map(|p| p.hwnd))) {
         _ = InvalidateRect(Some(pane), None, false); // filter badge on/off
     }
+    if changed {
+        note_save();
+    }
+}
+
+thread_local! {
+    static KEEP_VIEWS: Cell<bool> = const { Cell::new(false) };
 }
 
 // Pane-sticky view mode and columns (order, widths, sort): remember them before leaving a folder,
 // re-apply after arriving. Columns seen in shell places (This PC ...) are theirs, not the pane's.
 unsafe fn save_view(i: usize) {
+    if KEEP_VIEWS.with(|c| c.get()) {
+        return;
+    }
     if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some() || p.settle.is_some())) {
         return; // columns are about to be put on, or still settling: don't overwrite them
     }
@@ -1952,6 +2455,8 @@ unsafe fn settle_cols(h: HWND) {
     });
     if left > 0 {
         SetTimer(Some(h), TIMER_SETTLE, [1000, 400, 150][left as usize - 1], None);
+    } else {
+        note_save();
     }
 }
 
@@ -2007,6 +2512,7 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         }
     }
     hook_ctx(i);
+    note_save();
 }
 
 #[implement(IExplorerBrowserEvents)]
@@ -2460,6 +2966,8 @@ unsafe fn relayout() {
         let show_bar = a.s.bar;
         let show_tree = a.s.tree_on;
         let tree_h = a.tree_hwnd;
+        let strip_top = if show_bar { s(34) } else { 0 };
+        moves.push((a.tabs_hwnd, RECT { left: 0, top: strip_top, right: g.w, bottom: strip_top + s(32) }));
         let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
         let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
@@ -2480,6 +2988,10 @@ unsafe fn relayout() {
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_tree { SW_SHOW } else { SW_HIDE });
+    }
+    let strip = app(|a| a.tabs_hwnd);
+    if !strip.0.is_null() {
+        _ = ShowWindow(strip, SW_SHOW);
     }
     for (h, on) in shown {
         _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
@@ -2877,10 +3389,18 @@ unsafe fn apply_theme() {
         tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
     set_accent(accent);
-    for i in 0..MAXP {
-        destroy_pane(i);
-    }
+    // Every tab's Explorer windows follow the theme. Their folders, filters and columns are already on the tab.
+    remember_tabs();
+    let filters = app(|a| a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default());
+    destroy_every_pane();
+    put_filters(&filters);
+    app(|a| {
+        let n = a.s.tabs.len().max(1);
+        a.park = (0..n).map(|_| no_panes()).collect();
+        a.park_lru.clear();
+    });
     relayout();
+    sync_filter_edits();
     redraw_all();
     settings::refresh();
 }
@@ -3093,20 +3613,61 @@ unsafe fn toggle_hidden() {
 
 // ---------- sessions ----------
 
+thread_local! {
+    static LAST_SAVED: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Writes every tab (name, lock, order, folders, filters, columns) and the window.
+/// The startup mode is stored beside that list; it does not gate the write.
 unsafe fn save_session() {
-    let (main, n) = app(|a| (a.main, a.s.panes()));
-    for i in 0..n {
-        save_view(i);
-    }
+    remember_tabs();
+    let main = app(|a| a.main);
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-    _ = GetWindowPlacement(main, &mut wp);
+    if !main.0.is_null() {
+        _ = GetWindowPlacement(main, &mut wp);
+    }
     let text = app(|a| {
-        let r = wp.rcNormalPosition;
-        let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
-        a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
+        if !main.0.is_null() {
+            let r = wp.rcNormalPosition;
+            let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
+            a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
+        }
         store::sync_text(&a.s)
     });
-    _ = store::write_settings(&text);
+    let same = LAST_SAVED.with(|l| l.borrow().as_str() == text);
+    if same || store::write_settings(&text).is_ok() {
+        if !same {
+            LAST_SAVED.with(|l| *l.borrow_mut() = text);
+        }
+        app(|a| a.save_since = None);
+    }
+}
+
+/// Coalesce tab, folder and window edits into one write, and never wait longer than SAVE_LATEST_MS.
+unsafe fn note_save() {
+    let main = app(|a| a.main);
+    if main.0.is_null() {
+        return;
+    }
+    let flush = app(|a| {
+        let now = Instant::now();
+        let late = a.save_since.is_some_and(|t| now.duration_since(t).as_millis() >= SAVE_LATEST_MS);
+        if late {
+            a.save_since = None;
+            true
+        } else {
+            if a.save_since.is_none() {
+                a.save_since = Some(now);
+            }
+            false
+        }
+    });
+    if flush {
+        _ = KillTimer(Some(main), TIMER_SAVE);
+        save_session();
+    } else {
+        SetTimer(Some(main), TIMER_SAVE, SAVE_SOON_MS, None);
+    }
 }
 
 // Save button / Ctrl+S: overwrite the current session file; the first time, ask for a name.
@@ -3120,9 +3681,7 @@ unsafe fn save_current() {
 }
 
 unsafe fn write_session(path: &Path) {
-    for i in 0..app(|a| a.s.panes()) {
-        save_view(i);
-    }
+    remember_tabs();
     if std::fs::write(path, app(|a| a.s.snapshot())).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
         return;
@@ -3134,8 +3693,8 @@ unsafe fn write_session(path: &Path) {
     refresh_save_button();
 }
 
-// "New name": the save dialog does naming, overwrite prompts, rename and delete for us.
-unsafe fn save_session_as() -> Result<()> {
+// The named-session save dialog: naming, overwrite prompts, and the sessions folder.
+unsafe fn ask_session_path(title: &str) -> Result<String> {
     let main = app(|a| a.main);
     let dir = sessions_dir();
     _ = std::fs::create_dir_all(&dir);
@@ -3143,14 +3702,28 @@ unsafe fn save_session_as() -> Result<()> {
     let kind = HSTRING::from(tr("Grids session (*.grids)", "Grids 세션 (*.grids)", "Grids セッション (*.grids)"));
     dlg.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(kind.as_ptr()), pszSpec: w!("*.grids") }])?;
     dlg.SetDefaultExtension(w!("grids"))?;
-    dlg.SetTitle(&HSTRING::from(tr("Save session", "세션 저장", "セッションを保存")))?;
+    dlg.SetTitle(&HSTRING::from(title))?;
     if let Ok(f) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.to_string_lossy().as_ref()), None) {
         dlg.SetFolder(&f)?;
     }
     dlg.Show(Some(main))?; // Err on cancel
-    let path = pwstr(dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?);
+    Ok(pwstr(dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?))
+}
+
+unsafe fn save_session_as() -> Result<()> {
+    let path = ask_session_path(tr("Save session", "세션 저장", "セッションを保存"))?;
     write_session(Path::new(&path));
     Ok(())
+}
+
+/// Writes one tab's grid to a named session. The window's own session file stays as it is.
+unsafe fn save_tab_as_session(i: usize) {
+    remember_tabs();
+    let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
+    let Ok(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
+    if std::fs::write(Path::new(&path), text).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
 }
 
 unsafe fn load_session_file(path: &Path) {
@@ -3158,20 +3731,17 @@ unsafe fn load_session_file(path: &Path) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     };
-    for i in 0..MAXP {
-        destroy_pane(i);
-    }
     let other = Session::parse(&text);
-    app(|a| {
-        a.s.take_layout(&other);
-        a.zoom = None;
-        a.s.file = path.to_string_lossy().into_owned();
-        (a.base, a.dirty) = (Some(a.s.clone()), false);
-    });
+    let mut s = app(|a| a.s.clone());
+    s.take_layout(&other);
+    s.file = path.to_string_lossy().into_owned();
+    install_grids(s);
+    app(|a| (a.base, a.dirty) = (Some(a.s.clone()), false));
     refresh_save_button();
     relayout();
+    sync_filter_edits();
     redraw_all();
-    focus_view(app(|a| a.s.active));
+    focus_view(active_pane());
 }
 
 // Paths from the command line or a second instance: a session file loads, folders fill panes from the active one on.
@@ -3506,6 +4076,802 @@ unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i3
         });
     }
     app(|a| a.status_base = (head, size, parts.join("     ·     ")));
+}
+
+// ---------- tabs ----------
+// The strip is its own child so splitter hit-testing stays below it. Every hidden tab keeps its
+// grid on the session. Only the most recently hidden tab also keeps its Explorer windows.
+
+#[derive(Clone, Copy, PartialEq)]
+enum TabHit {
+    Tab(usize),
+    Close(usize),
+    Plus,
+    Empty,
+}
+
+struct TabLay {
+    body: Vec<RECT>,
+    close: Vec<Option<RECT>>,
+    plus: RECT,
+}
+
+fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32) -> TabLay {
+    let s = |v: i32| v * dpi / 96;
+    let n = n.max(1);
+    let (pad, gap, plus_w, max_w, min_w) = (s(6), s(2), s(28), s(90), s(28));
+    let mut w = max_w;
+    let used = |w: i32| n as i32 * w + gap * (n as i32 - 1) + plus_w + pad * 2;
+    if used(w) > width {
+        w = ((width - pad * 2 - plus_w - gap * (n as i32 - 1)) / n as i32).max(min_w);
+    }
+    let y = s(4);
+    let h = s(26);
+    let mut x = pad;
+    let mut body = Vec::new();
+    let mut close = Vec::new();
+    for i in 0..n {
+        let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+        let cw = s(16);
+        let c = if locked.get(i).copied().unwrap_or(false) {
+            None
+        } else {
+            Some(RECT {
+                left: r.right - s(4) - cw,
+                top: r.top + (h - cw) / 2,
+                right: r.right - s(4),
+                bottom: r.top + (h - cw) / 2 + cw,
+            })
+        };
+        body.push(r);
+        close.push(c);
+        x += w + gap;
+    }
+    TabLay { body, close, plus: RECT { left: x, top: y, right: x + plus_w, bottom: y + h } }
+}
+
+fn in_rect(r: RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+fn tab_hit(lay: &TabLay, x: i32, y: i32) -> TabHit {
+    if in_rect(lay.plus, x, y) {
+        return TabHit::Plus;
+    }
+    for (i, r) in lay.body.iter().enumerate() {
+        if in_rect(*r, x, y) {
+            if lay.close[i].is_some_and(|c| in_rect(c, x, y)) {
+                return TabHit::Close(i);
+            }
+            return TabHit::Tab(i);
+        }
+    }
+    TabHit::Empty
+}
+
+fn put_filters(f: &[String]) {
+    if let Ok(mut g) = FILTERS.lock() {
+        for i in 0..MAXP {
+            g[i] = f.get(i).cloned().unwrap_or_default();
+        }
+    }
+}
+
+fn fit_park(a: &mut App) {
+    let n = a.s.tabs.len();
+    if a.park.len() < n {
+        a.park.resize_with(n, no_panes);
+    } else if a.park.len() > n {
+        a.park.truncate(n);
+    }
+    a.park_lru.retain(|&i| i < a.park.len());
+}
+
+fn lru_note(a: &mut App, i: usize) {
+    a.park_lru.retain(|&x| x != i);
+    a.park_lru.push(i);
+}
+
+fn lru_forget(a: &mut App, i: usize) {
+    a.park_lru.retain(|&x| x != i);
+}
+
+fn lru_insert_shift(a: &mut App, at: usize) {
+    for x in &mut a.park_lru {
+        if *x >= at {
+            *x += 1;
+        }
+    }
+}
+
+fn lru_remove_shift(a: &mut App, at: usize) {
+    a.park_lru.retain(|&x| x != at);
+    for x in &mut a.park_lru {
+        if *x > at {
+            *x -= 1;
+        }
+    }
+}
+
+fn park_has_browsers(set: &[Option<Pane>]) -> bool {
+    set.iter().any(|p| p.is_some())
+}
+
+/// Drop hidden Explorer windows past PARK_CACHE. Their folders, columns and filters stay on the tab.
+unsafe fn evict_park() {
+    loop {
+        let victim = app(|a| {
+            let live = a.park.iter().filter(|s| park_has_browsers(s)).count();
+            if live <= PARK_CACHE {
+                return None;
+            }
+            a.park_lru.iter().copied().find(|&i| a.park.get(i).is_some_and(|s| park_has_browsers(s))).or_else(|| {
+                a.park.iter().position(|s| park_has_browsers(s))
+            })
+        });
+        let Some(i) = victim else { break };
+        let set = app(|a| {
+            lru_forget(a, i);
+            if i < a.park.len() {
+                std::mem::replace(&mut a.park[i], no_panes())
+            } else {
+                no_panes()
+            }
+        });
+        destroy_set(set);
+    }
+}
+
+unsafe fn pull_filters() -> Vec<String> {
+    let (n, stored) = app(|a| {
+        let stored = a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default();
+        (a.s.panes(), stored)
+    });
+    let mut f = pad_filters(stored);
+    for i in 0..n {
+        if let Some(e) = pane_ctl(i, ID_FILTER) {
+            f[i] = filter_spec(&text_of(e));
+        }
+    }
+    put_filters(&f);
+    f
+}
+
+/// Fold the live grid and filters into the active tab so a switch or a save keeps them.
+unsafe fn remember_tabs() {
+    let n = app(|a| a.s.panes());
+    for i in 0..n {
+        save_view(i);
+    }
+    let filters = pull_filters();
+    app(|a| {
+        if a.s.tab < a.s.tabs.len() {
+            a.s.tabs[a.s.tab].filters = pad_filters(filters);
+        }
+        a.s.anchor();
+    });
+}
+
+unsafe fn detach_live() {
+    for i in 0..MAXP {
+        let got = app(|a| {
+            a.panes[i].as_mut().map(|p| {
+                let eb = p.eb.clone();
+                let cookie = std::mem::take(&mut p.cookie);
+                (eb, cookie, p.hwnd)
+            })
+        });
+        if let Some((eb, cookie, hwnd)) = got {
+            if cookie != 0 {
+                _ = eb.Unadvise(cookie);
+            }
+            _ = IUnknown_SetSite(&eb, None);
+            _ = KillTimer(Some(hwnd), TIMER_SETTLE);
+            _ = KillTimer(Some(hwnd), TIMER_FILTER);
+            _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+unsafe fn attach_live() {
+    for i in 0..MAXP {
+        let eb = app(|a| a.panes[i].as_ref().map(|p| p.eb.clone()));
+        let Some(eb) = eb else { continue };
+        let site: IServiceProvider = Host(i).into();
+        _ = IUnknown_SetSite(&eb, &site);
+        let ev: IExplorerBrowserEvents = Events(i).into();
+        if let Ok(c) = eb.Advise(&ev) {
+            app(|a| {
+                if let Some(p) = a.panes[i].as_mut() {
+                    p.cookie = c;
+                }
+            });
+        }
+    }
+}
+
+unsafe fn sync_filter_edits() {
+    let n = app(|a| a.s.panes());
+    for i in 0..n {
+        let spec = filter_of(i);
+        if let Some(e) = pane_ctl(i, ID_FILTER) {
+            if text_of(e) != spec {
+                _ = SetWindowTextW(e, &HSTRING::from(spec.as_str()));
+            }
+        }
+    }
+}
+
+unsafe fn destroy_set(set: Vec<Option<Pane>>) {
+    if set.iter().all(|p| p.is_none()) {
+        return;
+    }
+    let (back, keep) = app(|a| {
+        let keep = FILTERS.lock().map(|f| f.clone()).unwrap_or_else(|_| [const { String::new() }; MAXP]);
+        (std::mem::replace(&mut a.panes, set), keep)
+    });
+    // These browsers belong to a tab that is not on screen. Their grid is already on that tab.
+    KEEP_VIEWS.with(|c| c.set(true));
+    for i in 0..MAXP {
+        destroy_pane(i);
+    }
+    KEEP_VIEWS.with(|c| c.set(false));
+    app(|a| a.panes = back);
+    put_filters(&keep);
+}
+
+unsafe fn destroy_every_pane() {
+    for i in 0..MAXP {
+        destroy_pane(i);
+    }
+    let sets = app(|a| a.park.drain(..).collect::<Vec<_>>());
+    for set in sets {
+        destroy_set(set);
+    }
+}
+
+fn tabs_invalidate() {
+    let h = app(|a| a.tabs_hwnd);
+    if !h.0.is_null() {
+        unsafe { _ = InvalidateRect(Some(h), None, false) };
+    }
+}
+
+unsafe fn switch_tab(j: usize) {
+    let (cur, n) = app(|a| (a.s.tab, a.s.tabs.len()));
+    if j >= n || j == cur {
+        return;
+    }
+    end_rename(true);
+    remember_tabs();
+    detach_live();
+    let filters = app(|a| {
+        fit_park(a);
+        let live = std::mem::replace(&mut a.panes, no_panes());
+        a.park[a.s.tab] = live;
+        lru_note(a, a.s.tab);
+        a.panes = std::mem::take(&mut a.park[j]);
+        if a.panes.len() != MAXP {
+            a.panes = no_panes();
+        }
+        lru_forget(a, j);
+        a.s.tab = j;
+        a.s.publish();
+        a.zoom = None;
+        a.s.tabs[j].filters.clone()
+    });
+    put_filters(&filters);
+    attach_live();
+    relayout();
+    sync_filter_edits();
+    redraw_all();
+    focus_view(active_pane());
+    tabs_invalidate();
+    evict_park();
+    note_save();
+}
+
+unsafe fn switch_rel(d: i32) {
+    let (i, n) = app(|a| (a.s.tab as i32, a.s.tabs.len() as i32));
+    if n <= 0 {
+        return;
+    }
+    switch_tab((i + d).rem_euclid(n) as usize);
+}
+
+unsafe fn new_tab() {
+    end_rename(true);
+    remember_tabs();
+    detach_live();
+    app(|a| {
+        fit_park(a);
+        let live = std::mem::replace(&mut a.panes, no_panes());
+        a.park[a.s.tab] = live;
+        lru_note(a, a.s.tab);
+        let fresh = Session {
+            heights: vec![2, 2],
+            colr: even(2),
+            rowr: vec![even(2); 2],
+            active: 0,
+            paths: vec![String::new(); MAXP],
+            views: vec![(0, 0); MAXP],
+            cols: vec![String::new(); MAXP],
+            ..a.s.clone()
+        };
+        let name = next_tab_name(&a.s.tabs);
+        a.s.tabs.push(Tab::from_live(&fresh, name, false, vec![String::new(); MAXP]));
+        a.park.push(no_panes());
+        a.s.tab = a.s.tabs.len() - 1;
+        a.s.publish();
+        a.zoom = None;
+    });
+    put_filters(&vec![String::new(); MAXP]);
+    attach_live();
+    relayout();
+    redraw_all();
+    focus_view(active_pane());
+    tabs_invalidate();
+    evict_park();
+    note_save();
+}
+
+unsafe fn duplicate_tab(i: usize) {
+    end_rename(true);
+    remember_tabs();
+    let j = app(|a| {
+        if i >= a.s.tabs.len() {
+            return None;
+        }
+        fit_park(a);
+        let mut t = a.s.tabs[i].clone();
+        t.name = duplicate_name(&a.s.tabs, &t.name);
+        t.locked = false;
+        let j = (i + 1).min(a.s.tabs.len());
+        a.s.tabs.insert(j, t);
+        a.park.insert(j, no_panes());
+        lru_insert_shift(a, j);
+        if j <= a.s.tab {
+            a.s.tab += 1;
+        }
+        Some(j)
+    });
+    if let Some(j) = j {
+        switch_tab(j);
+    }
+}
+
+unsafe fn close_tab(i: usize) {
+    end_rename(true);
+    if !app(|a| can_close_tab(&a.s.tabs, i)) {
+        return;
+    }
+    let active = app(|a| a.s.tab);
+    if i == active {
+        remember_tabs();
+        detach_live();
+    }
+    let (doomed, filters, switched) = app(|a| {
+        fit_park(a);
+        let tab = a.s.tabs.remove(i);
+        let mut parked = a.park.remove(i);
+        lru_remove_shift(a, i);
+        a.closed.insert(0, tab);
+        a.closed.truncate(CLOSED_KEEP);
+        let was = a.s.tab;
+        let switched = i == was;
+        if switched {
+            let j = i.min(a.s.tabs.len() - 1);
+            a.s.tab = j;
+            let next = std::mem::replace(&mut a.park[j], no_panes());
+            lru_forget(a, j);
+            parked = std::mem::replace(&mut a.panes, next);
+            a.s.publish();
+        } else if i < was {
+            a.s.tab = was - 1;
+        }
+        let filters = a.s.tabs[a.s.tab].filters.clone();
+        (parked, filters, switched)
+    });
+    destroy_set(doomed);
+    if switched {
+        put_filters(&filters);
+        attach_live();
+        relayout();
+        sync_filter_edits();
+        redraw_all();
+        focus_view(active_pane());
+    }
+    tabs_invalidate();
+    note_save();
+}
+
+unsafe fn close_other_tabs(keep: usize) {
+    let victims = app(|a| close_other_indexes(&a.s.tabs, keep));
+    for i in victims.into_iter().rev() {
+        close_tab(i);
+    }
+}
+
+unsafe fn reopen_closed_at(k: usize) {
+    end_rename(true);
+    let j = app(|a| {
+        if k >= a.closed.len() {
+            return None;
+        }
+        let t = a.closed.remove(k);
+        fit_park(a);
+        let j = (a.s.tab + 1).min(a.s.tabs.len());
+        a.s.tabs.insert(j, t);
+        a.park.insert(j, no_panes());
+        lru_insert_shift(a, j);
+        Some(j)
+    });
+    if let Some(j) = j {
+        switch_tab(j);
+    }
+}
+
+unsafe fn reorder_tab(from: usize, to: usize) {
+    if from == to {
+        return;
+    }
+    app(|a| {
+        if from >= a.s.tabs.len() || to >= a.s.tabs.len() {
+            return;
+        }
+        fit_park(a);
+        reorder_vec(&mut a.s.tabs, from, to);
+        reorder_vec(&mut a.park, from, to);
+        a.park_lru = a.park_lru.iter().copied().map(|i| moved_active(i, from, to)).collect();
+        a.s.tab = moved_active(a.s.tab, from, to);
+    });
+    tabs_invalidate();
+    note_save();
+}
+
+unsafe fn end_rename(save: bool) {
+    let (edit, which) = app(|a| {
+        a.tab_rename_skip = !save;
+        (a.tab_edit, a.tab_renaming.take())
+    });
+    if edit.0.is_null() || which.is_none() {
+        return;
+    }
+    if save {
+        if let Some(i) = which {
+            let name = text_of(edit);
+            app(|a| {
+                if let Some(t) = a.s.tabs.get_mut(i) {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        t.name = name.chars().take(80).collect();
+                    }
+                }
+            });
+        }
+    }
+    _ = ShowWindow(edit, SW_HIDE);
+    tabs_invalidate();
+    if save {
+        note_save();
+    }
+}
+
+unsafe fn begin_rename(i: usize) {
+    let (edit, font, dpi, name, lay_w) = app(|a| {
+        let mut rc = RECT::default();
+        _ = GetClientRect(a.tabs_hwnd, &mut rc);
+        let name = a.s.tabs.get(i).map(|t| t.name.clone()).unwrap_or_default();
+        (a.tab_edit, a.font, a.dpi, name, rc.right)
+    });
+    if edit.0.is_null() || app(|a| i >= a.s.tabs.len()) {
+        return;
+    }
+    let locked: Vec<bool> = app(|a| a.s.tabs.iter().map(|t| t.locked).collect());
+    let lay = tab_lay(lay_w, locked.len(), &locked, dpi);
+    let Some(r) = lay.body.get(i).copied() else { return };
+    let s = |v: i32| v * dpi / 96;
+    app(|a| a.tab_renaming = Some(i));
+    _ = SetWindowTextW(edit, &HSTRING::from(name.as_str()));
+    SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    _ = SetWindowPos(edit, None, r.left + s(6), r.top + s(3), (r.right - r.left - s(28)).max(s(24)), r.bottom - r.top - s(6), SWP_NOZORDER | SWP_SHOWWINDOW);
+    _ = SetFocus(Some(edit));
+    let len = GetWindowTextLengthW(edit) as usize;
+    SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(len as isize)));
+}
+
+unsafe fn set_tab_color(i: usize, color: Option<u32>) {
+    app(|a| {
+        if let Some(t) = a.s.tabs.get_mut(i) {
+            t.color = color;
+        }
+    });
+    tabs_invalidate();
+    note_save();
+}
+
+unsafe fn tab_menu(i: usize, x: i32, y: i32) {
+    let (hwnd, locked, others, color) = app(|a| {
+        let tab = a.s.tabs.get(i);
+        let locked = tab.is_some_and(|t| t.locked);
+        let others = !close_other_indexes(&a.s.tabs, i).is_empty();
+        (a.tabs_hwnd, locked, others, tab.and_then(|t| t.color))
+    });
+    let Ok(menu) = CreatePopupMenu() else { return };
+    let add = |id: usize, text: &str, on: bool| {
+        let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+        _ = AppendMenuW(menu, flags, id, &HSTRING::from(text));
+    };
+    add(1, tr("Rename tab", "이름 변경", "タブ名の変更"), true);
+    add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
+    add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
+    add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
+    add(5, tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存"), true);
+    let Ok(colors) = CreatePopupMenu() else {
+        _ = DestroyMenu(menu);
+        return;
+    };
+    let mark = |menu: HMENU, id: usize, on: bool| {
+        if on {
+            _ = CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | MF_CHECKED).0);
+        }
+    };
+    _ = AppendMenuW(colors, MF_STRING, 19, &HSTRING::from(tr("None", "없음", "なし")));
+    mark(colors, 19, color.is_none());
+    for (k, &(c, en, ko, ja)) in TAB_COLORS.iter().enumerate() {
+        let id = 20 + k;
+        _ = AppendMenuW(colors, MF_STRING, id, &HSTRING::from(tr(en, ko, ja)));
+        mark(colors, id, color == Some(c));
+    }
+    _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, &HSTRING::from(tr("Tab color", "탭 색 지정", "タブの色")));
+    let mut pt = POINT { x, y };
+    _ = ClientToScreen(hwnd, &mut pt);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, hwnd, None).0 as usize;
+    _ = DestroyMenu(menu);
+    match pick {
+        1 => begin_rename(i),
+        2 => {
+            app(|a| {
+                if let Some(t) = a.s.tabs.get_mut(i) {
+                    t.locked ^= true;
+                }
+            });
+            tabs_invalidate();
+            note_save();
+        }
+        3 => duplicate_tab(i),
+        4 => close_other_tabs(i),
+        5 => save_tab_as_session(i),
+        19 => set_tab_color(i, None),
+        n if (20..20 + TAB_COLORS.len()).contains(&n) => set_tab_color(i, Some(TAB_COLORS[n - 20].0)),
+        _ => {}
+    }
+}
+
+unsafe fn install_grids(s: Session) {
+    destroy_every_pane();
+    let filters = s.tabs.get(s.tab.min(s.tabs.len().saturating_sub(1))).map(|t| t.filters.clone()).unwrap_or_default();
+    let n = s.tabs.len().max(1);
+    put_filters(&filters);
+    app(|a| {
+        a.s = s;
+        a.park = (0..n).map(|_| no_panes()).collect();
+        a.park_lru.clear();
+        a.zoom = None;
+    });
+}
+
+fn current_tab_lay() -> TabLay {
+    app(|a| {
+        let mut rc = RECT::default();
+        unsafe { _ = GetClientRect(a.tabs_hwnd, &mut rc) };
+        let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
+        tab_lay(rc.right.max(1), locked.len().max(1), &locked, a.dpi)
+    })
+}
+
+unsafe fn paint_tabs(h: HWND) {
+    let (active, names, locked, colors, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
+        (
+            a.s.tab,
+            a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            a.s.tabs.iter().map(|t| t.locked).collect::<Vec<_>>(),
+            a.s.tabs.iter().map(|t| t.color).collect::<Vec<_>>(),
+            a.tab_hot,
+            a.tab_hot_close,
+            a.tab_hot_plus,
+            a.dpi,
+            a.font,
+            a.icon_font,
+            a.s.accent_now(),
+        )
+    });
+    let lay = current_tab_lay();
+    buffered(h, |dc, rc| {
+        let s = |v: i32| v * dpi / 96;
+        fill(dc, rc, pal().bg);
+        fill(dc, RECT { top: rc.bottom - 1, ..rc }, pal().line);
+        for (i, r) in lay.body.iter().enumerate() {
+            let on = i == active;
+            let over = hot == Some(i);
+            let col = colors.get(i).copied().flatten();
+            let bg = match (on, over, col) {
+                (true, _, Some(c)) => blend(pal().card, c, 0.18),
+                (true, _, None) => pal().card,
+                (_, true, Some(c)) => blend(blend(pal().card, pal().bg, 0.45), c, 0.16),
+                (_, true, None) => blend(pal().card, pal().bg, 0.45),
+                (_, _, Some(c)) => blend(pal().bg, c, 0.18),
+                _ => pal().bg,
+            };
+            fill(dc, *r, bg);
+            if !on {
+                frame(dc, *r, 1, pal().line);
+            }
+            if on {
+                fill(dc, RECT { bottom: r.top + s(2), ..*r }, col.unwrap_or(accent));
+                fill(dc, RECT { top: r.bottom - 1, bottom: r.bottom, ..*r }, pal().card);
+            }
+            if let Some(c) = col {
+                let inset = if on { 0 } else { 1 };
+                fill(dc, RECT { left: r.left + inset, top: r.top + inset, right: r.left + inset + s(4), bottom: r.bottom - inset }, c);
+            }
+            let lock = locked.get(i).copied().unwrap_or(false);
+            let nudge = if col.is_some() { s(5) } else { 0 };
+            let mut label = *r;
+            if lock {
+                let ir = RECT { left: r.left + nudge + s(4), top: r.top, right: r.left + nudge + s(20), bottom: r.bottom };
+                text(dc, ir, ICON_LOCK, icon, if on { pal().text } else { pal().sub }, DT_CENTER);
+                label.left = ir.right;
+            } else {
+                label.left += s(8) + nudge;
+            }
+            if let Some(c) = lay.close[i] {
+                label.right = c.left;
+                let ink = if hot_close && hot == Some(i) { accent } else { pal().sub };
+                text(dc, c, ICON_CLOSE, icon, ink, DT_CENTER);
+            } else {
+                label.right -= s(8);
+            }
+            text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT);
+        }
+        let plus_bg = if hot_plus { blend(pal().card, pal().bg, 0.45) } else { pal().bg };
+        fill(dc, lay.plus, plus_bg);
+        text(dc, lay.plus, ICON_PLUS, icon, pal().text, DT_CENTER);
+    });
+}
+
+unsafe fn tab_mouse(x: i32, y: i32) -> TabHit {
+    tab_hit(&current_tab_lay(), x, y)
+}
+
+extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => paint_tabs(h),
+            WM_ERASEBKGND => return LRESULT(1),
+            WM_MOUSEMOVE => {
+                let (x, y) = xy(lp);
+                let hit = tab_mouse(x, y);
+                let (hot, close, plus) = match hit {
+                    TabHit::Tab(i) => (Some(i), false, false),
+                    TabHit::Close(i) => (Some(i), true, false),
+                    TabHit::Plus => (None, false, true),
+                    TabHit::Empty => (None, false, false),
+                };
+                let (from, paint) = app(|a| {
+                    if let Some((pi, px, py, _)) = a.tab_press {
+                        if a.tab_drag.is_none() && (x - px).abs() + (y - py).abs() > (4 * a.dpi / 96).max(4) {
+                            a.tab_drag = Some(pi);
+                        }
+                    }
+                    let from = a.tab_drag;
+                    let same = a.tab_hot == hot && a.tab_hot_close == close && a.tab_hot_plus == plus;
+                    if !same {
+                        a.tab_hot = hot;
+                        a.tab_hot_close = close;
+                        a.tab_hot_plus = plus;
+                    }
+                    (from, !same)
+                });
+                if let Some(from) = from {
+                    let lay = current_tab_lay();
+                    let to = lay.body.iter().position(|r| x < (r.left + r.right) / 2).unwrap_or(lay.body.len().saturating_sub(1));
+                    if to != from && to < app(|a| a.s.tabs.len()) {
+                        reorder_tab(from, to);
+                        app(|a| a.tab_drag = Some(to));
+                    }
+                }
+                if paint || from.is_some() {
+                    tabs_invalidate();
+                }
+                let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                _ = TrackMouseEvent(&mut t);
+            }
+            WM_MOUSELEAVE => {
+                app(|a| {
+                    a.tab_hot = None;
+                    a.tab_hot_close = false;
+                    a.tab_hot_plus = false;
+                });
+                tabs_invalidate();
+            }
+            WM_LBUTTONDOWN => {
+                let (x, y) = xy(lp);
+                end_rename(true);
+                match tab_mouse(x, y) {
+                    TabHit::Tab(i) | TabHit::Close(i) => {
+                        let on_close = matches!(tab_mouse(x, y), TabHit::Close(_));
+                        app(|a| a.tab_press = Some((i, x, y, on_close)));
+                        SetCapture(h);
+                        if !on_close {
+                            switch_tab(i);
+                        }
+                    }
+                    TabHit::Plus => new_tab(),
+                    TabHit::Empty => {}
+                }
+            }
+            WM_LBUTTONUP => {
+                let (x, y) = xy(lp);
+                let press = app(|a| a.tab_press.take());
+                let dragged = app(|a| a.tab_drag.take());
+                _ = ReleaseCapture();
+                if let Some((i, _, _, on_close)) = press {
+                    if dragged.is_none() && on_close {
+                        if let TabHit::Close(j) = tab_mouse(x, y) {
+                            if j == i {
+                                close_tab(i);
+                            }
+                        }
+                    }
+                }
+            }
+            WM_LBUTTONDBLCLK => {
+                if let TabHit::Tab(i) = tab_mouse(xy(lp).0, xy(lp).1) {
+                    begin_rename(i);
+                }
+            }
+            WM_MBUTTONUP => {
+                if let TabHit::Tab(i) | TabHit::Close(i) = tab_mouse(xy(lp).0, xy(lp).1) {
+                    close_tab(i);
+                }
+            }
+            WM_RBUTTONUP => {
+                let (x, y) = xy(lp);
+                let i = match tab_mouse(x, y) {
+                    TabHit::Tab(i) | TabHit::Close(i) => i,
+                    _ => app(|a| a.s.tab),
+                };
+                tab_menu(i, x, y);
+            }
+            WM_CAPTURECHANGED => {
+                app(|a| {
+                    a.tab_press = None;
+                    a.tab_drag = None;
+                });
+            }
+            WM_CTLCOLOREDIT => {
+                let dc = HDC(wp.0 as _);
+                SetBkColor(dc, cref(pal().card));
+                SetTextColor(dc, cref(pal().text));
+                SetDCBrushColor(dc, cref(pal().card));
+                return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
+            }
+            WM_COMMAND => match ((wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32) {
+                (ID_TAB_EDIT, EN_KILLFOCUS) => {
+                    let skip = app(|a| a.tab_rename_skip);
+                    if !skip {
+                        end_rename(true);
+                    } else {
+                        app(|a| a.tab_rename_skip = false);
+                    }
+                }
+                _ => {}
+            },
+            _ => return DefWindowProcW(h, msg, wp, lp),
+        }
+        LRESULT(0)
+    }
 }
 
 // ---------- painting ----------
@@ -4969,7 +6335,7 @@ fn default_new_name() -> String {
 }
 
 unsafe fn create_text_file() {
-    let i = app(|a| a.s.active);
+    let i = active_pane();
     let dir = app(|a| a.s.paths[i].clone());
     if !is_fs(&dir) {
         _ = MessageBeep(MB_ICONWARNING);
@@ -5113,7 +6479,7 @@ unsafe fn import_settings(text: &str) -> bool {
     s.win = win;
     s.dark = resolve_dark(s.theme);
     let lang = s.lang;
-    app(|a| a.s = s);
+    install_grids(s);
     if lang != lang_now {
         set_language(lang);
     } else {
@@ -5136,6 +6502,9 @@ fn apply_boot(s: &mut Session) {
             s.cols = vec![String::new(); MAXP];
             s.active = 0;
             s.file.clear();
+            s.tabs.clear();
+            s.tab = 0;
+            s.anchor();
         }
         1 if !s.boot_file.is_empty() => {
             if let Ok(t) = std::fs::read_to_string(&s.boot_file) {
@@ -5144,7 +6513,13 @@ fn apply_boot(s: &mut Session) {
                 s.file = file;
             }
         }
-        _ => {}
+        // 0, the default: every tab loaded from grids.json stays. Only the active one is shown.
+        _ => {
+            if s.tabs.is_empty() {
+                s.anchor();
+            }
+            s.publish();
+        }
     }
 }
 
@@ -5237,6 +6612,14 @@ unsafe fn key(m: &MSG) -> bool {
         }
         return false;
     }
+    if m.hwnd == app(|a| a.tab_edit) && app(|a| a.tab_renaming.is_some()) {
+        match VIRTUAL_KEY(m.wParam.0 as u16) {
+            VK_RETURN => end_rename(true),
+            VK_ESCAPE => end_rename(false),
+            _ => return false,
+        }
+        return true;
+    }
     if let Some(i) = pane_of(m.hwnd) {
         set_active(i);
     }
@@ -5251,7 +6634,13 @@ unsafe fn key(m: &MSG) -> bool {
     };
     let list = || view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     match VIRTUAL_KEY(m.wParam.0 as u16) {
-        VK_TAB if ctrl => cycle(if shift { -1 } else { 1 }),
+        // Ctrl+Tab used to cycle panes. It now moves between tabs; panes use Ctrl+PageDown / Ctrl+PageUp.
+        VK_T if ctrl && shift && !alt => reopen_closed_at(0),
+        VK_T if ctrl && !shift && !alt => new_tab(),
+        VK_W if ctrl && !shift && !alt => close_tab(app(|x| x.s.tab)),
+        VK_TAB if ctrl && !alt => switch_rel(if shift { -1 } else { 1 }),
+        VK_NEXT if ctrl && !alt => cycle(1),
+        VK_PRIOR if ctrl && !alt => cycle(-1),
         k if ctrl && !shift && !alt && (VK_1.0..=VK_9.0).contains(&k.0) && ((k.0 - VK_1.0) as usize) < app(|x| x.s.panes()) => {
             let i = (k.0 - VK_1.0) as usize;
             set_active(i);
@@ -5361,6 +6750,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 app(|a| a.sizing = false);
                 relayout();
                 redraw_all();
+                note_save();
             }
             WM_PAINT => paint_main(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_main covers everything
@@ -5382,6 +6772,10 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_TIMER if wp.0 == TIMER_STATUS => {
                 update_status();
                 check_dirty();
+            }
+            WM_TIMER if wp.0 == TIMER_SAVE => {
+                _ = KillTimer(Some(h), TIMER_SAVE);
+                save_session();
             }
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
@@ -5501,6 +6895,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             WM_CLOSE => {
+                _ = KillTimer(Some(h), TIMER_SAVE);
                 if app(|a| a.s.autosave && !a.s.file.is_empty()) {
                     let path = app(|a| a.s.file.clone());
                     write_session(Path::new(&path));
@@ -5510,9 +6905,8 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             WM_DESTROY => {
                 _ = KillTimer(Some(h), TIMER_STATUS);
-                for i in 0..MAXP {
-                    destroy_pane(i);
-                }
+                _ = KillTimer(Some(h), TIMER_SAVE);
+                destroy_every_pane();
                 app(|a| a.tree = None);
                 PostQuitMessage(0);
             }
@@ -5830,6 +7224,14 @@ fn main() -> Result<()> {
             lpszClassName: w!("GridsPicker"),
             ..Default::default()
         });
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(tabs_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsTabs"),
+            ..Default::default()
+        });
         UI.store(s.lang.resolve(), Ordering::Relaxed);
         let view_menu = make_menus()?;
         let main = CreateWindowExW(
@@ -5858,7 +7260,20 @@ fn main() -> Result<()> {
         let win = s.win;
         let tip_style = WS_POPUP | WINDOW_STYLE(0x01 | 0x02); // TTS_ALWAYSTIP | TTS_NOPREFIX
         let tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, tip_style, 0, 0, 0, 0, Some(main), None, None, None)?;
-        app(|a| (a.s, a.main, a.dpi, a.view_menu, a.tip) = (s, main, dpi, view_menu, tip));
+        s.anchor();
+        let ntabs = s.tabs.len().max(1);
+        app(|a| {
+            (a.s, a.main, a.dpi, a.view_menu, a.tip) = (s, main, dpi, view_menu, tip);
+            a.park = (0..ntabs).map(|_| no_panes()).collect();
+            a.park_lru.clear();
+        });
+        // Match the file we just loaded so opening the window does not rewrite grids.json.
+        let seeded = app(|a| store::sync_text(&a.s));
+        LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
+        let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
+        let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
+        _ = ShowWindow(tab_edit, SW_HIDE);
+        app(|a| (a.tabs_hwnd, a.tab_edit) = (tabs_hwnd, tab_edit));
         let bar_ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         let mut bars = [HWND::default(); 2];
         for b in &mut bars {
@@ -6122,6 +7537,178 @@ mod tests {
         assert_eq!((many, calls), (Err(Pick::TooMany), 0));
         assert_eq!(collect_all(0, |_| Some(String::new())), Err(Pick::Empty));
         assert_eq!(collect_all(5, |k| (k != 2).then(|| k.to_string())), Err(Pick::Unreadable));
+    }
+
+    #[test]
+    fn tabs_session() {
+        let mut s = Session::default();
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\one".into();
+        s.views[0] = (4, 16);
+        s.anchor();
+        let mut other = Session::default();
+        other.set_heights(vec![2, 2]);
+        other.paths[1] = r"D:\two".into();
+        other.views[1] = (3, 16);
+        other.cols[1] = "{g}/1=80;".into();
+        other.active = 1;
+        s.tabs.push(Tab::from_live(&other, "Work".into(), true, vec!["*.pdf".into()]));
+        assert_eq!(Session::parse(&s.to_ini()), s);
+        assert!(s.snapshot().contains("\"locked\":true") || s.snapshot().contains("\"locked\": true"));
+        assert!(!s.snapshot().contains("win="));
+
+        let old = Session::parse("cols=1,3\np0=C:\\a\nactive=1\n");
+        assert_eq!((old.tabs.len(), old.tabs[0].name.as_str(), old.tabs[0].locked), (1, "1", false));
+        assert_eq!((old.heights.clone(), old.paths[0].as_str(), old.active), (vec![1, 3], r"C:\a", 1));
+        assert_eq!(next_tab_name(&old.tabs), "2");
+        assert!(!can_close_tab(&old.tabs, 0));
+
+        let mut tabs = old.tabs.clone();
+        tabs.push(Tab::from_live(&Session::default(), "2".into(), false, vec![]));
+        tabs[0].locked = true;
+        assert!(!can_close_tab(&tabs, 0) && can_close_tab(&tabs, 1));
+        assert_eq!(close_other_indexes(&tabs, 0), vec![1]);
+        assert!(close_other_indexes(&tabs, 1).is_empty());
+        assert_eq!(duplicate_name(&tabs, "2"), "3");
+        assert_eq!(duplicate_name(&tabs, "Work"), "Work (2)");
+        let mut again = tabs.clone();
+        again.push(Tab::from_live(&Session::default(), "Work (2)".into(), false, vec![]));
+        assert_eq!(duplicate_name(&again, "Work"), "Work (3)");
+
+        let mut names = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+        reorder_vec(&mut names, 0, 2);
+        assert_eq!(names, ["2", "3", "1"]);
+        assert_eq!(moved_active(0, 0, 2), 2);
+        assert_eq!(moved_active(0, 2, 0), 1);
+        assert_eq!(moved_active(1, 0, 2), 0);
+
+        let lay = tab_lay(800, 3, &[false, true, false], 96);
+        assert_eq!(lay.body.len(), 3);
+        assert_eq!(lay.body[0].right - lay.body[0].left, 90);
+        let hidpi = tab_lay(1600, 3, &[false, true, false], 192);
+        assert_eq!(hidpi.body[0].right - hidpi.body[0].left, 180);
+        let crowd = tab_lay(120, 8, &[false; 8], 96);
+        let cw = crowd.body[0].right - crowd.body[0].left;
+        assert!(cw < 90 && cw >= 28);
+        assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
+        assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
+        assert!(lay.close[0].is_some() && lay.close[1].is_none() && lay.close[2].is_some());
+        let c = lay.close[0].unwrap();
+        assert!(c.left >= lay.body[0].left && c.right <= lay.body[0].right);
+        assert!(matches!(tab_hit(&lay, lay.plus.left + 2, lay.plus.top + 2), TabHit::Plus));
+        assert!(matches!(tab_hit(&lay, c.left + 1, c.top + 1), TabHit::Close(0)));
+        assert!(matches!(tab_hit(&lay, lay.body[1].left + 4, lay.body[1].top + 4), TabHit::Tab(1)));
+
+        let junk = Session::parse("cols=1\ntabs=[{\"id\":\"later\"}]\n");
+        assert_eq!((junk.tabs.len(), junk.heights.clone(), junk.tabs[0].name.as_str()), (1, vec![1], "1"));
+
+        let mut wide = other.clone();
+        wide.tabs.push(Tab::from_live(&Session::default(), "B".into(), false, vec![]));
+        wide.tab = 1;
+        wide.anchor();
+        let back = Session::parse(&wide.to_ini());
+        assert_eq!(back, wide);
+        assert_eq!(back.tab, 1);
+        assert_eq!(back.tabs[0].name, "1");
+        assert_eq!((back.heights.clone(), back.paths[1].as_str(), back.active), (vec![2, 2], r"D:\two", 1));
+    }
+
+    #[test]
+    fn three_tabs_restore_from_json() {
+        assert_eq!(Session::default().boot, 0);
+        let mut s = Session::default();
+        s.win = Some([10, 20, 1100, 700, 0]);
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\alpha".into();
+        s.views[0] = (4, 16);
+        s.cols[0] = "{g}/1=40;".into();
+        s.anchor();
+        s.tabs[0].name = "Docs".into();
+        s.tabs[0].filters[0] = "*.txt".into();
+
+        let mut pics = Session::default();
+        pics.set_heights(vec![2]);
+        pics.paths[0] = r"D:\beta".into();
+        pics.paths[1] = r"D:\gamma".into();
+        pics.views[1] = (3, 32);
+        pics.cols[1] = "{g}/2=80;".into();
+        pics.active = 1;
+        s.tabs.push(Tab::from_live(&pics, "Pics".into(), true, vec!["*.png".into(), "*.jpg".into()]));
+
+        let mut work = Session::default();
+        work.set_heights(vec![1, 1]);
+        work.paths[0] = r"E:\delta".into();
+        work.paths[1] = r"E:\epsilon".into();
+        s.tabs.push(Tab::from_live(&work, "Work".into(), false, vec![]));
+        s.tab = 2;
+        s.publish();
+
+        let text = store::sync_text(&s);
+        let mut back = store::import_text(&text).unwrap();
+        apply_boot(&mut back);
+        assert_eq!(back.boot, 0);
+        assert_eq!(back.tabs.len(), 3);
+        assert_eq!(back.tab, 2);
+        assert_eq!(back.win, Some([10, 20, 1100, 700, 0]));
+        assert_eq!(back.tabs[0].name, "Docs");
+        assert!(!back.tabs[0].locked);
+        assert_eq!(back.tabs[0].paths[0], r"C:\alpha");
+        assert_eq!(back.tabs[0].filters[0], "*.txt");
+        assert_eq!(back.tabs[0].cols[0], "{g}/1=40;");
+        assert_eq!(back.tabs[0].views[0], (4, 16));
+        assert!(back.tabs[1].locked);
+        assert_eq!(back.tabs[1].name, "Pics");
+        assert_eq!((back.tabs[1].paths[0].as_str(), back.tabs[1].paths[1].as_str()), (r"D:\beta", r"D:\gamma"));
+        assert_eq!(back.tabs[1].filters[1], "*.jpg");
+        assert_eq!(back.tabs[1].cols[1], "{g}/2=80;");
+        assert_eq!(back.tabs[1].views[1], (3, 32));
+        assert_eq!((back.tabs[1].heights.clone(), back.tabs[1].active), (vec![2], 1));
+        assert_eq!(back.tabs[2].name, "Work");
+        assert_eq!((back.paths[0].as_str(), back.paths[1].as_str()), (r"E:\delta", r"E:\epsilon"));
+        assert_eq!(back.heights, vec![1, 1]);
+
+        // A different startup mode still stores the whole tab list. Only the next launch's boot step uses it.
+        s.boot = 2;
+        let forced = store::sync_text(&s);
+        assert!(forced.contains("\"Docs\"") && forced.contains("\"Pics\"") && forced.contains("\"Work\""));
+        let mut wiped = store::import_text(&forced).unwrap();
+        assert_eq!(wiped.tabs.len(), 3);
+        apply_boot(&mut wiped);
+        assert_eq!((wiped.boot, wiped.tabs.len(), wiped.tabs[0].name.as_str()), (2, 1, "1"));
+    }
+
+    #[test]
+    fn tab_color_persists_and_one_tab_session_drops_the_others() {
+        let mut s = Session::default();
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\docs".into();
+        s.anchor();
+        s.tabs[0].name = "Docs".into();
+        s.tabs[0].color = Some(0x3D7EE0);
+        let mut pics = Session::default();
+        pics.set_heights(vec![1]);
+        pics.paths[0] = r"D:\pics-only".into();
+        s.tabs.push(Tab::from_live(&pics, "Pics".into(), true, vec![]));
+        s.tabs[1].color = Some(0xE15A4A);
+
+        let back = store::import_text(&store::sync_text(&s)).unwrap();
+        assert_eq!(back.tabs[0].color, Some(0x3D7EE0));
+        assert_eq!(back.tabs[1].color, Some(0xE15A4A));
+        assert_eq!(back.tabs[0].paths[0], r"C:\docs");
+        let again = Session::parse(&s.to_ini());
+        assert_eq!((again.tabs[0].color, again.tabs[1].color), (Some(0x3D7EE0), Some(0xE15A4A)));
+
+        let old = store::import_text(r#"{"version":1,"tabs":[{"name":"1","locked":false,"active":true,"layout":{"columns":[1]},"panes":[{"index":0,"path":"C:\\plain"}]}]}"#).unwrap();
+        assert_eq!(old.tabs[0].color, None);
+
+        let file = tab_session_text(&s, 0).unwrap();
+        let one = Session::parse(&file);
+        assert_eq!(one.tabs.len(), 1);
+        assert_eq!(one.tabs[0].name, "Docs");
+        assert_eq!(one.tabs[0].color, Some(0x3D7EE0));
+        assert_eq!(one.paths[0], r"C:\docs");
+        assert!(!file.contains("pics-only"));
+        assert!(file.contains("3D7EE0"));
     }
 
     #[test]

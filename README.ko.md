@@ -45,7 +45,11 @@ Windows용 빠르고 가벼운 다중 패널 파일 관리자입니다. 한 창�
 
 | 키 | 동작 |
 | --- | --- |
-| Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 패널 |
+| Ctrl+T | 새 탭 |
+| Ctrl+W | 탭 닫기 (잠긴 탭은 그대로) |
+| Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
+| Ctrl+Shift+T | 마지막으로 닫은 탭 다시 열기 |
+| Ctrl+PageDown / Ctrl+PageUp | 다음 / 이전 패널 |
 | Ctrl+1 … Ctrl+9 | 1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, 아주 좁은 패널에서는 생략) |
 | Alt+Shift+← / → / ↑ / ↓ | 왼쪽·오른쪽·위·아래 패널로 이동 |
 | Alt+← / Alt+→ | 뒤로 / 앞으로 |

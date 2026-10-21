@@ -145,7 +145,7 @@ struct Spec {
 
 const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Lang },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore the last layout and folders, or open a chosen session.", "마지막 배치와 폴더를 복원하거나 정해진 세션을 열어요.", "前回のレイアウトとフォルダーを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
+    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("If it is already open, bring that window forward.", "이미 켜져 있으면 그 창을 앞으로 가져와요.", "すでに起動していれば、そのウィンドウを前面に出します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
 ];
@@ -191,7 +191,11 @@ struct Kr {
 }
 
 const KEYS: &[Kr] = &[
-    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Next / previous pane", "다음 / 이전 패널", "次 / 前のペイン"), keys: &["Ctrl+Tab", "Ctrl+Shift+Tab"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("New tab", "새 탭", "新しいタブ"), keys: &["Ctrl+T"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Close tab", "탭 닫기", "タブを閉じる"), keys: &["Ctrl+W"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Next / previous tab", "다음 / 이전 탭", "次 / 前のタブ"), keys: &["Ctrl+Tab", "Ctrl+Shift+Tab"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), keys: &["Ctrl+Shift+T"] },
+    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Next / previous pane", "다음 / 이전 패널", "次 / 前のペイン"), keys: &["Ctrl+PageDown", "Ctrl+PageUp"] },
     Kr { cat: s("Pane", "패널", "ペイン"), act: s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), keys: &["Ctrl+1 … Ctrl+9"] },
     Kr { cat: s("Move", "이동", "移動"), act: s("Left / right / above / below", "왼쪽 / 오른쪽 / 위 / 아래", "左 / 右 / 上 / 下"), keys: &["Alt+Shift+←", "Alt+Shift+→", "Alt+Shift+↑", "Alt+Shift+↓"] },
     Kr { cat: s("Move", "이동", "移動"), act: s("Back / forward", "뒤로 / 앞으로", "戻る / 進む"), keys: &["Alt+←", "Alt+→"] },
