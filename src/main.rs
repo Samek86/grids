@@ -3,7 +3,7 @@
 // thumbnails, columns etc. come from Windows itself.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -20,7 +20,7 @@ use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::*;
-use windows::Win32::System::SystemServices::SFGAO_FOLDER;
+use windows::Win32::System::SystemServices::{MODIFIERKEYS_FLAGS, SFGAO_FOLDER};
 use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows::Win32::UI::Controls::{
@@ -755,6 +755,8 @@ struct App {
     grid_closed: Option<Instant>,
     zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
     note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
+    drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
+    drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
 }
 
 thread_local! {
@@ -797,6 +799,8 @@ thread_local! {
         grid_closed: None,
         zoom: None,
         note: None,
+        drop_hover: HWND::default(),
+        drop_open: None,
     });
 }
 
@@ -954,7 +958,7 @@ unsafe fn buffered(h: HWND, draw: impl FnOnce(HDC, RECT)) {
 fn header_colors(pane: HWND) -> (u32, u32) {
     app(|a| {
         let active = a.panes.get(a.s.active).and_then(|p| p.as_ref()).is_some_and(|p| p.hwnd == pane);
-        if active {
+        if active || a.drop_hover == pane {
             (a.s.accent_now(), on_color(a.s.accent_now()))
         } else {
             (pal().card, pal().text)
@@ -1604,6 +1608,7 @@ unsafe extern "system" fn list_floor_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPA
 }
 
 const WM_NARROW_AGAIN: u32 = WM_APP + 41;
+const WM_DROP_OPEN: u32 = WM_APP + 42;
 static NARROWING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1); // column << 32 | width
 
 
@@ -1818,6 +1823,106 @@ impl ICommDlgBrowser_Impl for Host_Impl {
     }
 }
 
+// A folder dropped on a pane's top bar (its fields and buttons too: OLE walks up to the pane) opens there.
+// Never MOVE: a shell source deletes what it moved. LINK or COPY leaves the source alone.
+fn drop_pick(allowed: DROPEFFECT) -> DROPEFFECT {
+    [DROPEFFECT_LINK, DROPEFFECT_COPY].into_iter().find(|e| allowed.0 & e.0 != 0).unwrap_or(DROPEFFECT_NONE)
+}
+
+unsafe fn drop_items(d: &Ref<IDataObject>) -> Option<IShellItemArray> {
+    let arr: IShellItemArray = SHCreateShellItemArrayFromDataObject(d.as_ref()?).ok()?;
+    (arr.GetCount().unwrap_or(0) > 0).then_some(arr)
+}
+
+#[implement(IDropTarget)]
+struct PaneDrop {
+    slot: usize,
+    hwnd: HWND,
+    ok: Cell<bool>, // the data being dragged holds shell items
+    helper: Option<IDropTargetHelper>,
+}
+
+impl PaneDrop {
+    // sets the effect this drop would get, and tints the header only while it isn't NONE
+    unsafe fn pick(&self, effect: *mut DROPEFFECT) {
+        *effect = if self.ok.get() { drop_pick(*effect) } else { DROPEFFECT_NONE };
+        self.hover(*effect != DROPEFFECT_NONE);
+    }
+    unsafe fn hover(&self, on: bool) {
+        let h = self.hwnd;
+        let changed = app(|a| {
+            let was = a.drop_hover == h;
+            if on {
+                a.drop_hover = h;
+            } else if was {
+                a.drop_hover = HWND::default();
+            }
+            was != on
+        });
+        if changed {
+            repaint_header(h);
+        }
+    }
+    // the folder (or a file's folder) is queued, not opened: a drag from this pane's own list is still running
+    unsafe fn queue(&self, d: &Ref<IDataObject>) -> bool {
+        let Some(item) = drop_items(d).and_then(|a| a.GetItemAt(0).ok()) else { return false };
+        let is_dir = item.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
+        let Some(folder) = (if is_dir { Some(item) } else { item.GetParent().ok() }) else { return false };
+        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot, folder)));
+        if PostMessageW(Some(self.hwnd), WM_DROP_OPEN, WPARAM(0), LPARAM(0)).is_ok() {
+            return true;
+        }
+        _ = app(|a| a.drop_open.take());
+        false
+    }
+}
+
+impl IDropTarget_Impl for PaneDrop_Impl {
+    fn DragEnter(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            self.ok.set(drop_items(&d).is_some());
+            self.pick(effect);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragEnter(self.hwnd, d.as_ref(), &POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
+    }
+    fn DragOver(&self, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            self.pick(effect);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragOver(&POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
+    }
+    fn DragLeave(&self) -> Result<()> {
+        unsafe {
+            self.hover(false);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragLeave();
+            }
+        }
+        Ok(())
+    }
+    fn Drop(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            let allowed = *effect;
+            *effect = DROPEFFECT_NONE;
+            self.hover(false);
+            let eff = drop_pick(allowed);
+            if eff != DROPEFFECT_NONE && self.queue(&d) {
+                *effect = eff;
+            }
+            if let Some(hp) = &self.helper {
+                _ = hp.Drop(d.as_ref(), &POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------- shell tree (sidebar) ----------
 
 #[implement(INameSpaceTreeControlEvents)]
@@ -1950,18 +2055,31 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     eb.SetOptions(EBO_NOBORDER)?;
     let ev: IExplorerBrowserEvents = Events(i).into();
     let cookie = eb.Advise(&ev)?;
+    let helper = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok(); // drag image over the bar
+    let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
+    _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
     Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None })
 }
 
 unsafe fn destroy_pane(i: usize) {
     save_view(i);
-    if let Some(p) = app(|a| a.panes[i].take()) {
+    let (p, queued) = app(|a| {
+        let p = a.panes[i].take();
+        if p.as_ref().is_some_and(|p| p.hwnd == a.drop_hover) {
+            a.drop_hover = HWND::default();
+        }
+        let queued = if a.drop_open.as_ref().is_some_and(|d| d.1 == i) { a.drop_open.take() } else { None };
+        (p, queued)
+    });
+    if let Some(p) = p {
+        _ = RevokeDragDrop(p.hwnd);
         _ = p.eb.Unadvise(p.cookie);
         _ = IUnknown_SetSite(&p.eb, None);
         _ = p.eb.Destroy();
         _ = DestroyWindow(p.hwnd);
     }
+    drop(queued);
     if let Ok(mut f) = FILTERS.lock() {
         f[i].clear();
     }
@@ -2916,7 +3034,9 @@ unsafe fn paint_main(h: HWND) {
 unsafe fn paint_pane(h: HWND) {
     let (active, i, dpi, icon_font, small_font, accent) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
-        (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
+        // a drop target-to-be looks active too
+        let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
+        (active, i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
     });
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
@@ -3991,6 +4111,22 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 }
             }
             WM_PAINT => paint_pane(h),
+            // folder dropped on the top bar: still this pane's? then open it here, as ⇄ does
+            WM_DROP_OPEN => {
+                let queued = app(|a| {
+                    let mine = a.drop_open.as_ref().is_some_and(|(w, i, _)| *w == h && a.panes[*i].as_ref().is_some_and(|p| p.hwnd == h));
+                    if mine {
+                        a.drop_open.take()
+                    } else {
+                        None
+                    }
+                });
+                if let Some((_, i, item)) = queued {
+                    browse_item(i, &item);
+                    set_active(i);
+                    focus_view(i);
+                }
+            }
             WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
             WM_DRAWITEM => {
                 draw_button(&*(lp.0 as *const DRAWITEMSTRUCT));
