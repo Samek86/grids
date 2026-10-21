@@ -80,6 +80,8 @@ struct PaneJson {
     view: Vec<i32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     columns: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    filter: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -89,8 +91,8 @@ struct FavJson {
     name: String,
 }
 
-/// Version 1. `tabs`, `keybindings` and `favorites_tree` are reserved.
-/// Unknown keys land in `extra` and are written back.
+/// Version 1. `tabs` is the tab list (each tab is one pane grid). `keybindings` and
+/// `favorites_tree` stay reserved. Unknown keys land in `extra` and are written back.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SettingsFile {
     #[serde(default = "v1")]
@@ -216,9 +218,13 @@ impl SettingsFile {
     }
 
     fn from_session(s: &Session) -> Self {
+        let shown = s.view_tabs();
+        let at = s.tab.min(shown.len().saturating_sub(1));
+        let filters = shown.get(at).map(|t| t.filters.clone()).unwrap_or_default();
         let mut panes = Vec::new();
         for i in 0..MAXP {
-            if s.paths[i].is_empty() && s.views[i] == (0, 0) && s.cols[i].is_empty() {
+            let filter = filters.get(i).cloned().unwrap_or_default();
+            if s.paths[i].is_empty() && s.views[i] == (0, 0) && s.cols[i].is_empty() && filter.is_empty() {
                 continue;
             }
             panes.push(PaneJson {
@@ -226,6 +232,7 @@ impl SettingsFile {
                 path: s.paths[i].clone(),
                 view: if s.views[i].0 == 0 { Vec::new() } else { vec![s.views[i].0, s.views[i].1] },
                 columns: s.cols[i].clone(),
+                filter,
             });
         }
         let favorites = s.favs.iter().map(|f| {
@@ -266,7 +273,7 @@ impl SettingsFile {
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
-            tabs: Vec::new(),
+            tabs: serde_json::from_str(&super::tabs_json(&shown, at)).unwrap_or_default(),
             keybindings: Map::new(),
             favorites_tree: Vec::new(),
             extra: Map::new(),
@@ -274,11 +281,11 @@ impl SettingsFile {
     }
 
     /// Keep a newer file's version and any keys this build does not edit.
+    /// `tabs` is this build's: the session just wrote it.
     fn merge_forward(&mut self, previous: &SettingsFile) {
         if previous.version >= 1 {
             self.version = previous.version;
         }
-        self.tabs = previous.tabs.clone();
         self.keybindings = previous.keybindings.clone();
         self.favorites_tree = previous.favorites_tree.clone();
         self.extra = previous.extra.clone();
@@ -314,6 +321,12 @@ impl SettingsFile {
                 s.views[p.index] = (*m, 0);
             }
             s.cols[p.index] = p.columns.clone();
+        }
+        let mut filters = vec![String::new(); MAXP];
+        for p in &self.panes {
+            if p.index < MAXP {
+                filters[p.index] = p.filter.clone();
+            }
         }
         s.accent = parse_color(&self.accent).unwrap_or(s.accent);
         s.accent_dark = parse_color(&self.accent_dark).unwrap_or(s.accent_dark);
@@ -352,6 +365,16 @@ impl SettingsFile {
             if f.name.trim().is_empty() { f.path.trim().to_string() } else { format!("{}\t{}", f.path.trim(), f.name.trim()) }
         }).collect();
         s.recent = self.recent.iter().filter(|r| !r.trim().is_empty()).take(RECENT).cloned().collect();
+        if self.tabs.is_empty() {
+            s.tabs.clear();
+            s.tab = 0;
+            s.anchor();
+            if let Some(t) = s.tabs.get_mut(0) {
+                t.filters = filters;
+            }
+        } else {
+            super::adopt_tabs(&mut s, &self.tabs);
+        }
         s
     }
 }
@@ -596,7 +619,11 @@ mod tests {
         assert_eq!(loaded, parsed);
         let saved: Value = serde_json::from_str(&sync_text(&loaded)).unwrap();
         assert_eq!(saved["version"], 2);
-        assert_eq!(saved["tabs"][0]["id"], "later");
+        assert_eq!(saved["tabs"][0]["name"], "1");
+        assert_eq!(saved["tabs"][0]["locked"], false);
+        assert_eq!(saved["tabs"][0]["layout"]["columns"][0], 1);
+        assert_eq!(saved["tabs"][0]["layout"]["columns"][1], 3);
+        assert!(saved["tabs"][0]["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\a=b\\폴더"));
         assert_eq!(saved["keybindings"]["copy"], "Ctrl+C");
         assert_eq!(saved["favorites_tree"][0], "group");
         assert_eq!(saved["future"]["keep"], true);
@@ -608,6 +635,36 @@ mod tests {
         let ini = import_text(&parsed.to_ini()).unwrap();
         assert_eq!(ini, parsed);
         assert!(import_text("{").is_err());
+    }
+
+    #[test]
+    fn tabs_round_trip_in_json() {
+        let mut s = Session::default();
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\one".into();
+        s.anchor();
+        let mut other = Session::default();
+        other.set_heights(vec![2]);
+        other.paths[0] = r"D:\two".into();
+        s.tabs.push(crate::Tab::from_live(&other, "Notes".into(), true, vec!["*.txt".into()]));
+        let back = adopt(&sync_text(&s)).unwrap();
+        assert_eq!(back, s);
+        assert!(back.tabs[1].locked);
+        assert_eq!(back.tabs[1].filters[0], "*.txt");
+        assert_eq!(back.tabs[1].paths[0], r"D:\two");
+        assert_eq!(back.paths[0], r"C:\one");
+
+        let old = r#"{"version":1,"layout":{"columns":[1,3],"active":2},"panes":[{"index":1,"path":"C:\\z","filter":"*.pdf"}]}"#;
+        let loaded = adopt(old).unwrap();
+        assert_eq!(loaded.tabs.len(), 1);
+        assert_eq!(loaded.tabs[0].name, "1");
+        assert!(!loaded.tabs[0].locked);
+        assert_eq!(loaded.paths[1], r"C:\z");
+        assert_eq!(loaded.tabs[0].filters[1], "*.pdf");
+        assert_eq!((loaded.heights.clone(), loaded.active), (vec![1, 3], 2));
+        let again: Value = serde_json::from_str(&sync_text(&loaded)).unwrap();
+        assert_eq!(again["tabs"][0]["name"], "1");
+        assert_eq!(again["tabs"][0]["panes"][0]["filter"], "*.pdf");
     }
 
     #[test]

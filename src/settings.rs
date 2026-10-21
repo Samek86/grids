@@ -191,7 +191,11 @@ struct Kr {
 }
 
 const KEYS: &[Kr] = &[
-    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Next / previous pane", "다음 / 이전 패널", "次 / 前のペイン"), keys: &["Ctrl+Tab", "Ctrl+Shift+Tab"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("New tab", "새 탭", "新しいタブ"), keys: &["Ctrl+T"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Close tab", "탭 닫기", "タブを閉じる"), keys: &["Ctrl+W"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Next / previous tab", "다음 / 이전 탭", "次 / 前のタブ"), keys: &["Ctrl+Tab", "Ctrl+Shift+Tab"] },
+    Kr { cat: s("Tab", "탭", "タブ"), act: s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), keys: &["Ctrl+Shift+T"] },
+    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Next / previous pane", "다음 / 이전 패널", "次 / 前のペイン"), keys: &["Ctrl+PageDown", "Ctrl+PageUp"] },
     Kr { cat: s("Pane", "패널", "ペイン"), act: s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), keys: &["Ctrl+1 … Ctrl+9"] },
     Kr { cat: s("Move", "이동", "移動"), act: s("Left / right / above / below", "왼쪽 / 오른쪽 / 위 / 아래", "左 / 右 / 上 / 下"), keys: &["Alt+Shift+←", "Alt+Shift+→", "Alt+Shift+↑", "Alt+Shift+↓"] },
     Kr { cat: s("Move", "이동", "移動"), act: s("Back / forward", "뒤로 / 앞으로", "戻る / 進む"), keys: &["Alt+←", "Alt+→"] },
