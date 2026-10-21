@@ -162,6 +162,7 @@ pub(crate) fn load_hit(g: &LoadGeo, x: i32, y: i32) -> Option<usize> {
 
 pub(crate) extern "system" fn load_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
         let g = app(|a| load_geo(a.cards.len(), a.dpi));
         match msg {
             WM_PAINT => paint_load(h),

@@ -15,6 +15,10 @@ pub(crate) fn logfont(face: &str, px: i32) -> LOGFONTW {
 
 // Windows' own UI font at this DPI (no custom fonts: they only reached our chrome and cost paint time),
 // plus the MDL2 icon font for the buttons. Pushed to every edit; also used on DPI change.
+pub(crate) unsafe fn apply_font_all() {
+    across_windows(|| apply_font());
+}
+
 pub(crate) unsafe fn apply_font() {
     let dpi = app(|a| a.dpi);
     let mut ncm = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };

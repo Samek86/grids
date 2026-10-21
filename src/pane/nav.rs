@@ -257,6 +257,11 @@ pub(crate) unsafe fn apply_filter(i: usize) {
     let Some(f) = pane_ctl(i, ID_FILTER) else { return };
     let spec = filter_spec(&text_of(f));
     let changed = FILTERS.lock().map(|mut fl| std::mem::replace(&mut fl[i], spec.clone()) != spec).unwrap_or(false);
+    if let Some(sv) = view_of::<IShellView>(i) {
+        if let Ok(h) = sv.GetWindow() {
+            note_filter_view(h, &spec);
+        }
+    }
     if let (true, Some(sv)) = (changed, view_of::<IShellView>(i)) {
         _ = sv.Refresh(); // re-enumerates, asking IncludeObject again
     }
@@ -497,7 +502,8 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let Some((h, eb, view, cols)) = app(|a| {
         let fs = is_fs(&parse);
         let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
-        visit(&mut a.s.recent, &old, &a.s.paths[i]);
+        let path = a.s.paths[i].clone();
+        visit(&mut a.s.recent, &old, &path);
         let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
@@ -543,6 +549,11 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         }
     }
     hook_ctx(i);
+    if let Some(sv) = view_of::<IShellView>(i) {
+        if let Ok(hw) = sv.GetWindow() {
+            note_filter_view(hw, &filter_of(i));
+        }
+    }
     note_save();
 }
 
@@ -597,7 +608,13 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         Ok(())
     }
     fn IncludeObject(&self, sv: Ref<IShellView>, pidl: *const ITEMIDLIST) -> Result<()> {
-        let spec = filter_of(self.0);
+        // The view hwnd map is process-wide. filter_of() is only the window this thread last bound.
+        let spec = unsafe {
+            match sv.ok().ok().and_then(|v| v.GetWindow().ok()) {
+                Some(h) => filter_for_view(h).unwrap_or_default(),
+                None => filter_of(self.0),
+            }
+        };
         if spec.is_empty() {
             return Ok(());
         }

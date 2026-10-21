@@ -29,22 +29,26 @@ fn main() -> Result<()> {
         // Read first so single=0 can opt out of handing arguments to the running window.
         // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
         let mut s = store::load();
-        if session_arg(&args).is_none() && args.is_empty() {
+        let boot = s.boot;
+        let restore = session_arg(&args).is_none() && args.is_empty();
+        if restore {
             apply_boot(&mut s);
+        }
+        // Extra windows belong to "restore last state". A session file, paths, or another startup mode do not.
+        if !restore || boot != 0 {
+            stash_windows(Vec::new());
         }
         s.dark = resolve_dark(s.theme);
         if s.single {
             if let Some(prev) = running_instance() {
-                if !args.is_empty() {
-                    let data: Vec<u16> = args.join("\n").encode_utf16().collect();
-                    let cd = CopyData { dw: COPY_ID, cb: (data.len() * 2) as u32, lp: data.as_ptr() as _ };
-                    let lp = LPARAM(&cd as *const CopyData as isize);
-                    SendMessageTimeoutW(prev, WM_COPYDATA, WPARAM(0), lp, SMTO_ABORTIFHUNG, 5000, None);
-                }
-                if IsIconic(prev).as_bool() {
-                    _ = ShowWindow(prev, SW_RESTORE);
-                }
-                _ = SetForegroundWindow(prev);
+                // Empty arguments still open a window. The running process is the one that can take focus.
+                let data: Vec<u16> = args.join("\n").encode_utf16().collect();
+                let cd = CopyData { dw: COPY_ID, cb: (data.len() * 2) as u32, lp: data.as_ptr() as _ };
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(prev, Some(&mut pid));
+                _ = AllowSetForegroundWindow(pid);
+                let lp = LPARAM(&cd as *const CopyData as isize);
+                SendMessageTimeoutW(prev, WM_COPYDATA, WPARAM(0), lp, SMTO_ABORTIFHUNG, 5000, None);
                 return Ok(());
             }
         }
@@ -115,82 +119,13 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         UI.store(s.lang.resolve(), Ordering::Relaxed);
-        let view_menu = make_menus()?;
-        let main = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            w!("GridsMain"),
-            w!("Grids"),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            1400,
-            900,
-            None,
-            None,
-            Some(hinst),
-            None,
-        )?;
-        // caption in the ground colour, so title bar and toolbar read as one surface
-        let caption = cref(pal().bg);
-        _ = DwmSetWindowAttribute(main, DWMWA_CAPTION_COLOR, &caption as *const _ as _, 4);
-        let square = DWMWCP_DONOTROUND;
-        _ = DwmSetWindowAttribute(main, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
-        let dpi = GetDpiForWindow(main) as i32;
-        if s.side <= 0 {
-            s.side = 240 * dpi / 96;
-        }
-        let win = s.win;
-        let tip_style = WS_POPUP | WINDOW_STYLE(0x01 | 0x02); // TTS_ALWAYSTIP | TTS_NOPREFIX
-        let tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, tip_style, 0, 0, 0, 0, Some(main), None, None, None)?;
-        s.anchor();
-        let ntabs = s.tabs.len().max(1);
-        app(|a| {
-            (a.s, a.main, a.dpi, a.view_menu, a.tip) = (s, main, dpi, view_menu, tip);
-            a.park = (0..ntabs).map(|_| no_panes()).collect();
-            a.park_lru.clear();
-        });
-        // Match the file we just loaded so opening the window does not rewrite grids.json.
-        let seeded = app(|a| store::sync_text(&a.s));
-        LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
-        let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
-        let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
-        _ = ShowWindow(tab_edit, SW_HIDE);
-        app(|a| (a.tabs_hwnd, a.tab_edit) = (tabs_hwnd, tab_edit));
-        let bar_ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-        let mut bars = [HWND::default(); 2];
-        for b in &mut bars {
-            *b = CreateWindowExW(bar_ex, w!("GridsBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None)?;
-            _ = SetLayeredWindowAttributes(*b, COLORREF(0), 170, LWA_ALPHA);
-        }
-        app(|a| a.bars = bars);
-        for (id, label, hint) in toolbar_tips() {
-            add_tip(child(main, w!("BUTTON"), PCWSTR(HSTRING::from(label).as_ptr()), BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0), id, HFONT::default()), hint);
-        }
-        if let Ok((t, th)) = create_tree(main) {
-            app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
-        }
-        apply_theme();
-        apply_font();
-        match win {
-            Some([l, t, r, b, max]) => {
-                let wp = WINDOWPLACEMENT {
-                    length: size_of::<WINDOWPLACEMENT>() as u32,
-                    showCmd: if max != 0 { SW_SHOWMAXIMIZED.0 as u32 } else { SW_SHOWNORMAL.0 as u32 },
-                    rcNormalPosition: RECT { left: l, top: t, right: r, bottom: b },
-                    ..Default::default()
-                };
-                _ = SetWindowPlacement(main, &wp);
-            }
-            None => _ = ShowWindow(main, SW_SHOWNORMAL),
-        }
-        relayout();
+        let main = open_window(s)?;
         apply_ext(app(|a| a.s.ext));
-        focus_view(app(|a| a.s.active));
-        let file = app(|a| a.s.file.clone());
-        let base = std::fs::read_to_string(&file).ok().map(|t| Session::parse(&t));
-        app(|a| a.base = Some(base.unwrap_or_else(|| a.s.clone())));
-        refresh_save_button();
-        SetTimer(Some(main), TIMER_STATUS, 300, None);
+        if restore && boot != 0 {
+            save_session();
+        }
+        // Other saved windows open after this one is on screen, so the first paint is one window.
+        SetTimer(Some(main), TIMER_WINS, 50, None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

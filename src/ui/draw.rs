@@ -262,10 +262,11 @@ pub(crate) unsafe fn check_dirty() {
         save_view(i);
     }
     let changed = app(|a| {
+        let (n, cols) = (a.s.panes(), a.s.cols.clone());
         if let Some(b) = a.base.as_mut() {
-            for i in 0..a.s.panes() {
+            for i in 0..n {
                 if b.cols[i].is_empty() {
-                    b.cols[i] = a.s.cols[i].clone();
+                    b.cols[i] = cols[i].clone();
                 }
             }
         }

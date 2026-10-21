@@ -228,7 +228,7 @@ pub(crate) unsafe fn update_status() {
         (!j.target.is_empty()).then_some((j.bytes, j.done, j.partial))
     };
     let Some(rc) = app(|a| {
-        let (head, size, tail) = &a.status_base;
+        let (head, size, tail) = a.status_base.clone();
         let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
         // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
         a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
