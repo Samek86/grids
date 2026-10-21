@@ -255,6 +255,17 @@ const ICON_FILTER: &str = "\u{E71C}";
 const ICON_LOCK: &str = "\u{E72E}";
 const ICON_CLOSE: &str = "\u{E711}";
 const ICON_PLUS: &str = "\u{E710}";
+/// Tab stripe colours, 0xRRGGBB. Chosen so a thin bar and a light tint read on both themes.
+const TAB_COLORS: [(u32, &str, &str, &str); 8] = [
+    (0xE15A4A, "Red", "빨강", "赤"),
+    (0xE8943A, "Orange", "주황", "オレンジ"),
+    (0xC49212, "Yellow", "노랑", "黄"),
+    (0x3EAE6E, "Green", "초록", "緑"),
+    (0x2A9D9A, "Teal", "청록", "ティール"),
+    (0x3D7EE0, "Blue", "파랑", "青"),
+    (0x8A5CD0, "Purple", "보라", "紫"),
+    (0xD45A8C, "Pink", "분홍", "ピンク"),
+];
 const CLOSED_KEEP: usize = 10;
 const ID_TAB_EDIT: i32 = 208;
 
@@ -367,6 +378,8 @@ F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n\
 struct Tab {
     name: String,
     locked: bool,
+    /// Stripe colour 0xRRGGBB. None draws the tab in the theme colours.
+    color: Option<u32>,
     heights: Vec<usize>,
     colr: Vec<f64>,
     rowr: Vec<Vec<f64>>,
@@ -388,6 +401,7 @@ impl Tab {
         Tab {
             name,
             locked,
+            color: None,
             heights: s.heights.clone(),
             colr: s.colr.clone(),
             rowr: s.rowr.clone(),
@@ -649,8 +663,10 @@ impl Session {
         let i = self.tab.min(tabs.len() - 1);
         let name = tabs[i].name.clone();
         let locked = tabs[i].locked;
+        let color = tabs[i].color;
         let filters = tabs[i].filters.clone();
         tabs[i] = Tab::from_live(self, name, locked, filters);
+        tabs[i].color = color;
         tabs
     }
 
@@ -666,8 +682,10 @@ impl Session {
         }
         let name = self.tabs[self.tab].name.clone();
         let locked = self.tabs[self.tab].locked;
+        let color = self.tabs[self.tab].color;
         let filters = pad_filters(std::mem::take(&mut self.tabs[self.tab].filters));
         self.tabs[self.tab] = Tab::from_live(self, name, locked, filters);
+        self.tabs[self.tab].color = color;
     }
 
     /// Copy the active tab onto the live grid fields.
@@ -896,6 +914,24 @@ impl Session {
     }
 }
 
+/// Named-session text for one tab: its grid only.
+fn tab_session_text(s: &Session, i: usize) -> Option<String> {
+    let t = s.view_tabs().get(i)?.clone();
+    let mut one = s.clone();
+    one.tabs = vec![t];
+    one.tab = 0;
+    one.publish();
+    Some(one.snapshot())
+}
+
+fn parse_tab_color(v: &str) -> Option<u32> {
+    let t = v.trim().trim_start_matches('#');
+    if t.len() != 6 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok().map(|n| n & 0xFFFFFF)
+}
+
 fn pane_json(t: &Tab) -> Vec<Value> {
     let mut panes = Vec::new();
     for i in 0..MAXP {
@@ -924,13 +960,19 @@ fn pane_json(t: &Tab) -> Vec<Value> {
 
 fn tabs_json(tabs: &[Tab], active: usize) -> String {
     let v: Vec<Value> = tabs.iter().enumerate().map(|(i, t)| {
-        serde_json::json!({
+        let mut obj = serde_json::json!({
             "name": t.name,
             "locked": t.locked,
             "active": i == active,
             "layout": { "columns": t.heights, "colr": t.colr, "rowr": t.rowr, "active": t.active },
             "panes": pane_json(t),
-        })
+        });
+        if let Some(c) = t.color {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("color".into(), Value::String(format!("{c:06X}")));
+            }
+        }
+        obj
     }).collect();
     serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
 }
@@ -943,6 +985,7 @@ fn tab_from_value(v: &Value) -> Option<Tab> {
     }
     let name = obj.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().to_string();
     let locked = obj.get("locked").and_then(|n| n.as_bool()).unwrap_or(false);
+    let color = obj.get("color").and_then(|c| c.as_str()).and_then(parse_tab_color);
     let mut heights = vec![2, 2];
     let mut colr = Vec::new();
     let mut rowr: Vec<Vec<f64>> = Vec::new();
@@ -999,7 +1042,7 @@ fn tab_from_value(v: &Value) -> Option<Tab> {
         }
     }
     let name = if name.is_empty() { "1".into() } else { name };
-    Some(Tab { name, locked, heights, colr, rowr, active, paths, views, cols, filters })
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters })
 }
 
 fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
@@ -3602,8 +3645,8 @@ unsafe fn write_session(path: &Path) {
     refresh_save_button();
 }
 
-// "New name": the save dialog does naming, overwrite prompts, rename and delete for us.
-unsafe fn save_session_as() -> Result<()> {
+// The named-session save dialog: naming, overwrite prompts, and the sessions folder.
+unsafe fn ask_session_path(title: &str) -> Result<String> {
     let main = app(|a| a.main);
     let dir = sessions_dir();
     _ = std::fs::create_dir_all(&dir);
@@ -3611,14 +3654,28 @@ unsafe fn save_session_as() -> Result<()> {
     let kind = HSTRING::from(tr("Grids session (*.grids)", "Grids 세션 (*.grids)", "Grids セッション (*.grids)"));
     dlg.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(kind.as_ptr()), pszSpec: w!("*.grids") }])?;
     dlg.SetDefaultExtension(w!("grids"))?;
-    dlg.SetTitle(&HSTRING::from(tr("Save session", "세션 저장", "セッションを保存")))?;
+    dlg.SetTitle(&HSTRING::from(title))?;
     if let Ok(f) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.to_string_lossy().as_ref()), None) {
         dlg.SetFolder(&f)?;
     }
     dlg.Show(Some(main))?; // Err on cancel
-    let path = pwstr(dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?);
+    Ok(pwstr(dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?))
+}
+
+unsafe fn save_session_as() -> Result<()> {
+    let path = ask_session_path(tr("Save session", "세션 저장", "セッションを保存"))?;
     write_session(Path::new(&path));
     Ok(())
+}
+
+/// Writes one tab's grid to a named session. The window's own session file stays as it is.
+unsafe fn save_tab_as_session(i: usize) {
+    remember_tabs();
+    let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
+    let Ok(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
+    if std::fs::write(Path::new(&path), text).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
 }
 
 unsafe fn load_session_file(path: &Path) {
@@ -4475,46 +4532,57 @@ unsafe fn begin_rename(i: usize) {
     SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(len as isize)));
 }
 
+unsafe fn set_tab_color(i: usize, color: Option<u32>) {
+    app(|a| {
+        if let Some(t) = a.s.tabs.get_mut(i) {
+            t.color = color;
+        }
+    });
+    tabs_invalidate();
+    note_save();
+}
+
 unsafe fn tab_menu(i: usize, x: i32, y: i32) {
-    let (hwnd, locked, can, others, closed) = app(|a| {
-        let locked = a.s.tabs.get(i).is_some_and(|t| t.locked);
-        let can = can_close_tab(&a.s.tabs, i);
+    let (hwnd, locked, others, color) = app(|a| {
+        let tab = a.s.tabs.get(i);
+        let locked = tab.is_some_and(|t| t.locked);
         let others = !close_other_indexes(&a.s.tabs, i).is_empty();
-        let closed: Vec<String> = a.closed.iter().map(|t| t.name.clone()).collect();
-        (a.tabs_hwnd, locked, can, others, closed)
+        (a.tabs_hwnd, locked, others, tab.and_then(|t| t.color))
     });
     let Ok(menu) = CreatePopupMenu() else { return };
     let add = |id: usize, text: &str, on: bool| {
         let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
         _ = AppendMenuW(menu, flags, id, &HSTRING::from(text));
     };
-    add(1, tr("New tab", "새 탭", "新しいタブ"), true);
-    add(2, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
-    add(3, tr("Rename", "이름 바꾸기", "名前の変更"), true);
-    add(4, if locked { tr("Unlock", "잠금 해제", "ロック解除") } else { tr("Lock", "잠금", "ロック") }, true);
-    add(5, tr("Close", "닫기", "閉じる"), can);
-    add(6, tr("Close other tabs", "다른 탭 닫기", "他のタブを閉じる"), others);
-    let Ok(sub) = CreatePopupMenu() else {
+    add(1, tr("Rename tab", "이름 변경", "タブ名の変更"), true);
+    add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
+    add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
+    add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
+    add(5, tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存"), true);
+    let Ok(colors) = CreatePopupMenu() else {
         _ = DestroyMenu(menu);
         return;
     };
-    if closed.is_empty() {
-        _ = AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No closed tabs", "닫은 탭이 없습니다", "閉じたタブはありません")));
-    } else {
-        for (k, name) in closed.iter().enumerate().take(CLOSED_KEEP) {
-            _ = AppendMenuW(sub, MF_STRING, 100 + k, &HSTRING::from(name.replace('&', "&&")));
+    let mark = |menu: HMENU, id: usize, on: bool| {
+        if on {
+            _ = CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | MF_CHECKED).0);
         }
+    };
+    _ = AppendMenuW(colors, MF_STRING, 19, &HSTRING::from(tr("None", "없음", "なし")));
+    mark(colors, 19, color.is_none());
+    for (k, &(c, en, ko, ja)) in TAB_COLORS.iter().enumerate() {
+        let id = 20 + k;
+        _ = AppendMenuW(colors, MF_STRING, id, &HSTRING::from(tr(en, ko, ja)));
+        mark(colors, id, color == Some(c));
     }
-    _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(tr("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す")));
+    _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, &HSTRING::from(tr("Tab color", "탭 색 지정", "タブの色")));
     let mut pt = POINT { x, y };
     _ = ClientToScreen(hwnd, &mut pt);
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, hwnd, None).0 as usize;
     _ = DestroyMenu(menu);
     match pick {
-        1 => new_tab(),
-        2 => duplicate_tab(i),
-        3 => begin_rename(i),
-        4 => {
+        1 => begin_rename(i),
+        2 => {
             app(|a| {
                 if let Some(t) = a.s.tabs.get_mut(i) {
                     t.locked ^= true;
@@ -4523,9 +4591,11 @@ unsafe fn tab_menu(i: usize, x: i32, y: i32) {
             tabs_invalidate();
             note_save();
         }
-        5 => close_tab(i),
-        6 => close_other_tabs(i),
-        n if (100..100 + CLOSED_KEEP).contains(&n) => reopen_closed_at(n - 100),
+        3 => duplicate_tab(i),
+        4 => close_other_tabs(i),
+        5 => save_tab_as_session(i),
+        19 => set_tab_color(i, None),
+        n if (20..20 + TAB_COLORS.len()).contains(&n) => set_tab_color(i, Some(TAB_COLORS[n - 20].0)),
         _ => {}
     }
 }
@@ -4553,11 +4623,12 @@ fn current_tab_lay() -> TabLay {
 }
 
 unsafe fn paint_tabs(h: HWND) {
-    let (active, names, locked, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
+    let (active, names, locked, colors, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
         (
             a.s.tab,
             a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
             a.s.tabs.iter().map(|t| t.locked).collect::<Vec<_>>(),
+            a.s.tabs.iter().map(|t| t.color).collect::<Vec<_>>(),
             a.tab_hot,
             a.tab_hot_close,
             a.tab_hot_plus,
@@ -4575,28 +4646,36 @@ unsafe fn paint_tabs(h: HWND) {
         for (i, r) in lay.body.iter().enumerate() {
             let on = i == active;
             let over = hot == Some(i);
-            let bg = if on {
-                pal().card
-            } else if over {
-                blend(pal().card, pal().bg, 0.45)
-            } else {
-                pal().bg
+            let col = colors.get(i).copied().flatten();
+            let bg = match (on, over, col) {
+                (true, _, Some(c)) => blend(pal().card, c, 0.18),
+                (true, _, None) => pal().card,
+                (_, true, Some(c)) => blend(blend(pal().card, pal().bg, 0.45), c, 0.16),
+                (_, true, None) => blend(pal().card, pal().bg, 0.45),
+                (_, _, Some(c)) => blend(pal().bg, c, 0.18),
+                _ => pal().bg,
             };
             fill(dc, *r, bg);
-            if on {
-                fill(dc, RECT { bottom: r.top + s(2), ..*r }, accent);
-                fill(dc, RECT { top: r.bottom - 1, bottom: r.bottom, ..*r }, pal().card);
-            } else {
+            if !on {
                 frame(dc, *r, 1, pal().line);
             }
+            if on {
+                fill(dc, RECT { bottom: r.top + s(2), ..*r }, col.unwrap_or(accent));
+                fill(dc, RECT { top: r.bottom - 1, bottom: r.bottom, ..*r }, pal().card);
+            }
+            if let Some(c) = col {
+                let inset = if on { 0 } else { 1 };
+                fill(dc, RECT { left: r.left + inset, top: r.top + inset, right: r.left + inset + s(4), bottom: r.bottom - inset }, c);
+            }
             let lock = locked.get(i).copied().unwrap_or(false);
+            let nudge = if col.is_some() { s(5) } else { 0 };
             let mut label = *r;
             if lock {
-                let ir = RECT { left: r.left + s(4), top: r.top, right: r.left + s(20), bottom: r.bottom };
+                let ir = RECT { left: r.left + nudge + s(4), top: r.top, right: r.left + nudge + s(20), bottom: r.bottom };
                 text(dc, ir, ICON_LOCK, icon, if on { pal().text } else { pal().sub }, DT_CENTER);
                 label.left = ir.right;
             } else {
-                label.left += s(8);
+                label.left += s(8) + nudge;
             }
             if let Some(c) = lay.close[i] {
                 label.right = c.left;
@@ -6860,6 +6939,40 @@ mod tests {
         assert_eq!(wiped.tabs.len(), 3);
         apply_boot(&mut wiped);
         assert_eq!((wiped.boot, wiped.tabs.len(), wiped.tabs[0].name.as_str()), (2, 1, "1"));
+    }
+
+    #[test]
+    fn tab_color_persists_and_one_tab_session_drops_the_others() {
+        let mut s = Session::default();
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\docs".into();
+        s.anchor();
+        s.tabs[0].name = "Docs".into();
+        s.tabs[0].color = Some(0x3D7EE0);
+        let mut pics = Session::default();
+        pics.set_heights(vec![1]);
+        pics.paths[0] = r"D:\pics-only".into();
+        s.tabs.push(Tab::from_live(&pics, "Pics".into(), true, vec![]));
+        s.tabs[1].color = Some(0xE15A4A);
+
+        let back = store::import_text(&store::sync_text(&s)).unwrap();
+        assert_eq!(back.tabs[0].color, Some(0x3D7EE0));
+        assert_eq!(back.tabs[1].color, Some(0xE15A4A));
+        assert_eq!(back.tabs[0].paths[0], r"C:\docs");
+        let again = Session::parse(&s.to_ini());
+        assert_eq!((again.tabs[0].color, again.tabs[1].color), (Some(0x3D7EE0), Some(0xE15A4A)));
+
+        let old = store::import_text(r#"{"version":1,"tabs":[{"name":"1","locked":false,"active":true,"layout":{"columns":[1]},"panes":[{"index":0,"path":"C:\\plain"}]}]}"#).unwrap();
+        assert_eq!(old.tabs[0].color, None);
+
+        let file = tab_session_text(&s, 0).unwrap();
+        let one = Session::parse(&file);
+        assert_eq!(one.tabs.len(), 1);
+        assert_eq!(one.tabs[0].name, "Docs");
+        assert_eq!(one.tabs[0].color, Some(0x3D7EE0));
+        assert_eq!(one.paths[0], r"C:\docs");
+        assert!(!file.contains("pics-only"));
+        assert!(file.contains("3D7EE0"));
     }
 
     #[test]
