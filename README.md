@@ -53,6 +53,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
 | Ctrl+S | Save the current session |
+| Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
 | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).

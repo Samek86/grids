@@ -193,6 +193,7 @@ Ctrl+1 … Ctrl+9\tGo to pane 1–9 (numbered down each column, left to right)\n
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Ctrl+L, Alt+D, F4\tAddress bar\n\
+Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
@@ -211,6 +212,7 @@ Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (열마다 위에서 아래, 왼쪽 �
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Ctrl+L, Alt+D, F4\t주소창\n\
+Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
@@ -697,6 +699,7 @@ struct App {
     fav_popup: HWND,
     fav_closed: Option<Instant>,
     fav_hot: Option<(usize, bool)>, // (row, on its ✕)
+    fav_prev: HWND,                 // focus before the popup opened; Esc goes back there
     cards: Vec<(PathBuf, Session, String)>,
     hover: HWND, // owner-drawn button under the mouse
     tip: HWND,
@@ -735,6 +738,7 @@ thread_local! {
         fav_popup: HWND::default(),
         fav_closed: None,
         fav_hot: None,
+        fav_prev: HWND::default(),
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),
@@ -2911,7 +2915,8 @@ unsafe fn open_favs() {
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_FAV) {
         _ = GetWindowRect(b, &mut rc);
     }
-    app(|a| a.fav_hot = None);
+    let prev = GetFocus();
+    app(|a| (a.fav_hot, a.fav_prev) = (None, prev));
     let style = WS_POPUP | WS_VISIBLE;
     let y = rc.bottom + 6 * dpi / 96;
     let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsFav"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
@@ -2965,32 +2970,61 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                     _ = InvalidateRect(Some(h), None, false);
                 }
             }
-            WM_LBUTTONUP => {
-                let (x, y) = xy(lp);
-                match fav_hit(&g, x, y) {
-                    Some((k, true)) => {
-                        // ✕: drop it and shrink the list in place
-                        app(|a| {
-                            a.s.favs.remove(k);
-                            a.fav_hot = None;
-                        });
-                        let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
-                        _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                        _ = InvalidateRect(Some(h), None, false);
-                        repaint_fav_buttons();
+            WM_LBUTTONUP | WM_KEYDOWN => {
+                // ✕ / Del: drop it and shrink the list in place
+                let remove = |k: usize| {
+                    app(|a| {
+                        a.s.favs.remove(k);
+                        a.fav_hot = None;
+                    });
+                    let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
+                    _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    _ = InvalidateRect(Some(h), None, false);
+                    repaint_fav_buttons();
+                };
+                let open = |k: usize| {
+                    let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    _ = DestroyWindow(h);
+                    if !navigate(i, &path) {
+                        _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
                     }
-                    Some((k, false)) => {
-                        let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    focus_view(i);
+                };
+                if msg == WM_LBUTTONUP {
+                    let (x, y) = xy(lp);
+                    match fav_hit(&g, x, y) {
+                        Some((k, true)) => remove(k),
+                        Some((k, false)) => open(k),
+                        None => {}
+                    }
+                    return LRESULT(0);
+                }
+                let (n, cur) = app(|a| (a.s.favs.len(), a.fav_hot.map(|(k, _)| k)));
+                match VIRTUAL_KEY(wp.0 as u16) {
+                    VK_ESCAPE => {
+                        let (main, prev, active) = app(|a| (a.main, a.fav_prev, a.s.active));
                         _ = DestroyWindow(h);
-                        if !navigate(i, &path) {
-                            _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+                        let fav_btn = GetDlgItem(Some(main), ID_TB_FAV).unwrap_or_default();
+                        if !prev.0.is_null() && IsWindow(Some(prev)).as_bool() && prev != fav_btn {
+                            _ = SetFocus(Some(prev));
+                        } else {
+                            focus_view(active);
                         }
-                        focus_view(i);
                     }
-                    None => {}
+                    _ if n == 0 => {}
+                    k @ (VK_DOWN | VK_UP) => {
+                        let next = if k == VK_DOWN { cur.map_or(0, |k| (k + 1) % n) } else { cur.map_or(n - 1, |k| (k + n - 1) % n) };
+                        app(|a| a.fav_hot = Some((next, false)));
+                        _ = InvalidateRect(Some(h), None, false);
+                    }
+                    VK_RETURN => if let Some(k) = cur { open(k) },
+                    VK_DELETE => if let Some(k) = cur {
+                        remove(k);
+                        app(|a| a.fav_hot = if n > 1 { Some((k.min(n - 2), false)) } else { None });
+                    },
+                    _ => {}
                 }
             }
-            WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => _ = DestroyWindow(h),
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
             WM_DESTROY => app(|a| (a.fav_popup, a.fav_closed) = (HWND::default(), Some(Instant::now()))),
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -3149,6 +3183,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
         VK_S if ctrl => save_current(),
+        VK_B if ctrl && !shift && !alt => open_favs(),
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
         VK_RETURN if filt => {
@@ -3464,7 +3499,7 @@ fn toolbar_tips() -> [(i32, &'static str, &'static str); 6] {
         (ID_TB_SAVE, tr("Save session", "세션 저장"), ""), // tooltip set by refresh_save_button
         (ID_TB_LOAD, tr("Load", "불러오기"), tr("Load a session", "세션 불러오기")),
         (ID_TB_VIEW, tr("View", "보기"), tr("View: hidden files · colours · language · help", "보기: 숨김 파일 · 선택 색 · 언어 · 도움말")),
-        (ID_TB_FAV, tr("Favourites", "즐겨찾기"), tr("Favourite folders (open in the active pane)", "즐겨찾기 폴더 (선택한 패널에서 열기)")),
+        (ID_TB_FAV, tr("Favourites", "즐겨찾기"), tr("Favourite folders (Ctrl+B; open in the active pane)", "즐겨찾기 폴더 (Ctrl+B, 선택한 패널에서 열기)")),
         (ID_TB_THEME, tr("Theme", "테마"), tr("Light / dark theme", "라이트 / 다크 테마")),
     ]
 }
