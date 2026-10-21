@@ -195,7 +195,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         Err(e) => {
             if pushed {
                 let handles = drop_current_desk();
-                release_desk_handles(handles.0, handles.1, handles.2, handles.3);
+                release_desk_handles(handles.0, handles.1, handles.2, handles.3, handles.4);
             }
             return Err(e);
         }

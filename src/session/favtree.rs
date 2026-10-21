@@ -213,13 +213,14 @@ pub(crate) fn reorder_leaves(tree: &mut Vec<FavNode>, from: usize, to: usize) ->
     let paths = leaf_paths(tree);
     let (Some(src), Some(dst)) = (paths.get(from).cloned(), paths.get(to).cloned()) else { return false };
     let zone = if to < from { 0 } else { 2 };
-    apply_drop(tree, &src, &dst, zone)
+    apply_drop(tree, &src, &dst, zone).is_some()
 }
 
 /// `zone`: 0 before `onto`, 1 into `onto` when it is a group, 2 after `onto`.
-pub(crate) fn apply_drop(tree: &mut Vec<FavNode>, from: &[usize], onto: &[usize], zone: u8) -> bool {
+/// On success, the moved node's id in the tree afterwards.
+pub(crate) fn apply_drop(tree: &mut Vec<FavNode>, from: &[usize], onto: &[usize], zone: u8) -> Option<Vec<usize>> {
     if from.is_empty() || onto.is_empty() || from == onto || onto.starts_with(from) {
-        return false;
+        return None;
     }
     let into = zone == 1 && is_group_id(tree, onto);
     let parent: Vec<usize> = if into { onto.to_vec() } else { onto[..onto.len() - 1].to_vec() };
@@ -233,9 +234,13 @@ pub(crate) fn apply_drop(tree: &mut Vec<FavNode>, from: &[usize], onto: &[usize]
     if from[..from.len() - 1] == parent[..] && from[from.len() - 1] < index {
         index -= 1;
     }
-    let Some(node) = take_node(tree, from) else { return false };
+    let Some(node) = take_node(tree, from) else { return None };
     let parent = adjust(&parent, from).unwrap_or(parent);
-    insert_child(tree, &parent, index, node).is_some()
+    let index = index.min(child_len(tree, &parent));
+    insert_child(tree, &parent, index, node)?;
+    let mut id = parent;
+    id.push(index);
+    Some(id)
 }
 
 /// Top quarter / middle / bottom quarter of a row. A leaf has no middle.
@@ -379,6 +384,25 @@ fn take_node(tree: &mut Vec<FavNode>, id: &[usize]) -> Option<FavNode> {
     rec(tree, parent, i)
 }
 
+/// Visible row that an "after" marker belongs under.
+/// An open group's next sibling sits below its children, so the line follows the last one.
+pub(crate) fn after_row(rows: &[FavRow], i: usize) -> usize {
+    let Some(row) = rows.get(i) else { return i };
+    if !(row.group && row.open) {
+        return i;
+    }
+    rows.iter().enumerate().skip(i + 1).find(|(_, r)| r.depth <= row.depth).map(|(j, _)| j - 1).unwrap_or(rows.len().saturating_sub(1))
+}
+
+/// Open a group that just accepted a drop. `onto` is its id from before the move.
+pub(crate) fn reveal_drop(tree: &mut Vec<FavNode>, from: &[usize], onto: &[usize], zone: u8) {
+    if zone != 1 {
+        return;
+    }
+    let Some(id) = adjust(onto, from) else { return };
+    set_open(tree, &id, true);
+}
+
 /// Path of a node that was not inside `removed`, after `removed` is gone.
 fn adjust(path: &[usize], removed: &[usize]) -> Option<Vec<usize>> {
     if !removed.is_empty() && path.starts_with(removed) {
@@ -418,7 +442,7 @@ mod tests {
         let jobs = visible_rows(&tree).iter().find(|r| r.group).unwrap().id.clone();
         assert!(add_item(&mut tree, r"C:\a\note.txt", true));
         let file = leaf_paths(&tree).last().unwrap().clone();
-        assert!(apply_drop(&mut tree, &file, &jobs, 1));
+        assert!(apply_drop(&mut tree, &file, &jobs, 1).is_some());
         assert!(contains_path(&tree, r"C:\a\note.txt"));
         let rows = visible_rows(&tree);
         let nested = rows.iter().find(|r| r.file).unwrap();
@@ -428,9 +452,9 @@ mod tests {
         let back = tree_from_values(&values);
         assert_eq!(back, tree);
         assert!(back.iter().any(|n| n.is_group() && n.children.iter().any(|c| c.file)));
-        assert!(!apply_drop(&mut tree, &jobs, &jobs, 1));
+        assert!(apply_drop(&mut tree, &jobs, &jobs, 1).is_none());
         let child = visible_rows(&tree).iter().find(|r| r.file).unwrap().id.clone();
-        assert!(!apply_drop(&mut tree, &jobs, &child, 1));
+        assert!(apply_drop(&mut tree, &jobs, &child, 1).is_none());
     }
 
     #[test]
@@ -459,9 +483,79 @@ mod tests {
         assert_eq!(drop_zone(true, 5, 28), 0);
         assert_eq!(drop_zone(true, 14, 28), 1);
         assert_eq!(drop_zone(false, 2, 28), 0);
+        assert_eq!(drop_zone(true, 22, 28), 2);
+        assert_eq!(drop_zone(false, 20, 28), 2);
         let junk = vec![json!("group"), json!({"name": "Box", "children": [{"path": "C:\\f", "file": true}]})];
         let parsed = tree_from_values(&junk);
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].children[0].file);
+    }
+
+    fn jobs_and_desk() -> Vec<FavNode> {
+        vec![
+            FavNode {
+                name: "Jobs".into(),
+                path: String::new(),
+                file: false,
+                open: true,
+                children: vec![FavNode::leaf(r"C:\a", "a", false), FavNode::leaf(r"C:\b", "b", false)],
+            },
+            FavNode {
+                name: "Desk".into(),
+                path: String::new(),
+                file: false,
+                open: true,
+                children: vec![FavNode::leaf(r"C:\c", "c", false), FavNode::leaf(r"C:\d", "d", true)],
+            },
+        ]
+    }
+
+    fn labels(tree: &[FavNode]) -> String {
+        visible_rows(tree).into_iter().map(|r| r.name).collect::<Vec<_>>().join("/")
+    }
+
+    #[test]
+    fn reorders_groups_leaves_and_moves_a_leaf_between_groups() {
+        let mut tree = jobs_and_desk();
+        assert_eq!(apply_drop(&mut tree, &[0], &[1], 2), Some(vec![1]), "group moves after the other group");
+        assert_eq!(labels(&tree), "Desk/c/d/Jobs/a/b");
+        assert!(apply_drop(&mut tree, &[1], &[0], 0).is_some(), "group moves back before the other group");
+        assert_eq!(labels(&tree), "Jobs/a/b/Desk/c/d");
+
+        assert!(apply_drop(&mut tree, &[0, 0], &[0, 1], 2).is_some(), "leaf moves after its sibling");
+        assert_eq!(labels(&tree), "Jobs/b/a/Desk/c/d");
+        assert!(apply_drop(&mut tree, &[0, 1], &[0, 0], 0).is_some(), "leaf moves back before its sibling");
+        assert_eq!(labels(&tree), "Jobs/a/b/Desk/c/d");
+
+        assert!(apply_drop(&mut tree, &[0, 0], &[1], 1).is_some(), "leaf appends into the other group");
+        assert_eq!(labels(&tree), "Jobs/b/Desk/c/d/a");
+        assert_eq!(tree[1].children.last().map(|n| n.name.as_str()), Some("a"));
+        assert!(apply_drop(&mut tree, &[1, 2], &[0, 0], 0).is_some(), "leaf moves to the front of the first group");
+        assert_eq!(labels(&tree), "Jobs/a/b/Desk/c/d");
+        assert!(apply_drop(&mut tree, &[0, 1], &[1, 0], 2).is_some(), "leaf lands between the other group's leaves");
+        assert_eq!(labels(&tree), "Jobs/a/Desk/c/b/d");
+        assert_eq!(tree[1].children.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["c", "b", "d"]);
+    }
+
+    #[test]
+    fn after_line_follows_an_open_group_and_a_drop_opens_it() {
+        let tree = jobs_and_desk();
+        let rows = visible_rows(&tree);
+        assert_eq!(after_row(&rows, 0), 2, "open group: line sits under its last child");
+        assert_eq!(after_row(&rows, 1), 1, "leaf: line stays on that row");
+        assert_eq!(after_row(&rows, 3), 5);
+        let mut closed = tree.clone();
+        closed[0].open = false;
+        let rows = visible_rows(&closed);
+        assert_eq!(after_row(&rows, 0), 0, "collapsed group: the next row is already the sibling");
+
+        closed[1].open = false;
+        let jobs = vec![0usize];
+        let desk = vec![1usize];
+        assert!(apply_drop(&mut closed, &jobs, &desk, 1).is_some());
+        reveal_drop(&mut closed, &jobs, &desk, 1);
+        assert_eq!(closed[0].name, "Desk");
+        assert!(closed[0].open, "the group that received the drop is expanded");
+        assert!(closed[0].children.iter().any(|n| n.name == "Jobs"));
     }
 }
