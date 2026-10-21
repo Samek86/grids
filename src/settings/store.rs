@@ -11,7 +11,7 @@ use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
 use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 
-use super::{fav_path, fix, Lang, Session, MAXP, RECENT};
+use crate::{fav_path, fix, Lang, Session, MAXP, RECENT};
 
 fn v1() -> u32 {
     1
@@ -273,7 +273,7 @@ impl SettingsFile {
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
-            tabs: serde_json::from_str(&super::tabs_json(&shown, at)).unwrap_or_default(),
+            tabs: serde_json::from_str(&crate::tabs_json(&shown, at)).unwrap_or_default(),
             keybindings: Map::new(),
             favorites_tree: Vec::new(),
             extra: Map::new(),
@@ -373,7 +373,7 @@ impl SettingsFile {
                 t.filters = filters;
             }
         } else {
-            super::adopt_tabs(&mut s, &self.tabs);
+            crate::adopt_tabs(&mut s, &self.tabs);
         }
         s
     }
