@@ -241,12 +241,14 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "fav.list" => open_favs(),
         "app.settings" => settings::open(app(|x| x.main)),
         "app.help" => open_help(),
+        "win.new" => new_window(),
         _ => return shell(),
     }
     true
 }
 
 pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
+    bind_hwnd(m.hwnd);
     if m.message == WM_LBUTTONDOWN || m.message == WM_KEYDOWN {
         app(|a| a.tree_input |= a.tree_hwnd == m.hwnd || IsChild(a.tree_hwnd, m.hwnd).as_bool());
     }

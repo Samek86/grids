@@ -15,20 +15,13 @@ thread_local! {
 /// Writes every tab (name, lock, order, folders, filters, columns) and the window.
 /// The startup mode is stored beside that list; it does not gate the write.
 pub(crate) unsafe fn save_session() {
-    remember_tabs();
-    let main = app(|a| a.main);
-    let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-    if !main.0.is_null() {
-        _ = GetWindowPlacement(main, &mut wp);
+    if window_count() == 0 {
+        return;
     }
-    let text = app(|a| {
-        if !main.0.is_null() {
-            let r = wp.rcNormalPosition;
-            let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
-            a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
-        }
-        store::sync_text(&a.s)
-    });
+    publish_shared();
+    // Snaps are read by from_session. That runs inside app() below, so it must not call app() again.
+    set_snaps(snapshot_windows());
+    let text = app(|a| store::sync_text(&a.s));
     let same = LAST_SAVED.with(|l| l.borrow().as_str() == text);
     if same || store::write_settings(&text).is_ok() {
         if !same {
@@ -137,22 +130,6 @@ pub(crate) unsafe fn load_session_file(path: &Path) {
     sync_filter_edits();
     redraw_all();
     focus_view(active_pane());
-}
-
-// Paths from the command line or a second instance: a session file loads, folders fill panes from the active one on.
-pub(crate) unsafe fn open_args(args: Vec<String>) {
-    if let Some(f) = session_arg(&args) {
-        return load_session_file(Path::new(f));
-    }
-    if app(|x| x.zoom.take()).is_some() {
-        relayout();
-        redraw_all();
-    }
-    let (a, n) = app(|x| (x.s.active, x.s.panes()));
-    for (k, p) in args.iter().take(n).enumerate() {
-        navigate((a + k) % n, p);
-    }
-    focus_view(a);
 }
 
 // Window of a running copy of this same exe. A portable.txt copy keeps its own grids.json.

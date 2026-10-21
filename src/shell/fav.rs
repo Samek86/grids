@@ -33,6 +33,7 @@ pub(crate) unsafe fn set_favs(paths: &[String], add: bool) {
             }
         }
     });
+    publish_shared();
     repaint_fav_buttons();
     // The Ctrl+B list reads the same favs. Resize it if it is already open.
     let (pop, dpi, n) = app(|a| {
@@ -47,6 +48,7 @@ pub(crate) unsafe fn set_favs(paths: &[String], add: bool) {
         }
     }
     settings::refresh();
+    across_windows(|| repaint_fav_buttons());
 }
 
 pub(crate) unsafe fn toggle_fav(i: usize) {
@@ -615,6 +617,7 @@ pub(crate) fn fav_hit(g: &FavGeo, x: i32, y: i32) -> Option<(usize, bool)> {
 
 pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        bind_hwnd(h);
         let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
         match msg {
             WM_PAINT => paint_favs(h),
