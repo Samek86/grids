@@ -20,8 +20,10 @@ use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::*;
-use windows::Win32::System::SystemServices::{MODIFIERKEYS_FLAGS, SFGAO_FOLDER};
+use windows::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT, MODIFIERKEYS_FLAGS, SFGAO_FOLDER};
 use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4};
+use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible, ROLE_SYSTEM_LIST};
 use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows::Win32::UI::Controls::{
     SetWindowTheme, BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
@@ -1756,6 +1758,7 @@ struct Events(usize);
 
 impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, _: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         unsafe { save_view(self.0) };
         Ok(())
     }
@@ -1763,10 +1766,12 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         Ok(())
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         unsafe { on_nav(self.0, pidl) };
         Ok(())
     }
     fn OnNavigationFailed(&self, _: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -2065,6 +2070,7 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
 }
 
 unsafe fn destroy_pane(i: usize) {
+    NAV_GEN.fetch_add(1, Ordering::SeqCst);
     save_view(i);
     let (p, queued) = app(|a| {
         let p = a.panes[i].take();
@@ -2544,17 +2550,110 @@ unsafe fn pick_accent() {
     }
 }
 
-// A double-click on empty space in a list (the first click cleared the selection) goes up a folder.
-unsafe fn up_candidate(m: &MSG) -> Option<usize> {
-    if m.message != WM_LBUTTONDBLCLK || !app(|a| a.s.dblup) {
+// Bumped on every navigation event and pane teardown, so a click pair spanning a folder change is dropped.
+static NAV_GEN: AtomicUsize = AtomicUsize::new(0);
+
+fn gen() -> usize {
+    NAV_GEN.load(Ordering::SeqCst)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Click {
+    win: isize,
+    gen: usize,
+    time: u32,
+    x: i32,
+    y: i32,
+}
+
+thread_local! {
+    static LAST_CLICK: Cell<Option<Click>> = const { Cell::new(None) };
+}
+
+// Windows 11's list (DirectUIHWND) has no CS_DBLCLKS, so a double-click is two background presses in a row,
+// within the system's double-click time and box. The pair is consumed: a third click doesn't go up again.
+fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx: i32, cy: i32) -> (Option<Click>, bool) {
+    if !bg {
+        return (None, false);
+    }
+    match prev {
+        Some(p)
+            if p.win == now.win
+                && p.gen == now.gen
+                && now.time.wrapping_sub(p.time) <= ms
+                && (now.x - p.x).abs() <= cx / 2
+                && (now.y - p.y).abs() <= cy / 2 =>
+        {
+            (None, true)
+        }
+        _ => (Some(now), false),
+    }
+}
+
+// Only the list itself is background; rows, group headers, collapse buttons, column headers are not.
+fn bg_role(role: u32) -> bool {
+    role == ROLE_SYSTEM_LIST
+}
+
+// The generation is read before the probe and again after it: a navigation during the probe voids it.
+fn bg_probe(gen: impl Fn() -> usize, probe: impl FnOnce() -> bool) -> (usize, bool) {
+    let g0 = gen();
+    let b = probe();
+    (g0, b && gen() == g0)
+}
+
+// After dispatch: same view window, nothing selected, and no navigation since the click. The generation is
+// read last, after the queries that could run navigation callbacks.
+fn confirm(cand: (usize, isize), query: impl FnOnce() -> (Option<isize>, Option<u32>), gen: impl Fn() -> usize) -> bool {
+    let (view, sel) = query();
+    view == Some(cand.1) && sel == Some(0) && gen() == cand.0
+}
+
+// Same-thread window, so WM_GETOBJECT runs inline; call outside app().
+unsafe fn on_background(m: &MSG) -> bool {
+    if WindowFromPoint(m.pt) != m.hwnd {
+        return false;
+    }
+    let mut acc: Option<IAccessible> = None;
+    let mut child = VARIANT::default();
+    if AccessibleObjectFromPoint(m.pt, &mut acc, &mut child).is_err() {
+        return false;
+    }
+    let bg = acc.and_then(|a| a.get_accRole(&child).ok()).is_some_and(|mut role| {
+        let r = &role.Anonymous.Anonymous;
+        let bg = r.vt == VT_I4 && bg_role(r.Anonymous.lVal as u32);
+        _ = VariantClear(&mut role);
+        bg
+    });
+    _ = VariantClear(&mut child);
+    bg
+}
+
+// A double-click on empty space in a list goes up a folder: (pane, generation, view window) when this press
+// completes a background pair.
+unsafe fn up_candidate(m: &MSG) -> Option<(usize, usize, isize)> {
+    if !matches!(m.message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) || !app(|a| a.s.dblup) {
         return None;
     }
     let i = pane_of(m.hwnd)?;
-    let svh = view_of::<IShellView>(i)?.GetWindow().ok()?;
-    let mut c = [0u16; 32];
-    let n = GetClassNameW(m.hwnd, &mut c) as usize;
-    let list = matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32");
-    (list && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())).then_some(i)
+    let svh = Cell::new(HWND::default());
+    let (g0, bg) = bg_probe(gen, || {
+        let Some(h) = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()) else {
+            return false;
+        };
+        svh.set(h);
+        let mut c = [0u16; 32];
+        let n = GetClassNameW(m.hwnd, &mut c) as usize;
+        let list = matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32");
+        list && (h == m.hwnd || IsChild(h, m.hwnd).as_bool())
+            && m.wParam.0 & (MK_CONTROL.0 | MK_SHIFT.0) as usize == 0
+            && on_background(m)
+    });
+    let now = Click { win: m.hwnd.0 as isize, gen: g0, time: m.time, x: m.pt.x, y: m.pt.y };
+    let (cx, cy) = (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK));
+    let (next, up) = next_click(LAST_CLICK.get(), now, bg, GetDoubleClickTime(), cx, cy);
+    LAST_CLICK.set(next);
+    up.then(|| (i, g0, svh.get().0 as isize))
 }
 
 unsafe fn cycle(d: i32) {
@@ -4449,9 +4548,15 @@ fn main() -> Result<()> {
                 let up = up_candidate(&msg);
                 _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
-                let empty = |i| view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()) == Some(0);
-                if let Some(i) = up.filter(|&i| empty(i)) {
-                    browse(i, SBSP_PARENT);
+                if let Some((i, g, svh)) = up {
+                    let query = || {
+                        let view = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()).map(|h| h.0 as isize);
+                        let sel = view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()).map(|n| n as u32);
+                        (view, sel)
+                    };
+                    if confirm((g, svh), query, gen) {
+                        browse(i, SBSP_PARENT);
+                    }
                 }
             }
         }
@@ -4510,6 +4615,49 @@ mod tests {
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
         let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
         assert_eq!(titles, ["Downloads - Grids", "Grids", "C: - Grids"]);
+    }
+
+    #[test]
+    fn dblclick_up() {
+        let c = |time, x, y| Click { win: 7, gen: 1, time, x, y };
+        let next = |prev, now, bg| next_click(prev, now, bg, 500, 4, 4);
+        // background, then background in time and box: up, and the pair is consumed
+        let (rec, up) = next(None, c(100, 10, 10), true);
+        assert!(rec == Some(c(100, 10, 10)) && !up);
+        let (rec, up) = next(rec, c(400, 12, 8), true);
+        assert!(rec.is_none() && up);
+        assert!(!next(rec, c(450, 12, 8), true).1); // third click
+        // first press on an item: the next one only records
+        let (rec, up) = next(None, c(100, 10, 10), false);
+        assert!(rec.is_none() && !up);
+        assert!(!next(rec, c(200, 10, 10), true).1);
+        // out of time, x, y
+        let p = Some(c(100, 10, 10));
+        assert!(!next(p, c(601, 10, 10), true).1);
+        assert!(!next(p, c(200, 13, 10), true).1);
+        assert!(!next(p, c(200, 10, 7), true).1);
+        // MSG.time wraps
+        assert!(next(Some(c(u32::MAX - 10, 10, 10)), c(20, 10, 10), true).1);
+        // a navigation between the clicks
+        assert!(!next(p, Click { gen: 2, ..c(200, 10, 10) }, true).1);
+
+        assert!(bg_role(33));
+        assert!([34, 20, 43, 25, 3].iter().all(|&r| !bg_role(r)));
+
+        // a navigation during the probe voids it; g0 is the value before
+        let g = Cell::new(5);
+        assert_eq!(bg_probe(|| g.get(), || { g.set(6); true }), (5, false));
+        assert_eq!(bg_probe(|| g.get(), || true), (6, true));
+
+        // the generation is read after the queries (sol regression)
+        let g = Cell::new(5);
+        assert!(!confirm((5, 9), || { g.set(6); (Some(9), Some(0)) }, || g.get()));
+        let g = || 5;
+        assert!(!confirm((5, 9), || (Some(8), Some(0)), g));
+        assert!(!confirm((5, 9), || (Some(9), Some(1)), g));
+        assert!(!confirm((5, 9), || (Some(9), None), g));
+        assert!(!confirm((5, 9), || (None, Some(0)), g));
+        assert!(confirm((5, 9), || (Some(9), Some(0)), g));
     }
 
     #[test]
