@@ -24,6 +24,7 @@ jobs:
         with:
           name: grids-exe
           path: target/x86_64-pc-windows-gnu/release/grids.exe
+          retention-days: 3
   smoke:
     needs: build
     runs-on: windows-latest
@@ -59,3 +60,4 @@ jobs:
           name: screenshot
           path: screen.png
           if-no-files-found: ignore
+          retention-days: 3
