@@ -146,7 +146,7 @@ const VIEW: &[Spec] = &[
     Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), badge: true, live: true, ctl: Ctl::StartDir },
     Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), badge: false, live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
     Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_EXT) },
-    Spec { title: s("Show the left tree", "왼쪽 트리 표시", "左のツリーを表示"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The bar at the far left switches Folder and Favourites, and collapses this panel.", "맨 왼쪽 막대에서 폴더와 즐겨찾기를 전환하고, 이 패널을 접어요.", "左端のバーでフォルダーとお気に入りを切り替え、このパネルを折りたたみます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_TREE) },
     Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_EDGE) },
 ];
 const FILE: &[Spec] = &[

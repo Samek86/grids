@@ -147,7 +147,7 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
 
 pub(crate) unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label, shown, show_bar, show_tree, tree_h)) = app(|a| {
+    let Some((main, moves, label, shown, show_bar, show_tree, show_fav, tree_h, side_h, act_h)) = app(|a| {
         if a.main.0.is_null() {
             return None;
         }
@@ -158,7 +158,7 @@ pub(crate) unsafe fn relayout() {
         let s = |v: i32| v * a.dpi / 96;
         let sr = side_rect(&g);
         let tree = RECT { left: sr.left + s(2), top: sr.top + s(4), right: sr.right - s(2), bottom: sr.bottom - s(2) };
-        let mut moves = vec![(a.tree_hwnd, tree)];
+        let mut moves = vec![(a.tree_hwnd, tree), (a.side_hwnd, tree), (a.act_hwnd, act_rect(&g))];
         let mut x = g.pad;
         let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
         for (id, w) in [(ID_TB_LAYOUT, s(70)), (ID_TB_SAVE, s(32)), (ID_TB_LOAD, s(32)), (ID_TB_VIEW, s(32)), (ID_TB_FAV, s(32))] {
@@ -170,8 +170,9 @@ pub(crate) unsafe fn relayout() {
         let gear = right - s(32) - s(4) - s(32);
         moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
         let show_bar = a.s.bar;
-        let show_tree = a.s.tree_on;
-        let tree_h = a.tree_hwnd;
+        let show_tree = a.s.tree_on && a.s.panel != 1;
+        let show_fav = a.s.tree_on && a.s.panel == 1;
+        let (tree_h, side_h, act_h) = (a.tree_hwnd, a.side_hwnd, a.act_hwnd);
         let strip_top = if show_bar { s(34) } else { 0 };
         moves.push((a.tabs_hwnd, RECT { left: 0, top: strip_top, right: g.w, bottom: strip_top + s(32) }));
         let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
@@ -182,7 +183,7 @@ pub(crate) unsafe fn relayout() {
                 shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_tree, tree_h))
+        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_tree, show_fav, tree_h, side_h, act_h))
     }) else {
         return;
     };
@@ -194,6 +195,12 @@ pub(crate) unsafe fn relayout() {
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_tree { SW_SHOW } else { SW_HIDE });
+    }
+    if !side_h.0.is_null() {
+        _ = ShowWindow(side_h, if show_fav { SW_SHOW } else { SW_HIDE });
+    }
+    if !act_h.0.is_null() {
+        _ = ShowWindow(act_h, SW_SHOW);
     }
     let strip = app(|a| a.tabs_hwnd);
     if !strip.0.is_null() {
@@ -223,7 +230,7 @@ pub(crate) unsafe fn show_bars() {
         let vbar = |x: i32| RECT { left: x - t / 2, top: g.top, right: x - t / 2 + t, bottom: g.bot };
         let hbar = |(x0, x1): (i32, i32), y: i32| RECT { left: x0, top: y - t / 2, right: x1, bottom: y - t / 2 + t };
         let rects = match d {
-            Hit::Side => [Some(vbar(g.pad + g.side + g.gap / 2)), None],
+            Hit::Side => [Some(vbar(g.act + g.side + g.gap / 2)), None],
             Hit::Col(k) => [Some(vbar(g.xs[k].1 + g.gap / 2)), None],
             Hit::Row(c, k) => [None, Some(hbar(g.xs[c], g.ys[c][k].1 + g.gap / 2))],
         };

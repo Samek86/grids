@@ -19,6 +19,10 @@ fn v1() -> u32 {
 fn yes() -> bool {
     true
 }
+
+fn is_tree_panel(s: &str) -> bool {
+    s.is_empty() || s == "tree"
+}
 fn accent_light() -> String {
     "0067C0".into()
 }
@@ -129,6 +133,9 @@ struct SettingsFile {
     ext: bool,
     #[serde(default = "yes")]
     tree: bool,
+    /// "fav" shows the favourites list in the left panel. Empty or "tree" is the folder tree.
+    #[serde(default, skip_serializing_if = "is_tree_panel")]
+    panel: String,
     #[serde(default = "yes")]
     edge: bool,
     #[serde(default = "yes")]
@@ -197,6 +204,7 @@ impl SettingsFile {
             start_path: String::new(),
             ext: true,
             tree: true,
+            panel: String::new(),
             edge: true,
             confirm: true,
             del: 0,
@@ -261,6 +269,7 @@ impl SettingsFile {
             start_path: s.start_path.clone(),
             ext: s.ext,
             tree: s.tree_on,
+            panel: if s.panel == 1 { "fav".into() } else { String::new() },
             edge: s.edge,
             confirm: s.confirm,
             del: s.del,
@@ -365,6 +374,7 @@ impl SettingsFile {
         s.start_path = self.start_path.clone();
         s.ext = self.ext;
         s.tree_on = self.tree;
+        s.panel = if self.panel == "fav" { 1 } else { 0 };
         s.edge = self.edge;
         s.confirm = self.confirm;
         s.del = if self.del == 1 { 1 } else { 0 };
@@ -825,5 +835,18 @@ mod tests {
         // A save that did not snapshot windows must leave the stored list in place.
         let kept: Value = serde_json::from_str(&sync_text(&loaded)).unwrap();
         assert_eq!(kept["windows"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fav_panel_round_trips_and_tree_stays_the_default() {
+        let mut s = Session::default();
+        s.panel = 1;
+        s.anchor();
+        let saved: Value = serde_json::from_str(&sync_text(&s)).unwrap();
+        assert_eq!(saved["panel"], "fav");
+        assert_eq!(adopt(&serde_json::to_string(&saved).unwrap()).unwrap().panel, 1);
+        let tree: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert!(tree.get("panel").is_none());
+        assert_eq!(adopt(&serde_json::to_string(&tree).unwrap()).unwrap().panel, 0);
     }
 }

@@ -16,6 +16,7 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 
 - **Free layouts**: up to 4 columns, each with its own number of panes (1 to 4). Click the layout button for an even grid, or press and drag across it to set each column; six presets for common setups.
 - **Resizable everything**: drag any boundary between panes or the sidebar; double-click a boundary to even it out.
+- **Activity bar**: a narrow column at the far left switches the left panel between the folder tree and favourites. Click the active icon to collapse it. Search is reserved. The choice is remembered.
 - **Folder tree** that follows the active pane and keeps the current folder's name in view, even in deep folders.
 - **Per-pane toolbar**: address bar, back / forward / up, name filter (`*.pdf;*.txt` or any part of a name), open the selected folder in another pane (its columns come along, so you can set one pane up and copy it around) or copy / move the selected files to another pane's folder (up to 10,000), favourite toggle; drag a folder onto a pane's top bar to open it there.
 - **Sessions**: the layout, folders and each pane's columns (order, widths, sort) are saved automatically. Save named sessions and load them from cards that preview each layout; a green dot on the save button shows unsaved layout changes.

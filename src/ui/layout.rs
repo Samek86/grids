@@ -46,6 +46,7 @@ pub(crate) struct Geo {
     pub(crate) bot: i32, // plates bottom = status line top
     pub(crate) pad: i32,
     pub(crate) gap: i32,
+    pub(crate) act: i32,  // activity bar width, always on the far left
     pub(crate) side: i32, // sidebar plate width
     pub(crate) gx: i32,   // grid left
     pub(crate) xs: Vec<(i32, i32)>,
@@ -58,8 +59,9 @@ pub(crate) fn geo(a: &App) -> Geo {
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
     let (pad, gap) = (s(8), s(8));
-    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120))) } else { 0 };
-    let gx = if a.s.tree_on { pad + side + gap } else { pad };
+    let act = s(36);
+    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - act - gap - pad - s(240)).max(s(120))) } else { 0 };
+    let gx = if a.s.tree_on { act + side + gap } else { act + pad };
     let top = (if a.s.bar { s(34) } else { 0 }) + s(32); // toolbar, then the tab strip
     let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     Geo {
@@ -71,6 +73,7 @@ pub(crate) fn geo(a: &App) -> Geo {
         bot,
         pad,
         gap,
+        act,
         side,
         gx,
         zoom: a.zoom.is_some(),
@@ -78,7 +81,11 @@ pub(crate) fn geo(a: &App) -> Geo {
 }
 
 pub(crate) fn side_rect(g: &Geo) -> RECT {
-    RECT { left: g.pad, top: g.top, right: g.pad + g.side, bottom: g.bot }
+    RECT { left: g.act, top: g.top, right: g.act + g.side, bottom: g.bot }
+}
+
+pub(crate) fn act_rect(g: &Geo) -> RECT {
+    RECT { left: 0, top: g.top, right: g.act, bottom: g.bot }
 }
 
 pub(crate) fn status_rect(g: &Geo) -> RECT {
@@ -141,7 +148,7 @@ pub(crate) fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if y < g.top || y >= g.bot {
         return None;
     }
-    if x >= g.pad + g.side && x < g.gx {
+    if g.side > 0 && x >= g.act + g.side && x < g.gx {
         return Some(Hit::Side);
     }
     if x < g.gx || g.zoom {
