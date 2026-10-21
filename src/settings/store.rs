@@ -274,7 +274,7 @@ impl SettingsFile {
             favorites,
             recent: s.recent.clone(),
             tabs: serde_json::from_str(&crate::tabs_json(&shown, at)).unwrap_or_default(),
-            keybindings: Map::new(),
+            keybindings: crate::keys::bindings_json(),
             favorites_tree: Vec::new(),
             extra: Map::new(),
         }
@@ -286,7 +286,15 @@ impl SettingsFile {
         if previous.version >= 1 {
             self.version = previous.version;
         }
-        self.keybindings = previous.keybindings.clone();
+        // Command ids come from the live keymap. Anything else (a future build's keys) stays.
+        let mut kb = self.keybindings.clone();
+        for (k, v) in &previous.keybindings {
+            if crate::keys::is_command(k) {
+                continue;
+            }
+            kb.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        self.keybindings = kb;
         self.favorites_tree = previous.favorites_tree.clone();
         self.extra = previous.extra.clone();
     }
@@ -406,6 +414,7 @@ fn remember(file: SettingsFile) {
 fn adopt(text: &str) -> Option<Session> {
     let file: SettingsFile = serde_json::from_str(text).ok()?;
     let s = file.to_session();
+    crate::keys::load_bindings(&file.keybindings);
     remember(file);
     Some(s)
 }
@@ -736,6 +745,31 @@ mod tests {
         assert!(dir.join("grids.json").is_file());
         assert!(dir.join("grids.ini.bak").is_file());
         assert!(!dir.join("grids.json.tmp").exists());
+    }
+
+    #[test]
+    fn keybinding_round_trip_keeps_unknown_keys_and_drops_defaults() {
+        crate::keys::load_bindings(&Map::new());
+        let _ = adopt("{}");
+        let i = crate::keys::index("tab.new").unwrap();
+        crate::keys::rebind(i, crate::keys::parse_chord("Ctrl+K").unwrap());
+        let saved: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert_eq!(saved["keybindings"]["tab.new"], "Ctrl+K");
+
+        let mut file = SettingsFile::from_session(&Session::default());
+        file.keybindings.insert("copy".into(), serde_json::json!("Ctrl+C"));
+        let _ = adopt(&pretty(&file));
+        assert_eq!(crate::keys::lookup(b'K' as u16, true, false, false), Some(i));
+        let again: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert_eq!(again["keybindings"]["tab.new"], "Ctrl+K");
+        assert_eq!(again["keybindings"]["copy"], "Ctrl+C");
+
+        crate::keys::reset_all();
+        let cleared: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert!(cleared["keybindings"].get("tab.new").is_none());
+        assert_eq!(cleared["keybindings"]["copy"], "Ctrl+C");
+        crate::keys::load_bindings(&Map::new());
+        let _ = adopt("{}");
     }
 
     #[test]

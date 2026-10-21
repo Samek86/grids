@@ -85,18 +85,33 @@ pub(crate) unsafe fn select_new_file(i: usize, name: &str) -> bool {
 }
 
 pub(crate) unsafe fn key(m: &MSG) -> bool {
+    let vk = m.wParam.0 as u16;
     let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
     let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
+    // A conflict dialog is up. Let it see the key.
+    if crate::keys::modal() {
+        return false;
+    }
+    // The key that just finished a capture must not also run the command.
+    if crate::keys::swallows(vk) {
+        return true;
+    }
+    if crate::keys::capturing() {
+        if down(VK_LWIN) || down(VK_RWIN) || m.lParam.0 & (1 << 30) != 0 {
+            return true;
+        }
+        return finish_capture(vk, ctrl, shift, alt);
+    }
     // Typing in Settings must not fire pane shortcuts. Esc closes the window.
     if settings::captures(m.hwnd) {
-        if !ctrl && !alt && VIRTUAL_KEY(m.wParam.0 as u16) == VK_ESCAPE {
+        if !ctrl && !alt && VIRTUAL_KEY(vk) == VK_ESCAPE {
             settings::close();
             return true;
         }
         return false;
     }
     if m.hwnd == app(|a| a.tab_edit) && app(|a| a.tab_renaming.is_some()) {
-        match VIRTUAL_KEY(m.wParam.0 as u16) {
+        match VIRTUAL_KEY(vk) {
             VK_RETURN => end_rename(true),
             VK_ESCAPE => end_rename(false),
             _ => return false,
@@ -109,71 +124,123 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     let a = active_pane();
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
-    // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
+    // Address, filter, and tab rename keep every key except Enter and Esc.
+    // A rebound letter must not land in the middle of a name.
+    if addr || filt {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN if addr => go_edit(a),
+            VK_RETURN if filt => {
+                apply_filter(a);
+                focus_view(a);
+            }
+            VK_ESCAPE if addr => addr_reset(a, m.hwnd),
+            VK_ESCAPE if filt => {
+                _ = SetWindowTextW(m.hwnd, w!(""));
+                apply_filter(a);
+                focus_view(a);
+            }
+            _ => return false,
+        }
+        return true;
+    }
     let shell = || {
         let Some(sv) = view_of::<IShellView>(a) else { return false };
         let svh = sv.GetWindow().unwrap_or_default();
         (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
     };
-    let list = || view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
-    match VIRTUAL_KEY(m.wParam.0 as u16) {
-        // Ctrl+Tab used to cycle panes. It now moves between tabs; panes use Ctrl+PageDown / Ctrl+PageUp.
-        VK_T if ctrl && shift && !alt => reopen_closed_at(0),
-        VK_T if ctrl && !shift && !alt => new_tab(),
-        VK_W if ctrl && !shift && !alt => close_tab(app(|x| x.s.tab)),
-        VK_TAB if ctrl && !alt => switch_rel(if shift { -1 } else { 1 }),
-        VK_NEXT if ctrl && !alt => cycle(1),
-        VK_PRIOR if ctrl && !alt => cycle(-1),
-        k if ctrl && !shift && !alt && (VK_1.0..=VK_9.0).contains(&k.0) && ((k.0 - VK_1.0) as usize) < app(|x| x.s.panes()) => {
-            let i = (k.0 - VK_1.0) as usize;
-            set_active(i);
-            focus_view(i);
-        }
-        k @ (VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN) if alt && shift && !ctrl => match k {
-            VK_LEFT => move_pane(-1, 0),
-            VK_RIGHT => move_pane(1, 0),
-            VK_UP => move_pane(0, -1),
-            _ => move_pane(0, 1),
-        },
-        VK_LEFT if alt => browse(a, SBSP_NAVIGATEBACK),
-        VK_RIGHT if alt => browse(a, SBSP_NAVIGATEFORWARD),
-        VK_UP if alt => browse(a, SBSP_PARENT),
-        VK_L if ctrl => return focus_ctl(a, ID_EDIT),
-        VK_D if alt => return focus_ctl(a, ID_EDIT),
-        VK_F4 if !alt => return focus_ctl(a, ID_EDIT),
-        VK_F if ctrl => return focus_ctl(a, ID_FILTER),
-        VK_H if ctrl => toggle_hidden(),
-        VK_OEM_COMMA if ctrl && !shift && !alt => settings::open(app(|a| a.main)),
-        VK_S if ctrl => save_current(),
-        VK_B if ctrl && !shift && !alt => open_favs(),
-        VK_M if ctrl && shift && !alt => toggle_zoom(),
-        VK_N if ctrl && alt && !shift && !addr && !filt => new_file(a),
-        VK_N if ctrl && shift && !alt && !addr && !filt => new_folder(a),
-        VK_F1 => open_help(),
-        VK_RETURN if addr => go_edit(a),
-        VK_RETURN if filt => {
-            apply_filter(a);
-            focus_view(a);
-        }
-        VK_ESCAPE if addr => addr_reset(a, m.hwnd),
-        VK_ESCAPE if filt => {
-            _ = SetWindowTextW(m.hwnd, w!(""));
-            apply_filter(a);
-            focus_view(a);
-        }
-        _ if addr || filt => return false,
-        VK_C if ctrl && shift && !alt && list() => copy_paths(a),
-        VK_DOWN if alt && !ctrl && !shift => recent_menu(a),
-        VK_F5 if list() => {
+    let list = view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
+    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
+        return dispatch(crate::keys::id_of(i), vk, a, list, shell);
+    }
+    // Not an app shortcut. F5, Del, and Ctrl+V still belong to the file list
+    // unless the user has bound that chord above.
+    match VIRTUAL_KEY(vk) {
+        VK_F5 if list => {
             resum_sizes();
-            return shell();
+            shell()
         }
-        VK_DELETE if !ctrl && !alt && list() => delete_selection(a, shift),
-        VK_V if ctrl && !shift && !alt && list() => {
+        VK_DELETE if !ctrl && !alt && list => {
+            delete_selection(a, shift);
+            true
+        }
+        VK_V if ctrl && !shift && !alt && list => {
             if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
-                return shell();
+                shell()
+            } else {
+                true
             }
         }
+        _ => shell(),
+    }
+}
+
+unsafe fn finish_capture(vk: u16, ctrl: bool, shift: bool, alt: bool) -> bool {
+    match crate::keys::offer(vk, ctrl, shift, alt) {
+        crate::keys::Offer::Ignore => true,
+        crate::keys::Offer::Cancel | crate::keys::Offer::Same => {
+            crate::keys::swallow(vk);
+            settings::redraw();
+            true
+        }
+        crate::keys::Offer::Bind { row, chord, other } => {
+            if let Some(other) = other {
+                let name = crate::keys::action(other);
+                if !settings::confirm_swap(&crate::keys::format_chord(&chord), &name) {
+                    crate::keys::swallow(vk);
+                    settings::redraw();
+                    return true;
+                }
+            }
+            crate::keys::rebind(row, chord);
+            crate::keys::swallow(vk);
+            save_session();
+            settings::refresh();
+            true
+        }
+    }
+}
+
+unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> bool) -> bool {
+    match id {
+        "tab.new" => new_tab(),
+        "tab.close" => close_tab(app(|x| x.s.tab)),
+        "tab.next" => switch_rel(1),
+        "tab.prev" => switch_rel(-1),
+        "tab.reopen" => reopen_closed_at(0),
+        "pane.next" => cycle(1),
+        "pane.prev" => cycle(-1),
+        "pane.goto" => {
+            let n = if (0x31..=0x39).contains(&vk) { (vk - 0x31) as usize } else { 0 };
+            if n >= app(|x| x.s.panes()) {
+                return shell();
+            }
+            set_active(n);
+            focus_view(n);
+        }
+        "pane.left" => move_pane(-1, 0),
+        "pane.right" => move_pane(1, 0),
+        "pane.up" => move_pane(0, -1),
+        "pane.down" => move_pane(0, 1),
+        "nav.back" => browse(a, SBSP_NAVIGATEBACK),
+        "nav.fwd" => browse(a, SBSP_NAVIGATEFORWARD),
+        "nav.up" => browse(a, SBSP_PARENT),
+        "nav.recent" => recent_menu(a),
+        "nav.addr" | "nav.addr2" | "nav.addr3" => return focus_ctl(a, ID_EDIT),
+        "view.filter" => return focus_ctl(a, ID_FILTER),
+        "view.hidden" => toggle_hidden(),
+        "view.zoom" => toggle_zoom(),
+        "file.path" => {
+            if !list {
+                return shell();
+            }
+            copy_paths(a);
+        }
+        "file.new" => new_file(a),
+        "file.dir" => new_folder(a),
+        "sess.save" => save_current(),
+        "fav.list" => open_favs(),
+        "app.settings" => settings::open(app(|x| x.main)),
+        "app.help" => open_help(),
         _ => return shell(),
     }
     true
@@ -201,6 +268,10 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => key(m),
+        WM_KEYUP | WM_SYSKEYUP => {
+            crate::keys::clear_swallow(m.wParam.0 as u16);
+            false
+        }
         _ => false,
     }
 }

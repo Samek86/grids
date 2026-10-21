@@ -172,7 +172,7 @@ unsafe fn build_children(h: HWND) {
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
     btn(S_CLOSE, tx(CLOSE_L), true);
-    btn(S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す")), false);
+    btn(S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す")), true);
     btn(S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
     btn(S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…")), true);
     btn(S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く")), true);
@@ -443,7 +443,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 crate::text(dc, RECT { left: b, ..*r }, tx(s("Shortcut", "단축키", "ショートカット")), sn.small, crate::pal().sub, DT_LEFT);
                 crate::fill(dc, RECT { top: r.bottom - 1, ..*r }, crate::pal().line);
             }
-            Item::KeyRow { i, rect } => draw_key_row(dc, *i, *rect, sn),
+            Item::KeyRow { i, rect, change, reset } => draw_key_row(dc, *i, *rect, *change, *reset, sn),
         }
     }
     if g.has_bar {
@@ -455,8 +455,8 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
 
 fn key_cols(r: RECT) -> (RECT, i32) {
     let w = r.right - r.left;
-    let a = RECT { left: r.left + (w * 3 / 100).max(8), right: r.left + w * 22 / 100, ..r };
-    (a, r.left + w * 50 / 100)
+    let a = RECT { left: r.left + (w * 2 / 100).max(8), right: r.left + w * 16 / 100, ..r };
+    (a, r.left + w * 40 / 100)
 }
 
 fn chip_h(dpi: i32) -> i32 {
@@ -467,14 +467,22 @@ fn chord_gap(dpi: i32) -> i32 {
     sc(dpi, 6)
 }
 
-fn chord_inset(dpi: i32) -> i32 {
-    sc(dpi, 12)
+/// Change and Reset, sitting at the right of a shortcut row.
+pub(crate) fn key_btn_rects(r: RECT, dpi: i32) -> (RECT, RECT) {
+    let h = sc(dpi, 24).min((r.bottom - r.top - sc(dpi, 4)).max(sc(dpi, 18)));
+    let top = r.top + ((r.bottom - r.top - h) / 2).max(0);
+    let gap = sc(dpi, 6);
+    let edge = r.right - sc(dpi, 8);
+    let reset = RECT { left: edge - sc(dpi, 72), top, right: edge, bottom: top + h };
+    let change = RECT { left: reset.left - gap - sc(dpi, 76), top, right: reset.left - gap, bottom: top + h };
+    (change, reset)
 }
 
 /// Shortcut column: x where chips start, and the width they must stay inside.
 fn chord_box(r: RECT, dpi: i32) -> (i32, i32) {
     let (_, keys_x) = key_cols(r);
-    (keys_x, (r.right - chord_inset(dpi) - keys_x).max(sc(dpi, 48)))
+    let (change, _) = key_btn_rects(r, dpi);
+    (keys_x, (change.left - sc(dpi, 8) - keys_x).max(sc(dpi, 36)))
 }
 
 /// Pack chip widths onto lines that stay within `max_w`. A chip wider than the
@@ -533,15 +541,13 @@ unsafe fn key_row_height(dc: HDC, keys: &[&str], row: RECT, dpi: i32, font: HFON
     key_row_h_from_lines(lines.len() as i32, dpi)
 }
 
-pub(crate) unsafe fn key_row_heights(rows: &[usize], row: RECT, dpi: i32, font: HFONT) -> Vec<i32> {
-    if rows.is_empty() {
+pub(crate) unsafe fn key_row_heights(labels: &[String], row: RECT, dpi: i32, font: HFONT) -> Vec<i32> {
+    if labels.is_empty() {
         return vec![sc(dpi, 40)];
     }
     let dc = GetDC(None);
-    let heights = rows
-        .iter()
-        .map(|&i| key_row_height(dc, KEYS[i].keys, row, dpi, if dc.is_invalid() { HFONT::default() } else { font }))
-        .collect();
+    let font = if dc.is_invalid() { HFONT::default() } else { font };
+    let heights = labels.iter().map(|label| key_row_height(dc, &[label.as_str()], row, dpi, font)).collect();
     if !dc.is_invalid() {
         let _ = ReleaseDC(None, dc);
     }
@@ -633,42 +639,56 @@ unsafe fn draw_fav_row(dc: HDC, i: usize, r: RECT, sn: &Snap) {
     crate::fill(dc, RECT { top: r.bottom - 1, ..r }, crate::pal().line);
 }
 
-unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, sn: &Snap) {
+unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn: &Snap) {
     let dpi = sn.dpi.max(96);
-    if i == usize::MAX || i >= KEYS.len() {
+    if i == usize::MAX || i >= crate::keys::len() {
         crate::text(dc, r, tx(NONE), sn.small, crate::pal().sub, DT_CENTER);
         return;
     }
-    let k = &KEYS[i];
+    if crate::keys::capture_row() == Some(i) {
+        crate::fill(dc, r, crate::blend(crate::pal().bg, chrome(), 0.16));
+    }
+    let (cat_s, act_s, chord) = crate::keys::row(i);
+    let shown = if crate::keys::capture_row() == Some(i) {
+        tx(s("Press a key…", "키를 누르세요…", "キーを押してください…")).to_string()
+    } else {
+        chord
+    };
     let (cat, keys_x) = key_cols(r);
-    crate::text(dc, cat, tx(k.cat), sn.font, crate::pal().sub, DT_LEFT);
-    crate::text(dc, RECT { left: cat.right, right: keys_x - sc(dpi, 8), ..r }, tx(k.act), sn.font, crate::pal().text, DT_LEFT);
+    crate::text(dc, cat, &cat_s, sn.font, crate::pal().sub, DT_LEFT);
+    crate::text(dc, RECT { left: cat.right, right: keys_x - sc(dpi, 8), ..r }, &act_s, sn.font, crate::pal().text, DT_LEFT);
     let (_, max_w) = chord_box(r, dpi);
-    let widths = chord_widths(dc, sn.mono, k.keys, dpi);
+    let widths = chord_widths(dc, sn.mono, &[&shown], dpi);
     let lines = pack_chords(&widths, max_w, chord_gap(dpi));
     let n = lines.len().max(1) as i32;
     let ch = chip_h(dpi);
     let lg = sc(dpi, 4);
     let stack = n * ch + (n - 1) * lg;
-    let mut y = r.top + (r.bottom - r.top - stack).max(0) / 2;
+    let y = r.top + (r.bottom - r.top - stack).max(0) / 2;
     let limit = keys_x + max_w;
-    let mut ki = 0usize;
-    for line in &lines {
-        let mut x = keys_x;
+    let border = if crate::keys::is_custom(i) { chrome() } else { crate::pal().line };
+    let mut x = keys_x;
+    if let Some(line) = lines.first() {
         for &w in line {
-            let key = k.keys.get(ki).copied().unwrap_or("");
-            ki += 1;
             let right = (x + w).min(limit);
             let chip = RECT { left: x, top: y, right, bottom: (y + ch).min(r.bottom - 1) };
             if chip.right > chip.left && chip.bottom > chip.top {
-                rfill(dc, chip, sc(dpi, 6), crate::pal().bg, Some(crate::pal().line));
-                crate::fill(dc, RECT { top: chip.bottom - sc(dpi, 2).max(1), left: chip.left + 1, right: chip.right - 1, bottom: chip.bottom - 1 }, crate::blend(crate::pal().line, crate::pal().text, 0.35));
-                crate::text(dc, chip, key, sn.mono, crate::pal().text, DT_CENTER);
+                rfill(dc, chip, sc(dpi, 6), crate::pal().bg, Some(border));
+                crate::text(dc, chip, &shown, sn.mono, crate::pal().text, DT_CENTER);
             }
             x = right + chord_gap(dpi);
         }
-        y += ch + lg;
     }
+    let mini = |rect: RECT, label: &str, on: bool| {
+        if rect.right <= rect.left {
+            return;
+        }
+        let ink = if on { crate::pal().text } else { crate::pal().sub };
+        rfill(dc, rect, sc(dpi, 4), crate::pal().card, Some(if on { crate::pal().line } else { crate::pal().line }));
+        crate::text(dc, rect, label, sn.small, ink, DT_CENTER);
+    };
+    mini(change, tx(s("Change", "변경", "変更")), true);
+    mini(reset, tx(s("Reset", "되돌리기", "戻す")), crate::keys::is_custom(i));
     crate::fill(dc, RECT { top: r.bottom - 1, ..r }, crate::pal().line);
 }
 
@@ -870,6 +890,7 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
     }
     match id {
         S_CLOSE => close(),
+        S_RESET => reset_keys(h),
         S_SESS => {
             let d = crate::sessions_dir();
             let _ = std::fs::create_dir_all(&d);
@@ -1037,11 +1058,87 @@ unsafe fn rename_fav(h: HWND, k: usize) {
     refresh();
 }
 
+unsafe fn reset_keys(h: HWND) {
+    let q = tx(s(
+        "Reset every shortcut to its default?",
+        "단축키를 모두 기본값으로 되돌릴까요?",
+        "ショートカットをすべて既定に戻しますか?",
+    ));
+    if !confirm_box(h, q) {
+        return;
+    }
+    crate::keys::reset_all();
+    crate::save_session();
+    refresh();
+}
+
+unsafe fn reset_one(i: usize) {
+    let Some(chord) = crate::keys::default_chord(i) else { return };
+    if crate::keys::same(i, &chord) {
+        return;
+    }
+    if let Some(other) = crate::keys::conflict(i, chord) {
+        if !confirm_swap(&crate::keys::format_chord(&chord), &crate::keys::action(other)) {
+            return;
+        }
+    }
+    crate::keys::rebind(i, chord);
+    crate::save_session();
+    refresh();
+}
+
+fn key_click(g: &Geo, x: i32, y: i32) -> Option<(usize, u8)> {
+    for item in &g.items {
+        if let Item::KeyRow { i, rect, change, reset } = item {
+            if *i == usize::MAX || !inside(*rect, x, y) {
+                continue;
+            }
+            if inside(*change, x, y) {
+                return Some((*i, 1));
+            }
+            if inside(*reset, x, y) {
+                return Some((*i, 2));
+            }
+            return Some((*i, 0));
+        }
+    }
+    None
+}
+
+pub(crate) unsafe fn confirm_swap(chord: &str, other: &str) -> bool {
+    let q = if tr("en", "ko", "ja") == "ko" {
+        format!("{other} 동작이 이미 {chord} 를 쓰고 있어요.\n두 단축키를 바꿀까요?\n\n예: 맞바꿈    아니오: 그대로 두기")
+    } else if tr("en", "ko", "ja") == "ja" {
+        format!("「{other}」がすでに {chord} を使っています。\n二つのショートカットを入れ替えますか?\n\nはい: 入れ替え    いいえ: そのまま")
+    } else {
+        format!("{other} already uses {chord}.\nSwap the two shortcuts?\n\nYes swaps them. No leaves both unchanged.")
+    };
+    confirm_box(hwnd(), &q)
+}
+
+unsafe fn confirm_box(owner: HWND, q: &str) -> bool {
+    crate::keys::set_modal(true);
+    let ans = MessageBoxW(Some(owner), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONWARNING);
+    crate::keys::set_modal(false);
+    ans == IDYES
+}
+
 unsafe fn on_click(h: HWND, x: i32, y: i32) {
     let sn = snap();
     let mut rc = RECT::default();
     let _ = GetClientRect(h, &mut rc);
     let g = geo(rc, &sn);
+    if let Some((i, kind)) = key_click(&g, x, y) {
+        if kind == 1 {
+            crate::keys::begin(i);
+            let _ = InvalidateRect(Some(h), None, false);
+            return;
+        }
+        if kind == 2 {
+            reset_one(i);
+            return;
+        }
+    }
     for i in 0..9 {
         if g.show[i] && inside(g.nav[i], x, y) {
             ST.with(|s| {
@@ -1157,6 +1254,18 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
                 on_click(h, x, y);
             }
+            WM_LBUTTONDBLCLK => {
+                let x = (lp.0 & 0xffff) as i16 as i32;
+                let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
+                let sn = snap();
+                let mut rc = RECT::default();
+                let _ = GetClientRect(h, &mut rc);
+                let g = geo(rc, &sn);
+                if let Some((i, 0)) = key_click(&g, x, y) {
+                    crate::keys::begin(i);
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
+            }
             WM_MOUSEMOVE => {
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
@@ -1251,6 +1360,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let _ = DestroyWindow(h);
             }
             WM_DESTROY => {
+                crate::keys::cancel();
                 let old = ST.with(|s| {
                     let mut st = s.borrow_mut();
                     let old = (st.font, st.small, st.title_font, st.mono, st.icon);
