@@ -24,7 +24,8 @@ use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINI
 use windows::Win32::UI::Controls::{
     SetWindowTheme, BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
     CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDDS_SUBITEM, CDIS_HOT, CDIS_SELECTED, CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYSUBITEMDRAW, CDRF_SKIPDEFAULT,
-    HDF_CENTER, HDF_RIGHT, HDF_SORTDOWN, HDF_SORTUP, HDITEMW, HDI_FORMAT, HDI_TEXT, HDM_GETITEMW, NMCUSTOMDRAW, NMHDR, NMLVCUSTOMDRAW, NM_CUSTOMDRAW,
+    HDF_CENTER, HDF_RIGHT, HDF_SORTDOWN, HDF_SORTUP, HDITEMW, HDI_FORMAT, HDI_TEXT, HDM_GETITEMW, HDN_BEGINTRACKW, HDN_ITEMCHANGINGW, HDN_TRACKW, HDI_WIDTH, NMHEADERW, LVCF_MINWIDTH, LVCOLUMNW, LVM_GETCOLUMNW, LVM_SETCOLUMNW,
+    LVM_GETCOLUMNWIDTH, LVM_SETCOLUMNWIDTH, NMCUSTOMDRAW, NMHDR, NMLVCUSTOMDRAW, NM_CUSTOMDRAW,
     TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_UPDATETIPTEXTW, TTTOOLINFOW, WM_MOUSELEAVE,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
@@ -65,6 +66,7 @@ const EN_CHANGE: u32 = 0x0300;
 const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
 const TIMER_REVEAL: usize = 3;
+const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
 // tree-view messages (the sidebar's SysTreeView32)
 const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_ENSUREVISIBLE: u32 = 0x1114;
@@ -75,6 +77,10 @@ const TVM_SETBKCOLOR: u32 = 0x111D;
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_GETHEADER: u32 = 0x101F;
 const LVM_GETCOLUMNORDERARRAY: u32 = 0x103B;
+const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
+const LVM_GETEXTENDEDLISTVIEWSTYLE: u32 = 0x1037;
+const LVS_EX_AUTOSIZECOLUMNS: usize = 0x1000_0000;
+const LVS_EX_COLUMNSNAPPOINTS: usize = 0x4000_0000;
 const HDM_GETITEMCOUNT: u32 = 0x1200;
 const LVM_SETTEXTCOLOR: u32 = 0x1024;
 const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
@@ -411,7 +417,12 @@ fn layout_differs(cur: &Session, base: &Session) -> bool {
         || !near(&cur.colr, &base.colr)
         || cur.rowr.iter().zip(&base.rowr).any(|(a, b)| !near(a, b))
         || (0..cur.panes()).any(|i| base.views[i].0 != 0 && cur.views[i] != base.views[i])
-        || (0..cur.panes()).any(|i| !base.cols[i].is_empty() && cur.paths[i] == base.paths[i] && cur.cols[i] != base.cols[i])
+        || (0..cur.panes()).any(|i| !base.cols[i].is_empty() && cur.cols[i] != base.cols[i])
+}
+
+// Drives, folders and shares; not shell places like This PC or the Recycle Bin, whose columns are their own.
+fn is_fs(path: &str) -> bool {
+    path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
 }
 
 // A view's columns: visible ones in order with their widths, then the sort columns, each property as
@@ -651,6 +662,7 @@ struct Pane {
     cookie: u32,
     disp: String,
     pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
+    settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
 }
 
 struct App {
@@ -1074,7 +1086,7 @@ unsafe fn check_dirty() {
     let changed = app(|a| {
         if let Some(b) = a.base.as_mut() {
             for i in 0..a.s.panes() {
-                if b.cols[i].is_empty() && b.paths[i] == a.s.paths[i] {
+                if b.cols[i].is_empty() {
                     b.cols[i] = a.s.cols[i].clone();
                 }
             }
@@ -1241,55 +1253,140 @@ unsafe fn apply_filter(i: usize) {
     }
 }
 
-// Pane-sticky view mode: remember it before leaving a folder, re-apply after arriving. The columns
-// are only remembered; they go back on when a session's pane first opens, or come along with open in.
+// Pane-sticky view mode and columns (order, widths, sort): remember them before leaving a folder,
+// re-apply after arriving. Columns seen in shell places (This PC ...) are theirs, not the pane's.
 unsafe fn save_view(i: usize) {
-    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some())) {
-        return; // columns are about to be put on: don't overwrite what is waiting
+    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some() || p.settle.is_some())) {
+        return; // columns are about to be put on, or still settling: don't overwrite them
     }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
+    free_min_widths(view_list(&fv)); // a list made after the folder change gets it here
     let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
     if fv.GetViewModeAndIconSize(&mut m, &mut z).is_ok() {
         app(|a| a.s.views[i] = (m.0, z));
     }
-    let pane = app(|a| a.panes[i].as_ref().map(|p| p.hwnd)).unwrap_or_default();
-    if let Some(c) = read_cols(&fv, &header_names(pane)) {
+    if let Some(c) = read_cols(&fv, view_list(&fv)).filter(|_| app(|a| is_fs(&a.s.paths[i]))) {
         app(|a| a.s.cols[i] = c);
     }
 }
 
 // Column names in on-screen order, from the pane's list header: dragging a column to a new place
 // changes only the header's order, which the view's own column list doesn't follow.
-unsafe fn header_names(pane: HWND) -> Vec<String> {
-    extern "system" fn first_list(h: HWND, out: LPARAM) -> BOOL {
-        let mut c = [0u16; 16];
-        let n = unsafe { GetClassNameW(h, &mut c) } as usize;
-        if String::from_utf16_lossy(&c[..n]) != "SysListView32" {
-            return true.into();
-        }
-        unsafe { *(out.0 as *mut HWND) = h };
-        false.into()
-    }
-    let mut lv = HWND::default();
-    _ = EnumChildWindows(Some(pane), Some(first_list), LPARAM(&mut lv as *mut _ as isize));
-    let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
-    let n = SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize;
+unsafe fn header_names(lv: HWND) -> Vec<String> {
+    let n = list_titles(lv).len();
     let mut order = vec![0i32; n];
     SendMessageW(lv, LVM_GETCOLUMNORDERARRAY, Some(WPARAM(n)), Some(LPARAM(order.as_mut_ptr() as isize)));
-    order
-        .iter()
-        .map(|&k| {
+    let titles = list_titles(lv);
+    order.iter().filter_map(|&k| titles.get(k as usize).cloned()).collect()
+}
+
+// Column titles of a list, by column index.
+unsafe fn list_titles(lv: HWND) -> Vec<String> {
+    let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+    let n = SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize;
+    (0..n)
+        .map(|k| {
             let mut text = [0u16; 128];
             let mut item = HDITEMW { mask: HDI_TEXT, pszText: PWSTR(text.as_mut_ptr()), cchTextMax: text.len() as i32, ..Default::default() };
-            SendMessageW(header, HDM_GETITEMW, Some(WPARAM(k as usize)), Some(LPARAM(&mut item as *mut _ as isize)));
+            SendMessageW(header, HDM_GETITEMW, Some(WPARAM(k)), Some(LPARAM(&mut item as *mut _ as isize)));
             String::from_utf16_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(0)])
         })
         .collect()
 }
 
+// The list inside a view. During a folder change the old view's list is still around, so it is
+// found from the view itself, not by looking through the pane.
+unsafe fn view_list(fv: &IFolderView2) -> HWND {
+    let view = fv.cast::<IShellView>().and_then(|v| v.GetWindow()).unwrap_or_default();
+    FindWindowExW(Some(view), None, w!("SysListView32"), PCWSTR::null()).unwrap_or_default()
+}
+
+// Explorer puts a floor under some columns (Size stops at 90 px) so numbers never get cut, and puts it
+// back whenever a column changes (through an interface, not messages we could catch). In a pane the
+// user decides: the floor is lowered to a sliver right before each resize, a drag on the header or a
+// width set on the list.
+unsafe fn free_min_widths(lv: HWND) {
+    if lv.0.is_null() {
+        return;
+    }
+    let mut was = 0usize;
+    let first = !GetWindowSubclass(lv, Some(list_floor_proc), 3, Some(&mut was as *mut _)).as_bool();
+    _ = SetWindowSubclass(lv, Some(list_floor_proc), 3, 0);
+    if first {
+        // the view puts its floor back on the first width change a list sees, and only then: spend that
+        // change here (a pixel wider and back) so the user's first drag already goes below it
+        let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+        for c in 0..SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize {
+            let w = SendMessageW(lv, LVM_GETCOLUMNWIDTH, Some(WPARAM(c)), None).0;
+            SendMessageW(lv, LVM_SETCOLUMNWIDTH, Some(WPARAM(c)), Some(LPARAM(w + 1)));
+            SendMessageW(lv, LVM_SETCOLUMNWIDTH, Some(WPARAM(c)), Some(LPARAM(w)));
+        }
+    }
+    // and no snapping to the floor or ideal width while dragging, no automatic sizing: the user's width
+    let snap = LVS_EX_COLUMNSNAPPOINTS | LVS_EX_AUTOSIZECOLUMNS;
+    if SendMessageW(lv, LVM_GETEXTENDEDLISTVIEWSTYLE, None, None).0 as usize & snap != 0 {
+        SendMessageW(lv, LVM_SETEXTENDEDLISTVIEWSTYLE, Some(WPARAM(snap)), Some(LPARAM(0)));
+    }
+}
+
+unsafe fn lower_floors(lv: HWND) {
+    let floor = 20 * GetDpiForWindow(lv) as i32 / 96;
+    let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+    for c in 0..SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize {
+        let mut col = LVCOLUMNW { mask: LVCF_MINWIDTH, ..Default::default() };
+        if SendMessageW(lv, LVM_GETCOLUMNW, Some(WPARAM(c)), Some(LPARAM(&mut col as *mut _ as isize))).0 != 0 && col.cxMin > floor {
+            let lower = LVCOLUMNW { mask: LVCF_MINWIDTH, cxMin: floor, ..Default::default() };
+            SendMessageW(lv, LVM_SETCOLUMNW, Some(WPARAM(c)), Some(LPARAM(&lower as *const _ as isize)));
+        }
+    }
+}
+
+unsafe extern "system" fn list_floor_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+    let resize = match msg {
+        LVM_SETCOLUMNWIDTH => true,
+        WM_NOTIFY => matches!((*(lp.0 as *const NMHDR)).code, HDN_BEGINTRACKW | HDN_TRACKW | HDN_ITEMCHANGINGW),
+        _ => false,
+    };
+    if resize {
+        lower_floors(h);
+    }
+    // the view stops a column coming down from above its floor at the floor (through its own channel,
+    // not a message): the narrowing asked for goes on again right after, from the floor, where it isn't stopped
+    if msg == WM_NOTIFY && (*(lp.0 as *const NMHDR)).code == HDN_ITEMCHANGINGW {
+        let nm = &*(lp.0 as *const NMHEADERW);
+        if !nm.pitem.is_null() && (*nm.pitem).mask.0 & HDI_WIDTH.0 != 0 {
+            let floor = 20 * GetDpiForWindow(h) as i32 / 96; // never all the way to nothing
+            let (col, want) = (nm.iItem, (*nm.pitem).cxy.max(floor));
+            let now = SendMessageW(h, LVM_GETCOLUMNWIDTH, Some(WPARAM(col as usize)), None).0 as i32;
+            let ask = if want < now { (col as i64) << 32 | want as i64 } else { -1 };
+            NARROWING.store(ask, Ordering::Relaxed); // a newer change (or a widening) cancels an older one
+            if ask >= 0 {
+                _ = PostMessageW(Some(h), WM_NARROW_AGAIN, WPARAM(col as usize), LPARAM(want as isize));
+            }
+        }
+    }
+    if msg == WM_NARROW_AGAIN {
+        let (col, want) = (wp.0, lp.0 as i32);
+        if NARROWING.load(Ordering::Relaxed) == ((col as i64) << 32 | want as i64)
+            && SendMessageW(h, LVM_GETCOLUMNWIDTH, Some(WPARAM(col)), None).0 as i32 != want // stopped at the floor, or let through to nothing
+        {
+            NARROWING.store(-1, Ordering::Relaxed);
+            SendMessageW(h, LVM_SETCOLUMNWIDTH, Some(WPARAM(col)), Some(LPARAM(want as isize)));
+        }
+        return LRESULT(0);
+    }
+    DefSubclassProc(h, msg, wp, lp)
+}
+
+const WM_NARROW_AGAIN: u32 = WM_APP + 41;
+static NARROWING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1); // column << 32 | width
+
+
 // The view's visible columns with widths, put in on-screen order by name, then its sort columns.
-unsafe fn read_cols(fv: &IFolderView2, shown: &[String]) -> Option<String> {
+// Widths come from the list: one narrowed below the view's floor is only there (the view still says 90).
+unsafe fn read_cols(fv: &IFolderView2, lv: HWND) -> Option<String> {
     let cm: IColumnManager = fv.cast().ok()?;
+    let (titles, shown) = (list_titles(lv), header_names(lv));
     let mut keys = vec![PROPERTYKEY::default(); cm.GetColumnCount(CM_ENUM_VISIBLE).ok()? as usize];
     cm.GetColumns(CM_ENUM_VISIBLE, &mut keys).ok()?;
     let info = |k: &PROPERTYKEY| {
@@ -1297,12 +1394,13 @@ unsafe fn read_cols(fv: &IFolderView2, shown: &[String]) -> Option<String> {
         let mut ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: mask, ..Default::default() };
         _ = cm.GetColumnInfo(k, &mut ci);
         let name = String::from_utf16_lossy(&ci.wszName[..ci.wszName.iter().position(|&c| c == 0).unwrap_or(0)]);
-        (*k, ci.uWidth, name)
+        let on_list = titles.iter().position(|t| *t == name).map(|c| SendMessageW(lv, LVM_GETCOLUMNWIDTH, Some(WPARAM(c)), None).0 as u32);
+        (*k, on_list.filter(|&w| w > 0).unwrap_or(ci.uWidth), name)
     };
     let mut left: Vec<_> = keys.iter().map(info).collect();
     let mut cols = Vec::new();
-    for name in shown {
-        if let Some(at) = left.iter().position(|c| &c.2 == name) {
+    for name in &shown {
+        if let Some(at) = left.iter().position(|c| c.2 == *name) {
             cols.push(left.remove(at));
         }
     }
@@ -1313,7 +1411,24 @@ unsafe fn read_cols(fv: &IFolderView2, shown: &[String]) -> Option<String> {
     Some(cols_text(&cols, &sort.iter().map(|c| (c.propkey, c.direction.0)).collect::<Vec<_>>()))
 }
 
-unsafe fn apply_cols(fv: &IFolderView2, text: &str) {
+// The view keeps its own floor (Size: 90 px) under widths set through it, also when it builds a new
+// folder's columns: narrower ones go straight onto the list, which lets them through (list_floor_proc).
+unsafe fn put_widths(fv: &IFolderView2, text: &str, lv: HWND) {
+    let Ok(cm) = fv.cast::<IColumnManager>() else { return };
+    let titles = list_titles(lv);
+    for (k, w) in parse_cols(text).0 {
+        let mut ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: CM_MASK_NAME.0 as u32, ..Default::default() };
+        _ = cm.GetColumnInfo(&k, &mut ci);
+        let name = String::from_utf16_lossy(&ci.wszName[..ci.wszName.iter().position(|&c| c == 0).unwrap_or(0)]);
+        if let Some(c) = titles.iter().position(|t| *t == name) {
+            if SendMessageW(lv, LVM_GETCOLUMNWIDTH, Some(WPARAM(c)), None).0 != w as isize {
+                SendMessageW(lv, LVM_SETCOLUMNWIDTH, Some(WPARAM(c)), Some(LPARAM(w as isize)));
+            }
+        }
+    }
+}
+
+unsafe fn apply_cols(fv: &IFolderView2, text: &str, lv: HWND) {
     let (cols, sort) = parse_cols(text);
     if let (false, Ok(cm)) = (cols.is_empty(), fv.cast::<IColumnManager>()) {
         if cm.SetColumns(&cols.iter().map(|c| c.0).collect::<Vec<_>>()).is_ok() {
@@ -1321,6 +1436,7 @@ unsafe fn apply_cols(fv: &IFolderView2, text: &str) {
                 let ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: CM_MASK_WIDTH.0 as u32, uWidth: *w, ..Default::default() };
                 _ = cm.SetColumnInfo(k, &ci);
             }
+            put_widths(fv, text, lv);
         }
     }
     if !sort.is_empty() {
@@ -1328,15 +1444,40 @@ unsafe fn apply_cols(fv: &IFolderView2, text: &str) {
     }
 }
 
+// A few passes after a folder change (50, 150, 400, 1000 ms) put narrow widths back as the view builds
+// its columns at its own floor; then the pane's columns are read from the view again.
+unsafe fn settle_cols(h: HWND) {
+    _ = KillTimer(Some(h), TIMER_SETTLE);
+    let Some(i) = pane_of(h) else { return };
+    let Some((cols, left)) = app(|a| a.panes[i].as_ref().and_then(|p| p.settle.clone())) else { return };
+    if let Some(fv) = view_of::<IFolderView2>(i) {
+        let lv = view_list(&fv); // the new folder's list exists by now
+        free_min_widths(lv);
+        put_widths(&fv, &cols, lv);
+    }
+    let left = left - 1;
+    app(|a| {
+        if let Some(p) = a.panes[i].as_mut() {
+            p.settle = (left > 0).then(|| (cols, left));
+        }
+    });
+    if left > 0 {
+        SetTimer(Some(h), TIMER_SETTLE, [1000, 400, 150][left as usize - 1], None);
+    }
+}
+
 unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
-    let Some((h, eb, view, restore)) = app(|a| {
+    let Some((h, eb, view, cols)) = app(|a| {
+        let fs = is_fs(&parse);
         a.s.paths[i] = parse;
-        let v = a.s.views[i];
+        let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
-            (p.hwnd, p.eb.clone(), v, p.pending.take())
+            // waiting columns (session, open in) first, else the pane's own; none in shell places
+            let cols = p.pending.take().unwrap_or(own);
+            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()))
         })
     }) else {
         return;
@@ -1351,8 +1492,16 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         if view.0 != 0 {
             _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(view.0), view.1);
         }
-        if let Some(cols) = restore.filter(|c| !c.is_empty()) {
-            apply_cols(&fv, &cols);
+        let lv = view_list(&fv);
+        free_min_widths(lv);
+        if let Some(cols) = cols {
+            apply_cols(&fv, &cols, lv);
+            app(|a| {
+                if let Some(p) = a.panes[i].as_mut() {
+                    p.settle = Some((cols, 4));
+                }
+            });
+            SetTimer(Some(h), TIMER_SETTLE, 50, None);
         }
         // No full-row select: a drag that starts in the size/date cells draws a selection box
         // (and selects the names it covers) instead of grabbing that row's file.
@@ -1570,7 +1719,7 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     let ev: IExplorerBrowserEvents = Events(i).into();
     let cookie = eb.Advise(&ev)?;
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None })
 }
 
 unsafe fn destroy_pane(i: usize) {
@@ -3062,6 +3211,7 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
         };
         match msg {
+            WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
             WM_SIZE => layout_pane(h),
             WM_PAINT => paint_pane(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
@@ -3357,7 +3507,7 @@ mod tests {
         let text = cols_text(&[(k(10), 220), (k(12), 80)], &[(k(12), -1)]);
         assert_eq!(parse_cols(&text), (vec![(k(10), 220), (k(12), 80)], vec![(k(12), -1)]));
         assert_eq!(parse_cols("junk;"), (vec![], vec![]));
-        // kept in the session; a change counts only while the pane shows the folder it was saved with
+        // kept in the session; a change counts wherever the pane is (columns are a pane setting)
         let mut base = Session { paths: vec![r"C:\a".into(); MAXP], ..Default::default() };
         base.cols[0] = text.clone();
         let base = Session::parse(&base.to_ini());
@@ -3366,7 +3516,8 @@ mod tests {
         cur.cols[0] = cols_text(&[(k(12), 80), (k(10), 220)], &[(k(12), -1)]);
         assert!(layout_differs(&cur, &base));
         cur.paths[0] = r"C:\b".into();
-        assert!(!layout_differs(&cur, &base));
+        assert!(layout_differs(&cur, &base));
+        assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
     }
 
     #[test]
