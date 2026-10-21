@@ -455,7 +455,13 @@ fn remember(file: SettingsFile) {
     SETTINGS_KEEP.with(|k| *k.borrow_mut() = file);
 }
 
+fn strip_bom(text: &str) -> &str {
+    let text = text.trim_start();
+    text.strip_prefix('\u{FEFF}').unwrap_or(text).trim_start()
+}
+
 fn adopt(text: &str) -> Option<Session> {
+    let text = strip_bom(text);
     let file: SettingsFile = serde_json::from_str(text).ok()?;
     let s = file.to_session();
     crate::keys::load_bindings(&file.keybindings);
@@ -479,7 +485,8 @@ pub(crate) fn current_text() -> String {
 
 /// A leading `{` is JSON. Anything else is a legacy ini. Invalid JSON is refused.
 pub(crate) fn import_text(text: &str) -> Result<Session, ()> {
-    if text.trim_start().starts_with('{') {
+    let text = strip_bom(text);
+    if text.starts_with('{') {
         adopt(text).ok_or(())
     } else {
         let s = Session::parse(text);
@@ -538,10 +545,11 @@ pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
     let _ = std::fs::create_dir_all(cfg);
     let json_path = cfg.join("grids.json");
     if json_path.is_file() {
-        if let Ok(text) = std::fs::read_to_string(&json_path) {
-            if let Some(s) = adopt(&text) {
+        if let Ok(raw) = std::fs::read_to_string(&json_path) {
+            let text = strip_bom(&raw);
+            if let Some(s) = adopt(text) {
                 // The activity-bar choice is retired. Drop it once so the next launch does not see it.
-                let had_panel = serde_json::from_str::<Value>(&text).ok().is_some_and(|v| v.get("panel").is_some());
+                let had_panel = serde_json::from_str::<Value>(text).ok().is_some_and(|v| v.get("panel").is_some());
                 if had_panel {
                     let migrated = current_text();
                     if migrated != text {
@@ -929,5 +937,27 @@ mod tests {
         let again = load_at(&exe, &cfg);
         assert!((again.side_split - 0.25).abs() < 1e-9);
         assert_eq!(std::fs::read_to_string(cfg.join("grids.json")).unwrap(), json);
+    }
+
+    #[test]
+    fn utf8_bom_loads_the_favorites_tree() {
+        let root = scratch("bom-fav");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        let mut raw = vec![0xEF, 0xBB, 0xBF];
+        raw.extend(br#"{"version":1,"favorites_tree":[{"name":"Jobs","children":[{"name":"note","path":"C:\\a\\note.txt","file":true}]}]}"#);
+        std::fs::write(cfg.join("grids.json"), raw).unwrap();
+        let s = load_at(&exe, &cfg);
+        assert_eq!(s.tree.len(), 1);
+        assert_eq!(s.tree[0].name, "Jobs");
+        assert!(s.tree[0].is_group());
+        assert_eq!(s.tree[0].children[0].name, "note");
+        assert!(s.tree[0].children[0].file);
+        assert!(s.is_fav(r"C:\a\note.txt"));
+        let imported = import_text("\u{FEFF}{\"version\":1,\"favorites_tree\":[{\"name\":\"Places\",\"path\":\"D:\\\\Photos\"}]}").unwrap();
+        assert_eq!(imported.tree[0].name, "Places");
+        assert!(imported.is_fav(r"D:\Photos"));
     }
 }

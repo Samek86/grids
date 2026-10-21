@@ -11,8 +11,59 @@ use super::*;
 
 const ID_SIDE_EDIT: i32 = 209;
 
-fn row_h(dpi: i32) -> i32 {
-    28 * dpi / 96
+/// Favourites row height in px. `tree` is the folder tree's `TVM_GETITEMHEIGHT`.
+/// When that control is not up yet, `font_px` (the UI font's line height, already scaled
+/// for DPI and the font setting) plus the padding a tree view adds.
+pub(crate) fn fav_row_height(tree: i32, font_px: i32) -> i32 {
+    if tree > 0 {
+        tree
+    } else {
+        (font_px + 4).max(1)
+    }
+}
+
+unsafe fn sys_tree() -> HWND {
+    let host = app(|a| a.tree_hwnd);
+    if host.0.is_null() {
+        HWND::default()
+    } else {
+        FindWindowExW(Some(host), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or_default()
+    }
+}
+
+/// The folder tree's current item height, or 0 when the control is not created yet.
+unsafe fn tree_item_height() -> i32 {
+    let tv = sys_tree();
+    if tv.0.is_null() {
+        return 0;
+    }
+    let h = SendMessageW(tv, TVM_GETITEMHEIGHT, None, None).0 as i32;
+    if h > 0 { h } else { 0 }
+}
+
+fn row_h() -> i32 {
+    unsafe {
+        let tree = tree_item_height();
+        let (fh, dpi) = app(|a| (a.fh, a.dpi));
+        fav_row_height(tree, if fh > 0 { fh } else { 16 * dpi.max(1) / 96 })
+    }
+}
+
+/// Give the folder tree the UI font (so its item height follows DPI and the font setting)
+/// and keep the favourites scroll inside the new row size.
+pub(crate) unsafe fn sync_fav_metrics() {
+    let (font, fh, dpi) = app(|a| (a.font, a.fh, a.dpi));
+    let tv = sys_tree();
+    if !tv.0.is_null() && !font.is_invalid() {
+        SendMessageW(tv, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    }
+    let rh = fav_row_height(tree_item_height(), if fh > 0 { fh } else { 16 * dpi.max(1) / 96 });
+    app(|a| {
+        a.s.ensure_fav_tree();
+        let n = visible_rows(&a.s.tree).len() as i32;
+        let max = (n * rh - 40).max(0);
+        a.side_scroll = a.side_scroll.min(max);
+    });
 }
 
 fn rows() -> Vec<FavRow> {
@@ -24,11 +75,11 @@ fn rows() -> Vec<FavRow> {
 
 fn row_at(y: i32) -> Option<usize> {
     let n = rows().len();
-    let (dpi, scroll) = app(|a| (a.dpi, a.side_scroll));
+    let scroll = app(|a| a.side_scroll);
     if y < 0 || n == 0 {
         return None;
     }
-    let i = (y + scroll) / row_h(dpi);
+    let i = (y + scroll) / row_h();
     (i >= 0 && (i as usize) < n).then_some(i as usize)
 }
 
@@ -81,7 +132,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
     });
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
-        let rh = row_h(dpi);
+        let rh = row_h();
         fill(dc, rc, pal().card);
         if list.is_empty() {
             text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
@@ -152,8 +203,9 @@ pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     let list = rows();
     let label = list.iter().find(|r| r.id == id).map(|r| if r.name.is_empty() { short_name(&r.path) } else { r.name.clone() }).unwrap_or_default();
     let i = list.iter().position(|r| r.id == id);
+    let rh = row_h();
     let (host, font, dpi, y) = app(|a| {
-        let y = i.map(|i| i as i32 * row_h(a.dpi) - a.side_scroll).unwrap_or(0);
+        let y = i.map(|i| i as i32 * rh - a.side_scroll).unwrap_or(0);
         (a.side_hwnd, a.font, a.dpi, y)
     });
     if host.0.is_null() {
@@ -174,7 +226,7 @@ pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     app(|a| a.side_edit_at = id.to_vec());
     _ = SetWindowTextW(edit, &HSTRING::from(label.as_str()));
     SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-    _ = SetWindowPos(edit, None, s(8), y + s(2), s(220), row_h(dpi) - s(4), SWP_NOZORDER | SWP_SHOWWINDOW);
+    _ = SetWindowPos(edit, None, s(8), y + s(2), s(220), rh - s(4), SWP_NOZORDER | SWP_SHOWWINDOW);
     _ = SetFocus(Some(edit));
     let len = GetWindowTextLengthW(edit) as usize;
     SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(len as isize)));
@@ -277,8 +329,8 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
 fn track_drop(y: i32) -> bool {
     let Some(i) = row_at(y) else { return false };
     let list = rows();
-    let (dpi, scroll) = app(|a| (a.dpi, a.side_scroll));
-    let rh = row_h(dpi);
+    let scroll = app(|a| a.side_scroll);
+    let rh = row_h();
     let top = i as i32 * rh - scroll;
     let zone = list.get(i).map(|r| drop_zone(r.group, y - top, rh)).unwrap_or(2);
     app(|a| {
@@ -362,10 +414,11 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_MOUSEWHEEL => {
-                let delta = ((wp.0 >> 16) as i16 as i32) * row_h(app(|a| a.dpi)) / 120;
+                let rh = row_h();
+                let delta = ((wp.0 >> 16) as i16 as i32) * rh / 120;
                 let n = rows().len() as i32;
                 app(|a| {
-                    let max = (n * row_h(a.dpi) - 40).max(0);
+                    let max = (n * rh - 40).max(0);
                     a.side_scroll = (a.side_scroll - delta).clamp(0, max);
                 });
                 _ = InvalidateRect(Some(h), None, false);
@@ -475,5 +528,19 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fav_row_height;
+
+    #[test]
+    fn row_height_uses_the_tree_and_font_fallback_scales() {
+        assert_eq!(fav_row_height(19, 16), 19);
+        assert_eq!(fav_row_height(38, 32), 38);
+        assert_eq!(fav_row_height(0, 16), 20);
+        assert_eq!(fav_row_height(0, 32), 36);
+        assert_eq!(fav_row_height(-1, 16), 20);
     }
 }
