@@ -84,6 +84,11 @@ const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
 const TIMER_REVEAL: usize = 3;
 const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
+const TIMER_SAVE: usize = 5; // debounced grids.json write
+const SAVE_SOON_MS: u32 = 1500;
+const SAVE_LATEST_MS: u128 = 30_000;
+/// Hidden tabs that still hold Explorer windows. Older hidden tabs keep only their saved grid.
+const PARK_CACHE: usize = 1;
 // tree-view messages (the sidebar's SysTreeView32)
 const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_ENSUREVISIBLE: u32 = 0x1114;
@@ -1377,7 +1382,9 @@ struct App {
     note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
     drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
     drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
-    park: Vec<Vec<Option<Pane>>>,             // hidden browsers for inactive tabs, parallel to s.tabs
+    park: Vec<Vec<Option<Pane>>>,             // hidden browsers, parallel to s.tabs; empty once evicted
+    park_lru: Vec<usize>,                     // parked tabs that still have browsers, oldest first
+    save_since: Option<Instant>,              // first unsaved change in this debounce window
     closed: Vec<Tab>,                         // recently closed tabs, newest first (not saved)
     tabs_hwnd: HWND,
     tab_edit: HWND,
@@ -1433,6 +1440,8 @@ thread_local! {
         drop_hover: HWND::default(),
         drop_open: None,
         park: Vec::new(),
+        park_lru: Vec::new(),
+        save_since: None,
         closed: Vec::new(),
         tabs_hwnd: HWND::default(),
         tab_edit: HWND::default(),
@@ -2152,11 +2161,21 @@ unsafe fn apply_filter(i: usize) {
     if let (true, Some(pane)) = (changed, app(|a| a.panes[i].as_ref().map(|p| p.hwnd))) {
         _ = InvalidateRect(Some(pane), None, false); // filter badge on/off
     }
+    if changed {
+        note_save();
+    }
+}
+
+thread_local! {
+    static KEEP_VIEWS: Cell<bool> = const { Cell::new(false) };
 }
 
 // Pane-sticky view mode and columns (order, widths, sort): remember them before leaving a folder,
 // re-apply after arriving. Columns seen in shell places (This PC ...) are theirs, not the pane's.
 unsafe fn save_view(i: usize) {
+    if KEEP_VIEWS.with(|c| c.get()) {
+        return;
+    }
     if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some() || p.settle.is_some())) {
         return; // columns are about to be put on, or still settling: don't overwrite them
     }
@@ -2365,6 +2384,8 @@ unsafe fn settle_cols(h: HWND) {
     });
     if left > 0 {
         SetTimer(Some(h), TIMER_SETTLE, [1000, 400, 150][left as usize - 1], None);
+    } else {
+        note_save();
     }
 }
 
@@ -2419,6 +2440,7 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             sync_tree(&item);
         }
     }
+    note_save();
 }
 
 #[implement(IExplorerBrowserEvents)]
@@ -3284,6 +3306,7 @@ unsafe fn apply_theme() {
     app(|a| {
         let n = a.s.tabs.len().max(1);
         a.park = (0..n).map(|_| no_panes()).collect();
+        a.park_lru.clear();
     });
     relayout();
     sync_filter_edits();
@@ -3499,18 +3522,61 @@ unsafe fn toggle_hidden() {
 
 // ---------- sessions ----------
 
+thread_local! {
+    static LAST_SAVED: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Writes every tab (name, lock, order, folders, filters, columns) and the window.
+/// The startup mode is stored beside that list; it does not gate the write.
 unsafe fn save_session() {
     remember_tabs();
     let main = app(|a| a.main);
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-    _ = GetWindowPlacement(main, &mut wp);
+    if !main.0.is_null() {
+        _ = GetWindowPlacement(main, &mut wp);
+    }
     let text = app(|a| {
-        let r = wp.rcNormalPosition;
-        let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
-        a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
+        if !main.0.is_null() {
+            let r = wp.rcNormalPosition;
+            let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
+            a.s.win = Some([r.left, r.top, r.right, r.bottom, max]);
+        }
         store::sync_text(&a.s)
     });
-    _ = store::write_settings(&text);
+    let same = LAST_SAVED.with(|l| l.borrow().as_str() == text);
+    if same || store::write_settings(&text).is_ok() {
+        if !same {
+            LAST_SAVED.with(|l| *l.borrow_mut() = text);
+        }
+        app(|a| a.save_since = None);
+    }
+}
+
+/// Coalesce tab, folder and window edits into one write, and never wait longer than SAVE_LATEST_MS.
+unsafe fn note_save() {
+    let main = app(|a| a.main);
+    if main.0.is_null() {
+        return;
+    }
+    let flush = app(|a| {
+        let now = Instant::now();
+        let late = a.save_since.is_some_and(|t| now.duration_since(t).as_millis() >= SAVE_LATEST_MS);
+        if late {
+            a.save_since = None;
+            true
+        } else {
+            if a.save_since.is_none() {
+                a.save_since = Some(now);
+            }
+            false
+        }
+    });
+    if flush {
+        _ = KillTimer(Some(main), TIMER_SAVE);
+        save_session();
+    } else {
+        SetTimer(Some(main), TIMER_SAVE, SAVE_SOON_MS, None);
+    }
 }
 
 // Save button / Ctrl+S: overwrite the current session file; the first time, ask for a name.
@@ -3908,8 +3974,8 @@ unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i3
 }
 
 // ---------- tabs ----------
-// The strip is its own child so splitter hit-testing stays below it. Inactive tabs keep their
-// Explorer windows hidden (travel log, filter edit, columns). Events are detached until the tab shows.
+// The strip is its own child so splitter hit-testing stays below it. Every hidden tab keeps its
+// grid on the session. Only the most recently hidden tab also keeps its Explorer windows.
 
 #[derive(Clone, Copy, PartialEq)]
 enum TabHit {
@@ -3928,11 +3994,11 @@ struct TabLay {
 fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32) -> TabLay {
     let s = |v: i32| v * dpi / 96;
     let n = n.max(1);
-    let (pad, gap, plus_w, max_w) = (s(6), s(2), s(28), s(180));
+    let (pad, gap, plus_w, max_w, min_w) = (s(6), s(2), s(28), s(90), s(28));
     let mut w = max_w;
     let used = |w: i32| n as i32 * w + gap * (n as i32 - 1) + plus_w + pad * 2;
     if used(w) > width {
-        w = ((width - pad * 2 - plus_w - gap * (n as i32 - 1)) / n as i32).max(s(28));
+        w = ((width - pad * 2 - plus_w - gap * (n as i32 - 1)) / n as i32).max(min_w);
     }
     let y = s(4);
     let h = s(26);
@@ -3992,6 +4058,62 @@ fn fit_park(a: &mut App) {
         a.park.resize_with(n, no_panes);
     } else if a.park.len() > n {
         a.park.truncate(n);
+    }
+    a.park_lru.retain(|&i| i < a.park.len());
+}
+
+fn lru_note(a: &mut App, i: usize) {
+    a.park_lru.retain(|&x| x != i);
+    a.park_lru.push(i);
+}
+
+fn lru_forget(a: &mut App, i: usize) {
+    a.park_lru.retain(|&x| x != i);
+}
+
+fn lru_insert_shift(a: &mut App, at: usize) {
+    for x in &mut a.park_lru {
+        if *x >= at {
+            *x += 1;
+        }
+    }
+}
+
+fn lru_remove_shift(a: &mut App, at: usize) {
+    a.park_lru.retain(|&x| x != at);
+    for x in &mut a.park_lru {
+        if *x > at {
+            *x -= 1;
+        }
+    }
+}
+
+fn park_has_browsers(set: &[Option<Pane>]) -> bool {
+    set.iter().any(|p| p.is_some())
+}
+
+/// Drop hidden Explorer windows past PARK_CACHE. Their folders, columns and filters stay on the tab.
+unsafe fn evict_park() {
+    loop {
+        let victim = app(|a| {
+            let live = a.park.iter().filter(|s| park_has_browsers(s)).count();
+            if live <= PARK_CACHE {
+                return None;
+            }
+            a.park_lru.iter().copied().find(|&i| a.park.get(i).is_some_and(|s| park_has_browsers(s))).or_else(|| {
+                a.park.iter().position(|s| park_has_browsers(s))
+            })
+        });
+        let Some(i) = victim else { break };
+        let set = app(|a| {
+            lru_forget(a, i);
+            if i < a.park.len() {
+                std::mem::replace(&mut a.park[i], no_panes())
+            } else {
+                no_panes()
+            }
+        });
+        destroy_set(set);
     }
 }
 
@@ -4083,9 +4205,12 @@ unsafe fn destroy_set(set: Vec<Option<Pane>>) {
         let keep = FILTERS.lock().map(|f| f.clone()).unwrap_or_else(|_| [const { String::new() }; MAXP]);
         (std::mem::replace(&mut a.panes, set), keep)
     });
+    // These browsers belong to a tab that is not on screen. Their grid is already on that tab.
+    KEEP_VIEWS.with(|c| c.set(true));
     for i in 0..MAXP {
         destroy_pane(i);
     }
+    KEEP_VIEWS.with(|c| c.set(false));
     app(|a| a.panes = back);
     put_filters(&keep);
 }
@@ -4119,10 +4244,12 @@ unsafe fn switch_tab(j: usize) {
         fit_park(a);
         let live = std::mem::replace(&mut a.panes, no_panes());
         a.park[a.s.tab] = live;
+        lru_note(a, a.s.tab);
         a.panes = std::mem::take(&mut a.park[j]);
         if a.panes.len() != MAXP {
             a.panes = no_panes();
         }
+        lru_forget(a, j);
         a.s.tab = j;
         a.s.publish();
         a.zoom = None;
@@ -4135,6 +4262,8 @@ unsafe fn switch_tab(j: usize) {
     redraw_all();
     focus_view(active_pane());
     tabs_invalidate();
+    evict_park();
+    note_save();
 }
 
 unsafe fn switch_rel(d: i32) {
@@ -4153,6 +4282,7 @@ unsafe fn new_tab() {
         fit_park(a);
         let live = std::mem::replace(&mut a.panes, no_panes());
         a.park[a.s.tab] = live;
+        lru_note(a, a.s.tab);
         let fresh = Session {
             heights: vec![2, 2],
             colr: even(2),
@@ -4176,6 +4306,8 @@ unsafe fn new_tab() {
     redraw_all();
     focus_view(active_pane());
     tabs_invalidate();
+    evict_park();
+    note_save();
 }
 
 unsafe fn duplicate_tab(i: usize) {
@@ -4192,6 +4324,7 @@ unsafe fn duplicate_tab(i: usize) {
         let j = (i + 1).min(a.s.tabs.len());
         a.s.tabs.insert(j, t);
         a.park.insert(j, no_panes());
+        lru_insert_shift(a, j);
         if j <= a.s.tab {
             a.s.tab += 1;
         }
@@ -4216,6 +4349,7 @@ unsafe fn close_tab(i: usize) {
         fit_park(a);
         let tab = a.s.tabs.remove(i);
         let mut parked = a.park.remove(i);
+        lru_remove_shift(a, i);
         a.closed.insert(0, tab);
         a.closed.truncate(CLOSED_KEEP);
         let was = a.s.tab;
@@ -4224,6 +4358,7 @@ unsafe fn close_tab(i: usize) {
             let j = i.min(a.s.tabs.len() - 1);
             a.s.tab = j;
             let next = std::mem::replace(&mut a.park[j], no_panes());
+            lru_forget(a, j);
             parked = std::mem::replace(&mut a.panes, next);
             a.s.publish();
         } else if i < was {
@@ -4242,6 +4377,7 @@ unsafe fn close_tab(i: usize) {
         focus_view(active_pane());
     }
     tabs_invalidate();
+    note_save();
 }
 
 unsafe fn close_other_tabs(keep: usize) {
@@ -4262,6 +4398,7 @@ unsafe fn reopen_closed_at(k: usize) {
         let j = (a.s.tab + 1).min(a.s.tabs.len());
         a.s.tabs.insert(j, t);
         a.park.insert(j, no_panes());
+        lru_insert_shift(a, j);
         Some(j)
     });
     if let Some(j) = j {
@@ -4280,9 +4417,11 @@ unsafe fn reorder_tab(from: usize, to: usize) {
         fit_park(a);
         reorder_vec(&mut a.s.tabs, from, to);
         reorder_vec(&mut a.park, from, to);
+        a.park_lru = a.park_lru.iter().copied().map(|i| moved_active(i, from, to)).collect();
         a.s.tab = moved_active(a.s.tab, from, to);
     });
     tabs_invalidate();
+    note_save();
 }
 
 unsafe fn end_rename(save: bool) {
@@ -4308,6 +4447,9 @@ unsafe fn end_rename(save: bool) {
     }
     _ = ShowWindow(edit, SW_HIDE);
     tabs_invalidate();
+    if save {
+        note_save();
+    }
 }
 
 unsafe fn begin_rename(i: usize) {
@@ -4379,6 +4521,7 @@ unsafe fn tab_menu(i: usize, x: i32, y: i32) {
                 }
             });
             tabs_invalidate();
+            note_save();
         }
         5 => close_tab(i),
         6 => close_other_tabs(i),
@@ -4395,6 +4538,7 @@ unsafe fn install_grids(s: Session) {
     app(|a| {
         a.s = s;
         a.park = (0..n).map(|_| no_panes()).collect();
+        a.park_lru.clear();
         a.zoom = None;
     });
 }
@@ -5680,7 +5824,13 @@ fn apply_boot(s: &mut Session) {
                 s.file = file;
             }
         }
-        _ => {}
+        // 0, the default: every tab loaded from grids.json stays. Only the active one is shown.
+        _ => {
+            if s.tabs.is_empty() {
+                s.anchor();
+            }
+            s.publish();
+        }
     }
 }
 
@@ -5833,6 +5983,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 app(|a| a.sizing = false);
                 relayout();
                 redraw_all();
+                note_save();
             }
             WM_PAINT => paint_main(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_main covers everything
@@ -5854,6 +6005,10 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_TIMER if wp.0 == TIMER_STATUS => {
                 update_status();
                 check_dirty();
+            }
+            WM_TIMER if wp.0 == TIMER_SAVE => {
+                _ = KillTimer(Some(h), TIMER_SAVE);
+                save_session();
             }
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
@@ -5973,6 +6128,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             WM_CLOSE => {
+                _ = KillTimer(Some(h), TIMER_SAVE);
                 if app(|a| a.s.autosave && !a.s.file.is_empty()) {
                     let path = app(|a| a.s.file.clone());
                     write_session(Path::new(&path));
@@ -5982,6 +6138,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             WM_DESTROY => {
                 _ = KillTimer(Some(h), TIMER_STATUS);
+                _ = KillTimer(Some(h), TIMER_SAVE);
                 destroy_every_pane();
                 app(|a| a.tree = None);
                 PostQuitMessage(0);
@@ -6293,7 +6450,11 @@ fn main() -> Result<()> {
         app(|a| {
             (a.s, a.main, a.dpi, a.view_menu, a.tip) = (s, main, dpi, view_menu, tip);
             a.park = (0..ntabs).map(|_| no_panes()).collect();
+            a.park_lru.clear();
         });
+        // Match the file we just loaded so opening the window does not rewrite grids.json.
+        let seeded = app(|a| store::sync_text(&a.s));
+        LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
         let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
         let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
         _ = ShowWindow(tab_edit, SW_HIDE);
@@ -6608,6 +6769,12 @@ mod tests {
 
         let lay = tab_lay(800, 3, &[false, true, false], 96);
         assert_eq!(lay.body.len(), 3);
+        assert_eq!(lay.body[0].right - lay.body[0].left, 90);
+        let hidpi = tab_lay(1600, 3, &[false, true, false], 192);
+        assert_eq!(hidpi.body[0].right - hidpi.body[0].left, 180);
+        let crowd = tab_lay(120, 8, &[false; 8], 96);
+        let cw = crowd.body[0].right - crowd.body[0].left;
+        assert!(cw < 90 && cw >= 28);
         assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
         assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
         assert!(lay.close[0].is_some() && lay.close[1].is_none() && lay.close[2].is_some());
@@ -6629,6 +6796,70 @@ mod tests {
         assert_eq!(back.tab, 1);
         assert_eq!(back.tabs[0].name, "1");
         assert_eq!((back.heights.clone(), back.paths[1].as_str(), back.active), (vec![2, 2], r"D:\two", 1));
+    }
+
+    #[test]
+    fn three_tabs_restore_from_json() {
+        assert_eq!(Session::default().boot, 0);
+        let mut s = Session::default();
+        s.win = Some([10, 20, 1100, 700, 0]);
+        s.set_heights(vec![1]);
+        s.paths[0] = r"C:\alpha".into();
+        s.views[0] = (4, 16);
+        s.cols[0] = "{g}/1=40;".into();
+        s.anchor();
+        s.tabs[0].name = "Docs".into();
+        s.tabs[0].filters[0] = "*.txt".into();
+
+        let mut pics = Session::default();
+        pics.set_heights(vec![2]);
+        pics.paths[0] = r"D:\beta".into();
+        pics.paths[1] = r"D:\gamma".into();
+        pics.views[1] = (3, 32);
+        pics.cols[1] = "{g}/2=80;".into();
+        pics.active = 1;
+        s.tabs.push(Tab::from_live(&pics, "Pics".into(), true, vec!["*.png".into(), "*.jpg".into()]));
+
+        let mut work = Session::default();
+        work.set_heights(vec![1, 1]);
+        work.paths[0] = r"E:\delta".into();
+        work.paths[1] = r"E:\epsilon".into();
+        s.tabs.push(Tab::from_live(&work, "Work".into(), false, vec![]));
+        s.tab = 2;
+        s.publish();
+
+        let text = store::sync_text(&s);
+        let mut back = store::import_text(&text).unwrap();
+        apply_boot(&mut back);
+        assert_eq!(back.boot, 0);
+        assert_eq!(back.tabs.len(), 3);
+        assert_eq!(back.tab, 2);
+        assert_eq!(back.win, Some([10, 20, 1100, 700, 0]));
+        assert_eq!(back.tabs[0].name, "Docs");
+        assert!(!back.tabs[0].locked);
+        assert_eq!(back.tabs[0].paths[0], r"C:\alpha");
+        assert_eq!(back.tabs[0].filters[0], "*.txt");
+        assert_eq!(back.tabs[0].cols[0], "{g}/1=40;");
+        assert_eq!(back.tabs[0].views[0], (4, 16));
+        assert!(back.tabs[1].locked);
+        assert_eq!(back.tabs[1].name, "Pics");
+        assert_eq!((back.tabs[1].paths[0].as_str(), back.tabs[1].paths[1].as_str()), (r"D:\beta", r"D:\gamma"));
+        assert_eq!(back.tabs[1].filters[1], "*.jpg");
+        assert_eq!(back.tabs[1].cols[1], "{g}/2=80;");
+        assert_eq!(back.tabs[1].views[1], (3, 32));
+        assert_eq!((back.tabs[1].heights.clone(), back.tabs[1].active), (vec![2], 1));
+        assert_eq!(back.tabs[2].name, "Work");
+        assert_eq!((back.paths[0].as_str(), back.paths[1].as_str()), (r"E:\delta", r"E:\epsilon"));
+        assert_eq!(back.heights, vec![1, 1]);
+
+        // A different startup mode still stores the whole tab list. Only the next launch's boot step uses it.
+        s.boot = 2;
+        let forced = store::sync_text(&s);
+        assert!(forced.contains("\"Docs\"") && forced.contains("\"Pics\"") && forced.contains("\"Work\""));
+        let mut wiped = store::import_text(&forced).unwrap();
+        assert_eq!(wiped.tabs.len(), 3);
+        apply_boot(&mut wiped);
+        assert_eq!((wiped.boot, wiped.tabs.len(), wiped.tabs[0].name.as_str()), (2, 1, "1"));
     }
 
     #[test]
