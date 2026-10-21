@@ -20,8 +20,11 @@ fn yes() -> bool {
     true
 }
 
-fn is_tree_panel(s: &str) -> bool {
-    s.is_empty() || s == "tree"
+fn half_split() -> f64 {
+    0.5
+}
+fn is_half_split(v: &f64) -> bool {
+    (v - 0.5).abs() < 1e-6
 }
 fn accent_light() -> String {
     "0067C0".into()
@@ -133,9 +136,13 @@ struct SettingsFile {
     ext: bool,
     #[serde(default = "yes")]
     tree: bool,
-    /// "fav" shows the favourites list in the left panel. Empty or "tree" is the folder tree.
-    #[serde(default, skip_serializing_if = "is_tree_panel")]
+    /// Retired activity-bar choice ("tree" / "fav"). Read so it is not kept, never written.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
     panel: String,
+    /// Folder tree's share of the left panel. Favourites use the rest. Missing means even.
+    #[serde(default = "half_split", skip_serializing_if = "is_half_split")]
+    side_split: f64,
     #[serde(default = "yes")]
     edge: bool,
     #[serde(default = "yes")]
@@ -205,6 +212,7 @@ impl SettingsFile {
             ext: true,
             tree: true,
             panel: String::new(),
+            side_split: 0.5,
             edge: true,
             confirm: true,
             del: 0,
@@ -271,7 +279,8 @@ impl SettingsFile {
             start_path: s.start_path.clone(),
             ext: s.ext,
             tree: s.tree_on,
-            panel: if s.panel == 1 { "fav".into() } else { String::new() },
+            panel: String::new(),
+            side_split: crate::sane_split(s.side_split),
             edge: s.edge,
             confirm: s.confirm,
             del: s.del,
@@ -316,6 +325,7 @@ impl SettingsFile {
             self.windows = previous.windows.clone();
         }
         self.extra = previous.extra.clone();
+        self.extra.remove("panel");
     }
 
     fn to_session(&self) -> Session {
@@ -375,7 +385,7 @@ impl SettingsFile {
         s.start_path = self.start_path.clone();
         s.ext = self.ext;
         s.tree_on = self.tree;
-        s.panel = if self.panel == "fav" { 1 } else { 0 };
+        s.side_split = crate::sane_split(self.side_split);
         s.edge = self.edge;
         s.confirm = self.confirm;
         s.del = if self.del == 1 { 1 } else { 0 };
@@ -870,15 +880,28 @@ mod tests {
     }
 
     #[test]
-    fn fav_panel_round_trips_and_tree_stays_the_default() {
+    fn old_panel_key_is_dropped_and_side_split_round_trips() {
         let mut s = Session::default();
-        s.panel = 1;
+        s.side_split = 0.25;
         s.anchor();
         let saved: Value = serde_json::from_str(&sync_text(&s)).unwrap();
-        assert_eq!(saved["panel"], "fav");
-        assert_eq!(adopt(&serde_json::to_string(&saved).unwrap()).unwrap().panel, 1);
-        let tree: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
-        assert!(tree.get("panel").is_none());
-        assert_eq!(adopt(&serde_json::to_string(&tree).unwrap()).unwrap().panel, 0);
+        assert!(saved.get("panel").is_none());
+        assert!((saved["side_split"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+        let back = adopt(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!((back.side_split - 0.25).abs() < 1e-9);
+        let migrated = adopt(r#"{"version":1,"panel":"fav","side_split":0.25}"#).unwrap();
+        assert!((migrated.side_split - 0.25).abs() < 1e-9);
+        let again: Value = serde_json::from_str(&sync_text(&migrated)).unwrap();
+        assert!(again.get("panel").is_none());
+        assert!((again["side_split"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+        let even: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert!(even.get("panel").is_none());
+        assert!(even.get("side_split").is_none());
+        let only = adopt(r#"{"panel":"fav"}"#).unwrap();
+        assert!((only.side_split - 0.5).abs() < 1e-9);
+        let dropped: Value = serde_json::from_str(&sync_text(&only)).unwrap();
+        assert!(dropped.get("panel").is_none());
+        let wide = adopt(r#"{"side_split":9}"#).unwrap();
+        assert!((wide.side_split - 1.0).abs() < 1e-9);
     }
 }

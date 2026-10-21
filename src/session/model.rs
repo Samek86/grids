@@ -142,8 +142,8 @@ pub(crate) struct Session {
     pub(crate) start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
     pub(crate) start_path: String,
     pub(crate) ext: bool,              // show file extensions (the Windows Explorer setting)
-    pub(crate) tree_on: bool,          // left panel open (the activity bar collapses it)
-    pub(crate) panel: u8,              // 0 folder tree, 1 favourites. Search stays disabled.
+    pub(crate) tree_on: bool,          // left panel open
+    pub(crate) side_split: f64,        // folder tree's share of the left panel; favourites take the rest
     pub(crate) edge: bool,             // accent border on the active pane
     pub(crate) confirm: bool,          // ask before delete
     pub(crate) del: u8,                // 0 recycle bin, 1 permanent
@@ -188,7 +188,7 @@ impl Default for Session {
             start_path: String::new(),
             ext: true,
             tree_on: true,
-            panel: 0,
+            side_split: 0.5,
             edge: true,
             confirm: true,
             del: 0,
@@ -236,7 +236,7 @@ impl PartialEq for Session {
             && self.start_path == o.start_path
             && self.ext == o.ext
             && self.tree_on == o.tree_on
-            && self.panel == o.panel
+            && self.side_split == o.side_split
             && self.edge == o.edge
             && self.confirm == o.confirm
             && self.del == o.del
@@ -249,6 +249,11 @@ impl PartialEq for Session {
             && self.tab == o.tab
             && self.view_tabs() == o.view_tabs()
     }
+}
+
+/// Folder tree's share of the side plate. Out of range or NaN becomes an even split.
+pub(crate) fn sane_split(v: f64) -> f64 {
+    if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 }
 }
 
 /// Favourite entries are `path` or `path<tab>display name`. The path is what gets opened.
@@ -377,6 +382,7 @@ impl Session {
             match k {
                 "win" => s.win = nums(v).try_into().ok(),
                 "side" => s.side = v.parse().unwrap_or(0),
+                "split" => s.side_split = sane_split(v.parse().unwrap_or(0.5)),
                 "cols" => {
                     let h: Vec<usize> = nums::<usize>(v).into_iter().take(4).map(|n| n.clamp(1, 4)).collect();
                     if !h.is_empty() {
@@ -477,7 +483,7 @@ impl Session {
             o += &format!("win={}\n", join(&w));
         }
         let rowr = self.rowr.iter().map(|r| join(r)).collect::<Vec<_>>().join("|");
-        o += &format!("side={}\ncols={}\n", self.side, join(&self.heights));
+        o += &format!("side={}\nsplit={}\ncols={}\n", self.side, self.side_split, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
         let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
