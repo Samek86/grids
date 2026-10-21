@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, Once};
 use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::*;
@@ -729,6 +729,7 @@ struct App {
     sizing: bool, // inside the window's own move/size loop
     status: String,
     status_key: String,
+    status_base: (String, Option<(u64, bool, bool)>, String), // text before / after the selection size, (file bytes, has folders, partial)
     view_menu: HMENU,
     base: Option<Session>, // last loaded/saved (or startup) state; differs -> green dot
     dirty: bool,
@@ -769,6 +770,7 @@ thread_local! {
         sizing: false,
         status: String::new(),
         status_key: String::new(),
+        status_base: Default::default(),
         view_menu: HMENU::default(),
         base: None,
         dirty: false,
@@ -1706,7 +1708,10 @@ impl ICommDlgBrowser_Impl for Host_Impl {
     fn OnDefaultCommand(&self, _: Ref<IShellView>) -> Result<()> {
         Err(S_FALSE.into()) // let the view do its default action (open)
     }
-    fn OnStateChange(&self, _: Ref<IShellView>, _: u32) -> Result<()> {
+    fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
+        if change == CDBOSC_SELCHANGE {
+            SEL_REV[self.0].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
+        }
         Ok(())
     }
     fn IncludeObject(&self, sv: Ref<IShellView>, pidl: *const ITEMIDLIST) -> Result<()> {
@@ -2531,15 +2536,207 @@ struct CopyData {
 
 // ---------- status bar ----------
 
-unsafe fn selected_size(fv: &IFolderView2) -> u64 {
-    let Ok(arr) = fv.GetSelection(false) else { return 0 };
-    // ponytail: sums at most 10k selected items; bigger selections show a partial size
-    let n = arr.GetCount().unwrap_or(0).min(10_000);
-    let paths = (0..n).filter_map(|k| arr.GetItemAt(k).ok()).filter_map(|it| it.GetDisplayName(SIGDN_FILESYSPATH).ok());
-    paths.map(|p| std::fs::metadata(pwstr(p)).map(|m| if m.is_file() { m.len() } else { 0 }).unwrap_or(0)).sum()
+// Bumped by each pane's selection-change notification; part of the status key.
+static SEL_REV: [AtomicUsize; MAXP] = [const { AtomicUsize::new(0) }; MAXP];
+
+// The selection split into summed file bytes and folders left to the size worker.
+// partial: something wasn't counted (over 10k items, no file system path, unreadable, a drive root).
+#[derive(Debug, PartialEq)]
+struct Sel {
+    file_bytes: u64,
+    dirs: Vec<String>,
+    partial: bool,
+}
+
+// n: the selection's count (None = it couldn't be read), path(k): item k's file system path.
+fn collect_sel(n: Option<u32>, path: impl Fn(u32) -> Option<String>) -> Sel {
+    let Some(n) = n else { return Sel { file_bytes: 0, dirs: Vec::new(), partial: true } };
+    // ponytail: sums at most 10k selected items; bigger selections are marked partial
+    let mut s = Sel { file_bytes: 0, dirs: Vec::new(), partial: n > 10_000 };
+    for k in 0..n.min(10_000) {
+        let Some(p) = path(k) else {
+            s.partial = true;
+            continue;
+        };
+        match std::fs::metadata(&p) {
+            Ok(m) if m.is_dir() && Path::new(&p).parent().is_some() => s.dirs.push(p),
+            Ok(m) if m.is_file() => s.file_bytes += m.len(),
+            // a drive or share root (its size is the free-space part), or unreadable
+            _ => s.partial = true,
+        }
+    }
+    s
+}
+
+unsafe fn selected_size(fv: &IFolderView2) -> Sel {
+    let arr = fv.GetSelection(false).ok();
+    let n = arr.as_ref().and_then(|a| a.GetCount().ok());
+    collect_sel(n, |k| Some(pwstr(arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?)))
+}
+
+// The " (…)" after "n selected". dirs: the folder total so far (bytes, done, partial), None = not started.
+fn size_text(ko: bool, file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool, bool)>, collect_partial: bool) -> String {
+    let (b, done, partial) = match dirs {
+        _ if !has_dirs => (0, true, false),
+        Some(d) => d,
+        None => (0, false, false),
+    };
+    let (bytes, partial) = (file_bytes + b, partial || collect_partial);
+    if !done {
+        return match bytes {
+            0 => (if ko { " (계산 중…)" } else { " (calculating…)" }).into(),
+            b => format!(" ({}…)", human(b)),
+        };
+    }
+    match (bytes, partial) {
+        (0, false) if !has_dirs => String::new(),
+        (0, true) if !has_dirs => (if ko { " (크기 모름)" } else { " (size unknown)" }).into(),
+        (b, true) => format!(" ({}, {})", human(b), if ko { "일부만" } else { "partial" }),
+        (b, false) => format!(" ({})", human(b)),
+    }
+}
+
+// Folder sizes are summed by one worker thread. gen changes on every new target or cancel;
+// the worker drops results of an older gen and stops walking once DIR_GEN moves on.
+#[derive(Default)]
+struct SizeJob {
+    gen: usize,
+    target: Vec<String>,
+    bytes: u64,
+    done: bool,
+    partial: bool,
+}
+
+impl SizeJob {
+    // True = a new walk is due. busy (a copy runs) or no folders cancel; the same target keeps
+    // running, or keeps its result.
+    fn want(&mut self, dirs: &[String], busy: bool) -> bool {
+        if busy || dirs.is_empty() {
+            (self.gen, self.done) = (self.gen + 1, false);
+            self.target.clear();
+            return false;
+        }
+        if self.target == dirs {
+            return false;
+        }
+        *self = SizeJob { gen: self.gen + 1, target: dirs.to_vec(), ..Default::default() };
+        true
+    }
+
+    fn publish(&mut self, gen: usize, bytes: u64, done: bool, partial: bool) -> bool {
+        if self.gen != gen {
+            return false;
+        }
+        (self.bytes, self.done, self.partial) = (bytes, done, partial);
+        true
+    }
+}
+
+static DIR_SIZE: Mutex<SizeJob> = Mutex::new(SizeJob { gen: 0, target: Vec::new(), bytes: 0, done: false, partial: false });
+static DIR_WAKE: Condvar = Condvar::new();
+static DIR_GEN: AtomicUsize = AtomicUsize::new(0); // copy of DIR_SIZE.gen, read without the lock
+
+fn size_job() -> std::sync::MutexGuard<'static, SizeJob> {
+    DIR_SIZE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn want_size(dirs: &[String], busy: bool) {
+    let mut j = size_job();
+    if j.want(dirs, busy) {
+        static WORKER: Once = Once::new();
+        WORKER.call_once(|| _ = std::thread::Builder::new().spawn(size_worker));
+        DIR_WAKE.notify_one();
+    }
+    DIR_GEN.store(j.gen, Ordering::Relaxed);
+}
+
+// Lives until the process ends. The lock is never held across file system calls.
+fn size_worker() {
+    let mut seen = 0;
+    loop {
+        let (gen, target) = {
+            let mut j = size_job();
+            while j.target.is_empty() || j.gen == seen {
+                j = DIR_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
+            }
+            (j.gen, j.target.clone())
+        };
+        seen = gen;
+        let stop = || DIR_GEN.load(Ordering::Relaxed) != gen;
+        // a copy only pauses the walk; the status line cancels it when it sees the copy
+        let paused = || COPYING.load(Ordering::Relaxed) > 0;
+        let (mut total, mut partial) = (0, false);
+        let finished = target.iter().all(|root| {
+            let (base, was) = (total, partial);
+            let mut progress = |b, p| _ = size_job().publish(gen, base + b, false, was || p);
+            dir_bytes(Path::new(root), &stop, &paused, &mut progress).map(|(b, p)| (total, partial) = (total + b, partial || p)).is_some()
+        });
+        if finished {
+            size_job().publish(gen, total, true, partial);
+        }
+    }
+}
+
+// Bytes under `root`, not following links or junctions. Unreadable parts set the flag and are skipped.
+// None = `stop` turned true. Checked before each directory read and each entry, also while `paused`;
+// a single read_dir/metadata call that hangs (a dead share) still has to return first.
+fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() -> bool, progress: &mut dyn FnMut(u64, bool)) -> Option<(u64, bool)> {
+    let go = || {
+        while paused() && !stop() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        !stop()
+    };
+    match std::fs::symlink_metadata(root) {
+        Ok(m) if m.is_dir() => {}
+        Ok(m) => return Some((if m.is_file() { m.len() } else { 0 }, false)),
+        Err(_) => return Some((0, true)),
+    }
+    let (mut sum, mut partial, mut n, mut last) = (0, false, 0usize, Instant::now());
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if !go() {
+            return None;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            partial = true;
+            continue;
+        };
+        for e in rd {
+            if !go() {
+                return None;
+            }
+            let Ok(e) = e else {
+                partial = true;
+                continue;
+            };
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => match e.metadata() {
+                    Ok(m) => sum += m.len(),
+                    Err(_) => partial = true,
+                },
+                Ok(_) => {} // a link or junction
+                Err(_) => partial = true,
+            }
+            n += 1;
+            if n % 2000 == 0 || last.elapsed().as_millis() >= 200 {
+                progress(sum, partial);
+                last = Instant::now();
+            }
+        }
+    }
+    Some((sum, partial))
+}
+
+// F5 in a file list: the shell reloads it, and selected folders are summed again.
+fn resum_sizes() {
+    want_size(&[], true);
+    app(|a| a.status_key.clear());
 }
 
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
+// Other ticks only merge the folder size worker's progress into the stored text.
 unsafe fn update_status() {
     let (i, path, main) = app(|a| (a.s.active, a.s.paths[a.s.active].clone(), a.main));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
@@ -2549,23 +2746,52 @@ unsafe fn update_status() {
     // while a background copy runs, the disk is left alone (size and free space come back after)
     let busy = COPYING.load(Ordering::Relaxed) > 0;
     let zoom = app(|a| a.zoom);
-    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}", fv.GetFocusedItem().unwrap_or(-1));
-    if app(|a| a.status_key == key) {
-        return;
+    let rev = SEL_REV[i].load(Ordering::Relaxed);
+    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}|{rev}", fv.GetFocusedItem().unwrap_or(-1));
+    if app(|a| a.status_key != key) {
+        status_base(i, &path, main, &fv, n, sel, &spec, busy, zoom);
+        app(|a| a.status_key = key);
     }
+    let job = {
+        let j = size_job();
+        (!j.target.is_empty()).then_some((j.bytes, j.done, j.partial))
+    };
+    let ko = KO.load(Ordering::Relaxed);
+    let Some(rc) = app(|a| {
+        let (head, size, tail) = &a.status_base;
+        let size = size.map(|(f, d, p)| size_text(ko, f, d, job, p)).unwrap_or_default();
+        let status = format!("{head}{size}{tail}");
+        (a.status != status).then(|| {
+            a.status = status;
+            status_rect(&geo(a))
+        })
+    }) else {
+        return;
+    };
+    _ = InvalidateRect(Some(main), Some(&rc), true);
+}
+
+// The status text around the selection size, the window title, and a new folder size job.
+unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i32, sel: i32, spec: &str, busy: bool, zoom: Option<usize>) {
     let title = window_title(&app(|a| a.panes[i].as_ref().map(|p| p.disp.clone()).unwrap_or_default()));
     if text_of(main) != title {
         _ = SetWindowTextW(main, &HSTRING::from(title));
     }
     let ko = KO.load(Ordering::Relaxed);
     let mut parts = vec![if ko { format!("항목 {n}개") } else { format!("{n} items") }];
+    let mut size = None;
+    let mut dirs = Vec::new();
     if sel > 0 {
-        let size = match if busy { 0 } else { selected_size(&fv) } {
-            0 => String::new(),
-            size => format!(" ({})", human(size)),
-        };
-        parts.push(if ko { format!("{sel}개 선택{size}") } else { format!("{sel} selected{size}") });
+        if !busy {
+            let s = selected_size(fv);
+            size = Some((s.file_bytes, !s.dirs.is_empty(), s.partial));
+            dirs = s.dirs;
+        }
+        parts.push(if ko { format!("{sel}개 선택") } else { format!("{sel} selected") });
     }
+    want_size(&dirs, busy);
+    let head = parts.join("     ·     ");
+    let mut parts = vec![String::new()];
     if !spec.is_empty() {
         parts.push(format!("{} {spec}", tr("Filter", "필터")));
     }
@@ -2575,7 +2801,7 @@ unsafe fn update_status() {
     } else if drive || path.starts_with(r"\\") {
         // ponytail: a dead network share can stall this call once per change
         let (mut free, mut total) = (0, 0);
-        if GetDiskFreeSpaceExW(&HSTRING::from(&path), Some(&mut free), Some(&mut total), None).is_ok() {
+        if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
             let label = if drive { &path[..2] } else { tr("Network", "네트워크") };
             parts.push(format!("{label} {} {} / {}", tr("free", "여유"), human(free), human(total)));
         }
@@ -2588,11 +2814,7 @@ unsafe fn update_status() {
             format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore")
         });
     }
-    let rc = app(|a| {
-        (a.status_key, a.status) = (key, parts.join("     ·     "));
-        status_rect(&geo(a))
-    });
-    _ = InvalidateRect(Some(main), Some(&rc), true);
+    app(|a| a.status_base = (head, size, parts.join("     ·     ")));
 }
 
 // ---------- painting ----------
@@ -3415,6 +3637,10 @@ unsafe fn key(m: &MSG) -> bool {
         }
         _ if addr || filt => return false,
         VK_DOWN if alt && !ctrl && !shift => recent_menu(a),
+        VK_F5 if list() => {
+            resum_sizes();
+            return shell();
+        }
         VK_V if ctrl && !shift && !alt && list() => {
             if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
                 return shell();
@@ -4161,5 +4387,141 @@ mod tests {
         assert!(!s.snapshot().contains("recent="));
         let many: String = (0..30).map(|k| format!("recent=C:\\{k}\n")).collect();
         assert_eq!(Session::parse(&many).recent.len(), RECENT);
+    }
+
+    // A fresh folder under %TEMP% holding `files` (relative path, size).
+    fn tree(name: &str, files: &[(String, usize)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("grids-test-{}-{name}", std::process::id()));
+        _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (f, n) in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, vec![0u8; *n]).unwrap();
+        }
+        root
+    }
+
+    fn many(prefix: &str, count: usize, size: usize) -> Vec<(String, usize)> {
+        (0..count).map(|k| (format!("{prefix}{k}.bin"), size)).collect()
+    }
+
+    #[test]
+    fn folder_size_walk() {
+        use std::cell::Cell;
+        let never = || false;
+        let mut quiet = |_, _| {};
+        let root = tree("walk", &[("a.bin".into(), 100), (r"sub\b.bin".into(), 20), (r"sub\deep\c.bin".into(), 3)]);
+        assert_eq!(dir_bytes(&root, &never, &never, &mut quiet), Some((123, false)));
+        assert_eq!(dir_bytes(&root.join("missing"), &never, &never, &mut quiet), Some((0, true)));
+        // a junction pointing back up is not followed
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join(r"sub\loop")).arg(&root).output();
+        assert!(made.is_ok_and(|o| o.status.success()) && root.join(r"sub\loop\a.bin").exists());
+        assert_eq!(dir_bytes(&root, &never, &never, &mut quiet), Some((123, false)));
+        // a stop mid-walk gives no total
+        let calls = Cell::new(0);
+        let later = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 2
+        };
+        assert_eq!(dir_bytes(&root, &later, &never, &mut quiet), None);
+
+        // many files, no subfolders: a copy that starts and ends between status ticks only pauses the walk
+        let flat = tree("flat", &many("f", 300, 2));
+        let seen = Cell::new(0);
+        let copying = || {
+            seen.set(seen.get() + 1);
+            (100..103).contains(&seen.get())
+        };
+        assert_eq!(dir_bytes(&flat, &never, &copying, &mut quiet), Some((600, false)));
+        assert!(seen.get() > 300);
+        // a cancel still gets through while paused
+        let paused = Cell::new(0);
+        let copy_on = || {
+            paused.set(paused.get() + 1);
+            paused.get() > 50
+        };
+        let cancel = || paused.get() > 52;
+        assert_eq!(dir_bytes(&flat, &cancel, &copy_on, &mut quiet), None);
+        assert!(paused.get() < 60);
+        // progress comes with the running total
+        let big = tree("big", &many("g", 2100, 1));
+        let mut last = 0;
+        let mut progress = |b, _| last = b;
+        assert_eq!(dir_bytes(&big, &never, &never, &mut progress), Some((2100, false)));
+        assert!(last >= 2000);
+
+        // F5 after a file was added: the same selection is summed again
+        let mut job = SizeJob::default();
+        let target = vec![flat.to_string_lossy().into_owned()];
+        assert!(job.want(&target, false));
+        assert!(job.publish(job.gen, 600, true, false));
+        std::fs::write(flat.join("new.bin"), [0u8; 50]).unwrap();
+        assert!(!job.want(&target, false));
+        job.want(&[], true); // what resum_sizes does
+        assert!(job.want(&target, false) && !job.done);
+        assert_eq!(dir_bytes(&flat, &never, &never, &mut quiet), Some((650, false)));
+        for r in [root, flat, big] {
+            _ = std::fs::remove_dir_all(r);
+        }
+    }
+
+    #[test]
+    fn folder_size_job() {
+        let (a, b) = (vec![r"C:\a".to_string()], vec![r"C:\b".to_string()]);
+        let mut j = SizeJob::default();
+        assert!(j.want(&a, false));
+        let g = j.gen;
+        assert!(!j.want(&a, false)); // same target: keeps running
+        assert!(j.publish(g, 10, true, false) && j.done);
+        assert!(!j.want(&a, false) && j.done && j.bytes == 10); // and keeps its result
+        assert!(!j.want(&a, true)); // a copy starts: cancelled
+        assert!(!j.publish(g, 99, true, false) && j.bytes == 10); // the old walk's result is dropped
+        assert!(j.want(&a, false) && j.bytes == 0 && !j.done); // the copy ended: summed again
+        assert!(!j.want(&[], false) && j.target.is_empty()); // no folders: cancelled
+        assert!(j.want(&a, false));
+        let g = j.gen;
+        assert!(j.want(&b, false) && j.gen != g);
+        assert!(!j.publish(g, 5, false, false));
+        assert!(j.publish(j.gen, 5, false, true) && j.partial);
+    }
+
+    #[test]
+    fn folder_size_text() {
+        let kb = human(1024);
+        assert_eq!(size_text(false, 0, true, None, false), " (calculating…)");
+        assert_eq!(size_text(false, 0, true, Some((0, false, false)), false), " (calculating…)");
+        assert_eq!(size_text(false, 1024, true, Some((1024, false, false)), false), format!(" ({}…)", human(2048)));
+        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), false), format!(" ({kb})"));
+        assert_eq!(size_text(false, 0, true, Some((1024, true, true)), false), format!(" ({kb}, partial)"));
+        // something missed while collecting the selection isn't shown as a full total
+        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(true, 0, true, Some((1024, true, false)), true), format!(" ({kb}, 일부만)"));
+        assert_eq!(size_text(false, 1024, false, None, false), format!(" ({kb})"));
+        assert_eq!(size_text(false, 1024, false, None, true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(false, 0, false, None, false), "");
+        assert_eq!(size_text(false, 0, false, None, true), " (size unknown)");
+        assert_eq!(size_text(true, 0, false, None, true), " (크기 모름)");
+    }
+
+    #[test]
+    fn folder_size_collect() {
+        let root = tree("collect", &[("f.bin".into(), 7), (r"d\x.bin".into(), 1)]);
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let (f, d) = (path("f.bin"), path("d"));
+        let none = Sel { file_bytes: 0, dirs: vec![], partial: true };
+        assert_eq!(collect_sel(None, |_| None), none); // GetSelection / GetCount failed
+        assert_eq!(collect_sel(Some(1), |_| None), none); // GetItemAt / no file system path
+        assert_eq!(collect_sel(Some(1), |_| Some(path("gone"))), none);
+        assert_eq!(collect_sel(Some(1), |_| Some(r"C:\".into())), none); // a drive root isn't walked
+        let both = [f.clone(), d.clone()];
+        assert_eq!(collect_sel(Some(2), |k| Some(both[k as usize].clone())), Sel { file_bytes: 7, dirs: vec![d], partial: false });
+        let calls = std::cell::Cell::new(0);
+        let s = collect_sel(Some(10_001), |_| {
+            calls.set(calls.get() + 1);
+            Some(f.clone())
+        });
+        assert_eq!((s.file_bytes, s.partial, calls.get()), (70_000, true, 10_000));
+        _ = std::fs::remove_dir_all(root);
     }
 }

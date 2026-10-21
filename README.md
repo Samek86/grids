@@ -21,6 +21,7 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 - **Sessions**: the layout, folders and each pane's columns (order, widths, sort) are saved automatically. Save named sessions and load them from cards that preview each layout; a green dot on the save button shows unsaved layout changes.
 - **Columns are a pane setting**: their order, widths and sort stay as the pane moves from folder to folder, and any column can be made narrower than Explorer allows (Size stops at 90 px there).
 - **Folder favourites**: star a folder from its pane header, jump to it from the star list in the toolbar.
+- **Folder sizes**: the status line also shows the total size of selected folders, summed in the background (F5 sums again; "partial" when some items couldn't be read).
 - **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted.
 - **Single instance**: running `grids.exe C:\a D:\b` or opening a `.grids` session file reuses the open window.
 - **Portable**: settings live in `grids.ini` next to the exe, named sessions in the `sessions` folder beside it.
