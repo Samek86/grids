@@ -2876,6 +2876,62 @@ fn fav_menu_label(paths: &[String]) -> &'static str {
     }
 }
 
+/// Menu index the favourites command sits above: the properties item, or the last item.
+fn fav_anchor(properties: Option<u32>, count: i32) -> u32 {
+    if count <= 0 {
+        0
+    } else {
+        properties.filter(|&i| (i as i32) < count).unwrap_or(count as u32 - 1)
+    }
+}
+
+unsafe fn cmd_verb(cm: &IContextMenu, offset: usize) -> String {
+    let mut buf = [0u16; 80];
+    if cm.GetCommandString(offset, GCS_VERBW, None, PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32).is_err() {
+        return String::new();
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
+/// Index of the "properties" verb. Shell command ids are `id_first + offset`; separators and submenus have no id.
+unsafe fn fav_anchor_pos(menu: HMENU, cm: &IContextMenu, id_first: u32, id_last: u32, start: u32) -> u32 {
+    let n = GetMenuItemCount(Some(menu));
+    if n <= 0 {
+        return 0;
+    }
+    let mut properties = None;
+    for i in start.min(n as u32)..n as u32 {
+        let id = GetMenuItemID(menu, i as i32);
+        if id == u32::MAX || id < id_first || id >= id_last {
+            continue;
+        }
+        if cmd_verb(cm, (id - id_first) as usize).trim().eq_ignore_ascii_case("properties") {
+            properties = Some(i);
+            break;
+        }
+    }
+    fav_anchor(properties, n)
+}
+
+/// Favourites command directly above `at`, with one separator above it so it doesn't glue to the items there.
+unsafe fn insert_fav(menu: HMENU, at: u32, id: usize, label: &str) {
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    let label = HSTRING::from(label);
+    if n == 0 {
+        _ = AppendMenuW(menu, MF_STRING, id, &label);
+        return;
+    }
+    let at = at.min(n - 1);
+    let prev_sep = at > 0 && GetMenuItemID(menu, (at - 1) as i32) == u32::MAX;
+    if at == 0 || prev_sep {
+        _ = InsertMenuW(menu, at, MF_STRING | MF_BYPOSITION, id, &label);
+    } else {
+        _ = InsertMenuW(menu, at, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+        _ = InsertMenuW(menu, at + 1, MF_STRING | MF_BYPOSITION, id, &label);
+    }
+}
+
 fn wnd_class(h: HWND) -> String {
     let mut c = [0u16; 64];
     let n = unsafe { GetClassNameW(h, &mut c) } as usize;
@@ -3030,7 +3086,7 @@ unsafe fn forward_menu(msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     })
 }
 
-// Shell menu for the pane, with Add/Remove favourites appended when the selection has a folder.
+// Shell menu for the pane. Add/Remove favourites sits directly above Properties when the selection has a folder.
 // Returns false when the shell menu could not be built, so the view shows its own.
 unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     if CTX_OPEN.swap(true, Ordering::AcqRel) {
@@ -3071,10 +3127,8 @@ unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         return false;
     }
     if !folders.is_empty() {
-        if GetMenuItemCount(Some(menu)) > 0 {
-            _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        }
-        _ = AppendMenuW(menu, MF_STRING, ID_CTX_FAV as usize, &HSTRING::from(fav_menu_label(&folders)));
+        let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
+        insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&folders));
     }
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
@@ -3130,7 +3184,7 @@ unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _:
 }
 
 // Sidebar menu: the tree builds the shell menu, then asks us for a replacement. Ours forwards
-// every shell command and appends the favourites item for a folder.
+// every shell command and puts the favourites item directly above Properties.
 #[implement(IContextMenu, IContextMenu2, IContextMenu3)]
 struct FavCtx {
     inner: IContextMenu,
@@ -3152,9 +3206,8 @@ impl IContextMenu_Impl for FavCtx_Impl {
                 return hr;
             }
             self.cmd.set(offset);
-            let at = GetMenuItemCount(Some(hmenu)).max(indexmenu as i32) as u32;
-            _ = InsertMenuW(hmenu, at, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
-            _ = InsertMenuW(hmenu, at + 1, MF_STRING | MF_BYPOSITION, (idcmdfirst + offset) as usize, &HSTRING::from(fav_menu_label(std::slice::from_ref(&self.path))));
+            let at = fav_anchor_pos(hmenu, &self.inner, idcmdfirst, idcmdlast.saturating_add(1), indexmenu);
+            insert_fav(hmenu, at, (idcmdfirst + offset) as usize, fav_menu_label(std::slice::from_ref(&self.path)));
             HRESULT((offset + 1) as i32)
         }
     }
@@ -3968,6 +4021,7 @@ mod tests {
         assert!(f.is_fav(r"c:\work") && !f.is_fav(r"C:\Work\x") && !f.is_fav(""));
         assert!(fav_removes(&[r"C:\Work"], |p| p.eq_ignore_ascii_case(r"C:\Work")));
         assert!(!fav_removes(&[], |_| true) && !fav_removes(&[r"C:\Work", r"D:\"], |p| p.eq_ignore_ascii_case(r"C:\Work")));
+        assert_eq!((fav_anchor(Some(5), 8), fav_anchor(None, 8), fav_anchor(Some(9), 3), fav_anchor(None, 0)), (5, 7, 2, 0));
         assert!(!f.snapshot().contains("fav="));
         assert_eq!((short_name(r"C:\Users\x\"), short_name("C:\\"), short_name(THIS_PC)), ("x".into(), "C:".into(), "This PC".into()));
 
