@@ -77,9 +77,11 @@ const TVM_ENSUREVISIBLE: u32 = 0x1114;
 const TVM_GETITEMRECT: u32 = 0x1104;
 const TVGN_CARET: usize = 9;
 const TVM_SETBKCOLOR: u32 = 0x111D;
+const TVM_GETTOOLTIPS: u32 = 0x1119;
 // list-view messages (the Explorer list inside each pane)
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_GETHEADER: u32 = 0x101F;
+const LVM_GETTOOLTIPS: u32 = 0x104E;
 const LVM_GETCOLUMNORDERARRAY: u32 = 0x103B;
 const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
 const LVM_GETEXTENDEDLISTVIEWSTYLE: u32 = 0x1037;
@@ -2061,6 +2063,11 @@ unsafe fn dark_list(pane: HWND) {
         if !header.0.is_null() {
             _ = SetWindowTheme(header, w!("DarkMode_ItemsView"), PCWSTR::null());
         }
+        // the info tip over a file, and the full name over a truncated one
+        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        if !tip.0.is_null() {
+            _ = SetWindowTheme(tip, w!("DarkMode_Explorer"), PCWSTR::null());
+        }
         _ = InvalidateRect(Some(lv), None, true);
     }
 }
@@ -2154,7 +2161,14 @@ unsafe fn uxtheme(ordinal: usize) -> FARPROC {
 
 // Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
 unsafe fn apply_theme() {
-    let (main, dark, tree, accent) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now()));
+    let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
+    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
+    let tip_theme = |t: HWND| {
+        if !t.0.is_null() {
+            _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
+        }
+    };
+    tip_theme(tip);
     DARK_ON.store(dark, Ordering::Relaxed);
     if let Some(f) = uxtheme(135) {
         let set_preferred_app_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
@@ -2173,6 +2187,7 @@ unsafe fn apply_theme() {
         let colour = |c: u32| LPARAM(if dark { cref(c).0 as isize } else { -1 }); // -1: system default
         SendMessageW(tv, TVM_SETBKCOLOR, None, Some(colour(pal().card)));
         SendMessageW(tv, TVM_SETTEXTCOLOR, None, Some(colour(pal().text)));
+        tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
     set_accent(accent);
     for i in 0..MAXP {
