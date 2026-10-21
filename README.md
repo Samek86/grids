@@ -43,6 +43,8 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 
 ## Keyboard shortcuts
 
+These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone.
+
 | Keys | Action |
 | --- | --- |
 | Ctrl+T | New tab |
