@@ -141,7 +141,8 @@ pub(crate) struct Session {
     pub(crate) start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
     pub(crate) start_path: String,
     pub(crate) ext: bool,              // show file extensions (the Windows Explorer setting)
-    pub(crate) tree_on: bool,          // left folder tree
+    pub(crate) tree_on: bool,          // left panel open (the activity bar collapses it)
+    pub(crate) panel: u8,              // 0 folder tree, 1 favourites. Search stays disabled.
     pub(crate) edge: bool,             // accent border on the active pane
     pub(crate) confirm: bool,          // ask before delete
     pub(crate) del: u8,                // 0 recycle bin, 1 permanent
@@ -185,6 +186,7 @@ impl Default for Session {
             start_path: String::new(),
             ext: true,
             tree_on: true,
+            panel: 0,
             edge: true,
             confirm: true,
             del: 0,
@@ -231,6 +233,7 @@ impl PartialEq for Session {
             && self.start_path == o.start_path
             && self.ext == o.ext
             && self.tree_on == o.tree_on
+            && self.panel == o.panel
             && self.edge == o.edge
             && self.confirm == o.confirm
             && self.del == o.del
