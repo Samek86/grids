@@ -20,7 +20,7 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 - **Per-pane toolbar**: address bar, back / forward / up, name filter (`*.pdf;*.txt` or any part of a name), open the selected folder in another pane (its columns come along, so you can set one pane up and copy it around), favourite toggle.
 - **Sessions**: the layout, folders and each pane's columns (order, widths, sort) are saved automatically. Save named sessions and load them from cards that preview each layout; a green dot on the save button shows unsaved layout changes.
 - **Columns are a pane setting**: their order, widths and sort stay as the pane moves from folder to folder, and any column can be made narrower than Explorer allows (Size stops at 90 px there).
-- **Folder favourites**: star a folder from its pane header, jump to it from the star list in the toolbar.
+- **Folder favourites**: star a folder from its pane header, or right-click a folder and choose Add to favourites (Remove from favourites when it is already there). Jump to it from the star list in the toolbar. The rest of the shell menu stays.
 - **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted.
 - **Single instance**: running `grids.exe C:\a D:\b` or opening a `.grids` session file reuses the open window.
 - **Portable**: settings live in `grids.ini` next to the exe, named sessions in the `sessions` folder beside it.
