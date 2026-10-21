@@ -6,3 +6,9 @@ Claude가 제안하고 gpt-6.1-sol이 동의한 개선을 사람 확인 없이 �
 | # | 시각(KST) | 분류 | 업데이트 | 사용자에게 달라지는 것 | 변경 |
 |---|---|---|---|---|---|
 | 1 | 2026-10-21 10:55 | UX | Folder path suggestions in the address bar | When you type a path in a pane's address bar (Ctrl+L), a list of matching folders drops down, the same as in Explorer. Pick one with the arrow keys and press Enter to go there, so a mistyped path no longer just beeps. | 1 file changed, 3 insertions(+), 1 deletion(-) |
+
+## 릴리즈 R1 · 2026-10-21 10:56 KST · 업데이트 1개
+
+| # | 구현 시각(KST) | 분류 | 업데이트 | 사용자에게 달라지는 것 | 변경 |
+|---|---|---|---|---|---|
+| #1 | 2026-10-21 10:55 | UX | Folder path suggestions in the address bar | When you type a path in a pane's address bar (Ctrl+L), a list of matching folders drops down, the same as in Explorer. Pick one with the arrow keys and press Enter to go there, so a mistyped path no longer just beeps. | 1 file changed, 3 insertions(+), 1 deletion(-) |
