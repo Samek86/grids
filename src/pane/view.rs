@@ -386,6 +386,7 @@ pub(crate) unsafe fn set_accent(c: u32) {
     for p in panes {
         repaint_header(p); // all of them: inactive panes show the accent in their filter badge
     }
+    drop_group_brushes();
     settings::redraw();
 }
 
