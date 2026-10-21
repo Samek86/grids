@@ -5,18 +5,22 @@
 
 use std::cell::RefCell;
 use std::fmt::Display;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::*;
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -88,6 +92,7 @@ const LVM_SETSELECTEDCOLUMN: u32 = 0x108C;
 const LVM_GETSELECTEDCOLUMN: u32 = 0x10AE;
 const TVM_SETTEXTCOLOR: u32 = 0x111E;
 const COPY_ID: usize = 0x4752_4944; // "GRID": WM_COPYDATA from a second instance
+const WM_XFER: u32 = WM_APP + 7; // background copy/move has news for the UI thread
 // Move without copying old pixels: copied bits are what left ghost borders/buttons while resizing.
 const MOVE: SET_WINDOW_POS_FLAGS = SET_WINDOW_POS_FLAGS(SWP_NOZORDER.0 | SWP_NOACTIVATE.0 | SWP_NOCOPYBITS.0);
 
@@ -191,7 +196,8 @@ Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
 F1\tHelp (opens the README on GitHub)\n\
-F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
+F2, Del, F5\tSame as Explorer\n\
+Ctrl+C / X / V\tCopy, cut, paste (paste and move run in the background)\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
 ⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns\n\
 Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
@@ -208,7 +214,8 @@ Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
 F1\t도움말 (GitHub README 열기)\n\
-F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
+F2, Del, F5\t탐색기와 동일\n\
+Ctrl+C / X / V\t복사, 잘라내기, 붙여넣기 (붙여넣기·이동은 뒤에서 진행)\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
 ⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께\n\
 저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
@@ -680,6 +687,8 @@ struct App {
     sizing: bool, // inside the window's own move/size loop
     status: String,
     status_key: String,
+    xfer_busy: bool, // a background copy/move owns the status line
+    xfer_jobs: u32,
     view_menu: HMENU,
     base: Option<Session>, // last loaded/saved (or startup) state; differs -> green dot
     dirty: bool,
@@ -718,6 +727,8 @@ thread_local! {
         sizing: false,
         status: String::new(),
         status_key: String::new(),
+        xfer_busy: false,
+        xfer_jobs: 0,
         view_menu: HMENU::default(),
         base: None,
         dirty: false,
@@ -2342,6 +2353,9 @@ unsafe fn selected_size(fv: &IFolderView2) -> u64 {
 
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
 unsafe fn update_status() {
+    if app(|a| a.xfer_busy) {
+        return; // progress text stays until the worker reports in
+    }
     let (i, path, main) = app(|a| (a.s.active, a.s.paths[a.s.active].clone(), a.main));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
@@ -2946,6 +2960,375 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
     }
 }
 
+// ---------- clipboard copy / move (worker thread; the UI thread only paints what PostMessage brings) ----------
+
+#[derive(Debug)]
+enum XferPlan {
+    Skip, // move of a file onto itself
+    IntoSelf,
+    Dest(PathBuf),
+}
+
+fn path_within(root: &Path, path: &Path) -> bool {
+    let root: Vec<_> = root.components().collect();
+    let path: Vec<_> = path.components().collect();
+    path.len() >= root.len() && path.iter().zip(&root).all(|(a, b)| a == b)
+}
+
+/// "report.pdf" → "report (2).pdf", then "report (3).pdf", skipping names `taken` says are in use.
+fn fresh_copy_name(path: &Path, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let mut n = 2u32;
+    loop {
+        let body = format!("{stem} ({n})");
+        let name = if ext.is_empty() { body } else { format!("{body}.{ext}") };
+        let cand = dir.join(name);
+        if !taken(&cand) || n == 9999 {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+fn plan_transfer(src: &Path, dest_dir: &Path, mv: bool, src_is_dir: bool, exists: impl Fn(&Path) -> bool) -> XferPlan {
+    if src_is_dir && path_within(src, dest_dir) {
+        return XferPlan::IntoSelf;
+    }
+    let Some(name) = src.file_name() else { return XferPlan::IntoSelf };
+    let dest = dest_dir.join(name);
+    if mv && dest == src {
+        return XferPlan::Skip;
+    }
+    if exists(&dest) || dest == src {
+        XferPlan::Dest(fresh_copy_name(&dest, exists))
+    } else {
+        XferPlan::Dest(dest)
+    }
+}
+
+struct XferJob {
+    hwnd: isize,
+    dest: PathBuf,
+    srcs: Vec<PathBuf>,
+    mv: bool,
+}
+
+enum XferNote {
+    Progress { done: u64, total: u64, name: String, mv: bool },
+    Finished { errors: Vec<String>, dirs: Vec<PathBuf>, moved: bool },
+}
+
+static XFER_NOTES: Mutex<Vec<XferNote>> = Mutex::new(Vec::new());
+
+fn xfer_tx() -> &'static mpsc::Sender<XferJob> {
+    static TX: OnceLock<mpsc::Sender<XferJob>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(job) = rx.recv() {
+                run_xfer(job);
+            }
+        });
+        tx
+    })
+}
+
+fn post_note(hwnd: isize, note: XferNote) {
+    if let Ok(mut q) = XFER_NOTES.lock() {
+        q.push(note);
+    }
+    unsafe {
+        _ = PostMessageW(Some(HWND(hwnd as *mut core::ffi::c_void)), WM_XFER, WPARAM(0), LPARAM(0));
+    }
+}
+
+fn push_err(errors: &mut Vec<String>, msg: String) {
+    if errors.len() < 32 {
+        errors.push(msg);
+    } else if errors.len() == 32 {
+        errors.push("…".into());
+    }
+}
+
+fn tree_bytes(p: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(p) else { return 0 };
+    if meta.file_type().is_symlink() || meta.is_file() {
+        return meta.len();
+    }
+    std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| tree_bytes(&e.path())).sum()).unwrap_or(0)
+}
+
+struct Tick {
+    hwnd: isize,
+    total: u64,
+    done: u64,
+    last: Instant,
+    mv: bool,
+}
+
+impl Tick {
+    fn bump(&mut self, add: u64, name: &str, force: bool) {
+        self.done = self.done.saturating_add(add);
+        if force || self.last.elapsed() >= Duration::from_millis(80) {
+            self.last = Instant::now();
+            post_note(self.hwnd, XferNote::Progress { done: self.done, total: self.total, name: name.to_string(), mv: self.mv });
+        }
+    }
+}
+
+fn copy_file(src: &Path, dest: &Path, tick: &mut Tick) -> std::io::Result<()> {
+    if dest.exists() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "already exists"));
+    }
+    let mut inn = std::fs::File::open(src)?;
+    let mut out = std::fs::File::create(dest)?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let name = src.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    loop {
+        let k = inn.read(&mut buf)?;
+        if k == 0 {
+            break;
+        }
+        out.write_all(&buf[..k])?;
+        tick.bump(k as u64, &name, false);
+    }
+    tick.bump(0, &name, true);
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dest: &Path, tick: &mut Tick, errors: &mut Vec<String>) -> bool {
+    let meta = match std::fs::symlink_metadata(src) {
+        Ok(m) => m,
+        Err(e) => {
+            push_err(errors, format!("{}: {e}", src.display()));
+            return false;
+        }
+    };
+    if meta.file_type().is_symlink() && std::fs::metadata(src).is_ok_and(|m| m.is_dir()) {
+        push_err(errors, format!("{}: skipped link", src.display()));
+        return false;
+    }
+    if meta.is_file() || meta.file_type().is_symlink() {
+        return match copy_file(src, dest, tick) {
+            Ok(()) => true,
+            Err(e) => {
+                // AlreadyExists means we never created dest; don't delete the file that was there.
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    _ = std::fs::remove_file(dest);
+                }
+                push_err(errors, format!("{}: {e}", src.display()));
+                false
+            }
+        };
+    }
+    if let Err(e) = std::fs::create_dir(dest) {
+        push_err(errors, format!("{}: {e}", dest.display()));
+        return false;
+    }
+    let rd = match std::fs::read_dir(src) {
+        Ok(rd) => rd,
+        Err(e) => {
+            push_err(errors, format!("{}: {e}", src.display()));
+            return false;
+        }
+    };
+    let mut ok = true;
+    for entry in rd.flatten() {
+        if !copy_tree(&entry.path(), &dest.join(entry.file_name()), tick, errors) {
+            ok = false;
+        }
+    }
+    ok
+}
+
+fn remove_path(p: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(p)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    }
+}
+
+fn run_xfer(job: XferJob) {
+    let mut errors = Vec::new();
+    let total = job.srcs.iter().map(|p| tree_bytes(p)).sum();
+    let mut tick = Tick { hwnd: job.hwnd, total, done: 0, last: Instant::now() - Duration::from_secs(1), mv: job.mv };
+    for src in &job.srcs {
+        if !src.exists() {
+            push_err(&mut errors, format!("Missing {}", src.display()));
+            continue;
+        }
+        let is_dir = std::fs::symlink_metadata(src).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
+        match plan_transfer(src, &job.dest, job.mv, is_dir, |p| p.exists()) {
+            XferPlan::Skip => {}
+            XferPlan::IntoSelf => push_err(&mut errors, format!("{}: inside itself", src.display())),
+            XferPlan::Dest(dest) => {
+                let name = src.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if job.mv && std::fs::rename(src, &dest).is_ok() {
+                    tick.bump(tree_bytes(&dest), name, true);
+                } else if copy_tree(src, &dest, &mut tick, &mut errors) {
+                    if job.mv {
+                        if let Err(e) = remove_path(src) {
+                            push_err(&mut errors, format!("{}: {e}", src.display()));
+                        }
+                    }
+                } else if job.mv {
+                    // rename failed and the copy did not finish: leave the source where it is
+                }
+            }
+        }
+    }
+    let mut dirs = vec![job.dest];
+    if job.mv {
+        for src in &job.srcs {
+            if let Some(p) = src.parent() {
+                if !dirs.iter().any(|d| d == p) {
+                    dirs.push(p.to_path_buf());
+                }
+            }
+        }
+    }
+    post_note(job.hwnd, XferNote::Finished { errors, dirs, moved: job.mv });
+}
+
+fn progress_text(done: u64, total: u64, name: &str, mv: bool) -> String {
+    let pct = if total == 0 { 100 } else { (done.saturating_mul(100) / total.max(1)).min(100) };
+    let verb = if mv { tr("Moving", "이동") } else { tr("Copying", "복사") };
+    format!("{verb} {pct}%  {name}")
+}
+
+unsafe fn set_status_text(text: String) {
+    let (main, rc) = app(|a| {
+        a.status = text;
+        (a.main, status_rect(&geo(a)))
+    });
+    _ = InvalidateRect(Some(main), Some(&rc), true);
+}
+
+unsafe fn notify_dir(dir: &Path) {
+    let wide: Vec<u16> = dir.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+    SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, Some(wide.as_ptr() as _), None);
+}
+
+unsafe fn refresh_views() {
+    for i in 0..MAXP {
+        if let Some(sv) = view_of::<IShellView>(i) {
+            _ = sv.Refresh();
+        }
+    }
+}
+
+unsafe fn clear_clipboard() {
+    if OpenClipboard(None).is_ok() {
+        _ = EmptyClipboard();
+        _ = CloseClipboard();
+    }
+}
+
+unsafe fn hdrop_list() -> Vec<PathBuf> {
+    let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) else { return Vec::new() };
+    let drop = HDROP(h.0);
+    let n = DragQueryFileW(drop, 0xFFFF_FFFF, None);
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let len = DragQueryFileW(drop, i, None) as usize;
+        let mut buf = vec![0u16; len + 1];
+        if DragQueryFileW(drop, i, Some(&mut buf)) == 0 {
+            continue;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let s = String::from_utf16_lossy(&buf[..end]);
+        if !s.is_empty() {
+            out.push(PathBuf::from(s));
+        }
+    }
+    out
+}
+
+unsafe fn clip_is_move() -> bool {
+    let fmt = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+    if fmt == 0 {
+        return false;
+    }
+    let Ok(h) = GetClipboardData(fmt) else { return false };
+    let p = GlobalLock(HGLOBAL(h.0));
+    if p.is_null() {
+        return false;
+    }
+    let effect = std::ptr::read_unaligned(p as *const u32);
+    _ = GlobalUnlock(HGLOBAL(h.0));
+    effect & DROPEFFECT_MOVE.0 != 0 && effect & DROPEFFECT_COPY.0 == 0
+}
+
+unsafe fn clipboard_files() -> Option<(Vec<PathBuf>, bool)> {
+    OpenClipboard(None).ok()?;
+    let files = hdrop_list();
+    let mv = clip_is_move();
+    _ = CloseClipboard();
+    (!files.is_empty()).then_some((files, mv))
+}
+
+// Ctrl+V. Ctrl+C / Ctrl+X still go to the shell, which fills the clipboard. Returns false when
+// there is nothing on the clipboard this can move, so the shell can paste instead.
+unsafe fn paste_async(i: usize) -> bool {
+    let dest = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    if !is_fs(&dest) {
+        return false;
+    }
+    let Some((srcs, mv)) = clipboard_files() else { return false };
+    let hwnd = app(|a| a.main.0 as isize);
+    app(|a| {
+        a.xfer_jobs = a.xfer_jobs.saturating_add(1);
+        a.xfer_busy = true;
+    });
+    set_status_text(if mv { tr("Moving…", "이동 중…").into() } else { tr("Copying…", "복사 중…").into() });
+    if xfer_tx().send(XferJob { hwnd, dest: PathBuf::from(dest), srcs, mv }).is_err() {
+        app(|a| {
+            a.xfer_jobs = a.xfer_jobs.saturating_sub(1);
+            a.xfer_busy = a.xfer_jobs > 0;
+        });
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    true
+}
+
+unsafe fn on_xfer() {
+    let notes = XFER_NOTES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for note in notes {
+        match note {
+            XferNote::Progress { done, total, name, mv } => set_status_text(progress_text(done, total, &name, mv)),
+            XferNote::Finished { errors, dirs, moved } => {
+                for d in &dirs {
+                    notify_dir(d);
+                }
+                refresh_views();
+                let idle = app(|a| {
+                    a.xfer_jobs = a.xfer_jobs.saturating_sub(1);
+                    a.xfer_busy = a.xfer_jobs > 0;
+                    !a.xfer_busy
+                });
+                if idle {
+                    update_status();
+                }
+                if moved && errors.is_empty() {
+                    clear_clipboard();
+                }
+                if !errors.is_empty() {
+                    let mut body = errors.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+                    if errors.len() > 8 {
+                        body.push_str(&format!("\n+{}", errors.len() - 8));
+                    }
+                    let main = app(|a| a.main);
+                    _ = MessageBoxW(Some(main), &HSTRING::from(body), &HSTRING::from(tr("Couldn't copy", "복사하지 못했습니다")), MB_OK | MB_ICONWARNING);
+                }
+            }
+        }
+    }
+}
+
 unsafe fn popup_menu(menu: HMENU, id: i32) {
     let main = app(|a| a.main);
     let mut rc = RECT::default();
@@ -2977,6 +3360,11 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
         VK_S if ctrl => save_current(),
+        VK_V if ctrl && !shift && !alt && !addr && !filt => {
+            if !paste_async(a) {
+                return shell_accel(a, m);
+            }
+        }
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
         VK_RETURN if filt => {
@@ -2994,14 +3382,16 @@ unsafe fn key(m: &MSG) -> bool {
             focus_view(a);
         }
         _ if addr || filt => return false,
-        _ => {
-            // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
-            let Some(sv) = view_of::<IShellView>(a) else { return false };
-            let svh = sv.GetWindow().unwrap_or_default();
-            return (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK;
-        }
+        _ => return shell_accel(a, m),
     }
     true
+}
+
+// F2, Del, Ctrl+C/X ... are the shell view's accelerators: hand them over.
+unsafe fn shell_accel(i: usize, m: &MSG) -> bool {
+    let Some(sv) = view_of::<IShellView>(i) else { return false };
+    let svh = sv.GetWindow().unwrap_or_default();
+    (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
 }
 
 unsafe fn pre_translate(m: &MSG) -> bool {
@@ -3163,6 +3553,7 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     check(ID_ACCENT + k, *c == accent);
                 }
             }
+            WM_XFER => on_xfer(),
             WM_COPYDATA => {
                 let cd = &*(lp.0 as *const CopyData);
                 if cd.dw != COPY_ID || cd.lp.is_null() {
@@ -3590,6 +3981,13 @@ mod tests {
         assert_eq!((session_arg(&["a.GRIDS".into()]), session_arg(&["old.qdr".into()])), (Some("a.GRIDS"), Some("old.qdr")));
         assert_eq!(session_arg(&["a.grids".into(), "b".into()]), None);
 
+        assert!(path_within(Path::new(r"C:\a"), Path::new(r"C:\a\b")) && path_within(Path::new(r"C:\a"), Path::new(r"C:\a")));
+        assert!(!path_within(Path::new(r"C:\a"), Path::new(r"C:\ab")));
+        assert!(matches!(plan_transfer(Path::new(r"C:\a\file.txt"), Path::new(r"C:\b"), false, false, |_| false), XferPlan::Dest(ref p) if p == Path::new(r"C:\b\file.txt")));
+        assert!(matches!(plan_transfer(Path::new(r"C:\a\file.txt"), Path::new(r"C:\a"), true, false, |_| true), XferPlan::Skip));
+        assert!(matches!(plan_transfer(Path::new(r"C:\a\file.txt"), Path::new(r"C:\a"), false, false, |p| p == Path::new(r"C:\a\file.txt")), XferPlan::Dest(ref p) if p == Path::new(r"C:\a\file (2).txt")));
+        assert!(matches!(plan_transfer(Path::new(r"C:\docs"), Path::new(r"C:\docs\n"), false, true, |_| false), XferPlan::IntoSelf));
+        assert_eq!(fresh_copy_name(Path::new(r"C:\a\file.txt"), |p| p.ends_with("file (2).txt")), Path::new(r"C:\a\file (3).txt"));
         assert_eq!(filter_spec(" pdf; *.TXT ;"), "*pdf*;*.TXT");
         assert_eq!((human(10), human(1536), human(5 << 30)), ("10 B".into(), "1.5 KB".into(), "5.0 GB".into()));
 
