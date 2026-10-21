@@ -457,13 +457,20 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
         has_bar: false,
     };
     // Lay out once to learn the height, then again inset for the scrollbar if needed.
+    // A scrollbar narrows the shortcut column, and that can wrap another chord line,
+    // so the height that is painted (not the wider first pass) decides the scroll range.
     let natural = fill_items(&mut g, sn, false);
     let view_h = (content.bottom - content.top).max(1);
-    let has_bar = natural > view_h;
-    g.has_bar = has_bar;
-    g.scroll_max = (natural - view_h).max(0);
+    let mut has_bar = natural > view_h;
     g.items.clear();
-    fill_items(&mut g, sn, has_bar);
+    let mut content_h = fill_items(&mut g, sn, has_bar);
+    if !has_bar && content_h > view_h {
+        has_bar = true;
+        g.items.clear();
+        content_h = fill_items(&mut g, sn, true);
+    }
+    g.has_bar = has_bar;
+    g.scroll_max = (content_h - view_h).max(0);
     if g.has_bar {
         let track = RECT {
             left: rc.right - sc(dpi, 10),
@@ -472,7 +479,7 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
             bottom: content.bottom - sc(dpi, 8),
         };
         let span = (track.bottom - track.top).max(1);
-        let thumb_h = (span * view_h / natural.max(view_h)).clamp(sc(dpi, 24), span);
+        let thumb_h = (span * view_h / content_h.max(view_h)).clamp(sc(dpi, 24), span);
         let travel = (span - thumb_h).max(1);
         let top = track.top + if g.scroll_max == 0 { 0 } else { sn.scroll.clamp(0, g.scroll_max) * travel / g.scroll_max };
         g.thumb = RECT { left: track.left, top, right: track.right, bottom: top + thumb_h };
@@ -598,20 +605,24 @@ fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     let edit = RECT { left, top: reset.top, right: reset.left - sc(dpi, 8), bottom: reset.bottom };
     g.items.push(Item::KeyBar { edit, reset });
     y += sc(dpi, 48);
-    let row_h = sc(dpi, 40);
     let head_h = sc(dpi, 32);
-    let n = rows.len().max(1) as i32;
-    let table = RECT { left, top: y, right, bottom: y + head_h + row_h * n };
+    let table_top = y;
+    let probe = RECT { left, top: 0, right, bottom: 0 };
+    let heights = unsafe { key_row_heights(&rows, probe, dpi, sn.mono) };
+    let body: i32 = heights.iter().sum();
+    let table = RECT { left, top: table_top, right, bottom: table_top + head_h + body };
     g.items.push(Item::Table(table));
-    g.items.push(Item::KeyHead(RECT { left, top: y, right, bottom: y + head_h }));
-    y += head_h;
+    g.items.push(Item::KeyHead(RECT { left, top: table_top, right, bottom: table_top + head_h }));
+    y = table_top + head_h;
     if rows.is_empty() {
-        g.items.push(Item::KeyRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + row_h } });
-        y += row_h;
+        let h = heights.first().copied().unwrap_or(sc(dpi, 40));
+        g.items.push(Item::KeyRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + h } });
+        y += h;
     }
-    for i in rows {
-        g.items.push(Item::KeyRow { i, rect: RECT { left, top: y, right, bottom: y + row_h } });
-        y += row_h;
+    for (n, i) in rows.into_iter().enumerate() {
+        let h = heights.get(n).copied().unwrap_or(sc(dpi, 40));
+        g.items.push(Item::KeyRow { i, rect: RECT { left, top: y, right, bottom: y + h } });
+        y += h;
     }
     y += sc(dpi, 8);
     g.items.push(Item::Note(RECT { left, top: y, right, bottom: y + sc(dpi, 40) }, KEY_NOTE));
@@ -1100,6 +1111,95 @@ fn key_cols(r: RECT) -> (RECT, i32) {
     (a, r.left + w * 50 / 100)
 }
 
+fn chip_h(dpi: i32) -> i32 {
+    sc(dpi, 24)
+}
+
+fn chord_gap(dpi: i32) -> i32 {
+    sc(dpi, 6)
+}
+
+fn chord_inset(dpi: i32) -> i32 {
+    sc(dpi, 12)
+}
+
+/// Shortcut column: x where chips start, and the width they must stay inside.
+fn chord_box(r: RECT, dpi: i32) -> (i32, i32) {
+    let (_, keys_x) = key_cols(r);
+    (keys_x, (r.right - chord_inset(dpi) - keys_x).max(sc(dpi, 48)))
+}
+
+/// Pack chip widths onto lines that stay within `max_w`. A chip wider than the
+/// cell is clamped so the row cannot paint past the table's right edge.
+fn pack_chords(widths: &[i32], max_w: i32, gap: i32) -> Vec<Vec<i32>> {
+    let max_w = max_w.max(1);
+    let mut lines: Vec<Vec<i32>> = Vec::new();
+    let mut line: Vec<i32> = Vec::new();
+    let mut used = 0i32;
+    for &raw in widths {
+        let w = raw.clamp(1, max_w);
+        if !line.is_empty() && used.saturating_add(gap).saturating_add(w) > max_w {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(w);
+        used = if line.len() == 1 { w } else { used.saturating_add(gap).saturating_add(w) };
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
+fn key_row_h_from_lines(n: i32, dpi: i32) -> i32 {
+    let n = n.max(1);
+    let min_h = sc(dpi, 40);
+    if n == 1 {
+        return min_h;
+    }
+    let pad = sc(dpi, 8);
+    let gap = sc(dpi, 4);
+    (pad * 2 + n * chip_h(dpi) + (n - 1) * gap).max(min_h)
+}
+
+unsafe fn chord_widths(dc: HDC, font: HFONT, keys: &[&str], dpi: i32) -> Vec<i32> {
+    let pad = sc(dpi, 14);
+    keys.iter()
+        .map(|k| {
+            let tw = if font.is_invalid() || dc.is_invalid() {
+                sc(dpi, 8) * k.chars().count() as i32
+            } else {
+                text_w(dc, font, k)
+            };
+            (tw + pad).max(pad)
+        })
+        .collect()
+}
+
+unsafe fn key_row_height(dc: HDC, keys: &[&str], row: RECT, dpi: i32, font: HFONT) -> i32 {
+    let (_, max_w) = chord_box(row, dpi);
+    let lines = pack_chords(&chord_widths(dc, font, keys, dpi), max_w, chord_gap(dpi));
+    key_row_h_from_lines(lines.len() as i32, dpi)
+}
+
+unsafe fn key_row_heights(rows: &[usize], row: RECT, dpi: i32, font: HFONT) -> Vec<i32> {
+    if rows.is_empty() {
+        return vec![sc(dpi, 40)];
+    }
+    let dc = GetDC(None);
+    let heights = rows
+        .iter()
+        .map(|&i| key_row_height(dc, KEYS[i].keys, row, dpi, if dc.is_invalid() { HFONT::default() } else { font }))
+        .collect();
+    if !dc.is_invalid() {
+        let _ = ReleaseDC(None, dc);
+    }
+    heights
+}
+
 unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     // Disabled rows stay on a white (or dark-theme card) ground; only the label grays.
@@ -1188,14 +1288,31 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, sn: &Snap) {
     let (cat, keys_x) = key_cols(r);
     super::text(dc, cat, tx(k.cat), sn.font, super::pal().sub, DT_LEFT);
     super::text(dc, RECT { left: cat.right, right: keys_x - sc(dpi, 8), ..r }, tx(k.act), sn.font, super::pal().text, DT_LEFT);
-    let mut x = keys_x;
-    for key in k.keys {
-        let w = text_w(dc, sn.mono, key) + sc(dpi, 14);
-        let chip = RECT { left: x, top: r.top + sc(dpi, 8), right: x + w, bottom: r.bottom - sc(dpi, 8) };
-        rfill(dc, chip, sc(dpi, 6), super::pal().bg, Some(super::pal().line));
-        super::fill(dc, RECT { top: chip.bottom - sc(dpi, 2).max(1), left: chip.left + 1, right: chip.right - 1, bottom: chip.bottom - 1 }, super::blend(super::pal().line, super::pal().text, 0.35));
-        super::text(dc, chip, key, sn.mono, super::pal().text, DT_CENTER);
-        x += w + sc(dpi, 6);
+    let (_, max_w) = chord_box(r, dpi);
+    let widths = chord_widths(dc, sn.mono, k.keys, dpi);
+    let lines = pack_chords(&widths, max_w, chord_gap(dpi));
+    let n = lines.len().max(1) as i32;
+    let ch = chip_h(dpi);
+    let lg = sc(dpi, 4);
+    let stack = n * ch + (n - 1) * lg;
+    let mut y = r.top + (r.bottom - r.top - stack).max(0) / 2;
+    let limit = keys_x + max_w;
+    let mut ki = 0usize;
+    for line in &lines {
+        let mut x = keys_x;
+        for &w in line {
+            let key = k.keys.get(ki).copied().unwrap_or("");
+            ki += 1;
+            let right = (x + w).min(limit);
+            let chip = RECT { left: x, top: y, right, bottom: (y + ch).min(r.bottom - 1) };
+            if chip.right > chip.left && chip.bottom > chip.top {
+                rfill(dc, chip, sc(dpi, 6), super::pal().bg, Some(super::pal().line));
+                super::fill(dc, RECT { top: chip.bottom - sc(dpi, 2).max(1), left: chip.left + 1, right: chip.right - 1, bottom: chip.bottom - 1 }, super::blend(super::pal().line, super::pal().text, 0.35));
+                super::text(dc, chip, key, sn.mono, super::pal().text, DT_CENTER);
+            }
+            x = right + chord_gap(dpi);
+        }
+        y += ch + lg;
     }
     super::fill(dc, RECT { top: r.bottom - 1, ..r }, super::pal().line);
 }
@@ -1871,4 +1988,48 @@ unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, true);
     let _ = SetForegroundWindow(owner);
     ASK_OUT.with(|o| o.borrow_mut().take().flatten())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(line: &[i32], gap: i32) -> i32 {
+        if line.is_empty() {
+            0
+        } else {
+            line.iter().sum::<i32>() + gap * (line.len() as i32 - 1)
+        }
+    }
+
+    fn column_w(client: i32, bar: bool) -> i32 {
+        let nav = sc(96, 220);
+        let pad = sc(96, 28);
+        let right_pad = if bar { sc(96, 18) } else { 0 };
+        let row = RECT { left: nav + pad, top: 0, right: client - pad - right_pad, bottom: 0 };
+        chord_box(row, 96).1
+    }
+
+    #[test]
+    fn shortcut_chords_wrap_inside_the_cell() {
+        let gap = chord_gap(96);
+        // Four Alt+Shift arrow chips, about 110px each in Consolas 12.
+        let arrows = [110, 110, 110, 110];
+        for (client, bar) in [(1000, false), (1000, true), (780, true)] {
+            let max_w = column_w(client, bar);
+            let lines = pack_chords(&arrows, max_w, gap);
+            assert!(lines.len() >= 2, "client {client} bar {bar} max {max_w} stayed one line");
+            assert_eq!(lines.iter().map(|l| l.len()).sum::<usize>(), 4);
+            for line in &lines {
+                assert!(span(line, gap) <= max_w, "line {line:?} exceeds {max_w}");
+            }
+            assert!(key_row_h_from_lines(lines.len() as i32, 96) > sc(96, 40));
+        }
+        // A chord wider than the cell is clamped to the cell.
+        assert_eq!(pack_chords(&[900], 200, gap), vec![vec![200]]);
+        // Short chords stay on one line and keep the 40px row.
+        assert_eq!(pack_chords(&[70, 60, 40], column_w(1000, false), gap).len(), 1);
+        assert_eq!(key_row_h_from_lines(1, 96), sc(96, 40));
+        assert!(key_row_h_from_lines(2, 96) > key_row_h_from_lines(1, 96));
+    }
 }
