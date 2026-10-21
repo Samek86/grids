@@ -3,7 +3,7 @@
 // thumbnails, columns etc. come from Windows itself.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1515,6 +1515,7 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             sync_tree(&item);
         }
     }
+    hook_ctx(i);
 }
 
 #[implement(IExplorerBrowserEvents)]
@@ -1652,7 +1653,26 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
     fn OnBeforeContextMenu(&self, _: Ref<IShellItem>, _: *const GUID, _: *mut *mut core::ffi::c_void) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn OnAfterContextMenu(&self, _: Ref<IShellItem>, _: Ref<IContextMenu>, _: *const GUID, _: *mut *mut core::ffi::c_void) -> Result<()> {
+    fn OnAfterContextMenu(&self, psi: Ref<IShellItem>, pcmin: Ref<IContextMenu>, riid: *const GUID, ppv: *mut *mut core::ffi::c_void) -> Result<()> {
+        let (Some(item), Some(inner)) = (psi.as_ref(), pcmin.as_ref()) else {
+            return Err(E_NOTIMPL.into());
+        };
+        if !shell_folder(item) {
+            return Err(E_NOTIMPL.into());
+        }
+        let path = shell_parse(item);
+        if path.is_empty() {
+            return Err(E_NOTIMPL.into());
+        }
+        let menu: IContextMenu = FavCtx { inner: inner.clone(), path, cmd: Cell::new(u32::MAX) }.into();
+        unsafe {
+            *ppv = std::ptr::null_mut();
+            if menu.query(riid, ppv).is_ok() && !(*ppv).is_null() {
+                return Ok(());
+            }
+            *ppv = std::ptr::null_mut();
+        }
+        // keep the tree's own menu if it asked for an interface we don't wrap
         Err(E_NOTIMPL.into())
     }
     fn OnBeforeStateImageChange(&self, _: Ref<IShellItem>) -> Result<()> {
@@ -2817,16 +2837,392 @@ unsafe fn repaint_fav_buttons() {
     }
 }
 
-unsafe fn toggle_fav(i: usize) {
+unsafe fn set_favs(paths: &[String], add: bool) {
+    if paths.is_empty() {
+        return;
+    }
     app(|a| {
-        let path = a.s.paths[i].clone();
-        if a.s.is_fav(&path) {
-            a.s.favs.retain(|f| !f.eq_ignore_ascii_case(&path));
-        } else if !path.is_empty() {
-            a.s.favs.push(path);
+        for path in paths {
+            if path.is_empty() {
+                continue;
+            }
+            let on = a.s.is_fav(path);
+            if add && !on {
+                a.s.favs.push(path.clone());
+            } else if !add && on {
+                a.s.favs.retain(|f| !f.eq_ignore_ascii_case(path));
+            }
         }
     });
     repaint_fav_buttons();
+}
+
+unsafe fn toggle_fav(i: usize) {
+    let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    set_favs(std::slice::from_ref(&path), !app(|a| a.s.is_fav(&path)));
+}
+
+/// Every path already a favourite → the menu removes them; otherwise it adds the rest.
+fn fav_removes(paths: &[&str], is_fav: impl Fn(&str) -> bool) -> bool {
+    !paths.is_empty() && paths.iter().all(|p| is_fav(p))
+}
+
+fn fav_menu_label(paths: &[String]) -> &'static str {
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    if fav_removes(&refs, |p| app(|a| a.s.is_fav(p))) {
+        tr("Remove from favourites", "즐겨찾기에서 빼기")
+    } else {
+        tr("Add to favourites", "즐겨찾기에 추가")
+    }
+}
+
+fn wnd_class(h: HWND) -> String {
+    let mut c = [0u16; 64];
+    let n = unsafe { GetClassNameW(h, &mut c) } as usize;
+    String::from_utf16_lossy(&c[..n])
+}
+
+// The real Explorer menu is built by the shell. These are the windows that show it; a header
+// or an in-place rename box is left alone.
+fn ctx_surface(h: HWND) -> bool {
+    matches!(wnd_class(h).as_str(), "SHELLDLL_DefView" | "DirectUIHWND" | "SysListView32")
+}
+
+const CTX_SUB: usize = 4;
+const ID_CTX_FAV: u32 = 0x8000; // outside the id range handed to IContextMenu::QueryContextMenu
+
+struct MenuBridge {
+    cm3: Option<IContextMenu3>,
+    cm2: Option<IContextMenu2>,
+}
+
+thread_local! {
+    static MENU_BRIDGE: RefCell<Option<MenuBridge>> = const { RefCell::new(None) };
+}
+
+static CTX_OPEN: AtomicBool = AtomicBool::new(false);
+
+struct ClearBridge;
+impl Drop for ClearBridge {
+    fn drop(&mut self) {
+        MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
+        CTX_OPEN.store(false, Ordering::Release);
+    }
+}
+
+unsafe fn hook_ctx_hwnd(h: HWND, i: usize) {
+    if !h.0.is_null() && ctx_surface(h) {
+        _ = SetWindowSubclass(h, Some(ctx_proc), CTX_SUB, i);
+    }
+}
+
+unsafe fn hook_ctx(i: usize) {
+    let Some(sv) = view_of::<IShellView>(i) else { return };
+    let Ok(view) = sv.GetWindow() else { return };
+    hook_ctx_hwnd(view, i);
+    let mut after = None;
+    loop {
+        let Ok(c) = FindWindowExW(Some(view), after, PCWSTR::null(), PCWSTR::null()) else { break };
+        if c.0.is_null() {
+            break;
+        }
+        hook_ctx_hwnd(c, i);
+        let mut inner = None;
+        loop {
+            let Ok(g) = FindWindowExW(Some(c), inner, PCWSTR::null(), PCWSTR::null()) else { break };
+            if g.0.is_null() {
+                break;
+            }
+            hook_ctx_hwnd(g, i);
+            inner = Some(g);
+        }
+        after = Some(c);
+    }
+}
+
+#[repr(C)]
+struct LvHit {
+    pt: POINT,
+    flags: u32,
+    item: i32,
+    sub: i32,
+    group: i32,
+}
+
+// Right-click on a row the view hasn't selected yet: select it, unless it is already part of
+// a multi-selection (Explorer keeps that selection).
+unsafe fn select_clicked(i: usize, screen: POINT) {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return };
+    let lv = view_list(&fv);
+    if lv.0.is_null() {
+        return;
+    }
+    let mut pt = screen;
+    if !ScreenToClient(lv, &mut pt).as_bool() {
+        return;
+    }
+    let mut hit = LvHit { pt, flags: 0, item: -1, sub: 0, group: 0 };
+    let idx = SendMessageW(lv, 0x1012, None, Some(LPARAM(&mut hit as *mut _ as isize))).0 as i32; // LVM_HITTEST
+    if idx < 0 {
+        return;
+    }
+    let Ok(pidl) = fv.Item(idx) else { return };
+    let selected = fv.GetSelectionState(pidl).unwrap_or(0) & SVSI_SELECT.0 as u32 != 0;
+    CoTaskMemFree(Some(pidl as _));
+    if !selected {
+        _ = fv.SelectItem(idx, (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_FOCUSED.0) as u32);
+    }
+}
+
+unsafe fn selection_pidls(i: usize) -> Vec<*mut ITEMIDLIST> {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return Vec::new() };
+    let Ok(en) = fv.Items::<IEnumIDList>(SVGIO_SELECTION) else { return Vec::new() };
+    let mut out = Vec::new();
+    loop {
+        let mut slot = [std::ptr::null_mut()];
+        let mut n = 0u32;
+        let hr = en.Next(&mut slot, Some(&mut n));
+        if !hr.is_ok() || n == 0 || slot[0].is_null() || out.len() == 2000 {
+            break;
+        }
+        out.push(slot[0]);
+    }
+    out
+}
+
+unsafe fn selected_folders(i: usize) -> Vec<String> {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return Vec::new() };
+    let Ok(arr) = fv.GetSelection(false) else { return Vec::new() };
+    let n = arr.GetCount().unwrap_or(0).min(500);
+    let mut out = Vec::new();
+    for k in 0..n {
+        let Ok(it) = arr.GetItemAt(k) else { continue };
+        if it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0) {
+            if let Ok(p) = it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+                let p = pwstr(p);
+                if !p.is_empty() {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
+unsafe fn forward_menu(msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    MENU_BRIDGE.with(|b| {
+        let b = b.borrow();
+        let b = b.as_ref()?;
+        unsafe {
+            if let Some(cm3) = &b.cm3 {
+                let mut lr = LRESULT(0);
+                if cm3.HandleMenuMsg2(msg, wp, lp, Some(&mut lr)).is_ok() {
+                    return Some(lr);
+                }
+            }
+            if let Some(cm2) = &b.cm2 {
+                if cm2.HandleMenuMsg(msg, wp, lp).is_ok() {
+                    return Some(LRESULT(0));
+                }
+            }
+        }
+        None
+    })
+}
+
+// Shell menu for the pane, with Add/Remove favourites appended when the selection has a folder.
+// Returns false when the shell menu could not be built, so the view shows its own.
+unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
+    if CTX_OPEN.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+    let _open = ClearBridge;
+    let Some(sv) = view_of::<IShellView>(i) else { return false };
+    let owner = sv.GetWindow().unwrap_or_else(|_| app(|a| a.main));
+    if owner.0.is_null() {
+        return false;
+    }
+    select_clicked(i, pt);
+    let folders = selected_folders(i);
+    let pidls = selection_pidls(i);
+    let refs: Vec<*const ITEMIDLIST> = pidls.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
+    let cm = if refs.is_empty() {
+        sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND).ok()
+    } else if let Some(folder) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellFolder>().ok()) {
+        folder.GetUIObjectOf::<IContextMenu>(owner, &refs, None).ok().or_else(|| sv.GetItemObject::<IContextMenu>(SVGIO_SELECTION).ok())
+    } else {
+        sv.GetItemObject::<IContextMenu>(SVGIO_SELECTION).ok()
+    };
+    for p in pidls {
+        CoTaskMemFree(Some(p as _));
+    }
+    let Some(cm) = cm else { return false };
+    let Ok(menu) = CreatePopupMenu() else { return false };
+    let mut flags = CMF_EXPLORE | CMF_CANRENAME;
+    if !refs.is_empty() {
+        flags |= CMF_ITEMMENU;
+    }
+    if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+        flags |= CMF_EXTENDEDVERBS;
+    }
+    let hr = cm.QueryContextMenu(menu, 0, 1, 0x7FFF, flags);
+    if !hr.is_ok() {
+        _ = DestroyMenu(menu);
+        return false;
+    }
+    if !folders.is_empty() {
+        if GetMenuItemCount(Some(menu)) > 0 {
+            _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
+        _ = AppendMenuW(menu, MF_STRING, ID_CTX_FAV as usize, &HSTRING::from(fav_menu_label(&folders)));
+    }
+    MENU_BRIDGE.with(|b| {
+        *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
+    });
+    let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, owner, None).0;
+    MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
+    if cmd == ID_CTX_FAV as i32 {
+        let remove = app(|a| folders.iter().all(|p| a.s.is_fav(p)));
+        set_favs(&folders, !remove);
+    } else if cmd > 0 {
+        let mut ici = CMINVOKECOMMANDINFO {
+            cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+            hwnd: owner,
+            lpVerb: PCSTR((cmd as u32 - 1) as usize as *const u8),
+            nShow: SW_SHOWNORMAL.0 as i32,
+            ..Default::default()
+        };
+        if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+            ici.fMask |= CMIC_MASK_SHIFT_DOWN;
+        }
+        if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+            ici.fMask |= CMIC_MASK_CONTROL_DOWN;
+        }
+        _ = cm.InvokeCommand(&ici);
+    }
+    _ = DestroyMenu(menu);
+    true
+}
+
+unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT {
+    if matches!(msg, WM_INITMENUPOPUP | WM_UNINITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
+        if let Some(lr) = forward_menu(msg, wp, lp) {
+            return lr;
+        }
+    }
+    if msg == WM_PARENTNOTIFY && (wp.0 & 0xFFFF) == WM_CREATE as usize {
+        hook_ctx_hwnd(HWND(lp.0 as _), data);
+    }
+    if msg == WM_CONTEXTMENU {
+        let pt = if lp.0 == -1 {
+            let mut rc = RECT::default();
+            let _ = GetWindowRect(h, &mut rc);
+            POINT { x: (rc.left + rc.right) / 2, y: (rc.top + rc.bottom) / 2 }
+        } else {
+            POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 }
+        };
+        let under = if lp.0 == -1 { h } else { WindowFromPoint(pt) };
+        if ctx_surface(under) && show_ctx(data, pt) {
+            return LRESULT(0);
+        }
+    }
+    DefSubclassProc(h, msg, wp, lp)
+}
+
+// Sidebar menu: the tree builds the shell menu, then asks us for a replacement. Ours forwards
+// every shell command and appends the favourites item for a folder.
+#[implement(IContextMenu, IContextMenu2, IContextMenu3)]
+struct FavCtx {
+    inner: IContextMenu,
+    path: String,
+    cmd: Cell<u32>,
+}
+
+impl IContextMenu_Impl for FavCtx_Impl {
+    fn QueryContextMenu(&self, hmenu: HMENU, indexmenu: u32, idcmdfirst: u32, idcmdlast: u32, uflags: u32) -> HRESULT {
+        unsafe {
+            let hr = self.inner.QueryContextMenu(hmenu, indexmenu, idcmdfirst, idcmdlast, uflags);
+            if !hr.is_ok() || uflags & CMF_DEFAULTONLY != 0 {
+                return hr;
+            }
+            let used = (hr.0 as u32) & 0xFFFF;
+            // Offset 0 looks like a null verb, so an empty shell menu gets the next slot.
+            let offset = if used == 0 { 1 } else { used };
+            if idcmdfirst.saturating_add(offset) >= idcmdlast {
+                return hr;
+            }
+            self.cmd.set(offset);
+            let at = GetMenuItemCount(Some(hmenu)).max(indexmenu as i32) as u32;
+            _ = InsertMenuW(hmenu, at, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+            _ = InsertMenuW(hmenu, at + 1, MF_STRING | MF_BYPOSITION, (idcmdfirst + offset) as usize, &HSTRING::from(fav_menu_label(std::slice::from_ref(&self.path))));
+            HRESULT((offset + 1) as i32)
+        }
+    }
+    fn InvokeCommand(&self, pici: *const CMINVOKECOMMANDINFO) -> Result<()> {
+        unsafe {
+            if !pici.is_null() && verb_offset(pici) == Some(self.cmd.get()) {
+                let remove = app(|a| a.s.is_fav(&self.path));
+                set_favs(std::slice::from_ref(&self.path), !remove);
+                return Ok(());
+            }
+            self.inner.InvokeCommand(pici)
+        }
+    }
+    fn GetCommandString(&self, idcmd: usize, utype: u32, preserved: *const u32, pszname: PSTR, cchmax: u32) -> Result<()> {
+        if idcmd == self.cmd.get() as usize {
+            return Ok(());
+        }
+        unsafe { self.inner.GetCommandString(idcmd, utype, Some(preserved), pszname, cchmax) }
+    }
+}
+
+impl IContextMenu2_Impl for FavCtx_Impl {
+    fn HandleMenuMsg(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> Result<()> {
+        unsafe {
+            if let Ok(m) = self.inner.cast::<IContextMenu2>() {
+                return m.HandleMenuMsg(umsg, wparam, lparam);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl IContextMenu3_Impl for FavCtx_Impl {
+    fn HandleMenuMsg2(&self, umsg: u32, wparam: WPARAM, lparam: LPARAM, plresult: *mut LRESULT) -> Result<()> {
+        unsafe {
+            if let Ok(m) = self.inner.cast::<IContextMenu3>() {
+                return m.HandleMenuMsg2(umsg, wparam, lparam, Some(plresult));
+            }
+            if let Ok(m) = self.inner.cast::<IContextMenu2>() {
+                return m.HandleMenuMsg(umsg, wparam, lparam);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn verb_offset(ici: *const CMINVOKECOMMANDINFO) -> Option<u32> {
+    unsafe {
+        let v = (*ici).lpVerb.0 as usize;
+        if v > 0 && v < 0x10000 {
+            return Some(v as u32);
+        }
+        if (*ici).cbSize >= size_of::<CMINVOKECOMMANDINFOEX>() as u32 {
+            let w = (*(ici as *const CMINVOKECOMMANDINFOEX)).lpVerbW.0 as usize;
+            if w > 0 && w < 0x10000 {
+                return Some(w as u32);
+            }
+        }
+        None
+    }
+}
+
+fn shell_folder(it: &IShellItem) -> bool {
+    unsafe { it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0) }
+}
+
+fn shell_parse(it: &IShellItem) -> String {
+    unsafe { it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING).map(|p| pwstr(p)).unwrap_or_default() }
 }
 
 struct FavGeo {
@@ -3570,6 +3966,8 @@ mod tests {
         let mut f = Session { favs: vec![r"C:\Work".into(), r"D:\".into()], ..Default::default() };
         f = Session::parse(&f.to_ini());
         assert!(f.is_fav(r"c:\work") && !f.is_fav(r"C:\Work\x") && !f.is_fav(""));
+        assert!(fav_removes(&[r"C:\Work"], |p| p.eq_ignore_ascii_case(r"C:\Work")));
+        assert!(!fav_removes(&[], |_| true) && !fav_removes(&[r"C:\Work", r"D:\"], |p| p.eq_ignore_ascii_case(r"C:\Work")));
         assert!(!f.snapshot().contains("fav="));
         assert_eq!((short_name(r"C:\Users\x\"), short_name("C:\\"), short_name(THIS_PC)), ("x".into(), "C:".into(), "This PC".into()));
 
