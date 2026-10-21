@@ -64,6 +64,8 @@ const HOME: &str = "https://github.com/efww/grids";
 const ID_ACCENT: usize = 1400; // + preset index
 const ID_ACCENT_PICK: usize = 1410;
 const EM_SETSEL: u32 = 0xB1;
+const EM_GETSEL: u32 = 0xB0;
+const EM_SCROLLCARET: u32 = 0xB7;
 const EN_CHANGE: u32 = 0x0300;
 const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
@@ -782,6 +784,21 @@ unsafe fn text_of(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
+// scroll an unfocused, untouched address bar to its end, so a cut-off path shows the current folder
+unsafe fn show_path_end(e: HWND, disp: &str) {
+    let (mut s, mut en) = (0u32, 0u32);
+    SendMessageW(e, EM_GETSEL, Some(WPARAM(&mut s as *mut u32 as usize)), Some(LPARAM(&mut en as *mut u32 as isize)));
+    if GetFocus() == e || s != en || text_of(e) != disp {
+        return;
+    }
+    let len = GetWindowTextLengthW(e) as usize;
+    // back to the start first: drops any scroll left from when the box was 0 px wide
+    for at in [0, len] {
+        SendMessageW(e, EM_SETSEL, Some(WPARAM(at)), Some(LPARAM(at as isize)));
+        SendMessageW(e, EM_SCROLLCARET, None, None);
+    }
+}
+
 // ---------- fonts ----------
 
 fn logfont(face: &str, px: i32) -> LOGFONTW {
@@ -1491,7 +1508,8 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         return;
     };
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
-        _ = SetWindowTextW(e, &HSTRING::from(disp));
+        _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+        show_path_end(e, &disp);
     }
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
@@ -1782,7 +1800,7 @@ unsafe fn move_all(moves: &[(HWND, RECT)], eb: Option<(&IExplorerBrowser, RECT)>
 }
 
 unsafe fn layout_pane(h: HWND) {
-    let Some((eb, dpi)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi))) else {
+    let Some((eb, dpi, disp)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi, p.disp.clone()))) else {
         return;
     };
     let fh = app(|a| a.fh) + 2;
@@ -1801,6 +1819,7 @@ unsafe fn layout_pane(h: HWND) {
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
+    show_path_end(ctl(ID_EDIT), &disp);
 }
 
 unsafe fn relayout() {
@@ -3138,8 +3157,9 @@ unsafe fn key(m: &MSG) -> bool {
         }
         VK_ESCAPE if addr => {
             let disp = app(|x| x.panes[a].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
-            _ = SetWindowTextW(m.hwnd, &HSTRING::from(disp));
+            _ = SetWindowTextW(m.hwnd, &HSTRING::from(disp.as_str()));
             focus_view(a);
+            show_path_end(m.hwnd, &disp);
         }
         VK_ESCAPE if filt => {
             _ = SetWindowTextW(m.hwnd, w!(""));
