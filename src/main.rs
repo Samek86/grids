@@ -194,6 +194,7 @@ const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
 Ctrl+1 … Ctrl+9\tGo to pane 1–9 (numbered down each column, left to right)\n\
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
+Alt+↓\tRecent folders (all panes, newest first)\n\
 Ctrl+L, Alt+D, F4\tAddress bar\n\
 Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
 Ctrl+Shift+M\tMaximize / restore the active pane (or double-click its header)\n\
@@ -214,6 +215,7 @@ const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
 Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (열마다 위에서 아래, 왼쪽 열부터)\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
+Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
 Ctrl+L, Alt+D, F4\t주소창\n\
 Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
 Ctrl+Shift+M\t선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능)\n\
@@ -248,6 +250,7 @@ struct Session {
     dblup: bool,            // double-click on empty space goes to the parent folder
     file: String,           // named session (.grids) the layout was last loaded from / saved to
     favs: Vec<String>,      // favourite folders (parsing names), app-wide
+    recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
     ko: bool,               // Korean UI
     cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
 }
@@ -269,6 +272,7 @@ impl Default for Session {
             dblup: true,
             file: String::new(),
             favs: Vec::new(),
+            recent: Vec::new(),
             ko: false,
             cols: vec![String::new(); MAXP],
         }
@@ -356,6 +360,7 @@ impl Session {
                 "lang" => s.ko = v.trim() == "ko",
                 "session" => s.file = v.trim().to_string(),
                 "fav" if !v.trim().is_empty() => s.favs.push(v.trim().to_string()),
+                "recent" if !v.trim().is_empty() && s.recent.len() < RECENT => s.recent.push(v.trim().to_string()),
                 _ => {
                     if let Some(i) = slot('p') {
                         s.paths[i] = v.to_string();
@@ -393,6 +398,9 @@ impl Session {
         for f in &self.favs {
             o += &format!("fav={f}\n");
         }
+        for r in &self.recent {
+            o += &format!("recent={r}\n");
+        }
         for i in 0..MAXP {
             if !self.paths[i].is_empty() {
                 o += &format!("p{i}={}\n", self.paths[i]);
@@ -411,9 +419,9 @@ impl Session {
         !path.is_empty() && self.favs.iter().any(|f| f.eq_ignore_ascii_case(path))
     }
 
-    /// What goes into a named session file: no window position, no pointer to itself, no favourites.
+    /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
     fn snapshot(&self) -> String {
-        Session { win: None, file: String::new(), favs: Vec::new(), ..self.clone() }.to_ini()
+        Session { win: None, file: String::new(), favs: Vec::new(), recent: Vec::new(), ..self.clone() }.to_ini()
     }
 
     /// Takes grid + folders from a named session; window position and sidebar width stay as they are.
@@ -436,6 +444,26 @@ fn layout_differs(cur: &Session, base: &Session) -> bool {
 // Drives, folders and shares; not shell places like This PC or the Recycle Bin, whose columns are their own.
 fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
+}
+
+const RECENT: usize = 20;
+
+// A pane moving from `old` to `new` puts both at the front of the recent list. Coming back to the folder it
+// already holds (session restore, theme/language rebuild, refresh) is no visit; neither is a fresh pane or a shell place.
+fn visit(list: &mut Vec<String>, old: &str, new: &str) {
+    if old.is_empty() || old.eq_ignore_ascii_case(new) || !is_fs(new) {
+        return;
+    }
+    for p in [old, new].into_iter().filter(|p| is_fs(p)) {
+        list.retain(|x| !x.eq_ignore_ascii_case(p));
+        list.insert(0, p.to_string());
+    }
+    list.truncate(RECENT);
+}
+
+// The recent menu of a pane: everything but the folder it shows.
+fn recent_items(list: &[String], cur: &str) -> Vec<String> {
+    list.iter().filter(|p| !p.eq_ignore_ascii_case(cur)).cloned().collect()
 }
 
 // A view's columns: visible ones in order with their widths, then the sort columns, each property as
@@ -1324,6 +1352,35 @@ unsafe fn open_in_menu(h: HWND, src: usize) {
     }
 }
 
+// Alt+↓ or right-click on ← / →: folders recently visited in any pane, opened in this one.
+unsafe fn recent_menu(i: usize) {
+    let Some(h) = app(|a| a.panes[i].as_ref().map(|p| p.hwnd)) else { return };
+    let items = app(|a| recent_items(&a.s.recent, &a.s.paths[i]));
+    let Ok(menu) = CreatePopupMenu() else { return };
+    if items.is_empty() {
+        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No recent folders yet", "최근 폴더가 아직 없습니다")));
+    }
+    for (k, p) in items.iter().enumerate() {
+        // "name<tab>parent"; drive roots and share roots show whole
+        let path = std::path::Path::new(p);
+        let (leaf, parent) = match (path.file_name(), path.parent()) {
+            (Some(n), Some(d)) => (n.to_string_lossy().into_owned(), d.display().to_string()),
+            _ => (p.clone(), String::new()),
+        };
+        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{leaf}\t{parent}").replace('&', "&&")));
+    }
+    let mut rc = RECT::default();
+    if let Some(b) = pane_ctl(i, ID_BACK) {
+        _ = GetWindowRect(b, &mut rc);
+    }
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if pick > 0 && !navigate(i, &items[pick as usize - 1]) {
+        _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+    }
+    focus_view(i);
+}
+
 unsafe fn apply_filter(i: usize) {
     let Some(f) = pane_ctl(i, ID_FILTER) else { return };
     let spec = filter_spec(&text_of(f));
@@ -1554,7 +1611,8 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
     let Some((h, eb, view, cols)) = app(|a| {
         let fs = is_fs(&parse);
-        a.s.paths[i] = parse;
+        let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
+        visit(&mut a.s.recent, &old, &a.s.paths[i]);
         let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
@@ -1782,8 +1840,8 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
-        (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←)", "뒤로  (Alt+←)")),
-        (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→)", "앞으로  (Alt+→)")),
+        (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더")),
+        (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더")),
         (ID_UP, tr("Parent folder", "상위 폴더"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)")),
         (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동")),
         (ID_FAV, tr("Favourite", "즐겨찾기"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)")),
@@ -3347,6 +3405,7 @@ unsafe fn key(m: &MSG) -> bool {
             focus_view(a);
         }
         _ if addr || filt => return false,
+        VK_DOWN if alt && !ctrl && !shift => recent_menu(a),
         VK_V if ctrl && !shift && !alt && list() => {
             if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
                 return shell();
@@ -3610,6 +3669,13 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = KillTimer(Some(h), TIMER_FILTER);
                 if let Some(i) = pane_of(h) {
                     apply_filter(i);
+                }
+            }
+            // right-click on ← / →: recent folders; anywhere else as before
+            WM_CONTEXTMENU if [ID_BACK, ID_FWD].iter().any(|&id| GetDlgItem(Some(h), id).is_ok_and(|b| b.0 as usize == wp.0)) => {
+                if let Some(i) = pane_of(h) {
+                    set_active(i);
+                    recent_menu(i);
                 }
             }
             // mouse side buttons
@@ -4019,5 +4085,53 @@ mod tests {
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
             assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
+    }
+
+    #[test]
+    fn recent_visits() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut r = Vec::new();
+        visit(&mut r, r"C:\a", r"C:\b");
+        assert_eq!(r, v(&[r"C:\b", r"C:\a"]));
+        visit(&mut r, r"C:\b", r"c:\A"); // case-insensitive: moves up, no duplicate
+        assert_eq!(r, v(&[r"c:\A", r"C:\b"]));
+        let before = r.clone();
+        for (old, new) in [(r"C:\b", r"c:\B"), ("", r"C:\x"), (r"C:\b", THIS_PC)] {
+            visit(&mut r, old, new); // refresh / restore, fresh pane, shell place: no visit
+        }
+        assert_eq!(r, before);
+        visit(&mut r, THIS_PC, r"D:\"); // leaving a shell place records only the folder
+        assert_eq!(r[0], r"D:\");
+        assert!(!r.iter().any(|p| p == THIS_PC));
+        for k in 0..30 {
+            visit(&mut r, r"C:\b", &format!(r"C:\n{k}"));
+        }
+        assert_eq!((r.len(), r[0].as_str(), r[1].as_str()), (RECENT, r"C:\n29", r"C:\b"));
+    }
+
+    #[test]
+    fn recent_survives_restore() {
+        let full: Vec<String> = (0..RECENT).map(|k| format!(r"C:\f{k}")).collect();
+        let mut r = full.clone();
+        // 16 panes come back to their folders, twice (start-up, then a theme / language rebuild)
+        for _ in 0..2 {
+            for p in &full[..16] {
+                visit(&mut r, p, p);
+            }
+        }
+        assert_eq!(r, full);
+        let items = recent_items(&r, r"c:\F0");
+        assert_eq!(items.len(), RECENT - 1);
+        assert_eq!(items.last(), full.last()); // the oldest is still offered
+    }
+
+    #[test]
+    fn recent_ini() {
+        let mut s = Session { recent: vec![r"C:\b".into(), r"\\srv\share".into(), r"C:\a".into()], ..Default::default() };
+        s = Session::parse(&s.to_ini());
+        assert_eq!(s.recent, [r"C:\b", r"\\srv\share", r"C:\a"]);
+        assert!(!s.snapshot().contains("recent="));
+        let many: String = (0..30).map(|k| format!("recent=C:\\{k}\n")).collect();
+        assert_eq!(Session::parse(&many).recent.len(), RECENT);
     }
 }

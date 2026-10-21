@@ -48,6 +48,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Ctrl+1 … Ctrl+9 | Go to pane 1–9 (numbered down each column, left to right) |
 | Alt+← / Alt+→ | Back / forward |
 | Alt+↑ | Parent folder |
+| Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
 | Ctrl+L, Alt+D, F4 | Address bar |
 | Ctrl+F | Name filter |
 | Enter / Esc | Apply / cancel the address or filter |
