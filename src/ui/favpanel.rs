@@ -167,22 +167,26 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
             let indent = s(14) * f.depth.min(8) as i32;
             let mut x = s(4) + indent;
+            let label_left;
             if f.group {
                 let chev = RECT { left: x, top: y, right: x + s(16), bottom: y + rh };
                 text(dc, chev, if f.open { "\u{E70D}" } else { "\u{E76C}" }, icon, pal().sub, DT_CENTER);
                 x += s(16);
-            }
-            let glyph = if f.file { "\u{E8A5}" } else { "\u{E8B7}" };
-            let ir = RECT { left: x, top: y, right: x + s(18), bottom: y + rh };
-            let glyph_ink = if f.group {
-                if sel == Some(i) || into { on_color(accent) } else { accent }
+                let ir = RECT { left: x, top: y, right: x + s(18), bottom: y + rh };
+                let glyph_ink = if sel == Some(i) || into { on_color(accent) } else { accent };
+                text(dc, ir, "\u{E8B7}", icon, glyph_ink, DT_CENTER);
+                label_left = ir.right + s(4);
             } else {
-                pal().sub
-            };
-            text(dc, ir, glyph, icon, glyph_ink, DT_CENTER);
+                let slot = (16 * dpi / 96).max(1);
+                let iy = y + (rh - slot).max(0) / 2;
+                if let Some((list, index, dim)) = shell_icon(&f.path, f.file) {
+                    draw_fav_icon(dc, list, index, x, iy, slot, dim);
+                }
+                label_left = x + slot + s(4);
+            }
             let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
             let label_font = if f.group { bold } else { font };
-            text(dc, RECT { left: ir.right + s(4), right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);
+            text(dc, RECT { left: label_left, right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);
         }
         if let Some((row, zone)) = drop {
             if zone != 1 {
@@ -197,6 +201,9 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
         }
     });
+    if list.iter().any(|f| !f.group) {
+        arm_icon_prewarm(h);
+    }
 }
 
 pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
@@ -373,10 +380,49 @@ fn finish_drop() {
     }
 }
 
+fn fav_exts(nodes: &[FavNode], seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>) {
+    for n in nodes {
+        if n.is_group() {
+            fav_exts(&n.children, seen, out);
+        } else if n.file {
+            let ext = file_ext(&n.path);
+            if !ext.is_empty() && !per_file_icon(&ext) && seen.insert(ext.clone()) {
+                out.push(ext);
+            }
+        }
+    }
+}
+
+fn prewarm_fav_icons() {
+    let exts = app(|a| {
+        a.s.ensure_fav_tree();
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        fav_exts(&a.s.tree, &mut seen, &mut out);
+        out
+    });
+    prewarm_exts(&exts);
+}
+
 pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
+        note_side(h);
         match msg {
+            WM_DESTROY => {
+                drop_side(h);
+                _ = KillTimer(Some(h), TIMER_ICON);
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_FAV_ICON => {
+                clear_icon_refresh();
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            WM_TIMER if wp.0 == TIMER_ICON => {
+                _ = KillTimer(Some(h), TIMER_ICON);
+                icon_prewarm_done();
+                prewarm_fav_icons();
+            }
             WM_PAINT => paint_side(h),
             WM_ERASEBKGND => return LRESULT(1),
             WM_MOUSEMOVE => {
