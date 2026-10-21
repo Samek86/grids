@@ -168,11 +168,11 @@ const FILE: &[Spec] = &[
     Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), badge: false, live: true, ctl: Ctl::CopyEng },
     Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
     Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::DelMode },
-    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルが使います。空なら表示言語に従います。"), badge: true, live: true, ctl: Ctl::NewName },
+    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu and by Ctrl+Alt+N. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일과 Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルと Ctrl+Alt+N が使います。空なら表示言語に従います。"), badge: true, live: true, ctl: Ctl::NewName },
     Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), badge: true, live: true, ctl: Ctl::Drop },
 ];
 const FAV: &[Spec] = &[
-    Spec { title: s("Show add or remove favourites on the right-click menu", "우클릭 메뉴에 즐겨찾기 추가/제거 표시", "右クリック メニューにお気に入りの追加と削除を表示"), desc: s("Not in this version. The shell menu is still Explorer's.", "이 버전에는 아직 없어요. 우클릭 메뉴는 탐색기 그대로예요.", "このバージョンではまだありません。右クリックはエクスプローラーのままです。"), badge: false, live: false, ctl: Ctl::Toggle(TG_FAVMENU) },
+    Spec { title: s("Show add or remove favourites on the right-click menu", "우클릭 메뉴에 즐겨찾기 추가/제거 표시", "右クリック メニューにお気に入りの追加と削除を表示"), desc: s("Always on. The item sits directly above Properties.", "항상 켜져 있어요. 속성 바로 위에 있어요.", "常にオンです。項目はプロパティのすぐ上です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_FAVMENU) },
 ];
 const SESS: &[Spec] = &[
     Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), badge: false, live: true, ctl: Ctl::Sess },
@@ -202,6 +202,8 @@ const KEYS: &[Kr] = &[
     Kr { cat: s("View", "보기", "表示"), act: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), keys: &["Ctrl+H"] },
     Kr { cat: s("View", "보기", "表示"), act: s("Maximise / restore the pane", "패널 크게 보기 / 복원", "ペインを最大化 / 元に戻す"), keys: &["Ctrl+Shift+M"] },
     Kr { cat: s("File", "파일", "ファイル"), act: s("Copy full path", "전체 경로 복사", "フルパスをコピー"), keys: &["Ctrl+Shift+C"] },
+    Kr { cat: s("File", "파일", "ファイル"), act: s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), keys: &["Ctrl+Alt+N"] },
+    Kr { cat: s("File", "파일", "ファイル"), act: s("New folder", "새 폴더", "新しいフォルダー"), keys: &["Ctrl+Shift+N"] },
     Kr { cat: s("Session", "세션", "セッション"), act: s("Save session", "세션 저장", "セッションを保存"), keys: &["Ctrl+S"] },
     Kr { cat: s("Favourites", "즐겨찾기", "お気に入り"), act: s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), keys: &["Ctrl+B"] },
     Kr { cat: s("Help", "도움말", "ヘルプ"), act: s("Settings", "설정", "設定"), keys: &["Ctrl+,"] },
@@ -642,8 +644,8 @@ fn toggle_on(id: u8) -> bool {
         TG_CONFIRM => app(|a| a.s.confirm),
         TG_AUTOSAVE => app(|a| a.s.autosave),
         TG_DOT => app(|a| a.s.dot),
-        // The shell context menu is still Explorer's.
-        TG_FAVMENU => false,
+        // The favourites item is always on the shell menu, directly above Properties.
+        TG_FAVMENU => true,
         _ => false,
     }
 }
