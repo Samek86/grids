@@ -1,0 +1,61 @@
+# Grids Nightly AI: every candidate change is pushed to ai-try/<n>, cross-built on Linux,
+# then launched on a real Windows runner. The loop only lands changes whose run passes.
+name: nightly-check
+on:
+  push:
+    branches: ['ai-try/**']
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - run: rustup target add x86_64-pc-windows-gnu
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: gnu-${{ hashFiles('Cargo.lock') }}
+      - run: cargo build --release --target x86_64-pc-windows-gnu
+        env:
+          WINDRES: x86_64-w64-mingw32-windres
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grids-exe
+          path: target/x86_64-pc-windows-gnu/release/grids.exe
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: grids-exe
+      - name: Launch with two folders and check it stays up with a window
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\grids.exe -ArgumentList 'C:\Windows','C:\Users' -PassThru
+          Start-Sleep -Seconds 12
+          $p.Refresh()
+          if ($p.HasExited) { throw "grids.exe exited early (code $($p.ExitCode))" }
+          if ($p.MainWindowHandle -eq 0) { throw "grids.exe has no main window" }
+          "alive: pid $($p.Id), title '$($p.MainWindowTitle)', ws $([math]::Round($p.WorkingSet64/1MB)) MB"
+      - name: Screenshot
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\screen.png")
+      - name: Close
+        if: always()
+        shell: pwsh
+        run: Get-Process grids -ErrorAction SilentlyContinue | Stop-Process -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot
+          path: screen.png
+          if-no-files-found: ignore
