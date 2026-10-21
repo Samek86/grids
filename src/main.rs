@@ -68,6 +68,7 @@ const ID_LANG_EN: usize = 1111;
 const ID_LANG_KO: usize = 1112;
 const ID_LANG_JA: usize = 1113;
 const ID_SETTINGS: usize = 1114;
+const ID_NEWFILE: usize = 1115;
 const ID_HELP: usize = 1105;
 const ID_ABOUT: usize = 1106;
 const HOME: &str = "https://github.com/efww/grids";
@@ -275,6 +276,7 @@ Ctrl+Shift+C\tCopy the full path of the selected items (or of the current folder
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
+Ctrl+,\tSettings\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
@@ -298,6 +300,7 @@ Ctrl+Shift+C\t선택한 항목(없으면 현재 폴더)의 전체 경로 복사\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
+Ctrl+,\t설정\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
@@ -321,6 +324,7 @@ Ctrl+Shift+C\t選択項目（なければ現在のフォルダー）のフルパ
 Ctrl+F\tフィルター（*.pdf;*.txt または名前の一部。フォルダーは常に表示）\n\
 Enter / Esc\tアドレスまたはフィルターを適用 / キャンセル\n\
 Ctrl+H\t隠しファイルを表示\n\
+Ctrl+,\t設定\n\
 F1\tヘルプ（GitHub の README を開く）\n\
 F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n\
 レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
@@ -353,6 +357,24 @@ struct Session {
     lang: Lang,             // UI language preference; Auto follows Windows
     single: bool,           // a second launch hands its arguments to the running window
     cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
+    theme: u8,              // 0 follow Windows, 1 light, 2 dark
+    font: u8,               // 0 default, 1 large, 2 larger
+    bar: bool,              // toolbar
+    stat: bool,             // status line
+    view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
+    start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
+    start_path: String,
+    ext: bool,              // show file extensions (the Windows Explorer setting)
+    tree_on: bool,          // left folder tree
+    edge: bool,             // accent border on the active pane
+    confirm: bool,          // ask before delete
+    del: u8,                // 0 recycle bin, 1 permanent
+    new_name: String,       // empty = the name for the display language
+    dropm: u8,              // 0 Windows rules, 1 always copy, 2 always ask (the ⇄ menu)
+    boot: u8,               // 0 restore last layout, 1 open boot_file, 2 default 2×2
+    boot_file: String,
+    autosave: bool,         // write the named session on exit
+    dot: bool,              // green unsaved mark on the save button
 }
 
 impl Default for Session {
@@ -376,7 +398,37 @@ impl Default for Session {
             lang: Lang::Auto,
             single: true,
             cols: vec![String::new(); MAXP],
+            theme: 0,
+            font: 0,
+            bar: true,
+            stat: true,
+            view_new: 4,
+            start_new: 0,
+            start_path: String::new(),
+            ext: true,
+            tree_on: true,
+            edge: true,
+            confirm: true,
+            del: 0,
+            new_name: String::new(),
+            dropm: 0,
+            boot: 0,
+            boot_file: String::new(),
+            autosave: false,
+            dot: true,
         }
+    }
+}
+
+/// Favourite entries are `path` or `path<tab>display name`. The path is what gets opened.
+fn fav_path(f: &str) -> &str {
+    f.split('\t').next().unwrap_or(f)
+}
+
+fn fav_label(f: &str) -> String {
+    match f.split_once('\t') {
+        Some((_, n)) if !n.is_empty() => n.to_string(),
+        _ => short_name(fav_path(f)),
     }
 }
 
@@ -433,6 +485,7 @@ impl Session {
     fn parse(text: &str) -> Session {
         let mut s = Session::default();
         let mut rowr: Vec<Vec<f64>> = Vec::new();
+        let (mut saw_theme, mut saw_dark) = (false, false);
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let slot = |p: char| k.strip_prefix(p).and_then(|n| n.parse::<usize>().ok()).filter(|&i| i < MAXP);
@@ -456,7 +509,40 @@ impl Session {
                 "active" => s.active = v.parse().unwrap_or(0),
                 "accent" => s.accent = u32::from_str_radix(v.trim().trim_start_matches('#'), 16).unwrap_or(s.accent) & 0xFFFFFF,
                 "accent_dark" => s.accent_dark = u32::from_str_radix(v.trim(), 16).unwrap_or(s.accent_dark) & 0xFFFFFF,
-                "dark" => s.dark = v.trim() == "1",
+                "dark" => {
+                    s.dark = v.trim() == "1";
+                    saw_dark = true;
+                }
+                "theme" => {
+                    s.theme = match v.trim() {
+                        "light" => 1,
+                        "dark" => 2,
+                        "auto" => 0,
+                        _ => s.theme,
+                    };
+                    saw_theme = true;
+                }
+                "font" => s.font = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "bar" => s.bar = v.trim() != "0",
+                "stat" => s.stat = v.trim() != "0",
+                "viewnew" => s.view_new = match v.trim() {
+                    "3" | "list" => 3,
+                    "1" | "icon" => 1,
+                    _ => 4,
+                },
+                "start" => s.start_new = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "startp" => s.start_path = v.trim().to_string(),
+                "ext" => s.ext = v.trim() != "0",
+                "tree" => s.tree_on = v.trim() != "0",
+                "edge" => s.edge = v.trim() != "0",
+                "confirm" => s.confirm = v.trim() != "0",
+                "del" => s.del = if v.trim() == "1" { 1 } else { 0 },
+                "newname" => s.new_name = v.trim().to_string(),
+                "drop" => s.dropm = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "boot" => s.boot = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "bootf" => s.boot_file = v.trim().to_string(),
+                "autosave" => s.autosave = v.trim() == "1",
+                "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
@@ -481,6 +567,10 @@ impl Session {
         if s.active >= s.panes() {
             s.active = 0;
         }
+        // An older ini has dark= and no theme=. That stays an explicit light or dark choice.
+        if !saw_theme && saw_dark {
+            s.theme = if s.dark { 2 } else { 1 };
+        }
         s
     }
 
@@ -493,6 +583,22 @@ impl Session {
         o += &format!("side={}\ncols={}\n", self.side, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
+        let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
+        o += &format!("theme={theme}\nfont={}\nbar={}\nstat={}\n", self.font, self.bar as u8, self.stat as u8);
+        o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
+        if !self.start_path.is_empty() {
+            o += &format!("startp={}\n", self.start_path);
+        }
+        o += &format!("ext={}\ntree={}\nedge={}\n", self.ext as u8, self.tree_on as u8, self.edge as u8);
+        o += &format!("confirm={}\ndel={}\n", self.confirm as u8, self.del);
+        if !self.new_name.is_empty() {
+            o += &format!("newname={}\n", self.new_name);
+        }
+        o += &format!("drop={}\nboot={}\n", self.dropm, self.boot);
+        if !self.boot_file.is_empty() {
+            o += &format!("bootf={}\n", self.boot_file);
+        }
+        o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
         o += &format!("dblup={}\nlang={}\nsingle={}\n", self.dblup as u8, self.lang.ini(), self.single as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
@@ -518,7 +624,15 @@ impl Session {
     }
 
     fn is_fav(&self, path: &str) -> bool {
-        !path.is_empty() && self.favs.iter().any(|f| f.eq_ignore_ascii_case(path))
+        !path.is_empty() && self.favs.iter().any(|f| fav_path(f).eq_ignore_ascii_case(path))
+    }
+
+    fn default_view(&self) -> (i32, i32) {
+        match self.view_new {
+            3 => (3, 16),
+            1 => (1, 96),
+            _ => (4, 16),
+        }
     }
 
     /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
@@ -706,10 +820,11 @@ fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
     let s = |v: i32| v * a.dpi / 96;
-    let (pad, gap, top) = (s(8), s(8), s(34));
-    let bot = (rc.bottom - s(24)).max(top);
-    let side = a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120)));
-    let gx = pad + side + gap;
+    let (pad, gap) = (s(8), s(8));
+    let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - 2 * pad - gap - s(240)).max(s(120))) } else { 0 };
+    let gx = if a.s.tree_on { pad + side + gap } else { pad };
+    let top = if a.s.bar { s(34) } else { 0 };
+    let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     Geo {
         xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
         ys: a.s.rowr.iter().map(|r| cells(top, bot - top, r, gap)).collect(),
@@ -973,6 +1088,12 @@ unsafe fn apply_font() {
     let sys = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, ncm.cbSize, Some(&mut ncm as *mut _ as _), 0, dpi as u32);
     let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont("Segoe UI", 12 * dpi / 96) };
     lf.lfFaceName = logfont(ui_face(), 0).lfFaceName; // Segoe UI / Malgun Gothic / Yu Gothic UI
+    let scale = match app(|a| a.s.font) {
+        1 => 125,
+        2 => 150,
+        _ => 100,
+    };
+    lf.lfHeight = lf.lfHeight * scale / 100;
     let font = CreateFontIndirectW(&lf);
     let small = CreateFontIndirectW(&LOGFONTW { lfHeight: lf.lfHeight * 85 / 100, ..lf });
     let icon_font = CreateFontIndirectW(&logfont("Segoe MDL2 Assets", 14 * dpi / 96));
@@ -1270,7 +1391,7 @@ unsafe fn check_dirty() {
                 }
             }
         }
-        let d = a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
+        let d = a.s.dot && a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
         std::mem::replace(&mut a.dirty, d) != d
     });
     if changed {
@@ -1498,7 +1619,11 @@ unsafe fn open_in_menu(h: HWND, src: usize) {
                 (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사", "選択した {n} 個をコピー").replace("{n}", &n.to_string())),
                 (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동", "選択した {n} 個を移動").replace("{n}", &n.to_string())),
             ];
+            let dropm = app(|a| a.s.dropm);
             for (mv, base, title) in titles {
+                if mv && dropm == 1 {
+                    continue; // always copy: the move submenu stays hidden
+                }
                 let Ok(sub) = CreatePopupMenu() else { continue };
                 for (k, disp, path) in &items {
                     let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
@@ -2203,7 +2328,13 @@ unsafe fn sync_panes() {
             app(|a| a.panes[i] = Some(p));
             let path = app(|a| a.s.paths[i].clone());
             if path.is_empty() || !navigate(i, &path) {
-                navigate(i, THIS_PC);
+                let start = app(|a| {
+                    if a.s.views[i].0 == 0 {
+                        a.s.views[i] = a.s.default_view();
+                    }
+                    start_folder(&a.s)
+                });
+                navigate(i, &start);
             }
         } else if i >= n && has {
             destroy_pane(i);
@@ -2251,7 +2382,7 @@ unsafe fn layout_pane(h: HWND) {
 
 unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label, shown)) = app(|a| {
+    let Some((main, moves, label, shown, show_bar, show_tree, tree_h)) = app(|a| {
         if a.main.0.is_null() {
             return None;
         }
@@ -2273,6 +2404,9 @@ unsafe fn relayout() {
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
         let gear = right - s(32) - s(4) - s(32);
         moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
+        let show_bar = a.s.bar;
+        let show_tree = a.s.tree_on;
+        let tree_h = a.tree_hwnd;
         let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
         let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
@@ -2281,11 +2415,19 @@ unsafe fn relayout() {
                 shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights), shown))
+        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_tree, tree_h))
     }) else {
         return;
     };
     move_all(&moves, None);
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_VIEW, ID_TB_FAV, ID_TB_THEME, ID_TB_SET] {
+        if let Ok(b) = GetDlgItem(Some(main), id) {
+            _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    if !tree_h.0.is_null() {
+        _ = ShowWindow(tree_h, if show_tree { SW_SHOW } else { SW_HIDE });
+    }
     for (h, on) in shown {
         _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
     }
@@ -2596,8 +2738,63 @@ unsafe fn uxtheme(ordinal: usize) -> FARPROC {
     GetProcAddress(m, PCSTR(ordinal as *const u8))
 }
 
+/// AppsUseLightTheme = 0 means Windows is in dark app mode.
+unsafe fn windows_dark() -> bool {
+    use windows::Win32::System::Registry::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD};
+    let mut key = HKEY::default();
+    if RegOpenKeyExW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), None, KEY_READ, &mut key).is_err() {
+        return false;
+    }
+    let mut data = [0u8; 4];
+    let mut n = 4u32;
+    let mut typ = REG_DWORD;
+    let ok = RegQueryValueExW(key, w!("AppsUseLightTheme"), None, Some(&mut typ), Some(data.as_mut_ptr()), Some(&mut n));
+    _ = RegCloseKey(key);
+    ok.is_ok() && u32::from_le_bytes(data) == 0
+}
+
+fn resolve_dark(theme: u8) -> bool {
+    match theme {
+        2 => true,
+        1 => false,
+        _ => unsafe { windows_dark() },
+    }
+}
+
+unsafe fn start_folder(s: &Session) -> String {
+    match s.start_new {
+        1 => {
+            let Ok(p) = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) else { return THIS_PC.into() };
+            let path = p.to_string().unwrap_or_default();
+            CoTaskMemFree(Some(p.0 as _));
+            if path.is_empty() { THIS_PC.into() } else { path }
+        }
+        2 if !s.start_path.is_empty() => s.start_path.clone(),
+        _ => THIS_PC.into(),
+    }
+}
+
+/// Show or hide extensions for the hosted Explorer views. This is Windows' own HideFileExt value.
+unsafe fn apply_ext(show: bool) {
+    use windows::Win32::System::Registry::{RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_DWORD};
+    let mut key = HKEY::default();
+    if RegOpenKeyExW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"), None, KEY_SET_VALUE, &mut key).is_err() {
+        return;
+    }
+    let data = [(!show) as u8, 0, 0, 0];
+    _ = RegSetValueExW(key, w!("HideFileExt"), None, REG_DWORD, Some(&data));
+    _ = RegCloseKey(key);
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    for i in 0..MAXP {
+        if let Some(sv) = view_of::<IShellView>(i) {
+            _ = sv.Refresh();
+        }
+    }
+}
+
 // Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
 unsafe fn apply_theme() {
+    app(|a| a.s.dark = resolve_dark(a.s.theme));
     let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
     // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
     let tip_theme = |t: HWND| {
@@ -3265,11 +3462,15 @@ unsafe fn paint_main(h: HWND) {
     let (g, status, font, dpi) = app(|a| (geo(a), a.status.clone(), a.font, a.dpi));
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().bg);
-        let side = side_rect(&g);
-        fill(dc, side, pal().card);
-        frame(dc, side, 1, pal().line);
-        let st = status_rect(&g);
-        text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, pal().sub, DT_LEFT);
+        if g.side > 0 {
+            let side = side_rect(&g);
+            fill(dc, side, pal().card);
+            frame(dc, side, 1, pal().line);
+        }
+        if g.bot < g.h {
+            let st = status_rect(&g);
+            text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, pal().sub, DT_LEFT);
+        }
     });
 }
 
@@ -3292,7 +3493,8 @@ unsafe fn paint_pane(h: HWND) {
         fill(dc, rc, pal().card);
         // active: header bar in the selection colour, same colour as the border
         fill(dc, RECT { bottom: pg.view.top, ..rc }, head);
-        if active {
+        let edge = app(|a| a.s.edge);
+        if active && edge {
             frame(dc, rc, s(2), accent);
         } else {
             frame(dc, rc, 1, pal().line);
@@ -3725,7 +3927,7 @@ unsafe fn toggle_fav(i: usize) {
     app(|a| {
         let path = a.s.paths[i].clone();
         if a.s.is_fav(&path) {
-            a.s.favs.retain(|f| !f.eq_ignore_ascii_case(&path));
+            a.s.favs.retain(|f| !fav_path(f).eq_ignore_ascii_case(&path));
         } else if !path.is_empty() {
             a.s.favs.push(path);
         }
@@ -3794,8 +3996,8 @@ unsafe fn paint_favs(h: HWND) {
             let icon = RECT { left: row.left + s(6), right: row.left + s(28), ..*row };
             text(dc, icon, "\u{E8B7}", icon_font, pal().sub, DT_CENTER);
             let line = |top: i32, hgt: i32| RECT { left: icon.right + s(6), right: remove.left - s(4), top, bottom: top + hgt };
-            text(dc, line(row.top + s(3), s(19)), &short_name(f), font, pal().text, DT_LEFT);
-            text(dc, line(row.top + s(21), s(16)), f, small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
+            text(dc, line(row.top + s(3), s(19)), &fav_label(f), font, pal().text, DT_LEFT);
+            text(dc, line(row.top + s(21), s(16)), fav_path(f), small, pal().sub, DT_LEFT | DT_PATH_ELLIPSIS);
         }
     });
 }
@@ -3834,7 +4036,7 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                     settings::refresh();
                 };
                 let open = |k: usize| {
-                    let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    let (i, path) = app(|a| (a.s.active, fav_path(&a.s.favs[k]).to_string()));
                     _ = DestroyWindow(h);
                     if !navigate(i, &path) {
                         _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
@@ -4083,6 +4285,216 @@ unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result
     op.PerformOperations()
 }
 
+unsafe fn delete_selection(i: usize, shift: bool) {
+    let arr = view_of::<IFolderView2>(i).and_then(|fv| fv.GetSelection(false).ok());
+    let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
+    let Ok(paths) = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) }) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    if paths.is_empty() {
+        return;
+    }
+    let (ask, permanent) = app(|a| (a.s.confirm, shift || a.s.del == 1));
+    if ask {
+        let n = paths.len();
+        let verb = if permanent {
+            tr("Permanently delete", "완전히 삭제", "完全に削除")
+        } else {
+            tr("Move to the Recycle Bin", "휴지통으로 이동", "ごみ箱へ移動")
+        };
+        let text = HSTRING::from(format!("{verb} ({n})"));
+        let owner = app(|a| a.main);
+        if MessageBoxW(Some(owner), &text, w!("Grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+            return;
+        }
+    }
+    start_delete(paths, permanent);
+}
+
+unsafe fn start_delete(srcs: Vec<String>, permanent: bool) -> bool {
+    let busy = Busy::new();
+    let job = std::thread::Builder::new().spawn(move || {
+        let _busy = busy;
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        if let Err(e) = run_delete(&srcs, permanent) {
+            if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
+                let text = HSTRING::from(format!("{}{}", tr("Delete failed: ", "삭제하지 못했습니다: ", "削除できませんでした: "), e.message()));
+                _ = MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+            }
+        }
+        if com {
+            CoUninitialize();
+        }
+    });
+    let Ok(job) = job else { return false };
+    JOBS.with_borrow_mut(|j| {
+        j.retain(|j| !j.is_finished());
+        j.push(job);
+    });
+    true
+}
+
+unsafe fn run_delete(srcs: &[String], permanent: bool) -> Result<()> {
+    let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+    let mut flags = FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR;
+    if !permanent {
+        flags |= FOF_ALLOWUNDO | FOFX_ADDUNDORECORD;
+    }
+    op.SetOperationFlags(flags)?;
+    for s in srcs {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
+        op.DeleteItem(&item, None)?;
+    }
+    op.PerformOperations()
+}
+
+fn default_new_name() -> String {
+    tr("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt").into()
+}
+
+unsafe fn create_text_file() {
+    let i = app(|a| a.s.active);
+    let dir = app(|a| a.s.paths[i].clone());
+    if !is_fs(&dir) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let base = app(|a| if a.s.new_name.trim().is_empty() { default_new_name() } else { a.s.new_name.clone() });
+    let dirp = PathBuf::from(&dir);
+    let mut path = dirp.join(&base);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut n = 2u32;
+    while path.exists() && n < 1000 {
+        let name = if ext.is_empty() { format!("{stem} ({n})") } else { format!("{stem} ({n}).{ext}") };
+        path = dirp.join(name);
+        n += 1;
+    }
+    if std::fs::write(&path, b"").is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    if let Some(sv) = view_of::<IShellView>(i) {
+        _ = sv.Refresh();
+    }
+}
+
+unsafe fn pick_folder(owner: HWND) -> Option<String> {
+    let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+    let opts = dlg.GetOptions().unwrap_or_default();
+    dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST).ok()?;
+    dlg.Show(Some(owner)).ok()?;
+    let name = dlg.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+    Some(pwstr(name))
+}
+
+unsafe fn pick_open(owner: HWND) -> Option<String> {
+    file_dialog(owner, false)
+}
+
+unsafe fn pick_save(owner: HWND) -> Option<String> {
+    file_dialog(owner, true)
+}
+
+unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
+    use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut buf = [0u16; 520];
+    if save {
+        for (d, c) in buf.iter_mut().zip("grids.ini".encode_utf16()) {
+            *d = c;
+        }
+    }
+    let filter: Vec<u16> = "Settings\0*.ini\0All\0*.*\0\0".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(buf.as_mut_ptr()),
+        nMaxFile: buf.len() as u32,
+        Flags: if save { OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST } else { OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST },
+        ..Default::default()
+    };
+    let ok = if save { GetSaveFileNameW(&mut ofn) } else { GetOpenFileNameW(&mut ofn) };
+    ok.as_bool().then(|| {
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..n])
+    })
+}
+
+unsafe fn reset_prefs() {
+    let fresh = Session::default();
+    app(|a| {
+        a.s.theme = fresh.theme;
+        a.s.font = fresh.font;
+        a.s.bar = fresh.bar;
+        a.s.stat = fresh.stat;
+        a.s.view_new = fresh.view_new;
+        a.s.start_new = fresh.start_new;
+        a.s.start_path.clear();
+        a.s.ext = fresh.ext;
+        a.s.tree_on = fresh.tree_on;
+        a.s.edge = fresh.edge;
+        a.s.confirm = fresh.confirm;
+        a.s.del = fresh.del;
+        a.s.new_name.clear();
+        a.s.dropm = fresh.dropm;
+        a.s.boot = fresh.boot;
+        a.s.boot_file.clear();
+        a.s.autosave = fresh.autosave;
+        a.s.dot = fresh.dot;
+        a.s.single = fresh.single;
+        a.s.dblup = fresh.dblup;
+        a.s.accent = fresh.accent;
+        a.s.accent_dark = fresh.accent_dark;
+    });
+    set_language(Lang::Auto);
+    apply_ext(true);
+    relayout();
+    save_session();
+    settings::refresh();
+}
+
+unsafe fn import_ini(text: &str) {
+    let (win, lang_now) = app(|a| (a.s.win, a.s.lang));
+    let mut s = Session::parse(text);
+    s.win = win;
+    s.dark = resolve_dark(s.theme);
+    let lang = s.lang;
+    app(|a| a.s = s);
+    if lang != lang_now {
+        set_language(lang);
+    } else {
+        apply_theme();
+        apply_font();
+    }
+    apply_ext(app(|a| a.s.ext));
+    relayout();
+    save_session();
+    settings::refresh();
+}
+
+fn apply_boot(s: &mut Session) {
+    match s.boot {
+        2 => {
+            s.set_heights(vec![2, 2]);
+            s.paths = vec![String::new(); MAXP];
+            s.views = vec![(0, 0); MAXP];
+            s.cols = vec![String::new(); MAXP];
+            s.active = 0;
+            s.file.clear();
+        }
+        1 if !s.boot_file.is_empty() => {
+            if let Ok(t) = std::fs::read_to_string(&s.boot_file) {
+                let file = s.boot_file.clone();
+                s.take_layout(&Session::parse(&t));
+                s.file = file;
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------- keyboard ----------
 
 unsafe fn key(m: &MSG) -> bool {
@@ -4130,6 +4542,7 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F4 if !alt => return focus_ctl(a, ID_EDIT),
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
+        VK_OEM_COMMA if ctrl && !shift && !alt => settings::open(app(|a| a.main)),
         VK_S if ctrl => save_current(),
         VK_B if ctrl && !shift && !alt => open_favs(),
         VK_M if ctrl && shift && !alt => toggle_zoom(),
@@ -4152,6 +4565,7 @@ unsafe fn key(m: &MSG) -> bool {
             resum_sizes();
             return shell();
         }
+        VK_DELETE if !ctrl && !alt && list() => delete_selection(a, shift),
         VK_V if ctrl && !shift && !alt && list() => {
             if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
                 return shell();
@@ -4297,9 +4711,12 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 id if id == ID_TB_LOAD as usize => open_load(),
                 id if id == ID_TB_FAV as usize => open_favs(),
                 id if id == ID_TB_THEME as usize => {
-                    app(|a| a.s.dark ^= true);
+                    let dark = app(|a| a.s.dark);
+                    app(|a| a.s.theme = if dark { 1 } else { 2 });
                     apply_theme();
+                    save_session();
                 }
+                ID_NEWFILE => create_text_file(),
                 id if id == ID_TB_SET as usize => settings::open(h),
                 id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
                 ID_HIDDEN => toggle_hidden(),
@@ -4353,6 +4770,10 @@ extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             WM_CLOSE => {
+                if app(|a| a.s.autosave && !a.s.file.is_empty()) {
+                    let path = app(|a| a.s.file.clone());
+                    write_session(Path::new(&path));
+                }
                 save_session();
                 _ = DestroyWindow(h);
             }
@@ -4523,6 +4944,7 @@ unsafe fn make_menus() -> Result<HMENU> {
     let view = CreatePopupMenu()?;
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
     item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
+    item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
     for (k, (name, _)) in LIGHT.accents.iter().enumerate() {
@@ -4553,6 +4975,10 @@ fn main() -> Result<()> {
         // Read first so single=0 can opt out of handing arguments to the running window.
         let ini = std::fs::read_to_string(ini_path()).or_else(|_| std::fs::read_to_string(ini_path().with_file_name("qdir.ini")));
         let mut s = ini.map(|t| Session::parse(&t)).unwrap_or_default();
+        if session_arg(&args).is_none() && args.is_empty() {
+            apply_boot(&mut s);
+        }
+        s.dark = resolve_dark(s.theme);
         if s.single {
             if let Some(prev) = running_instance() {
                 if !args.is_empty() {
@@ -4683,6 +5109,7 @@ fn main() -> Result<()> {
             None => _ = ShowWindow(main, SW_SHOWNORMAL),
         }
         relayout();
+        apply_ext(app(|a| a.s.ext));
         focus_view(app(|a| a.s.active));
         let file = app(|a| a.s.file.clone());
         let base = std::fs::read_to_string(&file).ok().map(|t| Session::parse(&t));
@@ -4734,6 +5161,35 @@ mod tests {
         assert_eq!(Session::parse("lang=ja").lang, Lang::Ja);
         assert!(Session::parse("dblup=1").single);
         assert!(!Session::parse("single=0").single);
+        let fresh = Session::default();
+        let round = Session::parse(&fresh.to_ini());
+        assert_eq!(round.theme, 0);
+        assert_eq!((round.font, round.bar, round.stat, round.view_new, round.start_new), (0, true, true, 4, 0));
+        assert_eq!((round.ext, round.tree_on, round.edge, round.confirm, round.del), (true, true, true, true, 0));
+        assert_eq!((round.dropm, round.boot, round.autosave, round.dot), (0, 0, false, true));
+        assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
+        // An older file has dark= and no theme=. That stays an explicit choice, and new keys keep defaults.
+        let old = Session::parse("dark=1\ndblup=1\n");
+        assert_eq!(old.theme, 2);
+        assert!(old.dark && old.bar && old.dot);
+        let t = Session::parse("theme=auto\ndark=1\nfont=2\nbar=0\nstat=0\nviewnew=1\nstart=2\nstartp=C:\\Work\next=0\ntree=0\nedge=0\nconfirm=0\ndel=1\nnewname=note.txt\ndrop=1\nboot=1\nbootf=C:\\s.grids\nautosave=1\ndot=0\nfav=C:\\WORK\tWork\n");
+        assert_eq!(t.theme, 0);
+        assert!(t.dark);
+        assert_eq!(t.font, 2);
+        assert!(!t.bar && !t.stat && !t.ext && !t.tree_on && !t.edge && !t.confirm && !t.dot);
+        assert_eq!(t.view_new, 1);
+        assert_eq!(t.start_new, 2);
+        assert_eq!(t.start_path, "C:\\Work");
+        assert_eq!(t.del, 1);
+        assert_eq!(t.new_name, "note.txt");
+        assert_eq!(t.dropm, 1);
+        assert_eq!(t.boot, 1);
+        assert_eq!(t.boot_file, "C:\\s.grids");
+        assert!(t.autosave);
+        assert_eq!(fav_path(&t.favs[0]), "C:\\WORK");
+        assert_eq!(fav_label(&t.favs[0]), "Work");
+        let back = Session::parse(&t.to_ini());
+        assert_eq!((back.font, back.new_name, back.start_path, back.boot_file, back.favs), (t.font, t.new_name.clone(), t.start_path.clone(), t.boot_file.clone(), t.favs.clone()));
         let mut s = Session::default();
         s.lang = Lang::Ja;
         s.single = false;

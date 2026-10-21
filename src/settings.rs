@@ -145,43 +145,43 @@ struct Spec {
 
 const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Lang },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore the last layout and folders, or open a chosen session.", "마지막 배치와 폴더를 복원하거나 정해진 세션을 열어요.", "前回のレイアウトとフォルダーを復元するか、指定したセッションを開きます。"), badge: false, live: false, ctl: Ctl::Start },
+    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore the last layout and folders, or open a chosen session.", "마지막 배치와 폴더를 복원하거나 정해진 세션을 열어요.", "前回のレイアウトとフォルダーを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("If it is already open, bring that window forward.", "이미 켜져 있으면 그 창을 앞으로 가져와요.", "すでに起動していれば、そのウィンドウを前面に出します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
 ];
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Theme },
     Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own (accent / accent_dark).", "라이트와 다크에 따로 정할 수 있어요(지금 있는 accent / accent_dark).", "ライトとダークで別々に選べます（accent / accent_dark）。"), badge: false, live: true, ctl: Ctl::Accent },
-    Spec { title: s("Font size", "글꼴 크기", "フォント サイズ"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Font },
-    Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Toggle(TG_BAR) },
-    Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), badge: true, live: false, ctl: Ctl::Toggle(TG_STATUS) },
+    Spec { title: s("Font size", "글꼴 크기", "フォント サイズ"), desc: s("The toolbar, panes and this window.", "툴바, 패널, 이 창에 적용돼요.", "ツールバー、ペイン、このウィンドウに適用します。"), badge: true, live: true, ctl: Ctl::Font },
+    Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_BAR) },
+    Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_STATUS) },
 ];
 const VIEW: &[Spec] = &[
-    Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::ViewMode },
-    Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::StartDir },
+    Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("Used when a pane has no view of its own yet.", "아직 보기가 없는 패널에 써요.", "まだ表示を持たないペインに使います。"), badge: true, live: true, ctl: Ctl::ViewMode },
+    Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), badge: true, live: true, ctl: Ctl::StartDir },
     Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), badge: false, live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
-    Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Toggle(TG_EXT) },
-    Spec { title: s("Show the left tree", "왼쪽 트리 표시", "左のツリーを表示"), desc: s("", "", ""), badge: false, live: false, ctl: Ctl::Toggle(TG_TREE) },
-    Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Toggle(TG_EDGE) },
+    Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_EXT) },
+    Spec { title: s("Show the left tree", "왼쪽 트리 표시", "左のツリーを表示"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_EDGE) },
 ];
 const FILE: &[Spec] = &[
     Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), badge: false, live: true, ctl: Ctl::CopyEng },
-    Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Toggle(TG_CONFIRM) },
-    Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::DelMode },
-    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Chosen from the display language. Not available in this version.", "표시 언어를 따라 자동으로 정해져요. 이 버전에는 아직 없어요.", "表示言語から自動で決まります。このバージョンではまだ使えません。"), badge: true, live: false, ctl: Ctl::NewName },
-    Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("", "", ""), badge: true, live: false, ctl: Ctl::Drop },
+    Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
+    Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::DelMode },
+    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルが使います。空なら表示言語に従います。"), badge: true, live: true, ctl: Ctl::NewName },
+    Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), badge: true, live: true, ctl: Ctl::Drop },
 ];
 const FAV: &[Spec] = &[
-    Spec { title: s("Show add or remove favourites on the right-click menu", "우클릭 메뉴에 즐겨찾기 추가/제거 표시", "右クリック メニューにお気に入りの追加と削除を表示"), desc: s("It would sit directly above Properties.", "속성 바로 위에 들어가요.", "プロパティのすぐ上に入ります。"), badge: false, live: false, ctl: Ctl::Toggle(TG_FAVMENU) },
+    Spec { title: s("Show add or remove favourites on the right-click menu", "우클릭 메뉴에 즐겨찾기 추가/제거 표시", "右クリック メニューにお気に入りの追加と削除を表示"), desc: s("Not in this version. The shell menu is still Explorer's.", "이 버전에는 아직 없어요. 우클릭 메뉴는 탐색기 그대로예요.", "このバージョンではまだありません。右クリックはエクスプローラーのままです。"), badge: false, live: false, ctl: Ctl::Toggle(TG_FAVMENU) },
 ];
 const SESS: &[Spec] = &[
     Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), badge: false, live: true, ctl: Ctl::Sess },
-    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("", "", ""), badge: false, live: false, ctl: Ctl::Toggle(TG_AUTOSAVE) },
-    Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("", "", ""), badge: false, live: false, ctl: Ctl::Toggle(TG_DOT) },
+    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
+    Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
-    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("grids.ini next to the exe. Export, import and a json move are not available yet.", "exe 옆 grids.ini예요. 내보내기·가져오기·json 이전은 아직 없어요.", "exe の隣の grids.ini です。書き出し、読み込み、json への移行はまだありません。"), badge: false, live: false, ctl: Ctl::Adv },
-    Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("", "", ""), badge: false, live: false, ctl: Ctl::AdvReset },
+    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("grids.ini next to the exe. Export and import use that same file.", "exe 옆 grids.ini예요. 내보내기와 가져오기도 그 파일이에요.", "exe の隣の grids.ini です。書き出しと読み込みも同じファイルです。"), badge: false, live: true, ctl: Ctl::Adv },
+    Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), badge: false, live: true, ctl: Ctl::AdvReset },
 ];
 
 struct Kr {
@@ -204,13 +204,14 @@ const KEYS: &[Kr] = &[
     Kr { cat: s("File", "파일", "ファイル"), act: s("Copy full path", "전체 경로 복사", "フルパスをコピー"), keys: &["Ctrl+Shift+C"] },
     Kr { cat: s("Session", "세션", "セッション"), act: s("Save session", "세션 저장", "セッションを保存"), keys: &["Ctrl+S"] },
     Kr { cat: s("Favourites", "즐겨찾기", "お気に入り"), act: s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), keys: &["Ctrl+B"] },
+    Kr { cat: s("Help", "도움말", "ヘルプ"), act: s("Settings", "설정", "設定"), keys: &["Ctrl+,"] },
     Kr { cat: s("Help", "도움말", "ヘルプ"), act: s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), keys: &["F1"] },
 ];
 
 const KEY_NOTE: [&str; 3] = s(
-    "F2, Del, Ctrl+C/X/V and F5 belong to Explorer and stay as they are.",
-    "F2, Del, Ctrl+C/X/V, F5는 탐색기 동작이라 바꾸지 않아요.",
-    "F2、Del、Ctrl+C/X/V、F5 はエクスプローラーの操作なので変更しません。",
+    "Read only. F2, Del, Ctrl+C/X/V and F5 belong to Explorer. Changing a shortcut comes later.",
+    "읽기 전용이에요. F2, Del, Ctrl+C/X/V, F5는 탐색기 동작이에요. 단축키 변경은 나중에 들어와요.",
+    "読み取り専用です。F2、Del、Ctrl+C/X/V、F5 はエクスプローラーの操作です。キーの変更は後で入ります。",
 );
 const FAV_NOTE: [&str; 3] = s(
     "Folder groups and file favourites will be managed here once the favourites tree arrives.",
@@ -294,6 +295,7 @@ struct St {
     track: RECT,
     thumb_h: i32,
     drag: Option<i32>,
+    fav_drag: Option<usize>,
 }
 
 impl Default for St {
@@ -315,6 +317,7 @@ impl Default for St {
             track: RECT::default(),
             thumb_h: 0,
             drag: None,
+            fav_drag: None,
         }
     }
 }
@@ -374,7 +377,7 @@ enum Item {
     Head(RECT, [&'static str; 3]),
     Table(RECT),
     FavHead(RECT),
-    FavRow { i: usize, rect: RECT, btn: RECT },
+    FavRow { i: usize, rect: RECT, rename: RECT, btn: RECT },
     Note(RECT, [&'static str; 3]),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
@@ -571,12 +574,13 @@ fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     g.items.push(Item::FavHead(RECT { left, top: y, right, bottom: y + head_h }));
     y += head_h;
     if rows.is_empty() {
-        g.items.push(Item::FavRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + row_h }, btn: RECT::default() });
+        g.items.push(Item::FavRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + row_h }, rename: RECT::default(), btn: RECT::default() });
         y += row_h;
     }
     for i in rows {
-        let btn = RECT { left: right - sc(dpi, 16) - sc(dpi, 72), top: y + sc(dpi, 6), right: right - sc(dpi, 16), bottom: y + row_h - sc(dpi, 6) };
-        g.items.push(Item::FavRow { i, rect: RECT { left, top: y, right, bottom: y + row_h }, btn });
+        let del = RECT { left: right - sc(dpi, 16) - sc(dpi, 72), top: y + sc(dpi, 6), right: right - sc(dpi, 16), bottom: y + row_h - sc(dpi, 6) };
+        let rename = RECT { left: del.left - sc(dpi, 8) - sc(dpi, 88), top: del.top, right: del.left - sc(dpi, 8), bottom: del.bottom };
+        g.items.push(Item::FavRow { i, rect: RECT { left, top: y, right, bottom: y + row_h }, rename, btn: del });
         y += row_h;
     }
     y += sc(dpi, 8);
@@ -619,10 +623,16 @@ fn toggle_on(id: u8) -> bool {
         TG_SINGLE => app(|a| a.s.single),
         TG_DBLUP => app(|a| a.s.dblup),
         TG_HIDDEN => unsafe { super::hidden() },
-        // Always on in this build, so the switch sits right and stays gray.
-        TG_BAR | TG_STATUS | TG_TREE | TG_EDGE | TG_AUTOSAVE | TG_DOT => true,
-        // No backend: extensions, delete confirm, and the favourites context menu.
-        TG_EXT | TG_CONFIRM | TG_FAVMENU => false,
+        TG_BAR => app(|a| a.s.bar),
+        TG_STATUS => app(|a| a.s.stat),
+        TG_EXT => app(|a| a.s.ext),
+        TG_TREE => app(|a| a.s.tree_on),
+        TG_EDGE => app(|a| a.s.edge),
+        TG_CONFIRM => app(|a| a.s.confirm),
+        TG_AUTOSAVE => app(|a| a.s.autosave),
+        TG_DOT => app(|a| a.s.dot),
+        // The shell context menu is still Explorer's.
+        TG_FAVMENU => false,
         _ => false,
     }
 }
@@ -745,15 +755,21 @@ fn make_font(face: &str, px: i32, weight: i32, dpi: i32) -> HFONT {
 fn rebuild_fonts() {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let face = super::ui_face();
+    let scale = match app(|a| a.s.font) {
+        1 => 125,
+        2 => 150,
+        _ => 100,
+    };
+    let px = |n: i32| (n * scale / 100).max(1);
     let (title_face, title_w) = match super::ui() {
         1 => ("Malgun Gothic", 700), // no semibold; bold is the Korean title face
         2 => ("Yu Gothic UI", 700),
         _ => ("Segoe UI Semibold", 600),
     };
     let new = (
-        make_font(face, 14, 400, dpi),
-        make_font(face, 12, 400, dpi),
-        make_font(title_face, 24, title_w, dpi),
+        make_font(face, px(14), 400, dpi),
+        make_font(face, px(12), 400, dpi),
+        make_font(title_face, px(24), title_w, dpi),
         make_font("Consolas", 12, 400, dpi),
         make_font("Segoe MDL2 Assets", 14, 400, dpi),
     );
@@ -793,7 +809,7 @@ unsafe fn build_children(h: HWND) {
     combo(S_LANG, true);
     combo(S_THEME, true);
     for id in [S_START, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP] {
-        combo(id, false);
+        combo(id, true);
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
     btn(S_CLOSE, tx(CLOSE_L), true);
@@ -801,10 +817,10 @@ unsafe fn build_children(h: HWND) {
     btn(S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
     btn(S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…")), true);
     btn(S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く")), true);
-    btn(S_ADV_OPEN, tx(s("Open file", "파일 열기", "ファイルを開く")), false);
-    btn(S_ADV_EX, tx(s("Export", "내보내기", "エクスポート")), false);
-    btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), false);
-    btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), false);
+    btn(S_ADV_OPEN, tx(s("Open file", "파일 열기", "ファイルを開く")), true);
+    btn(S_ADV_EX, tx(s("Export", "내보내기", "エクスポート")), true);
+    btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), true);
+    btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
@@ -815,7 +831,7 @@ fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
             f(c);
         }
     }
-    for i in 0..128 {
+    for i in 0..256 {
         let c = unsafe { GetDlgItem(Some(h), S_FAV0 + i).unwrap_or_default() };
         if c.0.is_null() {
             continue;
@@ -841,15 +857,24 @@ unsafe fn fill_strings(h: HWND) {
         Lang::Ja => 3,
     };
     fill_combo(h, S_LANG, &[auto, "English".into(), "한국어".into(), "日本語".into()], lang_i);
-    let dark = app(|a| a.s.dark) as usize;
-    fill_combo(h, S_THEME, &[tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], dark);
-    fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout (2×2)", "기본 배치(2×2)", "既定のレイアウト (2×2)")).into()], 0);
-    fill_combo(h, S_FONT, &[tx(s("Default", "기본", "既定")).into(), tx(s("Large", "크게", "大きく")).into(), tx(s("Larger", "더 크게", "さらに大きく")).into()], 0);
-    fill_combo(h, S_VIEW, &[tx(s("Details", "자세히", "詳細")).into(), tx(s("List", "목록", "一覧")).into(), tx(s("Large icons", "큰 아이콘", "大きなアイコン")).into()], 0);
-    fill_combo(h, S_DIR, &[tx(s("This PC", "내 PC", "PC")).into(), tx(s("Desktop", "바탕 화면", "デスクトップ")).into(), tx(s("Choose a folder…", "지정 폴더…", "フォルダーを指定…")).into()], 0);
-    fill_combo(h, S_DEL, &[tx(s("Recycle Bin", "휴지통으로", "ごみ箱へ")).into(), tx(s("Delete permanently", "완전 삭제", "完全に削除")).into()], 0);
-    fill_combo(h, S_NEW, &[tx(s("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt")).into(), tx(s("Custom…", "직접 지정…", "直接指定…")).into()], 0);
-    fill_combo(h, S_DROP, &[tx(s("Windows rules (same drive = move)", "Windows 규칙(같은 드라이브=이동)", "Windows の規則（同じドライブ=移動）")).into(), tx(s("Always copy", "항상 복사", "常にコピー")).into(), tx(s("Always ask", "항상 묻기", "常に確認")).into()], 0);
+    let theme = app(|a| a.s.theme) as usize;
+    fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
+    let boot = app(|a| a.s.boot) as usize;
+    fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout (2×2)", "기본 배치(2×2)", "既定のレイアウト (2×2)")).into()], boot.min(2));
+    let font = app(|a| a.s.font) as usize;
+    fill_combo(h, S_FONT, &[tx(s("Default", "기본", "既定")).into(), tx(s("Large", "크게", "大きく")).into(), tx(s("Larger", "더 크게", "さらに大きく")).into()], font.min(2));
+    let view_i = match app(|a| a.s.view_new) { 3 => 1, 1 => 2, _ => 0 };
+    fill_combo(h, S_VIEW, &[tx(s("Details", "자세히", "詳細")).into(), tx(s("List", "목록", "一覧")).into(), tx(s("Large icons", "큰 아이콘", "大きなアイコン")).into()], view_i);
+    let start = app(|a| a.s.start_new) as usize;
+    fill_combo(h, S_DIR, &[tx(s("This PC", "내 PC", "PC")).into(), tx(s("Desktop", "바탕 화면", "デスクトップ")).into(), tx(s("Choose a folder…", "지정 폴더…", "フォルダーを指定…")).into()], start.min(2));
+    let del = app(|a| a.s.del) as usize;
+    fill_combo(h, S_DEL, &[tx(s("Recycle Bin", "휴지통으로", "ごみ箱へ")).into(), tx(s("Delete permanently", "완전 삭제", "完全に削除")).into()], del.min(1));
+    let custom = app(|a| a.s.new_name.clone());
+    let new_label = if custom.is_empty() { tx(s("Custom…", "직접 지정…", "直接指定…")).to_string() } else { custom };
+    let new_i = usize::from(!app(|a| a.s.new_name.is_empty()));
+    fill_combo(h, S_NEW, &[tx(s("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt")).into(), new_label], new_i);
+    let dropm = app(|a| a.s.dropm) as usize;
+    fill_combo(h, S_DROP, &[tx(s("Windows rules (same drive = move)", "Windows 규칙(같은 드라이브=이동)", "Windows の規則（同じドライブ=移動）")).into(), tx(s("Always copy", "항상 복사", "常にコピー")).into(), tx(s("Always ask", "항상 묻기", "常に確認")).into()], dropm.min(2));
     let labels = [
         (S_CLOSE, tx(CLOSE_L)),
         (S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す"))),
@@ -925,15 +950,17 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
         hide(id);
     }
     let n = app(|a| a.s.favs.len()) as i32;
-    for i in 0..128 {
-        let c = ctl(h, S_FAV0 + i);
-        if c.0.is_null() {
-            continue;
-        }
-        if i >= n {
-            let _ = DestroyWindow(c);
-        } else {
-            let _ = ShowWindow(c, SW_HIDE);
+    for base in [S_FAV0, S_FAV0 + 128] {
+        for i in 0..128 {
+            let c = ctl(h, base + i);
+            if c.0.is_null() {
+                continue;
+            }
+            if i >= n {
+                let _ = DestroyWindow(c);
+            } else {
+                let _ = ShowWindow(c, SW_HIDE);
+            }
         }
     }
     move_to(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 2)), true);
@@ -959,7 +986,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 move_to(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
-            Item::FavRow { i, btn, .. } if *i != usize::MAX && btn.right > btn.left => {
+            Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && btn.right > btn.left => {
                 let id = S_FAV0 + *i as i32;
                 let mut b = ctl(h, id);
                 if b.0.is_null() {
@@ -967,6 +994,13 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 }
                 let _ = SetWindowTextW(b, &HSTRING::from(tx(s("Delete", "삭제", "削除"))));
                 move_to(b, *btn, intersects(*btn, content));
+                let rid = S_FAV0 + 128 + *i as i32;
+                let mut r = ctl(h, rid);
+                if r.0.is_null() {
+                    r = child_at(h, w!("BUTTON"), tx(s("Rename", "이름 변경", "名前の変更")), 0xB | 0x00010000, rid, sn.font);
+                }
+                let _ = SetWindowTextW(r, &HSTRING::from(tx(s("Rename", "이름 변경", "名前の変更"))));
+                move_to(r, *rename, intersects(*rename, content));
             }
             _ => {}
         }
@@ -1138,9 +1172,9 @@ unsafe fn draw_fav_row(dc: HDC, i: usize, r: RECT, sn: &Snap) {
     let icon = RECT { left: r.left + sc(dpi, 12), right: r.left + sc(dpi, 34), ..r };
     super::text(dc, icon, "\u{E8B7}", sn.icon, super::pal().sub, DT_CENTER);
     let name_r = RECT { left: icon.right + sc(dpi, 4), right: r.left + (r.right - r.left) * 32 / 100, ..r };
-    super::text(dc, name_r, &super::short_name(&path), sn.font, super::pal().text, DT_LEFT);
-    let path_r = RECT { left: name_r.right + sc(dpi, 8), right: r.right - sc(dpi, 100), ..r };
-    super::text(dc, path_r, &path, sn.small, super::pal().sub, DT_LEFT);
+    super::text(dc, name_r, &super::fav_label(&path), sn.font, super::pal().text, DT_LEFT);
+    let path_r = RECT { left: name_r.right + sc(dpi, 8), right: r.right - sc(dpi, 180), ..r };
+    super::text(dc, path_r, super::fav_path(&path), sn.small, super::pal().sub, DT_LEFT);
     super::fill(dc, RECT { top: r.bottom - 1, ..r }, super::pal().line);
 }
 
@@ -1261,10 +1295,39 @@ fn flip(id: u8) {
             unsafe { super::toggle_hidden() };
             return;
         }
+        TG_BAR => app(|a| a.s.bar ^= true),
+        TG_STATUS => app(|a| a.s.stat ^= true),
+        TG_EXT => {
+            let on = app(|a| {
+                a.s.ext ^= true;
+                a.s.ext
+            });
+            unsafe {
+                super::apply_ext(on);
+                super::save_session();
+                redraw();
+            }
+            return;
+        }
+        TG_TREE => app(|a| a.s.tree_on ^= true),
+        TG_EDGE => app(|a| a.s.edge ^= true),
+        TG_CONFIRM => app(|a| a.s.confirm ^= true),
+        TG_AUTOSAVE => app(|a| a.s.autosave ^= true),
+        TG_DOT => {
+            app(|a| a.s.dot ^= true);
+            unsafe {
+                super::save_session();
+                super::check_dirty();
+                redraw();
+            }
+            return;
+        }
         _ => return,
     }
     unsafe {
         super::save_session();
+        super::relayout();
+        super::redraw_all();
         redraw();
     }
 }
@@ -1324,15 +1387,11 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         }
         return;
     }
-    if code == CBN_SELCHANGE && id == S_THEME {
-        let sel = SendMessageW(ctl(h, S_THEME), 0x0147, None, None).0 as usize;
-        let dark = sel == 1;
-        if app(|a| a.s.dark) != dark {
-            app(|a| a.s.dark = dark);
-            super::apply_theme();
-            super::save_session();
+    if code == CBN_SELCHANGE {
+        let sel = SendMessageW(ctl(h, id), 0x0147, None, None).0 as usize;
+        if combo_pick(h, id, sel) {
+            return;
         }
-        return;
     }
     if code != 0 {
         return;
@@ -1353,9 +1412,152 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         S_GITHUB => {
             ShellExecuteW(Some(h), w!("open"), &HSTRING::from(super::HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
         }
+        S_ADV_OPEN => {
+            let p = HSTRING::from(super::ini_path().to_string_lossy().as_ref());
+            ShellExecuteW(Some(h), w!("open"), &p, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        }
+        S_ADV_EX => export_ini(h),
+        S_ADV_IM => import_ini(h),
+        S_ADV_RESET => reset_ini(h),
         id if (S_FAV0..S_FAV0 + 128).contains(&id) => delete_fav((id - S_FAV0) as usize),
+        id if (S_FAV0 + 128..S_FAV0 + 256).contains(&id) => rename_fav(h, (id - S_FAV0 - 128) as usize),
         _ => {}
     }
+}
+
+fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
+    match id {
+        S_THEME => {
+            app(|a| a.s.theme = sel.min(2) as u8);
+            unsafe {
+                super::apply_theme();
+                super::save_session();
+            }
+        }
+        S_FONT => {
+            app(|a| a.s.font = sel.min(2) as u8);
+            unsafe {
+                super::apply_font();
+                super::save_session();
+                refresh();
+            }
+        }
+        S_VIEW => {
+            let mode = [4, 3, 1][sel.min(2)];
+            app(|a| a.s.view_new = mode);
+            unsafe { super::save_session(); }
+        }
+        S_DIR => {
+            if sel == 2 {
+                let path = unsafe { super::pick_folder(h) };
+                match path {
+                    Some(p) => app(|a| {
+                        a.s.start_new = 2;
+                        a.s.start_path = p;
+                    }),
+                    None => {
+                        unsafe { refresh() };
+                        return true;
+                    }
+                }
+            } else {
+                app(|a| a.s.start_new = sel.min(1) as u8);
+            }
+            unsafe { super::save_session() };
+        }
+        S_DEL => {
+            app(|a| a.s.del = if sel == 1 { 1 } else { 0 });
+            unsafe { super::save_session() };
+        }
+        S_NEW => {
+            if sel == 0 {
+                app(|a| a.s.new_name.clear());
+            } else {
+                let cur = app(|a| if a.s.new_name.is_empty() { super::default_new_name() } else { a.s.new_name.clone() });
+                match unsafe { ask(h, tx(s("New file name", "새 파일 이름", "新しいファイル名")), &cur) } {
+                    Some(name) if !name.trim().is_empty() => app(|a| a.s.new_name = name),
+                    _ => {
+                        unsafe { refresh() };
+                        return true;
+                    }
+                }
+            }
+            unsafe {
+                super::save_session();
+                refresh();
+            }
+        }
+        S_DROP => {
+            app(|a| a.s.dropm = sel.min(2) as u8);
+            unsafe { super::save_session() };
+        }
+        S_START => {
+            if sel == 1 {
+                match unsafe { super::pick_open(h) } {
+                    Some(p) => app(|a| {
+                        a.s.boot = 1;
+                        a.s.boot_file = p;
+                    }),
+                    None => {
+                        unsafe { refresh() };
+                        return true;
+                    }
+                }
+            } else {
+                app(|a| a.s.boot = if sel >= 2 { 2 } else { 0 });
+            }
+            unsafe { super::save_session() };
+        }
+        _ => return false,
+    }
+    true
+}
+
+unsafe fn export_ini(h: HWND) {
+    let Some(path) = super::pick_save(h) else { return };
+    super::save_session();
+    if std::fs::copy(super::ini_path(), path).is_err() {
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not export the settings file.", "설정 파일을 내보내지 못했어요.", "設定ファイルを書き出せませんでした。"))), w!("grids"), MB_ICONWARNING);
+    }
+}
+
+unsafe fn import_ini(h: HWND) {
+    let Some(path) = super::pick_open(h) else { return };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not read that file.", "그 파일을 읽지 못했어요.", "そのファイルを読めませんでした。"))), w!("grids"), MB_ICONWARNING);
+        return;
+    };
+    let q = tx(s("Replace the current settings with this file?", "이 파일로 지금 설정을 바꿀까요?", "このファイルで現在の設定を置き換えますか?"));
+    if MessageBoxW(Some(h), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+        return;
+    }
+    super::import_ini(&text);
+}
+
+unsafe fn reset_ini(h: HWND) {
+    let q = tx(s("Reset every preference to its default? The layout, folders and favourites stay.", "환경설정을 모두 기본값으로 되돌릴까요? 배치, 폴더, 즐겨찾기는 남아요.", "環境設定をすべて既定に戻しますか? レイアウト、フォルダー、お気に入りはそのままです。"));
+    if MessageBoxW(Some(h), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+        return;
+    }
+    super::reset_prefs();
+}
+
+unsafe fn rename_fav(h: HWND, k: usize) {
+    let cur = app(|a| a.s.favs.get(k).map(|f| super::fav_label(f)).unwrap_or_default());
+    let Some(name) = ask(h, tx(s("Rename", "이름 변경", "名前の変更")), &cur) else { return };
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    app(|a| {
+        if let Some(f) = a.s.favs.get_mut(k) {
+            let path = super::fav_path(f).to_string();
+            *f = format!("{path}\t{name}");
+        }
+    });
+    super::save_session();
+    super::repaint_fav_buttons();
+    refresh();
 }
 
 unsafe fn on_click(h: HWND, x: i32, y: i32) {
@@ -1376,6 +1578,13 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
         }
     }
     for item in &g.items {
+        if let Item::FavRow { i, rect, rename, btn } = item {
+            if *i != usize::MAX && inside(*rect, x, y) && !inside(*rename, x, y) && !inside(*btn, x, y) {
+                ST.with(|s| s.borrow_mut().fav_drag = Some(*i));
+                let _ = SetCapture(h);
+                return;
+            }
+        }
         if let Item::Card(c) = item {
             if let Ctl::Toggle(id) = c.spec.ctl {
                 if c.spec.live && inside(c.ctl, x, y) {
@@ -1474,6 +1683,29 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             WM_MOUSEMOVE => {
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
+                if let Some(from) = ST.with(|s| s.borrow().fav_drag) {
+                    let sn = snap();
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(h, &mut rc);
+                    let g = geo(rc, &sn);
+                    let to = g.items.iter().find_map(|it| match it {
+                        Item::FavRow { i, rect, .. } if *i != usize::MAX && y >= rect.top && y < rect.bottom => Some(*i),
+                        _ => None,
+                    });
+                    if let Some(to) = to.filter(|to| *to != from) {
+                        app(|a| {
+                            if from < a.s.favs.len() && to < a.s.favs.len() {
+                                let item = a.s.favs.remove(from);
+                                a.s.favs.insert(to, item);
+                            }
+                        });
+                        ST.with(|s| s.borrow_mut().fav_drag = Some(to));
+                        layout(h);
+                        let _ = InvalidateRect(Some(h), None, false);
+                    }
+                    let _ = x;
+                    return LRESULT(0);
+                }
                 if let Some(off) = ST.with(|s| s.borrow().drag) {
                     let (track, thumb_h, max) = ST.with(|s| {
                         let st = s.borrow();
@@ -1508,9 +1740,14 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 }
             }
             WM_LBUTTONUP => {
-                if ST.with(|s| s.borrow().drag.is_some()) {
+                let fav = ST.with(|s| s.borrow_mut().fav_drag.take());
+                if ST.with(|s| s.borrow().drag.is_some()) || fav.is_some() {
                     ST.with(|s| s.borrow_mut().drag = None);
                     let _ = ReleaseCapture();
+                }
+                if fav.is_some() {
+                    super::save_session();
+                    super::repaint_fav_buttons();
                 }
             }
             WM_MOUSEWHEEL => {
@@ -1553,4 +1790,85 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         }
         LRESULT(0)
     }
+}
+
+thread_local! {
+    static ASK_EDIT: Cell<HWND> = Cell::new(HWND(std::ptr::null_mut()));
+    static ASK_OUT: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+
+unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_COMMAND => {
+            let id = (wp.0 & 0xffff) as i32;
+            if id == 1 {
+                let text = super::text_of(ASK_EDIT.with(|e| e.get()));
+                ASK_OUT.with(|o| *o.borrow_mut() = Some(Some(text)));
+                let _ = DestroyWindow(h);
+                return LRESULT(0);
+            }
+            if id == 2 {
+                ASK_OUT.with(|o| *o.borrow_mut() = Some(None));
+                let _ = DestroyWindow(h);
+                return LRESULT(0);
+            }
+        }
+        WM_CLOSE => {
+            ASK_OUT.with(|o| *o.borrow_mut() = Some(None));
+            let _ = DestroyWindow(h);
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    DefWindowProcW(h, msg, wp, lp)
+}
+
+/// One-line prompt. None means cancel.
+unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let Ok(m) = GetModuleHandleW(None) else { return };
+        let _ = RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(ask_proc),
+            hInstance: m.into(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as *mut _),
+            lpszClassName: w!("GridsAsk"),
+            ..Default::default()
+        });
+    });
+    ASK_OUT.with(|o| *o.borrow_mut() = None);
+    let dpi = GetDpiForWindow(owner).max(96) as i32;
+    let (ww, hh) = (sc(dpi, 420), sc(dpi, 140));
+    let mut orc = RECT::default();
+    let _ = GetWindowRect(owner, &mut orc);
+    let x = orc.left + (orc.right - orc.left - ww) / 2;
+    let y = orc.top + (orc.bottom - orc.top - hh) / 2;
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
+    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("GridsAsk"), &HSTRING::from(title), style, x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
+    if h.0.is_null() {
+        return None;
+    }
+    let font = ST.with(|s| s.borrow().font);
+    let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000 | WS_BORDER.0, 10, font);
+    ASK_EDIT.with(|e| e.set(edit));
+    let _ = child_at(h, w!("BUTTON"), tx(s("OK", "확인", "OK")), 0xB | 0x00010000, 1, font);
+    let _ = child_at(h, w!("BUTTON"), tx(CLOSE_L), 0xB | 0x00010000, 2, font);
+    let _ = SetWindowPos(edit, None, sc(dpi, 16), sc(dpi, 16), ww - sc(dpi, 48), sc(dpi, 28), SWP_NOZORDER);
+    let _ = SetWindowPos(ctl(h, 1), None, ww - sc(dpi, 200), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
+    let _ = SetWindowPos(ctl(h, 2), None, ww - sc(dpi, 108), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, false);
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit));
+    let mut msg = MSG::default();
+    while ASK_OUT.with(|o| o.borrow().is_none()) {
+        if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            PostQuitMessage(0);
+            break;
+        }
+        let _ = TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, true);
+    let _ = SetForegroundWindow(owner);
+    ASK_OUT.with(|o| o.borrow_mut().take().flatten())
 }
