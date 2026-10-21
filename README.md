@@ -59,6 +59,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
 | Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
 | Ctrl+Shift+C | Copy the full path of the selected items (or of the current folder) |
+| Ctrl+Shift+N | New folder |
 | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).
