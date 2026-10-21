@@ -192,6 +192,7 @@ fn glyph(id: i32) -> &'static str {
 
 const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
 Ctrl+1 … Ctrl+9\tGo to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes)\n\
+Alt+Shift+← / → / ↑ / ↓\tPane to the left / right / above / below\n\
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Alt+↓\tRecent folders (all panes, newest first)\n\
@@ -214,6 +215,7 @@ If Grids is already running, they open in that window.";
 
 const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
 Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, 아주 좁은 패널에서는 생략)\n\
+Alt+Shift+← / → / ↑ / ↓\t왼쪽·오른쪽·위·아래 패널로 이동\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
@@ -2562,6 +2564,40 @@ unsafe fn cycle(d: i32) {
     focus_view(i);
 }
 
+/// The slot of the nearest cell wholly to one side of `cur` (dx/dy = -1, 0 or 1) that overlaps it across that axis.
+fn neighbour(cells: &[(usize, RECT)], cur: usize, dx: i32, dy: i32) -> Option<usize> {
+    let &(_, c) = cells.iter().find(|(s, _)| *s == cur)?;
+    let mid = |r: &RECT| if dx != 0 { r.top + r.bottom } else { r.left + r.right };
+    cells
+        .iter()
+        .filter(|(s, _)| *s != cur)
+        .filter_map(|&(s, r)| {
+            let gap = match (dx, dy) {
+                (-1, _) => c.left - r.right,
+                (1, _) => r.left - c.right,
+                (_, -1) => c.top - r.bottom,
+                _ => r.top - c.bottom,
+            };
+            let overlap = if dx != 0 { r.top.max(c.top) < r.bottom.min(c.bottom) } else { r.left.max(c.left) < r.right.min(c.right) };
+            (gap >= 0 && overlap).then_some((gap, (mid(&r) - mid(&c)).abs(), s))
+        })
+        .min()
+        .map(|(_, _, s)| s)
+}
+
+// Like Windows Terminal's Alt+arrow or tmux's prefix+arrow: move to the pane on screen in that direction.
+unsafe fn move_pane(dx: i32, dy: i32) {
+    let (cells, cur) = app(|a| {
+        let g = geo(a);
+        let cells = (0..a.s.panes()).filter(|&i| a.panes[i].is_some()).map(|i| (i, cell_rect(&g, &a.s.heights, i))).collect::<Vec<_>>();
+        (cells, a.s.active)
+    });
+    if let Some(j) = neighbour(&cells, cur, dx, dy) {
+        set_active(j);
+        focus_view(j);
+    }
+}
+
 // Like tmux's pane zoom: the active pane takes the whole grid until toggled back or another pane is picked.
 unsafe fn toggle_zoom() {
     if app(|a| a.drag.is_some() || a.s.panes() <= 1) {
@@ -3855,6 +3891,12 @@ unsafe fn key(m: &MSG) -> bool {
             set_active(i);
             focus_view(i);
         }
+        k @ (VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN) if alt && shift && !ctrl => match k {
+            VK_LEFT => move_pane(-1, 0),
+            VK_RIGHT => move_pane(1, 0),
+            VK_UP => move_pane(0, -1),
+            _ => move_pane(0, 1),
+        },
         VK_LEFT if alt => browse(a, SBSP_NAVIGATEBACK),
         VK_RIGHT if alt => browse(a, SBSP_NAVIGATEFORWARD),
         VK_UP if alt => browse(a, SBSP_PARENT),
@@ -4429,6 +4471,25 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighbours() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        // 2×2 with an 8px gap: slots run down each column
+        let grid = [(0, r(0, 0, 100, 100)), (1, r(0, 108, 100, 208)), (2, r(108, 0, 208, 100)), (3, r(108, 108, 208, 208))];
+        let n = |cells: &[(usize, RECT)], cur, dx, dy| neighbour(cells, cur, dx, dy);
+        assert_eq!([n(&grid, 3, 0, -1), n(&grid, 3, -1, 0), n(&grid, 0, 1, 0), n(&grid, 0, 0, 1)], [Some(2), Some(1), Some(2), Some(1)]);
+        // edges
+        assert_eq!([n(&grid, 0, -1, 0), n(&grid, 0, 0, -1), n(&grid, 3, 1, 0), n(&grid, 3, 0, 1)], [None; 4]);
+        // [1,3]: one tall cell on the left, three on the right
+        let tall = [(0, r(0, 0, 100, 316)), (1, r(108, 0, 208, 100)), (2, r(108, 108, 208, 208)), (3, r(108, 216, 208, 316))];
+        assert_eq!([n(&tall, 0, 1, 0), n(&tall, 3, -1, 0), n(&tall, 2, 0, -1), n(&tall, 2, 0, 1)], [Some(2), Some(0), Some(1), Some(3)]);
+        assert_eq!(n(&tall, 1, 0, -1), None); // stays in its column
+        // a pane that failed to open: neither it nor the diagonal one is picked
+        let gone = [grid[0], grid[2], grid[3]];
+        assert_eq!([n(&gone, 0, 0, 1), n(&gone, 3, -1, 0), n(&gone, 2, 0, 1)], [None, None, Some(3)]);
+        assert_eq!(n(&grid, 7, 1, 0), None);
+    }
 
     #[test]
     fn columns() {

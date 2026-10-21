@@ -47,6 +47,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | --- | --- |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous pane |
 | Ctrl+1 … Ctrl+9 | Go to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes) |
+| Alt+Shift+← / → / ↑ / ↓ | Pane to the left / right / above / below |
 | Alt+← / Alt+→ | Back / forward |
 | Alt+↑ | Parent folder |
 | Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
