@@ -187,6 +187,7 @@ fn glyph(id: i32) -> &'static str {
 }
 
 const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
+Ctrl+1 … Ctrl+9\tGo to pane 1–9 (numbered down each column, left to right)\n\
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
 Ctrl+L, Alt+D, F4\tAddress bar\n\
@@ -204,6 +205,7 @@ Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, they open in that window.";
 
 const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
+Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (열마다 위에서 아래, 왼쪽 열부터)\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
 Ctrl+L, Alt+D, F4\t주소창\n\
@@ -3114,6 +3116,11 @@ unsafe fn key(m: &MSG) -> bool {
     let list = || view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     match VIRTUAL_KEY(m.wParam.0 as u16) {
         VK_TAB if ctrl => cycle(if shift { -1 } else { 1 }),
+        k if ctrl && !shift && !alt && (VK_1.0..=VK_9.0).contains(&k.0) && ((k.0 - VK_1.0) as usize) < app(|x| x.s.panes()) => {
+            let i = (k.0 - VK_1.0) as usize;
+            set_active(i);
+            focus_view(i);
+        }
         VK_LEFT if alt => browse(a, SBSP_NAVIGATEBACK),
         VK_RIGHT if alt => browse(a, SBSP_NAVIGATEFORWARD),
         VK_UP if alt => browse(a, SBSP_PARENT),
