@@ -169,40 +169,10 @@ const ADV: &[Spec] = &[
     Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), badge: false, live: true, ctl: Ctl::AdvReset },
 ];
 
-struct Kr {
-    cat: [&'static str; 3],
-    act: [&'static str; 3],
-    keys: &'static [&'static str],
-}
-
-const KEYS: &[Kr] = &[
-    Kr { cat: s("Tab", "탭", "タブ"), act: s("New tab", "새 탭", "新しいタブ"), keys: &["Ctrl+T"] },
-    Kr { cat: s("Tab", "탭", "タブ"), act: s("Close tab", "탭 닫기", "タブを閉じる"), keys: &["Ctrl+W"] },
-    Kr { cat: s("Tab", "탭", "タブ"), act: s("Next / previous tab", "다음 / 이전 탭", "次 / 前のタブ"), keys: &["Ctrl+Tab", "Ctrl+Shift+Tab"] },
-    Kr { cat: s("Tab", "탭", "タブ"), act: s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), keys: &["Ctrl+Shift+T"] },
-    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Next / previous pane", "다음 / 이전 패널", "次 / 前のペイン"), keys: &["Ctrl+PageDown", "Ctrl+PageUp"] },
-    Kr { cat: s("Pane", "패널", "ペイン"), act: s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), keys: &["Ctrl+1 … Ctrl+9"] },
-    Kr { cat: s("Move", "이동", "移動"), act: s("Left / right / above / below", "왼쪽 / 오른쪽 / 위 / 아래", "左 / 右 / 上 / 下"), keys: &["Alt+Shift+←", "Alt+Shift+→", "Alt+Shift+↑", "Alt+Shift+↓"] },
-    Kr { cat: s("Move", "이동", "移動"), act: s("Back / forward", "뒤로 / 앞으로", "戻る / 進む"), keys: &["Alt+←", "Alt+→"] },
-    Kr { cat: s("Move", "이동", "移動"), act: s("Parent folder", "상위 폴더", "上のフォルダー"), keys: &["Alt+↑"] },
-    Kr { cat: s("Move", "이동", "移動"), act: s("Recent folders", "최근 폴더", "最近のフォルダー"), keys: &["Alt+↓"] },
-    Kr { cat: s("Move", "이동", "移動"), act: s("Address bar", "주소창", "アドレス バー"), keys: &["Ctrl+L", "Alt+D", "F4"] },
-    Kr { cat: s("View", "보기", "表示"), act: s("Filter", "필터", "フィルター"), keys: &["Ctrl+F"] },
-    Kr { cat: s("View", "보기", "表示"), act: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), keys: &["Ctrl+H"] },
-    Kr { cat: s("View", "보기", "表示"), act: s("Maximise / restore the pane", "패널 크게 보기 / 복원", "ペインを最大化 / 元に戻す"), keys: &["Ctrl+Shift+M"] },
-    Kr { cat: s("File", "파일", "ファイル"), act: s("Copy full path", "전체 경로 복사", "フルパスをコピー"), keys: &["Ctrl+Shift+C"] },
-    Kr { cat: s("File", "파일", "ファイル"), act: s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), keys: &["Ctrl+Alt+N"] },
-    Kr { cat: s("File", "파일", "ファイル"), act: s("New folder", "새 폴더", "新しいフォルダー"), keys: &["Ctrl+Shift+N"] },
-    Kr { cat: s("Session", "세션", "セッション"), act: s("Save session", "세션 저장", "セッションを保存"), keys: &["Ctrl+S"] },
-    Kr { cat: s("Favourites", "즐겨찾기", "お気に入り"), act: s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), keys: &["Ctrl+B"] },
-    Kr { cat: s("Help", "도움말", "ヘルプ"), act: s("Settings", "설정", "設定"), keys: &["Ctrl+,"] },
-    Kr { cat: s("Help", "도움말", "ヘルプ"), act: s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), keys: &["F1"] },
-];
-
 const KEY_NOTE: [&str; 3] = s(
-    "Read only. F2, Del, Ctrl+C/X/V and F5 belong to Explorer. Changing a shortcut comes later.",
-    "읽기 전용이에요. F2, Del, Ctrl+C/X/V, F5는 탐색기 동작이에요. 단축키 변경은 나중에 들어와요.",
-    "読み取り専用です。F2、Del、Ctrl+C/X/V、F5 はエクスプローラーの操作です。キーの変更は後で入ります。",
+    "Double-click a row or press Change, then the new shortcut. Esc cancels. A conflict can be swapped.",
+    "행을 더블클릭하거나 변경을 누른 뒤 새 단축키를 누르세요. Esc는 취소, 겹치면 맞바꿀 수 있어요.",
+    "行をダブルクリックするか変更を押し、新しいキーを押します。Esc で取消。重複は入れ替えできます。",
 );
 const FAV_NOTE: [&str; 3] = s(
     "Folder groups and file favourites will be managed here once the favourites tree arrives.",
@@ -240,8 +210,9 @@ fn card_hit(c: &Spec, q: &str) -> bool {
     has(tx(c.title), q) || has(tx(c.desc), q)
 }
 
-fn key_hit(k: &Kr, q: &str) -> bool {
-    has(tx(k.cat), q) || has(tx(k.act), q) || k.keys.iter().any(|s| has(s, q))
+fn key_hit_i(i: usize, q: &str) -> bool {
+    let (cat, act, chord) = crate::keys::row(i);
+    has(&cat, q) || has(&act, q) || has(&chord, q)
 }
 
 fn page_match(q: &str, page: usize) -> bool {
@@ -255,7 +226,7 @@ fn page_match(q: &str, page: usize) -> bool {
         return app(|a| a.s.favs.iter().any(|f| has(f, q) || has(&super::short_name(f), q))) || has(tx(LIST_H), q);
     }
     if page == 5 {
-        return KEYS.iter().any(|k| key_hit(k, q)) || has(tx(KEY_NOTE), q);
+        return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
     }
     false
 }
@@ -372,7 +343,7 @@ enum Item {
     Note(RECT, [&'static str; 3]),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
-    KeyRow { i: usize, rect: RECT },
+    KeyRow { i: usize, rect: RECT, change: RECT, reset: RECT },
 }
 
 struct Geo {
@@ -593,9 +564,9 @@ fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
 fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
     let dpi = sn.dpi.max(96);
     // Both queries apply: a key typed in the page box, and a nav query that did not match the title.
-    let rows: Vec<usize> = KEYS.iter().enumerate().filter(|(_, k)| {
-        (rq.is_empty() || key_hit(k, rq)) && (sn.keyq.is_empty() || key_hit(k, &sn.keyq))
-    }).map(|(i, _)| i).collect();
+    let rows: Vec<usize> = (0..crate::keys::len()).filter(|&i| {
+        (rq.is_empty() || key_hit_i(i, rq)) && (sn.keyq.is_empty() || key_hit_i(i, &sn.keyq))
+    }).collect();
     let reset = right_box(RECT { left, top: y, right, bottom: y + sc(dpi, 40) }, sc(dpi, 210), sc(dpi, 32), 0);
     let edit = RECT { left, top: reset.top, right: reset.left - sc(dpi, 8), bottom: reset.bottom };
     g.items.push(Item::KeyBar { edit, reset });
@@ -603,7 +574,8 @@ fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     let head_h = sc(dpi, 32);
     let table_top = y;
     let probe = RECT { left, top: 0, right, bottom: 0 };
-    let heights = unsafe { win::key_row_heights(&rows, probe, dpi, sn.mono) };
+    let labels: Vec<String> = rows.iter().map(|&i| crate::keys::chord_text(i)).collect();
+    let heights = unsafe { win::key_row_heights(&labels, probe, dpi, sn.mono) };
     let body: i32 = heights.iter().sum();
     let table = RECT { left, top: table_top, right, bottom: table_top + head_h + body };
     g.items.push(Item::Table(table));
@@ -611,12 +583,14 @@ fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     y = table_top + head_h;
     if rows.is_empty() {
         let h = heights.first().copied().unwrap_or(sc(dpi, 40));
-        g.items.push(Item::KeyRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + h } });
+        g.items.push(Item::KeyRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + h }, change: RECT::default(), reset: RECT::default() });
         y += h;
     }
     for (n, i) in rows.into_iter().enumerate() {
         let h = heights.get(n).copied().unwrap_or(sc(dpi, 40));
-        g.items.push(Item::KeyRow { i, rect: RECT { left, top: y, right, bottom: y + h } });
+        let rect = RECT { left, top: y, right, bottom: y + h };
+        let (change, reset) = win::key_btn_rects(rect, dpi);
+        g.items.push(Item::KeyRow { i, rect, change, reset });
         y += h;
     }
     y += sc(dpi, 8);
