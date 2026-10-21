@@ -180,7 +180,7 @@ const SESS: &[Spec] = &[
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
-    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("grids.ini next to the exe. Export and import use that same file.", "exe 옆 grids.ini예요. 내보내기와 가져오기도 그 파일이에요.", "exe の隣の grids.ini です。書き出しと読み込みも同じファイルです。"), badge: false, live: true, ctl: Ctl::Adv },
+    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("portable.txt next to the exe keeps this file there.", "exe 옆 portable.txt가 있으면 이 파일을 그 옆에 둬요.", "exe の隣の portable.txt があると、このファイルをそこに置きます。"), badge: false, live: true, ctl: Ctl::Adv },
     Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), badge: false, live: true, ctl: Ctl::AdvReset },
 ];
 
@@ -414,7 +414,10 @@ fn right_box(card: RECT, w: i32, h: i32, pad: i32) -> RECT {
 
 fn card_h(spec: &Spec, dpi: i32) -> i32 {
     // 12px vertical padding, 14px label, optional 12px description.
-    if spec.desc[0].is_empty() {
+    // The settings-file card adds a line for the live path.
+    if spec.ctl == Ctl::Adv {
+        sc(dpi, 84)
+    } else if spec.desc[0].is_empty() {
         sc(dpi, 48)
     } else {
         sc(dpi, 64)
@@ -545,13 +548,14 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
         }
         Ctl::Adv | Ctl::AdvReset => {
             let n = if spec.ctl == Ctl::Adv { 3 } else { 1 };
-            let bw = sc(dpi, if spec.ctl == Ctl::Adv { 84 } else { 96 });
+            let bw = sc(dpi, if spec.ctl == Ctl::Adv { 108 } else { 96 });
             let gap = sc(dpi, 6);
             let total = bw * n + gap * (n - 1);
             let mut x = rect.right - pad - total;
-            let cy = (rect.top + rect.bottom) / 2;
+            // The settings-file card is taller so the path can use the full width under the buttons.
+            let top = if spec.ctl == Ctl::Adv { rect.top + sc(dpi, 14) } else { (rect.top + rect.bottom) / 2 - sc(dpi, 16) };
             for i in 0..n as usize {
-                adv[i] = RECT { left: x, top: cy - sc(dpi, 16), right: x + bw, bottom: cy + sc(dpi, 16) };
+                adv[i] = RECT { left: x, top, right: x + bw, bottom: top + sc(dpi, 32) };
                 x += bw + gap;
             }
             RECT { left: adv[0].left, top: adv[0].top, right: rect.right - pad, bottom: adv[0].bottom }
@@ -830,7 +834,7 @@ unsafe fn build_children(h: HWND) {
     btn(S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
     btn(S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…")), true);
     btn(S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く")), true);
-    btn(S_ADV_OPEN, tx(s("Open file", "파일 열기", "ファイルを開く")), true);
+    btn(S_ADV_OPEN, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
     btn(S_ADV_EX, tx(s("Export", "내보내기", "エクスポート")), true);
     btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), true);
     btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), true);
@@ -894,7 +898,7 @@ unsafe fn fill_strings(h: HWND) {
         (S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く"))),
         (S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…"))),
         (S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く"))),
-        (S_ADV_OPEN, tx(s("Open file", "파일 열기", "ファイルを開く"))),
+        (S_ADV_OPEN, tx(s("Open folder", "폴더 열기", "フォルダーを開く"))),
         (S_ADV_EX, tx(s("Export", "내보내기", "エクスポート"))),
         (S_ADV_IM, tx(s("Import", "가져오기", "インポート"))),
         (S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…"))),
@@ -1224,7 +1228,14 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
             super::text(dc, br, tx(NEW), sn.small, on_chrome(accent), DT_CENTER);
         }
     }
-    if !c.spec.desc[0].is_empty() {
+    if c.spec.ctl == Ctl::Adv {
+        let line = sc(dpi, 18);
+        let desc_r = RECT { top: title_line.bottom, bottom: title_line.bottom + line, ..text_r };
+        super::text(dc, desc_r, tx(c.spec.desc), sn.small, super::pal().sub, DT_LEFT);
+        let path = super::store::settings_path().to_string_lossy().into_owned();
+        let path_r = RECT { left: c.rect.left + sc(dpi, 16), top: desc_r.bottom, right: c.rect.right - sc(dpi, 16), bottom: c.rect.bottom - sc(dpi, 6) };
+        super::text(dc, path_r, &path, sn.small, super::pal().text, DT_LEFT);
+    } else if !c.spec.desc[0].is_empty() {
         super::text(dc, RECT { top: title_line.bottom, ..text_r }, tx(c.spec.desc), sn.small, super::pal().sub, DT_LEFT);
     }
     match c.spec.ctl {
@@ -1532,11 +1543,13 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
             ShellExecuteW(Some(h), w!("open"), &HSTRING::from(super::HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
         }
         S_ADV_OPEN => {
-            let p = HSTRING::from(super::ini_path().to_string_lossy().as_ref());
+            let d = super::store::config_dir();
+            let _ = std::fs::create_dir_all(&d);
+            let p = HSTRING::from(d.to_string_lossy().as_ref());
             ShellExecuteW(Some(h), w!("open"), &p, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
         }
-        S_ADV_EX => export_ini(h),
-        S_ADV_IM => import_ini(h),
+        S_ADV_EX => export_settings(h),
+        S_ADV_IM => import_settings(h),
         S_ADV_RESET => reset_ini(h),
         id if (S_FAV0..S_FAV0 + 128).contains(&id) => delete_fav((id - S_FAV0) as usize),
         id if (S_FAV0 + 128..S_FAV0 + 256).contains(&id) => rename_fav(h, (id - S_FAV0 - 128) as usize),
@@ -1632,16 +1645,17 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
     true
 }
 
-unsafe fn export_ini(h: HWND) {
-    let Some(path) = super::pick_save(h) else { return };
+unsafe fn export_settings(h: HWND) {
+    let Some(path) = super::pick_settings(h, true) else { return };
     super::save_session();
-    if std::fs::copy(super::ini_path(), path).is_err() {
+    let text = super::store::current_text();
+    if super::store::write_atomic(std::path::Path::new(&path), text.as_bytes()).is_err() {
         let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not export the settings file.", "설정 파일을 내보내지 못했어요.", "設定ファイルを書き出せませんでした。"))), w!("grids"), MB_ICONWARNING);
     }
 }
 
-unsafe fn import_ini(h: HWND) {
-    let Some(path) = super::pick_open(h) else { return };
+unsafe fn import_settings(h: HWND) {
+    let Some(path) = super::pick_settings(h, false) else { return };
     let Ok(text) = std::fs::read_to_string(&path) else {
         let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not read that file.", "그 파일을 읽지 못했어요.", "そのファイルを読めませんでした。"))), w!("grids"), MB_ICONWARNING);
         return;
@@ -1650,7 +1664,9 @@ unsafe fn import_ini(h: HWND) {
     if MessageBoxW(Some(h), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
-    super::import_ini(&text);
+    if !super::import_settings(&text) {
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("That file is not valid settings JSON.", "올바른 설정 JSON이 아니에요.", "正しい設定 JSON ではありません。"))), w!("grids"), MB_ICONWARNING);
+    }
 }
 
 unsafe fn reset_ini(h: HWND) {
