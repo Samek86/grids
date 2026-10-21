@@ -1,4 +1,4 @@
-// Favourites side of the activity bar. One owner-drawn window: groups, files, and
+// Favourites, the bottom half of the left panel. One owner-drawn window: groups, files, and
 // folders from the same tree the Ctrl+B list uses. No extra shell control.
 
 use crate::imports::*;

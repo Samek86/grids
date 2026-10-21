@@ -381,7 +381,6 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.start_path.clear();
         a.s.ext = fresh.ext;
         a.s.tree_on = fresh.tree_on;
-        a.s.panel = fresh.panel;
         a.s.edge = fresh.edge;
         a.s.confirm = fresh.confirm;
         a.s.del = fresh.del;
