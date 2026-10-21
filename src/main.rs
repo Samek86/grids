@@ -168,6 +168,7 @@ fn on_color(bg: u32) -> u32 {
 }
 // Segoe Fluent Icons / MDL2 Assets code points
 const ICON_SEARCH: &str = "\u{E721}";
+const ICON_FILTER: &str = "\u{E71C}";
 
 fn glyph(id: i32) -> &'static str {
     match id {
@@ -1253,6 +1254,9 @@ unsafe fn apply_filter(i: usize) {
     if let (true, Some(sv)) = (changed, view_of::<IShellView>(i)) {
         _ = sv.Refresh(); // re-enumerates, asking IncludeObject again
     }
+    if let (true, Some(pane)) = (changed, app(|a| a.panes[i].as_ref().map(|p| p.hwnd))) {
+        _ = InvalidateRect(Some(pane), None, false); // filter badge on/off
+    }
 }
 
 // Pane-sticky view mode and columns (order, widths, sort): remember them before leaving a folder,
@@ -1984,20 +1988,20 @@ unsafe fn start_reveal(main: HWND) {
 }
 
 unsafe fn set_accent(c: u32) {
-    let (bars, pane) = app(|a| {
+    let (bars, panes) = app(|a| {
         if a.s.dark {
             a.s.accent_dark = c;
         } else {
             a.s.accent = c;
         }
-        (a.bars, a.panes.get(a.s.active).and_then(|p| p.as_ref()).map(|p| p.hwnd))
+        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>())
     });
     let old = SetClassLongPtrW(bars[0], GCLP_HBRBACKGROUND, CreateSolidBrush(cref(c)).0 as isize);
     if old != 0 {
         _ = DeleteObject(HGDIOBJ(old as _));
     }
-    if let Some(p) = pane {
-        repaint_header(p);
+    for p in panes {
+        repaint_header(p); // all of them: inactive panes show the accent in their filter badge
     }
 }
 
@@ -2408,8 +2412,11 @@ unsafe fn paint_main(h: HWND) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 unsafe fn paint_pane(h: HWND) {
-    let (active, dpi, icon_font, accent) =
-        app(|a| (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), a.dpi, a.icon_font, a.s.accent_now()));
+    let (active, i, dpi, icon_font, accent) = app(|a| {
+        let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
+        (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), i, a.dpi, a.icon_font, a.s.accent_now())
+    });
+    let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
     let focus = GetFocus();
     let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
@@ -2432,8 +2439,16 @@ unsafe fn paint_pane(h: HWND) {
                 frame(dc, p, 1, if active { ink } else { accent });
             }
         }
-        let icon = RECT { left: pg.filt.left + s(4), right: pg.filt.left + s(22), ..pg.filt };
-        text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
+        if filtered {
+            // filter applied: accent chip left of the edit (which starts at filt.left + s(24))
+            let chip =
+                RECT { left: pg.filt.left + s(3), top: pg.filt.top + s(3), right: pg.filt.left + s(21), bottom: pg.filt.bottom - s(3) };
+            fill(dc, chip, accent);
+            text(dc, chip, ICON_FILTER, icon_font, on_color(accent), DT_CENTER);
+        } else {
+            let icon = RECT { left: pg.filt.left + s(4), right: pg.filt.left + s(22), ..pg.filt };
+            text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
+        }
     });
 }
 
