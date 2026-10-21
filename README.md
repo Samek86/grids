@@ -20,7 +20,7 @@ Every pane is a real Windows Explorer view, so right-click menus, drag and drop,
 - **Per-pane toolbar**: address bar, back / forward / up, name filter (`*.pdf;*.txt` or any part of a name), open the selected folder in another pane (its columns come along, so you can set one pane up and copy it around) or copy / move the selected files to another pane's folder (up to 10,000), favourite toggle; drag a folder onto a pane's top bar to open it there.
 - **Sessions**: the layout, folders and each pane's columns (order, widths, sort) are saved automatically. Save named sessions and load them from cards that preview each layout; a green dot on the save button shows unsaved layout changes.
 - **Columns are a pane setting**: their order, widths and sort stay as the pane moves from folder to folder, and any column can be made narrower than Explorer allows (Size stops at 90 px there).
-- **Folder favourites**: star a folder from its pane header, jump to it from the star list in the toolbar.
+- **Folder favourites**: star a folder from its pane header, or right-click a folder and choose Add to favourites, directly above Properties (Remove from favourites when it is already there). The same item is on the sidebar menu. Jump to a favourite from the star list in the toolbar (Ctrl+B). Both use the same `fav=` lines in `grids.ini`. The rest of the shell menu stays.
 - **Folder sizes**: the status line also shows the total size of selected folders, summed in the background (F5 sums again; "partial" when some items couldn't be read).
 - **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted.
 - **Single instance**: running `grids.exe C:\a D:\b` or opening a `.grids` session file reuses the open window.
@@ -63,6 +63,9 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 | Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
 | Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
 | Ctrl+Shift+C | Copy the full path of the selected items (or of the current folder) |
+| Ctrl+Alt+N | New text file |
+| Ctrl+Shift+N | New folder |
+| Ctrl+, | Settings |
 | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).
