@@ -3,11 +3,11 @@
 // thumbnails, columns etc. come from Windows itself.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, Once};
 use std::time::Instant;
 use windows::core::*;
 use windows::Win32::Foundation::*;
@@ -15,11 +15,15 @@ use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, 
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::*;
-use windows::Win32::System::SystemServices::SFGAO_FOLDER;
-use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT, MODIFIERKEYS_FLAGS, SFGAO_FOLDER};
+use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4};
+use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible, ROLE_SYSTEM_LIST};
 use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows::Win32::UI::Controls::{
     SetWindowTheme, BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
@@ -62,6 +66,8 @@ const HOME: &str = "https://github.com/efww/grids";
 const ID_ACCENT: usize = 1400; // + preset index
 const ID_ACCENT_PICK: usize = 1410;
 const EM_SETSEL: u32 = 0xB1;
+const EM_GETSEL: u32 = 0xB0;
+const EM_SCROLLCARET: u32 = 0xB7;
 const EN_CHANGE: u32 = 0x0300;
 const TIMER_STATUS: usize = 1;
 const TIMER_FILTER: usize = 2;
@@ -74,9 +80,11 @@ const TVM_ENSUREVISIBLE: u32 = 0x1114;
 const TVM_GETITEMRECT: u32 = 0x1104;
 const TVGN_CARET: usize = 9;
 const TVM_SETBKCOLOR: u32 = 0x111D;
+const TVM_GETTOOLTIPS: u32 = 0x1119;
 // list-view messages (the Explorer list inside each pane)
 const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_GETHEADER: u32 = 0x101F;
+const LVM_GETTOOLTIPS: u32 = 0x104E;
 const LVM_GETCOLUMNORDERARRAY: u32 = 0x103B;
 const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
 const LVM_GETEXTENDEDLISTVIEWSTYLE: u32 = 0x1037;
@@ -167,6 +175,7 @@ fn on_color(bg: u32) -> u32 {
 }
 // Segoe Fluent Icons / MDL2 Assets code points
 const ICON_SEARCH: &str = "\u{E721}";
+const ICON_FILTER: &str = "\u{E71C}";
 
 fn glyph(id: i32) -> &'static str {
     match id {
@@ -185,17 +194,23 @@ fn glyph(id: i32) -> &'static str {
 }
 
 const KEYS_EN: &str = "Ctrl+Tab / Ctrl+Shift+Tab\tNext / previous pane\n\
+Ctrl+1 … Ctrl+9\tGo to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes)\n\
+Alt+Shift+← / → / ↑ / ↓\tPane to the left / right / above / below\n\
 Alt+← / Alt+→\tBack / forward\n\
 Alt+↑\tParent folder\n\
-Ctrl+L, Alt+D, F4\tAddress bar\n\
+Alt+↓\tRecent folders (all panes, newest first)\n\
+Ctrl+L, Alt+D, F4\tAddress bar: also .. or a subfolder name, a file to open, or a command such as cmd, wt, powershell (runs in this pane's folder)\n\
+Ctrl+B\tFavourites list (↑/↓ to choose, Enter to open, Del to remove)\n\
+Ctrl+Shift+M\tMaximize / restore the active pane (or double-click its header)\n\
+Ctrl+Shift+C\tCopy the full path of the selected items (or of the current folder)\n\
 Ctrl+F\tFilter (*.pdf;*.txt or part of a name; folders always show)\n\
 Enter / Esc\tApply / cancel the address or filter\n\
 Ctrl+H\tShow hidden files\n\
-Ctrl+Shift+M\tNew text file (then rename)\n\
+Ctrl+Alt+N\tNew text file (then rename)\n\
 F1\tHelp (opens the README on GitHub)\n\
 F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
-⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns\n\
+⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns; or copy / move the selected files to another pane's folder (up to 10,000)\n\
 Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
@@ -203,17 +218,23 @@ Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, they open in that window.";
 
 const KEYS_KO: &str = "Ctrl+Tab / Ctrl+Shift+Tab\t다음 / 이전 패널\n\
+Ctrl+1 … Ctrl+9\t1~9번 패널로 이동 (패널 머리줄 왼쪽의 번호, 아주 좁은 패널에서는 생략)\n\
+Alt+Shift+← / → / ↑ / ↓\t왼쪽·오른쪽·위·아래 패널로 이동\n\
 Alt+← / Alt+→\t뒤로 / 앞으로\n\
 Alt+↑\t상위 폴더\n\
-Ctrl+L, Alt+D, F4\t주소창\n\
+Alt+↓\t최근 폴더 (모든 패널, 최근 순)\n\
+Ctrl+L, Alt+D, F4\t주소창: .. 이나 하위 폴더 이름, 열 파일, cmd·wt·powershell 같은 명령도 가능(이 패널 폴더에서 실행)\n\
+Ctrl+B\t즐겨찾기 목록 (↑/↓ 고르기, Enter 열기, Del 빼기)\n\
+Ctrl+Shift+M\t선택한 패널 크게 보기 / 복원 (머리줄 더블클릭도 가능)\n\
+Ctrl+Shift+C\t선택한 항목(없으면 현재 폴더)의 전체 경로 복사\n\
 Ctrl+F\t필터 (*.pdf;*.txt 또는 이름 일부, 폴더는 항상 표시)\n\
 Enter / Esc\t주소창·필터 적용 / 취소\n\
 Ctrl+H\t숨김 파일 표시\n\
-Ctrl+Shift+M\t새 텍스트 문서 (이어서 이름 바꾸기)\n\
+Ctrl+Alt+N\t새 텍스트 문서 (이어서 이름 바꾸기)\n\
 F1\t도움말 (GitHub README 열기)\n\
 F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
-⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께\n\
+⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개)\n\
 저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
@@ -238,6 +259,7 @@ struct Session {
     dblup: bool,            // double-click on empty space goes to the parent folder
     file: String,           // named session (.grids) the layout was last loaded from / saved to
     favs: Vec<String>,      // favourite folders (parsing names), app-wide
+    recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
     ko: bool,               // Korean UI
     cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
 }
@@ -259,6 +281,7 @@ impl Default for Session {
             dblup: true,
             file: String::new(),
             favs: Vec::new(),
+            recent: Vec::new(),
             ko: false,
             cols: vec![String::new(); MAXP],
         }
@@ -346,6 +369,7 @@ impl Session {
                 "lang" => s.ko = v.trim() == "ko",
                 "session" => s.file = v.trim().to_string(),
                 "fav" if !v.trim().is_empty() => s.favs.push(v.trim().to_string()),
+                "recent" if !v.trim().is_empty() && s.recent.len() < RECENT => s.recent.push(v.trim().to_string()),
                 _ => {
                     if let Some(i) = slot('p') {
                         s.paths[i] = v.to_string();
@@ -383,6 +407,9 @@ impl Session {
         for f in &self.favs {
             o += &format!("fav={f}\n");
         }
+        for r in &self.recent {
+            o += &format!("recent={r}\n");
+        }
         for i in 0..MAXP {
             if !self.paths[i].is_empty() {
                 o += &format!("p{i}={}\n", self.paths[i]);
@@ -401,9 +428,9 @@ impl Session {
         !path.is_empty() && self.favs.iter().any(|f| f.eq_ignore_ascii_case(path))
     }
 
-    /// What goes into a named session file: no window position, no pointer to itself, no favourites.
+    /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
     fn snapshot(&self) -> String {
-        Session { win: None, file: String::new(), favs: Vec::new(), ..self.clone() }.to_ini()
+        Session { win: None, file: String::new(), favs: Vec::new(), recent: Vec::new(), ..self.clone() }.to_ini()
     }
 
     /// Takes grid + folders from a named session; window position and sidebar width stay as they are.
@@ -426,6 +453,26 @@ fn layout_differs(cur: &Session, base: &Session) -> bool {
 // Drives, folders and shares; not shell places like This PC or the Recycle Bin, whose columns are their own.
 fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
+}
+
+const RECENT: usize = 20;
+
+// A pane moving from `old` to `new` puts both at the front of the recent list. Coming back to the folder it
+// already holds (session restore, theme/language rebuild, refresh) is no visit; neither is a fresh pane or a shell place.
+fn visit(list: &mut Vec<String>, old: &str, new: &str) {
+    if old.is_empty() || old.eq_ignore_ascii_case(new) || !is_fs(new) {
+        return;
+    }
+    for p in [old, new].into_iter().filter(|p| is_fs(p)) {
+        list.retain(|x| !x.eq_ignore_ascii_case(p));
+        list.insert(0, p.to_string());
+    }
+    list.truncate(RECENT);
+}
+
+// The recent menu of a pane: everything but the folder it shows.
+fn recent_items(list: &[String], cur: &str) -> Vec<String> {
+    list.iter().filter(|p| !p.eq_ignore_ascii_case(cur)).cloned().collect()
 }
 
 // A view's columns: visible ones in order with their widths, then the sort columns, each property as
@@ -559,6 +606,7 @@ struct Geo {
     gx: i32,   // grid left
     xs: Vec<(i32, i32)>,
     ys: Vec<Vec<(i32, i32)>>, // per column
+    zoom: bool, // one pane fills the grid: no splitters
 }
 
 fn geo(a: &App) -> Geo {
@@ -580,6 +628,7 @@ fn geo(a: &App) -> Geo {
         gap,
         side,
         gx,
+        zoom: a.zoom.is_some(),
     }
 }
 
@@ -610,6 +659,7 @@ fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
 
 // Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; the Explorer view below.
 struct PaneGeo {
+    num: RECT,      // pane number (Ctrl+N); zero width when the pane is too narrow
     btn: [RECT; 4], // back, forward, up, open-in
     addr: RECT,
     filt: RECT,
@@ -626,9 +676,14 @@ fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     let fw = s(150).min((w - 2 * pad - 5 * b) / 3).max(0);
     let filt = r(fav.left - s(2) - fw, fw);
     let open = r(filt.left - s(2) - b, b);
-    let addr_x = pad + 3 * b + s(4);
+    // pane number at the far left, only while the address edit (pill minus its s(8)/s(6) insets) keeps s(32)
+    let nw = s(18);
+    let nw = if open.left - s(4) - (pad + 3 * b + s(4) + nw) >= s(8) + s(6) + s(32) { nw } else { 0 };
+    let x = pad + nw;
+    let addr_x = x + 3 * b + s(4);
     PaneGeo {
-        btn: [r(pad, b), r(pad + b, b), r(pad + 2 * b, b), open],
+        num: r(pad, nw),
+        btn: [r(x, b), r(x + b, b), r(x + 2 * b, b), open],
         addr: r(addr_x, open.left - s(4) - addr_x),
         filt,
         fav,
@@ -644,7 +699,7 @@ fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if x >= g.pad + g.side && x < g.gx {
         return Some(Hit::Side);
     }
-    if x < g.gx {
+    if x < g.gx || g.zoom {
         return None;
     }
     let between = |v: &[(i32, i32)], p: i32| v.windows(2).position(|w| p >= w[0].1 && p < w[1].0);
@@ -683,6 +738,7 @@ struct App {
     sizing: bool, // inside the window's own move/size loop
     status: String,
     status_key: String,
+    status_base: (String, Option<(u64, bool, bool)>, String), // text before / after the selection size, (file bytes, has folders, partial)
     view_menu: HMENU,
     base: Option<Session>, // last loaded/saved (or startup) state; differs -> green dot
     dirty: bool,
@@ -693,6 +749,7 @@ struct App {
     fav_popup: HWND,
     fav_closed: Option<Instant>,
     fav_hot: Option<(usize, bool)>, // (row, on its ✕)
+    fav_prev: HWND,                 // focus before the popup opened; Esc goes back there
     cards: Vec<(PathBuf, Session, String)>,
     hover: HWND, // owner-drawn button under the mouse
     tip: HWND,
@@ -703,6 +760,10 @@ struct App {
     grid_drag: Option<Vec<usize>>, // press-and-drag in progress
     grid_preset: Option<usize>,    // preset tile under the mouse
     grid_closed: Option<Instant>,
+    zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
+    note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
+    drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
+    drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
 }
 
 thread_local! {
@@ -721,6 +782,7 @@ thread_local! {
         sizing: false,
         status: String::new(),
         status_key: String::new(),
+        status_base: Default::default(),
         view_menu: HMENU::default(),
         base: None,
         dirty: false,
@@ -731,6 +793,7 @@ thread_local! {
         fav_popup: HWND::default(),
         fav_closed: None,
         fav_hot: None,
+        fav_prev: HWND::default(),
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),
@@ -741,6 +804,10 @@ thread_local! {
         grid_drag: None,
         grid_preset: None,
         grid_closed: None,
+        zoom: None,
+        note: None,
+        drop_hover: HWND::default(),
+        drop_open: None,
     });
 }
 
@@ -783,6 +850,21 @@ unsafe fn text_of(h: HWND) -> String {
     let mut buf = vec![0u16; GetWindowTextLengthW(h) as usize + 1];
     let n = GetWindowTextW(h, &mut buf) as usize;
     String::from_utf16_lossy(&buf[..n])
+}
+
+// scroll an unfocused, untouched address bar to its end, so a cut-off path shows the current folder
+unsafe fn show_path_end(e: HWND, disp: &str) {
+    let (mut s, mut en) = (0u32, 0u32);
+    SendMessageW(e, EM_GETSEL, Some(WPARAM(&mut s as *mut u32 as usize)), Some(LPARAM(&mut en as *mut u32 as isize)));
+    if GetFocus() == e || s != en || text_of(e) != disp {
+        return;
+    }
+    let len = GetWindowTextLengthW(e) as usize;
+    // back to the start first: drops any scroll left from when the box was 0 px wide
+    for at in [0, len] {
+        SendMessageW(e, EM_SETSEL, Some(WPARAM(at)), Some(LPARAM(at as isize)));
+        SendMessageW(e, EM_SCROLLCARET, None, None);
+    }
 }
 
 // ---------- fonts ----------
@@ -888,7 +970,7 @@ unsafe fn buffered(h: HWND, draw: impl FnOnce(HDC, RECT)) {
 fn header_colors(pane: HWND) -> (u32, u32) {
     app(|a| {
         let active = a.panes.get(a.s.active).and_then(|p| p.as_ref()).is_some_and(|p| p.hwnd == pane);
-        if active {
+        if active || a.drop_hover == pane {
             (a.s.accent_now(), on_color(a.s.accent_now()))
         } else {
             (pal().card, pal().text)
@@ -1201,12 +1283,85 @@ unsafe fn focus_ctl(i: usize, id: i32) -> bool {
     true
 }
 
+// Address bar input as (a path, a program and its arguments); either may be missing. Unpaired quotes: nothing.
+fn addr_parts(raw: &str) -> Option<(Option<&str>, Option<(&str, &str)>)> {
+    let quotes = raw.matches('"').count();
+    if quotes % 2 == 1 {
+        return None;
+    }
+    let path = match quotes {
+        0 => Some(raw),
+        2 if raw.len() > 1 && raw.starts_with('"') && raw.ends_with('"') => Some(&raw[1..raw.len() - 1]),
+        _ => None,
+    };
+    let cmd = if let Some(q) = raw.strip_prefix('"') {
+        let (prog, rest) = q.split_once('"')?;
+        (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| (prog, rest.trim()))
+    } else {
+        let (prog, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+        (!prog.contains(['\\', '/', ':', '"'])).then(|| (prog, rest.trim()))
+    };
+    Some((path, cmd.filter(|(prog, _)| !prog.is_empty())))
+}
+
+fn is_rel(p: &str) -> bool {
+    !p.contains(':') && !p.starts_with(['\\', '/'])
+}
+
+unsafe fn addr_reset(i: usize, e: HWND) {
+    let disp = app(|x| x.panes[i].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
+    _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+    focus_view(i);
+    show_path_end(e, &disp);
+}
+
+// Enter in the address bar: a folder (relative to this pane's) is browsed to, a file opened, else a command
+// (cmd, wt, powershell ...) runs in this pane's folder.
 unsafe fn go_edit(i: usize) {
     let Some(e) = pane_ctl(i, ID_EDIT) else { return };
-    if navigate(i, text_of(e).trim().trim_matches('"')) {
-        focus_view(i);
-    } else {
+    let raw = text_of(e);
+    let Some((path, cmd)) = addr_parts(raw.trim()) else {
         _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    // none inside a zip or in a shell place; metadata (not GetFileAttributes) also takes a bare \\server\share
+    let cur = app(|a| a.s.paths[i].clone());
+    let cur = (is_fs(&cur) && std::fs::metadata(&cur).is_ok_and(|m| m.is_dir())).then_some(cur);
+    let dir = cur.as_deref().map(HSTRING::from);
+    let run = |mut sei: SHELLEXECUTEINFOW| {
+        sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.lpDirectory = dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr()));
+        sei.nShow = SW_SHOWNORMAL.0;
+        ShellExecuteExW(&mut sei).is_ok()
+    };
+    // Some(true) = browsed, Some(false) = opened or ran
+    let done = 'go: {
+        if let Some(p) = path {
+            // std::path::absolute is GetFullPathNameW: folds `..` and `.`
+            let full = cur.as_ref().filter(|_| is_rel(p)).and_then(|c| std::path::absolute(Path::new(c).join(p)).ok());
+            let target = full.filter(|f| std::fs::metadata(f).is_ok()).map_or(p.to_string(), |f| f.to_string_lossy().into_owned());
+            let (mut pidl, mut sfgao) = (std::ptr::null_mut(), 0u32);
+            if SHParseDisplayName(&HSTRING::from(target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() {
+                let r = if sfgao & SFGAO_FOLDER.0 != 0 {
+                    eb_of(i).is_some_and(|eb| eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok()).then_some(true)
+                } else {
+                    run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
+                };
+                CoTaskMemFree(Some(pidl as _));
+                break 'go r;
+            }
+        }
+        let Some((prog, args)) = cmd else { break 'go None };
+        // wt opens in its own default folder unless told; lpDirectory makes `.` this pane's
+        let wt = prog.eq_ignore_ascii_case("wt") || prog.eq_ignore_ascii_case("wt.exe");
+        let args = if wt && args.is_empty() && cur.is_some() { "-d ." } else { args };
+        let (prog, args) = (HSTRING::from(prog), HSTRING::from(args));
+        run(SHELLEXECUTEINFOW { fMask: SEE_MASK_FLAG_NO_UI, lpFile: PCWSTR(prog.as_ptr()), lpParameters: PCWSTR(args.as_ptr()), ..Default::default() }).then_some(false)
+    };
+    match done {
+        Some(true) => focus_view(i),
+        Some(false) => addr_reset(i, e),
+        None => _ = MessageBeep(MB_ICONWARNING),
     }
 }
 
@@ -1231,15 +1386,47 @@ unsafe fn open_in(src: usize, dst: usize) {
 }
 
 unsafe fn open_in_menu(h: HWND, src: usize) {
+    // (pane, shown name, folder it held when the menu opened)
     let items = app(|a| {
         let live = a.panes.iter().enumerate().take(a.s.panes());
-        live.filter(|(k, _)| *k != src).filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone()))).collect::<Vec<_>>()
+        let live = live.filter(|(k, _)| *k != src);
+        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone()))).collect::<Vec<_>>()
     });
+    let arr = view_of::<IFolderView2>(src).and_then(|fv| fv.GetSelection(false).ok());
+    let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
+    let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    for (k, disp) in &items {
+    for (k, disp, _) in &items {
         _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+    }
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    match &picked {
+        Ok(srcs) => {
+            let n = srcs.len();
+            let titles = [
+                (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사").replace("{n}", &n.to_string())),
+                (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동").replace("{n}", &n.to_string())),
+            ];
+            for (mv, base, title) in titles {
+                let Ok(sub) = CreatePopupMenu() else { continue };
+                for (k, disp, path) in &items {
+                    let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
+                    let flags = if ok { MF_STRING } else { MF_STRING | MF_GRAYED };
+                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널"), k + 1)));
+                }
+                _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
+            }
+        }
+        Err(why) => {
+            let text = match why {
+                Pick::TooMany => tr("Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V", "복사·이동: 선택이 10,000개를 넘습니다 — Ctrl+C / Ctrl+V를 쓰세요"),
+                Pick::Unreadable => tr("Copy / move: some selected items aren't regular files", "복사·이동: 일반 파일이 아닌 항목이 섞여 있습니다"),
+                Pick::Empty => tr("Copy / move: select files first", "복사·이동: 먼저 파일을 고르세요"),
+            };
+            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(text));
+        }
     }
     let mut rc = RECT::default();
     if let Some(b) = pane_ctl(src, ID_OPEN_IN) {
@@ -1247,9 +1434,52 @@ unsafe fn open_in_menu(h: HWND, src: usize) {
     }
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, None, h, None).0;
     _ = DestroyMenu(menu);
-    if pick > 0 {
-        open_in(src, pick as usize - 1);
+    match (pick as usize, picked) {
+        (0, _) => {}
+        (p @ 1..=100, _) => open_in(src, p - 1),
+        (p, Ok(srcs)) => {
+            // only to the folder the menu showed, and only the whole selection it counted
+            let (mv, k) = (p > 200, (p - 1) % 100);
+            let shown = items.iter().find(|(i, ..)| *i == k).map(|(.., path)| path.clone());
+            let sent = shown.filter(|s| *s == app(|a| a.s.paths[k].clone())).and_then(|dst| {
+                let rename = send_mode(&srcs, &dst, mv)?;
+                Some(start_copy(srcs, dst, rename, mv))
+            });
+            if sent != Some(true) {
+                _ = MessageBeep(MB_ICONWARNING);
+            }
+        }
+        _ => {}
     }
+}
+
+// Alt+↓ or right-click on ← / →: folders recently visited in any pane, opened in this one.
+unsafe fn recent_menu(i: usize) {
+    let Some(h) = app(|a| a.panes[i].as_ref().map(|p| p.hwnd)) else { return };
+    let items = app(|a| recent_items(&a.s.recent, &a.s.paths[i]));
+    let Ok(menu) = CreatePopupMenu() else { return };
+    if items.is_empty() {
+        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No recent folders yet", "최근 폴더가 아직 없습니다")));
+    }
+    for (k, p) in items.iter().enumerate() {
+        // "name<tab>parent"; drive roots and share roots show whole
+        let path = std::path::Path::new(p);
+        let (leaf, parent) = match (path.file_name(), path.parent()) {
+            (Some(n), Some(d)) => (n.to_string_lossy().into_owned(), d.display().to_string()),
+            _ => (p.clone(), String::new()),
+        };
+        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{leaf}\t{parent}").replace('&', "&&")));
+    }
+    let mut rc = RECT::default();
+    if let Some(b) = pane_ctl(i, ID_BACK) {
+        _ = GetWindowRect(b, &mut rc);
+    }
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if pick > 0 && !navigate(i, &items[pick as usize - 1]) {
+        _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+    }
+    focus_view(i);
 }
 
 unsafe fn apply_filter(i: usize) {
@@ -1258,6 +1488,9 @@ unsafe fn apply_filter(i: usize) {
     let changed = FILTERS.lock().map(|mut fl| std::mem::replace(&mut fl[i], spec.clone()) != spec).unwrap_or(false);
     if let (true, Some(sv)) = (changed, view_of::<IShellView>(i)) {
         _ = sv.Refresh(); // re-enumerates, asking IncludeObject again
+    }
+    if let (true, Some(pane)) = (changed, app(|a| a.panes[i].as_ref().map(|p| p.hwnd))) {
+        _ = InvalidateRect(Some(pane), None, false); // filter badge on/off
     }
 }
 
@@ -1387,6 +1620,7 @@ unsafe extern "system" fn list_floor_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPA
 }
 
 const WM_NARROW_AGAIN: u32 = WM_APP + 41;
+const WM_DROP_OPEN: u32 = WM_APP + 42;
 static NARROWING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1); // column << 32 | width
 
 
@@ -1479,7 +1713,8 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
     let Some((h, eb, view, cols)) = app(|a| {
         let fs = is_fs(&parse);
-        a.s.paths[i] = parse;
+        let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
+        visit(&mut a.s.recent, &old, &a.s.paths[i]);
         let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
@@ -1491,7 +1726,8 @@ unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         return;
     };
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
-        _ = SetWindowTextW(e, &HSTRING::from(disp));
+        _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+        show_path_end(e, &disp);
     }
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
@@ -1530,6 +1766,7 @@ struct Events(usize);
 
 impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, _: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         unsafe { save_view(self.0) };
         Ok(())
     }
@@ -1537,10 +1774,12 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         Ok(())
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         unsafe { on_nav(self.0, pidl) };
         Ok(())
     }
     fn OnNavigationFailed(&self, _: *const ITEMIDLIST) -> Result<()> {
+        NAV_GEN.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -1566,7 +1805,10 @@ impl ICommDlgBrowser_Impl for Host_Impl {
     fn OnDefaultCommand(&self, _: Ref<IShellView>) -> Result<()> {
         Err(S_FALSE.into()) // let the view do its default action (open)
     }
-    fn OnStateChange(&self, _: Ref<IShellView>, _: u32) -> Result<()> {
+    fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
+        if change == CDBOSC_SELCHANGE {
+            SEL_REV[self.0].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
+        }
         Ok(())
     }
     fn IncludeObject(&self, sv: Ref<IShellView>, pidl: *const ITEMIDLIST) -> Result<()> {
@@ -1593,6 +1835,106 @@ impl ICommDlgBrowser_Impl for Host_Impl {
                 Err(S_FALSE.into())
             }
         }
+    }
+}
+
+// A folder dropped on a pane's top bar (its fields and buttons too: OLE walks up to the pane) opens there.
+// Never MOVE: a shell source deletes what it moved. LINK or COPY leaves the source alone.
+fn drop_pick(allowed: DROPEFFECT) -> DROPEFFECT {
+    [DROPEFFECT_LINK, DROPEFFECT_COPY].into_iter().find(|e| allowed.0 & e.0 != 0).unwrap_or(DROPEFFECT_NONE)
+}
+
+unsafe fn drop_items(d: &Ref<IDataObject>) -> Option<IShellItemArray> {
+    let arr: IShellItemArray = SHCreateShellItemArrayFromDataObject(d.as_ref()?).ok()?;
+    (arr.GetCount().unwrap_or(0) > 0).then_some(arr)
+}
+
+#[implement(IDropTarget)]
+struct PaneDrop {
+    slot: usize,
+    hwnd: HWND,
+    ok: Cell<bool>, // the data being dragged holds shell items
+    helper: Option<IDropTargetHelper>,
+}
+
+impl PaneDrop {
+    // sets the effect this drop would get, and tints the header only while it isn't NONE
+    unsafe fn pick(&self, effect: *mut DROPEFFECT) {
+        *effect = if self.ok.get() { drop_pick(*effect) } else { DROPEFFECT_NONE };
+        self.hover(*effect != DROPEFFECT_NONE);
+    }
+    unsafe fn hover(&self, on: bool) {
+        let h = self.hwnd;
+        let changed = app(|a| {
+            let was = a.drop_hover == h;
+            if on {
+                a.drop_hover = h;
+            } else if was {
+                a.drop_hover = HWND::default();
+            }
+            was != on
+        });
+        if changed {
+            repaint_header(h);
+        }
+    }
+    // the folder (or a file's folder) is queued, not opened: a drag from this pane's own list is still running
+    unsafe fn queue(&self, d: &Ref<IDataObject>) -> bool {
+        let Some(item) = drop_items(d).and_then(|a| a.GetItemAt(0).ok()) else { return false };
+        let is_dir = item.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
+        let Some(folder) = (if is_dir { Some(item) } else { item.GetParent().ok() }) else { return false };
+        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot, folder)));
+        if PostMessageW(Some(self.hwnd), WM_DROP_OPEN, WPARAM(0), LPARAM(0)).is_ok() {
+            return true;
+        }
+        _ = app(|a| a.drop_open.take());
+        false
+    }
+}
+
+impl IDropTarget_Impl for PaneDrop_Impl {
+    fn DragEnter(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            self.ok.set(drop_items(&d).is_some());
+            self.pick(effect);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragEnter(self.hwnd, d.as_ref(), &POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
+    }
+    fn DragOver(&self, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            self.pick(effect);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragOver(&POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
+    }
+    fn DragLeave(&self) -> Result<()> {
+        unsafe {
+            self.hover(false);
+            if let Some(hp) = &self.helper {
+                _ = hp.DragLeave();
+            }
+        }
+        Ok(())
+    }
+    fn Drop(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+        unsafe {
+            let allowed = *effect;
+            *effect = DROPEFFECT_NONE;
+            self.hover(false);
+            let eff = drop_pick(allowed);
+            if eff != DROPEFFECT_NONE && self.queue(&d) {
+                *effect = eff;
+            }
+            if let Some(hp) = &self.helper {
+                _ = hp.Drop(d.as_ref(), &POINT { x: pt.x, y: pt.y }, *effect);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1706,16 +2048,18 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
-        (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←)", "뒤로  (Alt+←)")),
-        (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→)", "앞으로  (Alt+→)")),
+        (ID_BACK, tr("Back", "뒤로"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더")),
+        (ID_FWD, tr("Forward", "앞으로"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더")),
         (ID_UP, tr("Parent folder", "상위 폴더"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)")),
-        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in another pane", "다른 패널에서 열기")),
+        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동")),
         (ID_FAV, tr("Favourite", "즐겨찾기"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)")),
     ];
     for (id, name, tip) in buttons {
         add_tip(child(h, w!("BUTTON"), PCWSTR(HSTRING::from(name).as_ptr()), btn, plain, id, font), tip);
     }
-    child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_EDIT, font);
+    let edit = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_EDIT, font);
+    // Folder suggestions as you type, like Explorer's address bar; folders only, since navigate() only browses folders
+    _ = SHAutoComplete(edit, SHACF_FILESYS_DIRS | SHACF_AUTOSUGGEST_FORCE_ON | SHACF_AUTOAPPEND_FORCE_OFF);
     child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
 
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
@@ -1726,18 +2070,32 @@ unsafe fn create_pane(i: usize) -> Result<Pane> {
     eb.SetOptions(EBO_NOBORDER)?;
     let ev: IExplorerBrowserEvents = Events(i).into();
     let cookie = eb.Advise(&ev)?;
+    let helper = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok(); // drag image over the bar
+    let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
+    _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
     Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None })
 }
 
 unsafe fn destroy_pane(i: usize) {
+    NAV_GEN.fetch_add(1, Ordering::SeqCst);
     save_view(i);
-    if let Some(p) = app(|a| a.panes[i].take()) {
+    let (p, queued) = app(|a| {
+        let p = a.panes[i].take();
+        if p.as_ref().is_some_and(|p| p.hwnd == a.drop_hover) {
+            a.drop_hover = HWND::default();
+        }
+        let queued = if a.drop_open.as_ref().is_some_and(|d| d.1 == i) { a.drop_open.take() } else { None };
+        (p, queued)
+    });
+    if let Some(p) = p {
+        _ = RevokeDragDrop(p.hwnd);
         _ = p.eb.Unadvise(p.cookie);
         _ = IUnknown_SetSite(&p.eb, None);
         _ = p.eb.Destroy();
         _ = DestroyWindow(p.hwnd);
     }
+    drop(queued);
     if let Ok(mut f) = FILTERS.lock() {
         f[i].clear();
     }
@@ -1780,7 +2138,7 @@ unsafe fn move_all(moves: &[(HWND, RECT)], eb: Option<(&IExplorerBrowser, RECT)>
 }
 
 unsafe fn layout_pane(h: HWND) {
-    let Some((eb, dpi)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi))) else {
+    let Some((eb, dpi, disp)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi, p.disp.clone()))) else {
         return;
     };
     let fh = app(|a| a.fh) + 2;
@@ -1799,13 +2157,17 @@ unsafe fn layout_pane(h: HWND) {
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
+    show_path_end(ctl(ID_EDIT), &disp);
 }
 
 unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label)) = app(|a| {
+    let Some((main, moves, label, shown)) = app(|a| {
         if a.main.0.is_null() {
             return None;
+        }
+        if a.zoom.is_some_and(|z| z != a.s.active || z >= a.s.panes()) {
+            a.zoom = None;
         }
         let g = geo(a);
         let s = |v: i32| v * a.dpi / 96;
@@ -1820,16 +2182,22 @@ unsafe fn relayout() {
         }
         let right = g.w - g.pad; // the theme toggle sits at the far right
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
+        let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
+        let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
             if let Some(p) = p {
-                moves.push((p.hwnd, cell_rect(&g, &a.s.heights, i)));
+                moves.push((p.hwnd, if a.zoom == Some(i) { full } else { cell_rect(&g, &a.s.heights, i) }));
+                shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights)))
+        Some((a.main, moves, layout_label(&a.s.heights), shown))
     }) else {
         return;
     };
     move_all(&moves, None);
+    for (h, on) in shown {
+        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
+    }
     start_reveal(main); // sidebar size may have changed: keep its selection in view
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
         if text_of(b) != label {
@@ -1898,6 +2266,10 @@ unsafe fn set_active(i: usize) {
         (old, [old, i].map(|k| a.panes[k].as_ref().map(|p| p.hwnd)))
     });
     if old != i {
+        if app(|a| a.zoom.take()).is_some() {
+            relayout();
+            redraw_all();
+        }
         for h in hs.into_iter().flatten() {
             repaint_header(h);
         }
@@ -1988,20 +2360,20 @@ unsafe fn start_reveal(main: HWND) {
 }
 
 unsafe fn set_accent(c: u32) {
-    let (bars, pane) = app(|a| {
+    let (bars, panes) = app(|a| {
         if a.s.dark {
             a.s.accent_dark = c;
         } else {
             a.s.accent = c;
         }
-        (a.bars, a.panes.get(a.s.active).and_then(|p| p.as_ref()).map(|p| p.hwnd))
+        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>())
     });
     let old = SetClassLongPtrW(bars[0], GCLP_HBRBACKGROUND, CreateSolidBrush(cref(c)).0 as isize);
     if old != 0 {
         _ = DeleteObject(HGDIOBJ(old as _));
     }
-    if let Some(p) = pane {
-        repaint_header(p);
+    for p in panes {
+        repaint_header(p); // all of them: inactive panes show the accent in their filter badge
     }
 }
 
@@ -2035,6 +2407,11 @@ unsafe fn dark_list(pane: HWND) {
         let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
         if !header.0.is_null() {
             _ = SetWindowTheme(header, w!("DarkMode_ItemsView"), PCWSTR::null());
+        }
+        // the info tip over a file, and the full name over a truncated one
+        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        if !tip.0.is_null() {
+            _ = SetWindowTheme(tip, w!("DarkMode_Explorer"), PCWSTR::null());
         }
         _ = InvalidateRect(Some(lv), None, true);
     }
@@ -2129,7 +2506,14 @@ unsafe fn uxtheme(ordinal: usize) -> FARPROC {
 
 // Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
 unsafe fn apply_theme() {
-    let (main, dark, tree, accent) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now()));
+    let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
+    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
+    let tip_theme = |t: HWND| {
+        if !t.0.is_null() {
+            _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
+        }
+    };
+    tip_theme(tip);
     DARK_ON.store(dark, Ordering::Relaxed);
     if let Some(f) = uxtheme(135) {
         let set_preferred_app_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
@@ -2148,6 +2532,7 @@ unsafe fn apply_theme() {
         let colour = |c: u32| LPARAM(if dark { cref(c).0 as isize } else { -1 }); // -1: system default
         SendMessageW(tv, TVM_SETBKCOLOR, None, Some(colour(pal().card)));
         SendMessageW(tv, TVM_SETTEXTCOLOR, None, Some(colour(pal().text)));
+        tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
     set_accent(accent);
     for i in 0..MAXP {
@@ -2173,17 +2558,110 @@ unsafe fn pick_accent() {
     }
 }
 
-// A double-click on empty space in a list (the first click cleared the selection) goes up a folder.
-unsafe fn up_candidate(m: &MSG) -> Option<usize> {
-    if m.message != WM_LBUTTONDBLCLK || !app(|a| a.s.dblup) {
+// Bumped on every navigation event and pane teardown, so a click pair spanning a folder change is dropped.
+static NAV_GEN: AtomicUsize = AtomicUsize::new(0);
+
+fn gen() -> usize {
+    NAV_GEN.load(Ordering::SeqCst)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Click {
+    win: isize,
+    gen: usize,
+    time: u32,
+    x: i32,
+    y: i32,
+}
+
+thread_local! {
+    static LAST_CLICK: Cell<Option<Click>> = const { Cell::new(None) };
+}
+
+// Windows 11's list (DirectUIHWND) has no CS_DBLCLKS, so a double-click is two background presses in a row,
+// within the system's double-click time and box. The pair is consumed: a third click doesn't go up again.
+fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx: i32, cy: i32) -> (Option<Click>, bool) {
+    if !bg {
+        return (None, false);
+    }
+    match prev {
+        Some(p)
+            if p.win == now.win
+                && p.gen == now.gen
+                && now.time.wrapping_sub(p.time) <= ms
+                && (now.x - p.x).abs() <= cx / 2
+                && (now.y - p.y).abs() <= cy / 2 =>
+        {
+            (None, true)
+        }
+        _ => (Some(now), false),
+    }
+}
+
+// Only the list itself is background; rows, group headers, collapse buttons, column headers are not.
+fn bg_role(role: u32) -> bool {
+    role == ROLE_SYSTEM_LIST
+}
+
+// The generation is read before the probe and again after it: a navigation during the probe voids it.
+fn bg_probe(gen: impl Fn() -> usize, probe: impl FnOnce() -> bool) -> (usize, bool) {
+    let g0 = gen();
+    let b = probe();
+    (g0, b && gen() == g0)
+}
+
+// After dispatch: same view window, nothing selected, and no navigation since the click. The generation is
+// read last, after the queries that could run navigation callbacks.
+fn confirm(cand: (usize, isize), query: impl FnOnce() -> (Option<isize>, Option<u32>), gen: impl Fn() -> usize) -> bool {
+    let (view, sel) = query();
+    view == Some(cand.1) && sel == Some(0) && gen() == cand.0
+}
+
+// Same-thread window, so WM_GETOBJECT runs inline; call outside app().
+unsafe fn on_background(m: &MSG) -> bool {
+    if WindowFromPoint(m.pt) != m.hwnd {
+        return false;
+    }
+    let mut acc: Option<IAccessible> = None;
+    let mut child = VARIANT::default();
+    if AccessibleObjectFromPoint(m.pt, &mut acc, &mut child).is_err() {
+        return false;
+    }
+    let bg = acc.and_then(|a| a.get_accRole(&child).ok()).is_some_and(|mut role| {
+        let r = &role.Anonymous.Anonymous;
+        let bg = r.vt == VT_I4 && bg_role(r.Anonymous.lVal as u32);
+        _ = VariantClear(&mut role);
+        bg
+    });
+    _ = VariantClear(&mut child);
+    bg
+}
+
+// A double-click on empty space in a list goes up a folder: (pane, generation, view window) when this press
+// completes a background pair.
+unsafe fn up_candidate(m: &MSG) -> Option<(usize, usize, isize)> {
+    if !matches!(m.message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) || !app(|a| a.s.dblup) {
         return None;
     }
     let i = pane_of(m.hwnd)?;
-    let svh = view_of::<IShellView>(i)?.GetWindow().ok()?;
-    let mut c = [0u16; 32];
-    let n = GetClassNameW(m.hwnd, &mut c) as usize;
-    let list = matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32");
-    (list && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())).then_some(i)
+    let svh = Cell::new(HWND::default());
+    let (g0, bg) = bg_probe(gen, || {
+        let Some(h) = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()) else {
+            return false;
+        };
+        svh.set(h);
+        let mut c = [0u16; 32];
+        let n = GetClassNameW(m.hwnd, &mut c) as usize;
+        let list = matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32");
+        list && (h == m.hwnd || IsChild(h, m.hwnd).as_bool())
+            && m.wParam.0 & (MK_CONTROL.0 | MK_SHIFT.0) as usize == 0
+            && on_background(m)
+    });
+    let now = Click { win: m.hwnd.0 as isize, gen: g0, time: m.time, x: m.pt.x, y: m.pt.y };
+    let (cx, cy) = (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK));
+    let (next, up) = next_click(LAST_CLICK.get(), now, bg, GetDoubleClickTime(), cx, cy);
+    LAST_CLICK.set(next);
+    up.then(|| (i, g0, svh.get().0 as isize))
 }
 
 unsafe fn cycle(d: i32) {
@@ -2193,8 +2671,59 @@ unsafe fn cycle(d: i32) {
     focus_view(i);
 }
 
+/// The slot of the nearest cell wholly to one side of `cur` (dx/dy = -1, 0 or 1) that overlaps it across that axis.
+fn neighbour(cells: &[(usize, RECT)], cur: usize, dx: i32, dy: i32) -> Option<usize> {
+    let &(_, c) = cells.iter().find(|(s, _)| *s == cur)?;
+    let mid = |r: &RECT| if dx != 0 { r.top + r.bottom } else { r.left + r.right };
+    cells
+        .iter()
+        .filter(|(s, _)| *s != cur)
+        .filter_map(|&(s, r)| {
+            let gap = match (dx, dy) {
+                (-1, _) => c.left - r.right,
+                (1, _) => r.left - c.right,
+                (_, -1) => c.top - r.bottom,
+                _ => r.top - c.bottom,
+            };
+            let overlap = if dx != 0 { r.top.max(c.top) < r.bottom.min(c.bottom) } else { r.left.max(c.left) < r.right.min(c.right) };
+            (gap >= 0 && overlap).then_some((gap, (mid(&r) - mid(&c)).abs(), s))
+        })
+        .min()
+        .map(|(_, _, s)| s)
+}
+
+// Like Windows Terminal's Alt+arrow or tmux's prefix+arrow: move to the pane on screen in that direction.
+unsafe fn move_pane(dx: i32, dy: i32) {
+    let (cells, cur) = app(|a| {
+        let g = geo(a);
+        let cells = (0..a.s.panes()).filter(|&i| a.panes[i].is_some()).map(|i| (i, cell_rect(&g, &a.s.heights, i))).collect::<Vec<_>>();
+        (cells, a.s.active)
+    });
+    if let Some(j) = neighbour(&cells, cur, dx, dy) {
+        set_active(j);
+        focus_view(j);
+    }
+}
+
+// Like tmux's pane zoom: the active pane takes the whole grid until toggled back or another pane is picked.
+unsafe fn toggle_zoom() {
+    if app(|a| a.drag.is_some() || a.s.panes() <= 1) {
+        return;
+    }
+    let i = app(|a| {
+        a.zoom = if a.zoom.is_some() { None } else { Some(a.s.active) };
+        a.s.active
+    });
+    relayout();
+    redraw_all();
+    focus_view(i);
+}
+
 unsafe fn set_layout(h: Vec<usize>) {
-    app(|a| a.s.set_heights(h));
+    app(|a| {
+        a.zoom = None;
+        a.s.set_heights(h);
+    });
     relayout();
     redraw_all();
 }
@@ -2291,6 +2820,7 @@ unsafe fn load_session_file(path: &Path) {
     let other = Session::parse(&text);
     app(|a| {
         a.s.take_layout(&other);
+        a.zoom = None;
         a.s.file = path.to_string_lossy().into_owned();
         (a.base, a.dirty) = (Some(a.s.clone()), false);
     });
@@ -2304,6 +2834,10 @@ unsafe fn load_session_file(path: &Path) {
 unsafe fn open_args(args: Vec<String>) {
     if let Some(f) = session_arg(&args) {
         return load_session_file(Path::new(f));
+    }
+    if app(|x| x.zoom.take()).is_some() {
+        relayout();
+        redraw_all();
     }
     let (a, n) = app(|x| (x.s.active, x.s.panes()));
     for (k, p) in args.iter().take(n).enumerate() {
@@ -2340,51 +2874,288 @@ struct CopyData {
 
 // ---------- status bar ----------
 
-unsafe fn selected_size(fv: &IFolderView2) -> u64 {
-    let Ok(arr) = fv.GetSelection(false) else { return 0 };
-    // ponytail: sums at most 10k selected items; bigger selections show a partial size
-    let n = arr.GetCount().unwrap_or(0).min(10_000);
-    let paths = (0..n).filter_map(|k| arr.GetItemAt(k).ok()).filter_map(|it| it.GetDisplayName(SIGDN_FILESYSPATH).ok());
-    paths.map(|p| std::fs::metadata(pwstr(p)).map(|m| if m.is_file() { m.len() } else { 0 }).unwrap_or(0)).sum()
+// Bumped by each pane's selection-change notification; part of the status key.
+static SEL_REV: [AtomicUsize; MAXP] = [const { AtomicUsize::new(0) }; MAXP];
+
+// The selection split into summed file bytes and folders left to the size worker.
+// partial: something wasn't counted (over 10k items, no file system path, unreadable, a drive root).
+#[derive(Debug, PartialEq)]
+struct Sel {
+    file_bytes: u64,
+    dirs: Vec<String>,
+    partial: bool,
+}
+
+// n: the selection's count (None = it couldn't be read), path(k): item k's file system path.
+fn collect_sel(n: Option<u32>, path: impl Fn(u32) -> Option<String>) -> Sel {
+    let Some(n) = n else { return Sel { file_bytes: 0, dirs: Vec::new(), partial: true } };
+    // ponytail: sums at most 10k selected items; bigger selections are marked partial
+    let mut s = Sel { file_bytes: 0, dirs: Vec::new(), partial: n > 10_000 };
+    for k in 0..n.min(10_000) {
+        let Some(p) = path(k) else {
+            s.partial = true;
+            continue;
+        };
+        match std::fs::metadata(&p) {
+            Ok(m) if m.is_dir() && Path::new(&p).parent().is_some() => s.dirs.push(p),
+            Ok(m) if m.is_file() => s.file_bytes += m.len(),
+            // a drive or share root (its size is the free-space part), or unreadable
+            _ => s.partial = true,
+        }
+    }
+    s
+}
+
+unsafe fn selected_size(fv: &IFolderView2) -> Sel {
+    let arr = fv.GetSelection(false).ok();
+    let n = arr.as_ref().and_then(|a| a.GetCount().ok());
+    collect_sel(n, |k| Some(pwstr(arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?)))
+}
+
+// The " (…)" after "n selected". dirs: the folder total so far (bytes, done, partial), None = not started.
+fn size_text(ko: bool, file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool, bool)>, collect_partial: bool) -> String {
+    let (b, done, partial) = match dirs {
+        _ if !has_dirs => (0, true, false),
+        Some(d) => d,
+        None => (0, false, false),
+    };
+    let (bytes, partial) = (file_bytes + b, partial || collect_partial);
+    if !done {
+        return match bytes {
+            0 => (if ko { " (계산 중…)" } else { " (calculating…)" }).into(),
+            b => format!(" ({}…)", human(b)),
+        };
+    }
+    match (bytes, partial) {
+        (0, false) if !has_dirs => String::new(),
+        (0, true) if !has_dirs => (if ko { " (크기 모름)" } else { " (size unknown)" }).into(),
+        (b, true) => format!(" ({}, {})", human(b), if ko { "일부만" } else { "partial" }),
+        (b, false) => format!(" ({})", human(b)),
+    }
+}
+
+// Folder sizes are summed by one worker thread. gen changes on every new target or cancel;
+// the worker drops results of an older gen and stops walking once DIR_GEN moves on.
+#[derive(Default)]
+struct SizeJob {
+    gen: usize,
+    target: Vec<String>,
+    bytes: u64,
+    done: bool,
+    partial: bool,
+}
+
+impl SizeJob {
+    // True = a new walk is due. busy (a copy runs) or no folders cancel; the same target keeps
+    // running, or keeps its result.
+    fn want(&mut self, dirs: &[String], busy: bool) -> bool {
+        if busy || dirs.is_empty() {
+            (self.gen, self.done) = (self.gen + 1, false);
+            self.target.clear();
+            return false;
+        }
+        if self.target == dirs {
+            return false;
+        }
+        *self = SizeJob { gen: self.gen + 1, target: dirs.to_vec(), ..Default::default() };
+        true
+    }
+
+    fn publish(&mut self, gen: usize, bytes: u64, done: bool, partial: bool) -> bool {
+        if self.gen != gen {
+            return false;
+        }
+        (self.bytes, self.done, self.partial) = (bytes, done, partial);
+        true
+    }
+}
+
+static DIR_SIZE: Mutex<SizeJob> = Mutex::new(SizeJob { gen: 0, target: Vec::new(), bytes: 0, done: false, partial: false });
+static DIR_WAKE: Condvar = Condvar::new();
+static DIR_GEN: AtomicUsize = AtomicUsize::new(0); // copy of DIR_SIZE.gen, read without the lock
+
+fn size_job() -> std::sync::MutexGuard<'static, SizeJob> {
+    DIR_SIZE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn want_size(dirs: &[String], busy: bool) {
+    let mut j = size_job();
+    if j.want(dirs, busy) {
+        static WORKER: Once = Once::new();
+        WORKER.call_once(|| _ = std::thread::Builder::new().spawn(size_worker));
+        DIR_WAKE.notify_one();
+    }
+    DIR_GEN.store(j.gen, Ordering::Relaxed);
+}
+
+// Lives until the process ends. The lock is never held across file system calls.
+fn size_worker() {
+    let mut seen = 0;
+    loop {
+        let (gen, target) = {
+            let mut j = size_job();
+            while j.target.is_empty() || j.gen == seen {
+                j = DIR_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
+            }
+            (j.gen, j.target.clone())
+        };
+        seen = gen;
+        let stop = || DIR_GEN.load(Ordering::Relaxed) != gen;
+        // a copy only pauses the walk; the status line cancels it when it sees the copy
+        let paused = || COPYING.load(Ordering::Relaxed) > 0;
+        let (mut total, mut partial) = (0, false);
+        let finished = target.iter().all(|root| {
+            let (base, was) = (total, partial);
+            let mut progress = |b, p| _ = size_job().publish(gen, base + b, false, was || p);
+            dir_bytes(Path::new(root), &stop, &paused, &mut progress).map(|(b, p)| (total, partial) = (total + b, partial || p)).is_some()
+        });
+        if finished {
+            size_job().publish(gen, total, true, partial);
+        }
+    }
+}
+
+// Bytes under `root`, not following links or junctions. Unreadable parts set the flag and are skipped.
+// None = `stop` turned true. Checked before each directory read and each entry, also while `paused`;
+// a single read_dir/metadata call that hangs (a dead share) still has to return first.
+fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() -> bool, progress: &mut dyn FnMut(u64, bool)) -> Option<(u64, bool)> {
+    let go = || {
+        while paused() && !stop() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        !stop()
+    };
+    match std::fs::symlink_metadata(root) {
+        Ok(m) if m.is_dir() => {}
+        Ok(m) => return Some((if m.is_file() { m.len() } else { 0 }, false)),
+        Err(_) => return Some((0, true)),
+    }
+    let (mut sum, mut partial, mut n, mut last) = (0, false, 0usize, Instant::now());
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if !go() {
+            return None;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            partial = true;
+            continue;
+        };
+        for e in rd {
+            if !go() {
+                return None;
+            }
+            let Ok(e) = e else {
+                partial = true;
+                continue;
+            };
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => match e.metadata() {
+                    Ok(m) => sum += m.len(),
+                    Err(_) => partial = true,
+                },
+                Ok(_) => {} // a link or junction
+                Err(_) => partial = true,
+            }
+            n += 1;
+            if n % 2000 == 0 || last.elapsed().as_millis() >= 200 {
+                progress(sum, partial);
+                last = Instant::now();
+            }
+        }
+    }
+    Some((sum, partial))
+}
+
+// F5 in a file list: the shell reloads it, and selected folders are summed again.
+fn resum_sizes() {
+    want_size(&[], true);
+    app(|a| a.status_key.clear());
 }
 
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
+// Other ticks only merge the folder size worker's progress into the stored text.
 unsafe fn update_status() {
     let (i, path, main) = app(|a| (a.s.active, a.s.paths[a.s.active].clone(), a.main));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
     let sel = fv.ItemCount(SVGIO_SELECTION).unwrap_or(0);
     let spec = filter_of(i);
-    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}", fv.GetFocusedItem().unwrap_or(-1));
-    if app(|a| a.status_key == key) {
+    // while a background copy runs, the disk is left alone (size and free space come back after)
+    let busy = COPYING.load(Ordering::Relaxed) > 0;
+    let zoom = app(|a| a.zoom);
+    let rev = SEL_REV[i].load(Ordering::Relaxed);
+    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}|{rev}", fv.GetFocusedItem().unwrap_or(-1));
+    if app(|a| a.status_key != key) {
+        status_base(i, &path, main, &fv, n, sel, &spec, busy, zoom);
+        app(|a| a.status_key = key);
+    }
+    let job = {
+        let j = size_job();
+        (!j.target.is_empty()).then_some((j.bytes, j.done, j.partial))
+    };
+    let ko = KO.load(Ordering::Relaxed);
+    let Some(rc) = app(|a| {
+        let (head, size, tail) = &a.status_base;
+        let size = size.map(|(f, d, p)| size_text(ko, f, d, job, p)).unwrap_or_default();
+        // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
+        a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
+        let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
+        let status = format!("{note}{head}{size}{tail}");
+        (a.status != status).then(|| {
+            a.status = status;
+            status_rect(&geo(a))
+        })
+    }) else {
         return;
+    };
+    _ = InvalidateRect(Some(main), Some(&rc), true);
+}
+
+// The status text around the selection size, the window title, and a new folder size job.
+unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderView2, n: i32, sel: i32, spec: &str, busy: bool, zoom: Option<usize>) {
+    let title = window_title(&app(|a| a.panes[i].as_ref().map(|p| p.disp.clone()).unwrap_or_default()));
+    if text_of(main) != title {
+        _ = SetWindowTextW(main, &HSTRING::from(title));
     }
     let ko = KO.load(Ordering::Relaxed);
     let mut parts = vec![if ko { format!("항목 {n}개") } else { format!("{n} items") }];
+    let mut size = None;
+    let mut dirs = Vec::new();
     if sel > 0 {
-        let size = match selected_size(&fv) {
-            0 => String::new(),
-            size => format!(" ({})", human(size)),
-        };
-        parts.push(if ko { format!("{sel}개 선택{size}") } else { format!("{sel} selected{size}") });
+        if !busy {
+            let s = selected_size(fv);
+            size = Some((s.file_bytes, !s.dirs.is_empty(), s.partial));
+            dirs = s.dirs;
+        }
+        parts.push(if ko { format!("{sel}개 선택") } else { format!("{sel} selected") });
     }
+    want_size(&dirs, busy);
+    let head = parts.join("     ·     ");
+    let mut parts = vec![String::new()];
     if !spec.is_empty() {
         parts.push(format!("{} {spec}", tr("Filter", "필터")));
     }
     let drive = path.get(1..2) == Some(":");
-    if drive || path.starts_with(r"\\") {
+    if busy {
+        parts.push(tr("Copying / moving…", "복사·이동 중…").into());
+    } else if drive || path.starts_with(r"\\") {
         // ponytail: a dead network share can stall this call once per change
         let (mut free, mut total) = (0, 0);
-        if GetDiskFreeSpaceExW(&HSTRING::from(&path), Some(&mut free), Some(&mut total), None).is_ok() {
+        if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
             let label = if drive { &path[..2] } else { tr("Network", "네트워크") };
             parts.push(format!("{label} {} {} / {}", tr("free", "여유"), human(free), human(total)));
         }
     }
-    let rc = app(|a| {
-        (a.status_key, a.status) = (key, parts.join("     ·     "));
-        status_rect(&geo(a))
-    });
-    _ = InvalidateRect(Some(main), Some(&rc), true);
+    if let Some(z) = zoom {
+        let z = z + 1;
+        parts.push(if ko {
+            format!("패널 {z} 크게 보는 중 · Ctrl+Shift+M 또는 머리줄 더블클릭으로 복원")
+        } else {
+            format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore")
+        });
+    }
+    app(|a| a.status_base = (head, size, parts.join("     ·     ")));
 }
 
 // ---------- painting ----------
@@ -2404,8 +3175,13 @@ unsafe fn paint_main(h: HWND) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 unsafe fn paint_pane(h: HWND) {
-    let (active, dpi, icon_font, accent) =
-        app(|a| (a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h), a.dpi, a.icon_font, a.s.accent_now()));
+    let (active, i, dpi, icon_font, small_font, accent) = app(|a| {
+        let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
+        // a drop target-to-be looks active too
+        let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
+        (active, i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
+    });
+    let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
     let focus = GetFocus();
     let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
@@ -2422,14 +3198,25 @@ unsafe fn paint_pane(h: HWND) {
             frame(dc, rc, 1, pal().line);
             fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, pal().line);
         }
+        if let Some(i) = i.filter(|_| pg.num.right > pg.num.left) {
+            text(dc, pg.num, &(i + 1).to_string(), small_font, if active { ink } else { pal().sub }, DT_CENTER);
+        }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
             fill(dc, p, pal().pill);
             if on {
                 frame(dc, p, 1, if active { ink } else { accent });
             }
         }
-        let icon = RECT { left: pg.filt.left + s(4), right: pg.filt.left + s(22), ..pg.filt };
-        text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
+        if filtered {
+            // filter applied: accent chip left of the edit (which starts at filt.left + s(24))
+            let chip =
+                RECT { left: pg.filt.left + s(3), top: pg.filt.top + s(3), right: pg.filt.left + s(21), bottom: pg.filt.bottom - s(3) };
+            fill(dc, chip, accent);
+            text(dc, chip, ICON_FILTER, icon_font, on_color(accent), DT_CENTER);
+        } else {
+            let icon = RECT { left: pg.filt.left + s(4), right: pg.filt.left + s(22), ..pg.filt };
+            text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
+        }
     });
 }
 
@@ -2663,6 +3450,11 @@ fn short_name(path: &str) -> String {
     t.rsplit('\\').next().filter(|x| !x.starts_with("::")).unwrap_or(t).to_string()
 }
 
+// Title bar, taskbar and Alt+Tab follow the active pane's folder.
+fn window_title(disp: &str) -> String {
+    if disp.is_empty() { "Grids".into() } else { format!("{} - Grids", short_name(disp)) }
+}
+
 fn ago(t: std::time::SystemTime) -> String {
     let m = t.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
     match m {
@@ -2866,7 +3658,8 @@ unsafe fn open_favs() {
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_FAV) {
         _ = GetWindowRect(b, &mut rc);
     }
-    app(|a| a.fav_hot = None);
+    let prev = GetFocus();
+    app(|a| (a.fav_hot, a.fav_prev) = (None, prev));
     let style = WS_POPUP | WS_VISIBLE;
     let y = rc.bottom + 6 * dpi / 96;
     let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsFav"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
@@ -2920,32 +3713,61 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                     _ = InvalidateRect(Some(h), None, false);
                 }
             }
-            WM_LBUTTONUP => {
-                let (x, y) = xy(lp);
-                match fav_hit(&g, x, y) {
-                    Some((k, true)) => {
-                        // ✕: drop it and shrink the list in place
-                        app(|a| {
-                            a.s.favs.remove(k);
-                            a.fav_hot = None;
-                        });
-                        let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
-                        _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                        _ = InvalidateRect(Some(h), None, false);
-                        repaint_fav_buttons();
+            WM_LBUTTONUP | WM_KEYDOWN => {
+                // ✕ / Del: drop it and shrink the list in place
+                let remove = |k: usize| {
+                    app(|a| {
+                        a.s.favs.remove(k);
+                        a.fav_hot = None;
+                    });
+                    let g = app(|a| fav_geo(a.s.favs.len(), a.dpi));
+                    _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    _ = InvalidateRect(Some(h), None, false);
+                    repaint_fav_buttons();
+                };
+                let open = |k: usize| {
+                    let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    _ = DestroyWindow(h);
+                    if !navigate(i, &path) {
+                        _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
                     }
-                    Some((k, false)) => {
-                        let (i, path) = app(|a| (a.s.active, a.s.favs[k].clone()));
+                    focus_view(i);
+                };
+                if msg == WM_LBUTTONUP {
+                    let (x, y) = xy(lp);
+                    match fav_hit(&g, x, y) {
+                        Some((k, true)) => remove(k),
+                        Some((k, false)) => open(k),
+                        None => {}
+                    }
+                    return LRESULT(0);
+                }
+                let (n, cur) = app(|a| (a.s.favs.len(), a.fav_hot.map(|(k, _)| k)));
+                match VIRTUAL_KEY(wp.0 as u16) {
+                    VK_ESCAPE => {
+                        let (main, prev, active) = app(|a| (a.main, a.fav_prev, a.s.active));
                         _ = DestroyWindow(h);
-                        if !navigate(i, &path) {
-                            _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+                        let fav_btn = GetDlgItem(Some(main), ID_TB_FAV).unwrap_or_default();
+                        if !prev.0.is_null() && IsWindow(Some(prev)).as_bool() && prev != fav_btn {
+                            _ = SetFocus(Some(prev));
+                        } else {
+                            focus_view(active);
                         }
-                        focus_view(i);
                     }
-                    None => {}
+                    _ if n == 0 => {}
+                    k @ (VK_DOWN | VK_UP) => {
+                        let next = if k == VK_DOWN { cur.map_or(0, |k| (k + 1) % n) } else { cur.map_or(n - 1, |k| (k + n - 1) % n) };
+                        app(|a| a.fav_hot = Some((next, false)));
+                        _ = InvalidateRect(Some(h), None, false);
+                    }
+                    VK_RETURN => if let Some(k) = cur { open(k) },
+                    VK_DELETE => if let Some(k) = cur {
+                        remove(k);
+                        app(|a| a.fav_hot = if n > 1 { Some((k.min(n - 2), false)) } else { None });
+                    },
+                    _ => {}
                 }
             }
-            WM_KEYDOWN if wp.0 == VK_ESCAPE.0 as usize => _ = DestroyWindow(h),
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
             WM_DESTROY => app(|a| (a.fav_popup, a.fav_closed) = (HWND::default(), Some(Instant::now()))),
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -2961,6 +3783,194 @@ unsafe fn popup_menu(menu: HMENU, id: i32) {
         _ = GetWindowRect(b, &mut rc);
     }
     _ = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom + 4, None, main, None);
+}
+
+// ---------- background paste ----------
+
+// Copies running on worker threads; the status line says so and skips its disk calls meanwhile.
+static COPYING: AtomicUsize = AtomicUsize::new(0);
+
+struct Busy;
+
+impl Busy {
+    fn new() -> Busy {
+        COPYING.fetch_add(1, Ordering::Relaxed);
+        Busy
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        COPYING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+thread_local! {
+    // joined after the message loop so closing Grids doesn't cut a copy short
+    static JOBS: RefCell<Vec<std::thread::JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
+}
+
+// Ctrl+V in a file list: a held key's repeats are swallowed; the first press starts a copy, or goes
+// to the shell when `start` can't take it. True = handled, don't pass it on.
+fn paste_key(repeat: bool, start: impl FnOnce() -> bool) -> bool {
+    repeat || start()
+}
+
+// Some(true): every source sits in `dst` (copy with "- Copy" names), Some(false): none does,
+// None: empty, not a file system path or mixed (left to the shell).
+fn paste_mode(srcs: &[String], dst: &str) -> Option<bool> {
+    let dst = dst.trim_end_matches('\\').to_lowercase();
+    let parent = |p: &String| Some(p.trim_end_matches('\\').rsplit_once('\\')?.0.trim_end_matches('\\').to_lowercase());
+    let same: Vec<bool> = srcs.iter().map(|p| if is_fs(p) { parent(p).map(|d| d == dst) } else { None }).collect::<Option<_>>()?;
+    match (same.iter().all(|&s| s), same.iter().any(|&s| s)) {
+        _ if same.is_empty() => None,
+        (true, _) => Some(true),
+        (false, false) => Some(false),
+        _ => None,
+    }
+}
+
+// The ⇄ menu's copy / move: like a paste, but a move into the folder the files already sit in is refused.
+fn send_mode(srcs: &[String], dst: &str, mv: bool) -> Option<bool> {
+    paste_mode(srcs, dst).filter(|&same| !(mv && same))
+}
+
+// The ⇄ menu sends a whole selection or nothing: never a partial list from a capped or unreadable read.
+const SEND_MAX: u32 = 10_000;
+
+#[derive(Debug, PartialEq)]
+enum Pick {
+    Empty,
+    TooMany,
+    Unreadable,
+}
+
+fn collect_all(n: u32, mut get: impl FnMut(u32) -> Option<String>) -> std::result::Result<Vec<String>, Pick> {
+    match n {
+        0 => Err(Pick::Empty),
+        n if n > SEND_MAX => Err(Pick::TooMany),
+        n => (0..n).map(|k| get(k).ok_or(Pick::Unreadable)).collect(),
+    }
+}
+
+// Ctrl+Shift+C in a file list: the selected items' paths (or the folder's), quoted, one per line.
+// Virtual items without a file path are skipped. The clipboard is only touched once the text is ready.
+unsafe fn copy_paths(a: usize) {
+    let Some(fv) = view_of::<IFolderView2>(a) else { return };
+    let path = |it: IShellItem| it.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p));
+    let mut paths: Vec<String> = Vec::new();
+    if let Ok(arr) = fv.GetSelection(false) {
+        paths = (0..arr.GetCount().unwrap_or(0)).filter_map(|k| path(arr.GetItemAt(k).ok()?)).collect();
+    }
+    if fv.ItemCount(SVGIO_SELECTION).unwrap_or(0) == 0 {
+        paths = fv.GetFolder::<IShellItem>().ok().and_then(path).into_iter().collect();
+    }
+    if paths.is_empty() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let text: Vec<u16> = paths.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join("\r\n").encode_utf16().chain([0]).collect();
+    let main = app(|x| x.main);
+    let mut ok = false;
+    if let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, text.len() * 2) {
+        let p = GlobalLock(h) as *mut u16;
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), p, text.len());
+            _ = GlobalUnlock(h);
+            if OpenClipboard(Some(main)).is_ok() {
+                ok = EmptyClipboard().is_ok() && SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(h.0))).is_ok();
+                _ = CloseClipboard();
+            }
+        }
+        if !ok {
+            _ = GlobalFree(Some(h)); // after a successful SetClipboardData the system owns it
+        }
+    }
+    if !ok {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let n = paths.len();
+    let note = match (KO.load(Ordering::Relaxed), n) {
+        (true, 1) => "경로 복사함".into(),
+        (true, n) => format!("경로 {n}개 복사함"),
+        (false, 1) => "Copied path".into(),
+        (false, n) => format!("Copied {n} paths"),
+    };
+    app(|x| x.note = Some((note, Instant::now())));
+    update_status();
+}
+
+// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Grids stays usable.
+// Cut, links, virtual items and anything else stay with the shell.
+unsafe fn try_paste(a: usize) -> bool {
+    let (dst, main) = app(|x| (x.s.paths[a].clone(), x.main));
+    if !is_fs(&dst) || OpenClipboard(Some(main)).is_err() {
+        return false;
+    }
+    let mut srcs = Vec::new();
+    if let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) {
+        let drop = HDROP(h.0);
+        for k in 0..DragQueryFileW(drop, u32::MAX, None) {
+            let mut buf = vec![0u16; DragQueryFileW(drop, k, None) as usize + 1];
+            let n = DragQueryFileW(drop, k, Some(&mut buf)) as usize;
+            srcs.push(String::from_utf16_lossy(&buf[..n]));
+        }
+    }
+    let mut effect = None;
+    if let Ok(h) = GetClipboardData(RegisterClipboardFormatW(w!("Preferred DropEffect"))) {
+        let p = GlobalLock(HGLOBAL(h.0)) as *const u32;
+        if !p.is_null() {
+            effect = Some(*p);
+            _ = GlobalUnlock(HGLOBAL(h.0));
+        }
+    }
+    _ = CloseClipboard();
+    let copy = effect.is_none_or(|e| e & DROPEFFECT_MOVE.0 == 0 && e & DROPEFFECT_COPY.0 != 0);
+    let Some(rename) = paste_mode(&srcs, &dst).filter(|_| copy) else { return false };
+    start_copy(srcs, dst, rename, false)
+}
+
+// Copies (or, with `mv`, moves) `srcs` into `dst` on a worker thread. False = the thread didn't start.
+unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> bool {
+    let busy = Busy::new();
+    let job = std::thread::Builder::new().spawn(move || {
+        let _busy = busy;
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
+            if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
+                let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ") };
+                let text = HSTRING::from(format!("{what}{}", e.message()));
+                MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+            }
+        }
+        if com {
+            CoUninitialize();
+        }
+    });
+    let Ok(job) = job else { return false };
+    JOBS.with_borrow_mut(|j| {
+        j.retain(|j| !j.is_finished());
+        j.push(job);
+    });
+    true
+}
+
+// No owner window: the progress and conflict dialogs belong to the worker thread.
+unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result<()> {
+    let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+    let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOFX_ADDUNDORECORD;
+    op.SetOperationFlags(if rename { flags | FOF_RENAMEONCOLLISION } else { flags })?;
+    let to: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(dst), None)?;
+    for s in srcs {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
+        if mv {
+            op.MoveItem(&item, &to, PCWSTR::null(), None)?;
+        } else {
+            op.CopyItem(&item, &to, PCWSTR::null(), None)?;
+        }
+    }
+    op.PerformOperations()
 }
 
 // ---------- keyboard ----------
@@ -2984,7 +3994,7 @@ fn fresh_file(base: &str, taken: impl Fn(&str) -> bool) -> String {
     }
 }
 
-// File created by Ctrl+Shift+M, waiting for the view to list it so it can be selected and renamed.
+// File created by Ctrl+Alt+N, waiting for the view to list it so it can be selected and renamed.
 struct PendingFile {
     pane: usize,
     name: String,
@@ -2992,7 +4002,7 @@ struct PendingFile {
 }
 static PENDING_FILE: Mutex<Option<PendingFile>> = Mutex::new(None);
 
-// Ctrl+Shift+M: an empty text file in the active pane, then the shell's own rename (F2) once it shows up.
+// Ctrl+Alt+N: an empty text file in the active pane, then the shell's own rename (F2) once it shows up.
 unsafe fn new_file(i: usize) {
     let dir = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
     if !is_fs(&dir) {
@@ -3050,8 +4060,26 @@ unsafe fn key(m: &MSG) -> bool {
     let a = active_pane();
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
+    // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
+    let shell = || {
+        let Some(sv) = view_of::<IShellView>(a) else { return false };
+        let svh = sv.GetWindow().unwrap_or_default();
+        (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
+    };
+    let list = || view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     match VIRTUAL_KEY(m.wParam.0 as u16) {
         VK_TAB if ctrl => cycle(if shift { -1 } else { 1 }),
+        k if ctrl && !shift && !alt && (VK_1.0..=VK_9.0).contains(&k.0) && ((k.0 - VK_1.0) as usize) < app(|x| x.s.panes()) => {
+            let i = (k.0 - VK_1.0) as usize;
+            set_active(i);
+            focus_view(i);
+        }
+        k @ (VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN) if alt && shift && !ctrl => match k {
+            VK_LEFT => move_pane(-1, 0),
+            VK_RIGHT => move_pane(1, 0),
+            VK_UP => move_pane(0, -1),
+            _ => move_pane(0, 1),
+        },
         VK_LEFT if alt => browse(a, SBSP_NAVIGATEBACK),
         VK_RIGHT if alt => browse(a, SBSP_NAVIGATEFORWARD),
         VK_UP if alt => browse(a, SBSP_PARENT),
@@ -3061,30 +4089,34 @@ unsafe fn key(m: &MSG) -> bool {
         VK_F if ctrl => return focus_ctl(a, ID_FILTER),
         VK_H if ctrl => toggle_hidden(),
         VK_S if ctrl => save_current(),
-        VK_M if ctrl && shift && !alt && !addr && !filt => new_file(a),
+        VK_B if ctrl && !shift && !alt => open_favs(),
+        VK_M if ctrl && shift && !alt => toggle_zoom(),
+        VK_N if ctrl && alt && !shift && !addr && !filt => new_file(a),
         VK_F1 => open_help(),
         VK_RETURN if addr => go_edit(a),
         VK_RETURN if filt => {
             apply_filter(a);
             focus_view(a);
         }
-        VK_ESCAPE if addr => {
-            let disp = app(|x| x.panes[a].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
-            _ = SetWindowTextW(m.hwnd, &HSTRING::from(disp));
-            focus_view(a);
-        }
+        VK_ESCAPE if addr => addr_reset(a, m.hwnd),
         VK_ESCAPE if filt => {
             _ = SetWindowTextW(m.hwnd, w!(""));
             apply_filter(a);
             focus_view(a);
         }
         _ if addr || filt => return false,
-        _ => {
-            // F2, Del, Ctrl+C/V ... are the shell view's accelerators: hand them over.
-            let Some(sv) = view_of::<IShellView>(a) else { return false };
-            let svh = sv.GetWindow().unwrap_or_default();
-            return (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK;
+        VK_C if ctrl && shift && !alt && list() => copy_paths(a),
+        VK_DOWN if alt && !ctrl && !shift => recent_menu(a),
+        VK_F5 if list() => {
+            resum_sizes();
+            return shell();
         }
+        VK_V if ctrl && !shift && !alt && list() => {
+            if !paste_key(m.lParam.0 & (1 << 30) != 0, || try_paste(a)) {
+                return shell();
+            }
+        }
+        _ => return shell(),
     }
     true
 }
@@ -3322,7 +4354,29 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 }
             }
             WM_SIZE => layout_pane(h),
+            WM_LBUTTONDBLCLK => {
+                if let Some(i) = pane_of(h) {
+                    set_active(i);
+                    toggle_zoom();
+                }
+            }
             WM_PAINT => paint_pane(h),
+            // folder dropped on the top bar: still this pane's? then open it here, as ⇄ does
+            WM_DROP_OPEN => {
+                let queued = app(|a| {
+                    let mine = a.drop_open.as_ref().is_some_and(|(w, i, _)| *w == h && a.panes[*i].as_ref().is_some_and(|p| p.hwnd == h));
+                    if mine {
+                        a.drop_open.take()
+                    } else {
+                        None
+                    }
+                });
+                if let Some((_, i, item)) = queued {
+                    browse_item(i, &item);
+                    set_active(i);
+                    focus_view(i);
+                }
+            }
             WM_ERASEBKGND => return LRESULT(1), // paint_pane covers everything
             WM_DRAWITEM => {
                 draw_button(&*(lp.0 as *const DRAWITEMSTRUCT));
@@ -3360,6 +4414,13 @@ extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 _ = KillTimer(Some(h), TIMER_FILTER);
                 if let Some(i) = pane_of(h) {
                     apply_filter(i);
+                }
+            }
+            // right-click on ← / →: recent folders; anywhere else as before
+            WM_CONTEXTMENU if [ID_BACK, ID_FWD].iter().any(|&id| GetDlgItem(Some(h), id).is_ok_and(|b| b.0 as usize == wp.0)) => {
+                if let Some(i) = pane_of(h) {
+                    set_active(i);
+                    recent_menu(i);
                 }
             }
             // mouse side buttons
@@ -3400,7 +4461,7 @@ fn toolbar_tips() -> [(i32, &'static str, &'static str); 6] {
         (ID_TB_SAVE, tr("Save session", "세션 저장"), ""), // tooltip set by refresh_save_button
         (ID_TB_LOAD, tr("Load", "불러오기"), tr("Load a session", "세션 불러오기")),
         (ID_TB_VIEW, tr("View", "보기"), tr("View: hidden files · colours · language · help", "보기: 숨김 파일 · 선택 색 · 언어 · 도움말")),
-        (ID_TB_FAV, tr("Favourites", "즐겨찾기"), tr("Favourite folders (open in the active pane)", "즐겨찾기 폴더 (선택한 패널에서 열기)")),
+        (ID_TB_FAV, tr("Favourites", "즐겨찾기"), tr("Favourite folders (Ctrl+B; open in the active pane)", "즐겨찾기 폴더 (Ctrl+B, 선택한 패널에서 열기)")),
         (ID_TB_THEME, tr("Theme", "테마"), tr("Light / dark theme", "라이트 / 다크 테마")),
     ]
 }
@@ -3489,7 +4550,7 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW, // the plate is drawn to the window size
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, // the plate is drawn to the window size
             lpfnWndProc: Some(pane_proc),
             hInstance: hinst,
             hCursor: arrow,
@@ -3596,11 +4657,26 @@ fn main() -> Result<()> {
                 let up = up_candidate(&msg);
                 _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
-                let empty = |i| view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()) == Some(0);
-                if let Some(i) = up.filter(|&i| empty(i)) {
-                    browse(i, SBSP_PARENT);
+                if let Some((i, g, svh)) = up {
+                    let query = || {
+                        let view = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()).map(|h| h.0 as isize);
+                        let sel = view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()).map(|n| n as u32);
+                        (view, sel)
+                    };
+                    if confirm((g, svh), query, gen) {
+                        browse(i, SBSP_PARENT);
+                    }
                 }
             }
+        }
+        // The window is gone; copies still running finish first. Waiting keeps COM calls and messages
+        // moving, in case a shell extension calls back into this apartment.
+        for job in JOBS.take() {
+            if !job.is_finished() {
+                let h = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(&job));
+                _ = CoWaitForMultipleHandles((COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES).0 as u32, INFINITE, &[h]);
+            }
+            _ = job.join();
         }
     }
     Ok(())
@@ -3609,6 +4685,25 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighbours() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        // 2×2 with an 8px gap: slots run down each column
+        let grid = [(0, r(0, 0, 100, 100)), (1, r(0, 108, 100, 208)), (2, r(108, 0, 208, 100)), (3, r(108, 108, 208, 208))];
+        let n = |cells: &[(usize, RECT)], cur, dx, dy| neighbour(cells, cur, dx, dy);
+        assert_eq!([n(&grid, 3, 0, -1), n(&grid, 3, -1, 0), n(&grid, 0, 1, 0), n(&grid, 0, 0, 1)], [Some(2), Some(1), Some(2), Some(1)]);
+        // edges
+        assert_eq!([n(&grid, 0, -1, 0), n(&grid, 0, 0, -1), n(&grid, 3, 1, 0), n(&grid, 3, 0, 1)], [None; 4]);
+        // [1,3]: one tall cell on the left, three on the right
+        let tall = [(0, r(0, 0, 100, 316)), (1, r(108, 0, 208, 100)), (2, r(108, 108, 208, 208)), (3, r(108, 216, 208, 316))];
+        assert_eq!([n(&tall, 0, 1, 0), n(&tall, 3, -1, 0), n(&tall, 2, 0, -1), n(&tall, 2, 0, 1)], [Some(2), Some(0), Some(1), Some(3)]);
+        assert_eq!(n(&tall, 1, 0, -1), None); // stays in its column
+        // a pane that failed to open: neither it nor the diagonal one is picked
+        let gone = [grid[0], grid[2], grid[3]];
+        assert_eq!([n(&gone, 0, 0, 1), n(&gone, 3, -1, 0), n(&gone, 2, 0, 1)], [None, None, Some(3)]);
+        assert_eq!(n(&grid, 7, 1, 0), None);
+    }
 
     #[test]
     fn columns() {
@@ -3627,6 +4722,115 @@ mod tests {
         cur.paths[0] = r"C:\b".into();
         assert!(layout_differs(&cur, &base));
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
+        let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
+        assert_eq!(titles, ["Downloads - Grids", "Grids", "C: - Grids"]);
+    }
+
+    #[test]
+    fn dblclick_up() {
+        let c = |time, x, y| Click { win: 7, gen: 1, time, x, y };
+        let next = |prev, now, bg| next_click(prev, now, bg, 500, 4, 4);
+        // background, then background in time and box: up, and the pair is consumed
+        let (rec, up) = next(None, c(100, 10, 10), true);
+        assert!(rec == Some(c(100, 10, 10)) && !up);
+        let (rec, up) = next(rec, c(400, 12, 8), true);
+        assert!(rec.is_none() && up);
+        assert!(!next(rec, c(450, 12, 8), true).1); // third click
+        // first press on an item: the next one only records
+        let (rec, up) = next(None, c(100, 10, 10), false);
+        assert!(rec.is_none() && !up);
+        assert!(!next(rec, c(200, 10, 10), true).1);
+        // out of time, x, y
+        let p = Some(c(100, 10, 10));
+        assert!(!next(p, c(601, 10, 10), true).1);
+        assert!(!next(p, c(200, 13, 10), true).1);
+        assert!(!next(p, c(200, 10, 7), true).1);
+        // MSG.time wraps
+        assert!(next(Some(c(u32::MAX - 10, 10, 10)), c(20, 10, 10), true).1);
+        // a navigation between the clicks
+        assert!(!next(p, Click { gen: 2, ..c(200, 10, 10) }, true).1);
+
+        assert!(bg_role(33));
+        assert!([34, 20, 43, 25, 3].iter().all(|&r| !bg_role(r)));
+
+        // a navigation during the probe voids it; g0 is the value before
+        let g = Cell::new(5);
+        assert_eq!(bg_probe(|| g.get(), || { g.set(6); true }), (5, false));
+        assert_eq!(bg_probe(|| g.get(), || true), (6, true));
+
+        // the generation is read after the queries (sol regression)
+        let g = Cell::new(5);
+        assert!(!confirm((5, 9), || { g.set(6); (Some(9), Some(0)) }, || g.get()));
+        let g = || 5;
+        assert!(!confirm((5, 9), || (Some(8), Some(0)), g));
+        assert!(!confirm((5, 9), || (Some(9), Some(1)), g));
+        assert!(!confirm((5, 9), || (Some(9), None), g));
+        assert!(!confirm((5, 9), || (None, Some(0)), g));
+        assert!(confirm((5, 9), || (Some(9), Some(0)), g));
+    }
+
+    #[test]
+    fn addr() {
+        let x = r"C:\Program Files\x.exe";
+        assert_eq!(addr_parts("cmd"), Some((Some("cmd"), Some(("cmd", "")))));
+        assert_eq!(addr_parts("powershell -NoExit").unwrap().1, Some(("powershell", "-NoExit")));
+        assert_eq!(addr_parts(r#""C:\Program Files\x.exe" -a"#), Some((None, Some((x, "-a")))));
+        assert_eq!(addr_parts(r#""C:\Program Files\x.exe""#), Some((Some(x), Some((x, "")))));
+        assert_eq!(addr_parts(r#""C:\Windows\notepad.exe"#), None);
+        assert_eq!(addr_parts(r"C:\Program Files\x.exe -a").unwrap().1, None);
+        assert_eq!(addr_parts(r#"cmd /k "echo hi""#), Some((None, Some(("cmd", r#"/k "echo hi""#)))));
+        assert_eq!(addr_parts(r#""a"b"#), Some((None, None)));
+        assert!(is_rel("..") && is_rel(r"sub\x"));
+        assert!(!is_rel(r"C:\") && !is_rel(r"\\srv\s") && !is_rel("shell:Downloads") && !is_rel("::{GUID}"));
+    }
+
+    #[test]
+    fn paste() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt"]), r"C:\"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"c:\X\a.txt", r"C:\x\b\"]), r"C:\X\"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt"]), r"D:\x"), Some(false));
+        assert_eq!(paste_mode(&v(&[r"\\srv\share\a.txt"]), r"\\SRV\share"), Some(true));
+        assert_eq!(paste_mode(&v(&[r"\\srv\share\a.txt"]), r"C:\x"), Some(false));
+        assert_eq!(paste_mode(&v(&[r"C:\a.txt", r"D:\b.txt"]), r"C:\"), None); // mixed
+        assert_eq!(paste_mode(&[], r"C:\"), None);
+        assert_eq!(paste_mode(&v(&["::{x}", r"C:\a"]), r"D:\"), None);
+        assert_eq!(paste_mode(&v(&[r"C:\"]), r"D:\"), None); // a drive itself has no parent
+
+        // (tries, shell): first press starts one copy, no shell; a held key's repeat: neither; unsupported: shell
+        let run = |repeat: bool, ok: bool| {
+            let mut tries = 0;
+            let handled = paste_key(repeat, || {
+                tries += 1;
+                ok
+            });
+            (tries, !handled)
+        };
+        assert_eq!(run(false, true), (1, false));
+        assert_eq!(run(true, true), (0, false));
+        assert_eq!(run(false, false), (1, true));
+
+        // ⇄ copy / move: a move into the same folder and mixed paths are refused
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"C:\x", false), Some(true));
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"C:\x", true), None);
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt"]), r"D:\y", true), Some(false));
+        assert_eq!(send_mode(&v(&[r"C:\x\a.txt", r"D:\y\b.txt"]), r"D:\y", false), None);
+
+        // the whole selection or nothing
+        let mut calls = 0;
+        let all = collect_all(10_000, |k| {
+            calls += 1;
+            Some(k.to_string())
+        });
+        assert_eq!((all.map(|v| v.len()), calls), (Ok(10_000), 10_000));
+        let mut calls = 0;
+        let many = collect_all(10_001, |k| {
+            calls += 1;
+            Some(k.to_string())
+        });
+        assert_eq!((many, calls), (Err(Pick::TooMany), 0));
+        assert_eq!(collect_all(0, |_| Some(String::new())), Err(Pick::Empty));
+        assert_eq!(collect_all(5, |k| (k != 2).then(|| k.to_string())), Err(Pick::Unreadable));
     }
 
     #[test]
@@ -3705,12 +4909,215 @@ mod tests {
         assert_eq!(filter_spec(" pdf; *.TXT ;"), "*pdf*;*.TXT");
         assert_eq!((human(10), human(1536), human(5 << 30)), ("10 B".into(), "1.5 KB".into(), "5.0 GB".into()));
 
-        // pane top bar: back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
+        // pane top bar: number, back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
         for (w, dpi) in [(800, 96), (260, 96), (1200, 144)] {
             let p = pane_geo(w, 500, dpi);
-            let row = [p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
+            let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
-            assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom);
+            assert!(p.num.right > p.num.left && p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
+        // the number only shows while the address edit keeps s(32); otherwise the bar is laid out as before
+        for dpi in [96, 144] {
+            let s = |v: i32| v * dpi / 96;
+            for w in 60..=600 {
+                let p = pane_geo(w, 500, dpi);
+                if p.num.right > p.num.left {
+                    let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
+                    assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
+                    assert!((p.addr.right - s(6)) - (p.addr.left + s(8)) >= s(32), "{w}@{dpi}");
+                } else {
+                    assert!(p.btn[0].left == s(4) && p.addr.left == s(4) + 3 * s(24) + s(4), "{w}@{dpi}");
+                }
+            }
+        }
+        let shown = |w, dpi| {
+            let p = pane_geo(w, 500, dpi);
+            p.num.right > p.num.left
+        };
+        assert!(!shown(240, 96) && shown(241, 96) && !shown(361, 144) && shown(362, 144));
+    }
+
+    #[test]
+    fn recent_visits() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut r = Vec::new();
+        visit(&mut r, r"C:\a", r"C:\b");
+        assert_eq!(r, v(&[r"C:\b", r"C:\a"]));
+        visit(&mut r, r"C:\b", r"c:\A"); // case-insensitive: moves up, no duplicate
+        assert_eq!(r, v(&[r"c:\A", r"C:\b"]));
+        let before = r.clone();
+        for (old, new) in [(r"C:\b", r"c:\B"), ("", r"C:\x"), (r"C:\b", THIS_PC)] {
+            visit(&mut r, old, new); // refresh / restore, fresh pane, shell place: no visit
+        }
+        assert_eq!(r, before);
+        visit(&mut r, THIS_PC, r"D:\"); // leaving a shell place records only the folder
+        assert_eq!(r[0], r"D:\");
+        assert!(!r.iter().any(|p| p == THIS_PC));
+        for k in 0..30 {
+            visit(&mut r, r"C:\b", &format!(r"C:\n{k}"));
+        }
+        assert_eq!((r.len(), r[0].as_str(), r[1].as_str()), (RECENT, r"C:\n29", r"C:\b"));
+    }
+
+    #[test]
+    fn recent_survives_restore() {
+        let full: Vec<String> = (0..RECENT).map(|k| format!(r"C:\f{k}")).collect();
+        let mut r = full.clone();
+        // 16 panes come back to their folders, twice (start-up, then a theme / language rebuild)
+        for _ in 0..2 {
+            for p in &full[..16] {
+                visit(&mut r, p, p);
+            }
+        }
+        assert_eq!(r, full);
+        let items = recent_items(&r, r"c:\F0");
+        assert_eq!(items.len(), RECENT - 1);
+        assert_eq!(items.last(), full.last()); // the oldest is still offered
+    }
+
+    #[test]
+    fn recent_ini() {
+        let mut s = Session { recent: vec![r"C:\b".into(), r"\\srv\share".into(), r"C:\a".into()], ..Default::default() };
+        s = Session::parse(&s.to_ini());
+        assert_eq!(s.recent, [r"C:\b", r"\\srv\share", r"C:\a"]);
+        assert!(!s.snapshot().contains("recent="));
+        let many: String = (0..30).map(|k| format!("recent=C:\\{k}\n")).collect();
+        assert_eq!(Session::parse(&many).recent.len(), RECENT);
+    }
+
+    // A fresh folder under %TEMP% holding `files` (relative path, size).
+    fn tree(name: &str, files: &[(String, usize)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("grids-test-{}-{name}", std::process::id()));
+        _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (f, n) in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, vec![0u8; *n]).unwrap();
+        }
+        root
+    }
+
+    fn many(prefix: &str, count: usize, size: usize) -> Vec<(String, usize)> {
+        (0..count).map(|k| (format!("{prefix}{k}.bin"), size)).collect()
+    }
+
+    #[test]
+    fn folder_size_walk() {
+        use std::cell::Cell;
+        let never = || false;
+        let mut quiet = |_, _| {};
+        let root = tree("walk", &[("a.bin".into(), 100), (r"sub\b.bin".into(), 20), (r"sub\deep\c.bin".into(), 3)]);
+        assert_eq!(dir_bytes(&root, &never, &never, &mut quiet), Some((123, false)));
+        assert_eq!(dir_bytes(&root.join("missing"), &never, &never, &mut quiet), Some((0, true)));
+        // a junction pointing back up is not followed
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join(r"sub\loop")).arg(&root).output();
+        assert!(made.is_ok_and(|o| o.status.success()) && root.join(r"sub\loop\a.bin").exists());
+        assert_eq!(dir_bytes(&root, &never, &never, &mut quiet), Some((123, false)));
+        // a stop mid-walk gives no total
+        let calls = Cell::new(0);
+        let later = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 2
+        };
+        assert_eq!(dir_bytes(&root, &later, &never, &mut quiet), None);
+
+        // many files, no subfolders: a copy that starts and ends between status ticks only pauses the walk
+        let flat = tree("flat", &many("f", 300, 2));
+        let seen = Cell::new(0);
+        let copying = || {
+            seen.set(seen.get() + 1);
+            (100..103).contains(&seen.get())
+        };
+        assert_eq!(dir_bytes(&flat, &never, &copying, &mut quiet), Some((600, false)));
+        assert!(seen.get() > 300);
+        // a cancel still gets through while paused
+        let paused = Cell::new(0);
+        let copy_on = || {
+            paused.set(paused.get() + 1);
+            paused.get() > 50
+        };
+        let cancel = || paused.get() > 52;
+        assert_eq!(dir_bytes(&flat, &cancel, &copy_on, &mut quiet), None);
+        assert!(paused.get() < 60);
+        // progress comes with the running total
+        let big = tree("big", &many("g", 2100, 1));
+        let mut last = 0;
+        let mut progress = |b, _| last = b;
+        assert_eq!(dir_bytes(&big, &never, &never, &mut progress), Some((2100, false)));
+        assert!(last >= 2000);
+
+        // F5 after a file was added: the same selection is summed again
+        let mut job = SizeJob::default();
+        let target = vec![flat.to_string_lossy().into_owned()];
+        assert!(job.want(&target, false));
+        assert!(job.publish(job.gen, 600, true, false));
+        std::fs::write(flat.join("new.bin"), [0u8; 50]).unwrap();
+        assert!(!job.want(&target, false));
+        job.want(&[], true); // what resum_sizes does
+        assert!(job.want(&target, false) && !job.done);
+        assert_eq!(dir_bytes(&flat, &never, &never, &mut quiet), Some((650, false)));
+        for r in [root, flat, big] {
+            _ = std::fs::remove_dir_all(r);
+        }
+    }
+
+    #[test]
+    fn folder_size_job() {
+        let (a, b) = (vec![r"C:\a".to_string()], vec![r"C:\b".to_string()]);
+        let mut j = SizeJob::default();
+        assert!(j.want(&a, false));
+        let g = j.gen;
+        assert!(!j.want(&a, false)); // same target: keeps running
+        assert!(j.publish(g, 10, true, false) && j.done);
+        assert!(!j.want(&a, false) && j.done && j.bytes == 10); // and keeps its result
+        assert!(!j.want(&a, true)); // a copy starts: cancelled
+        assert!(!j.publish(g, 99, true, false) && j.bytes == 10); // the old walk's result is dropped
+        assert!(j.want(&a, false) && j.bytes == 0 && !j.done); // the copy ended: summed again
+        assert!(!j.want(&[], false) && j.target.is_empty()); // no folders: cancelled
+        assert!(j.want(&a, false));
+        let g = j.gen;
+        assert!(j.want(&b, false) && j.gen != g);
+        assert!(!j.publish(g, 5, false, false));
+        assert!(j.publish(j.gen, 5, false, true) && j.partial);
+    }
+
+    #[test]
+    fn folder_size_text() {
+        let kb = human(1024);
+        assert_eq!(size_text(false, 0, true, None, false), " (calculating…)");
+        assert_eq!(size_text(false, 0, true, Some((0, false, false)), false), " (calculating…)");
+        assert_eq!(size_text(false, 1024, true, Some((1024, false, false)), false), format!(" ({}…)", human(2048)));
+        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), false), format!(" ({kb})"));
+        assert_eq!(size_text(false, 0, true, Some((1024, true, true)), false), format!(" ({kb}, partial)"));
+        // something missed while collecting the selection isn't shown as a full total
+        assert_eq!(size_text(false, 0, true, Some((1024, true, false)), true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(true, 0, true, Some((1024, true, false)), true), format!(" ({kb}, 일부만)"));
+        assert_eq!(size_text(false, 1024, false, None, false), format!(" ({kb})"));
+        assert_eq!(size_text(false, 1024, false, None, true), format!(" ({kb}, partial)"));
+        assert_eq!(size_text(false, 0, false, None, false), "");
+        assert_eq!(size_text(false, 0, false, None, true), " (size unknown)");
+        assert_eq!(size_text(true, 0, false, None, true), " (크기 모름)");
+    }
+
+    #[test]
+    fn folder_size_collect() {
+        let root = tree("collect", &[("f.bin".into(), 7), (r"d\x.bin".into(), 1)]);
+        let path = |p: &str| root.join(p).to_string_lossy().into_owned();
+        let (f, d) = (path("f.bin"), path("d"));
+        let none = Sel { file_bytes: 0, dirs: vec![], partial: true };
+        assert_eq!(collect_sel(None, |_| None), none); // GetSelection / GetCount failed
+        assert_eq!(collect_sel(Some(1), |_| None), none); // GetItemAt / no file system path
+        assert_eq!(collect_sel(Some(1), |_| Some(path("gone"))), none);
+        assert_eq!(collect_sel(Some(1), |_| Some(r"C:\".into())), none); // a drive root isn't walked
+        let both = [f.clone(), d.clone()];
+        assert_eq!(collect_sel(Some(2), |k| Some(both[k as usize].clone())), Sel { file_bytes: 7, dirs: vec![d], partial: false });
+        let calls = std::cell::Cell::new(0);
+        let s = collect_sel(Some(10_001), |_| {
+            calls.set(calls.get() + 1);
+            Some(f.clone())
+        });
+        assert_eq!((s.file_bytes, s.partial, calls.get()), (70_000, true, 10_000));
+        _ = std::fs::remove_dir_all(root);
     }
 }
