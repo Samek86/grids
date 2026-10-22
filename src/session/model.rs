@@ -22,6 +22,8 @@ pub(crate) struct Tab {
     pub(crate) views: Vec<(i32, i32)>,
     pub(crate) cols: Vec<String>,
     pub(crate) filters: Vec<String>,
+    /// Per pane: 0 none, 1..=6 a selection-colour preset of the current theme. Separate from the tab stripe.
+    pub(crate) tints: Vec<u8>,
 }
 
 pub(crate) fn pad_filters(mut f: Vec<String>) -> Vec<String> {
@@ -44,6 +46,7 @@ impl Tab {
             views: s.views.clone(),
             cols: s.cols.clone(),
             filters: pad_filters(filters),
+            tints: s.tints.clone(),
         }
     }
 }
@@ -134,6 +137,7 @@ pub(crate) struct Session {
     pub(crate) lang: Lang,             // UI language preference; Auto follows Windows
     pub(crate) single: bool,           // a second launch opens a new window in this process
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
+    pub(crate) tints: Vec<u8>,         // per pane: colour label, 0 = none, 1..=6 = selection colour preset
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     pub(crate) bar: bool,              // toolbar
@@ -181,6 +185,7 @@ impl Default for Session {
             lang: Lang::Auto,
             single: true,
             cols: vec![String::new(); MAXP],
+            tints: vec![0; MAXP],
             theme: 0,
             font: 0,
             bar: true,
@@ -231,6 +236,7 @@ impl PartialEq for Session {
             && self.lang == o.lang
             && self.single == o.single
             && self.cols == o.cols
+            && self.tints == o.tints
             && self.theme == o.theme
             && self.font == o.font
             && self.bar == o.bar
@@ -355,6 +361,7 @@ impl Session {
         self.paths = t.paths;
         self.views = t.views;
         self.cols = t.cols;
+        self.tints = t.tints;
     }
 
     pub(crate) fn accent_now(&self) -> u32 {
@@ -459,6 +466,8 @@ impl Session {
                         s.views[i] = (*m, *z);
                     } else if let Some(i) = slot('c') {
                         s.cols[i] = v.trim().to_string();
+                    } else if let Some(i) = slot('t') {
+                        s.tints[i] = v.trim().parse().ok().filter(|&k| k <= 6).unwrap_or(0);
                     }
                 }
             }
@@ -528,6 +537,9 @@ impl Session {
             if !self.cols[i].is_empty() {
                 o += &format!("c{i}={}\n", self.cols[i]);
             }
+            if self.tints[i] != 0 {
+                o += &format!("t{i}={}\n", self.tints[i]);
+            }
         }
         let tabs = self.view_tabs();
         let active = self.tab.min(tabs.len() - 1);
@@ -564,6 +576,7 @@ impl Session {
     pub(crate) fn take_layout(&mut self, o: &Session) {
         (self.heights, self.colr, self.rowr) = (o.heights.clone(), o.colr.clone(), o.rowr.clone());
         (self.active, self.paths, self.views, self.cols) = (o.active, o.paths.clone(), o.views.clone(), o.cols.clone());
+        self.tints = o.tints.clone();
         self.tabs = o.view_tabs();
         self.tab = o.tab.min(self.tabs.len().saturating_sub(1));
     }
@@ -591,7 +604,8 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
     let mut panes = Vec::new();
     for i in 0..MAXP {
         let filter = t.filters.get(i).cloned().unwrap_or_default();
-        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() {
+        let tint = t.tints.get(i).copied().unwrap_or(0);
+        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() && tint == 0 {
             continue;
         }
         let mut p = serde_json::Map::new();
@@ -607,6 +621,9 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
         }
         if !filter.is_empty() {
             p.insert("filter".into(), Value::String(filter));
+        }
+        if tint != 0 {
+            p.insert("tint".into(), Value::from(tint));
         }
         panes.push(Value::Object(p));
     }
@@ -671,6 +688,7 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
     let mut views = vec![(0i32, 0i32); MAXP];
     let mut cols = vec![String::new(); MAXP];
     let mut filters = vec![String::new(); MAXP];
+    let mut tints = vec![0u8; MAXP];
     if let Some(panes) = obj.get("panes").and_then(|p| p.as_array()) {
         for p in panes {
             let Some(o) = p.as_object() else { continue };
@@ -694,10 +712,13 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
             if let Some(f) = o.get("filter").and_then(|x| x.as_str()) {
                 filters[i] = f.to_string();
             }
+            if let Some(t) = o.get("tint").and_then(|x| x.as_u64()) {
+                tints[i] = if t <= 6 { t as u8 } else { 0 };
+            }
         }
     }
     let name = if name.is_empty() { "1".into() } else { name };
-    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters })
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints })
 }
 
 pub(crate) fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
@@ -750,6 +771,7 @@ pub(crate) fn layout_differs(cur: &Session, base: &Session) -> bool {
             || c.rowr.iter().zip(&b.rowr).any(|(a, b)| !near(a, b))
             || (0..c.panes()).any(|i| b.views[i].0 != 0 && c.views[i] != b.views[i])
             || (0..c.panes()).any(|i| !b.cols[i].is_empty() && c.cols[i] != b.cols[i])
+            || (0..c.panes()).any(|i| c.tints.get(i) != b.tints.get(i))
     };
     if grid(cur, base) || cur.tab != base.tab || cur.tabs.len() != base.tabs.len() {
         return true;
@@ -765,6 +787,7 @@ pub(crate) fn layout_differs(cur: &Session, base: &Session) -> bool {
             || a.rowr.iter().zip(&b.rowr).any(|(x, y)| !near(x, y))
             || (0..n).any(|k| b.views.get(k).is_some_and(|v| v.0 != 0) && a.views.get(k) != b.views.get(k))
             || (0..n).any(|k| b.cols.get(k).is_some_and(|c| !c.is_empty()) && a.cols.get(k) != b.cols.get(k))
+            || (0..n).any(|k| a.tints.get(k) != b.tints.get(k))
     })
 }
 
@@ -933,8 +956,9 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{crumb_fit, crumbs, real_folder};
+    use super::{crumb_fit, crumbs, layout_differs, real_folder, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
+    use crate::MAXP;
     use crate::THIS_PC;
 
     #[test]
@@ -961,6 +985,26 @@ mod crumb_tests {
         assert_eq!(f(&[30, 40], 15), (2, false, 0));
         assert_eq!(f(&[30, 40], 0), (2, false, 0));
         assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn pane_tint_round_trip() {
+        let mut s = Session::default();
+        s.tints[3] = 4;
+        s.anchor();
+        let text = s.to_ini();
+        assert!(text.contains("t3=4\n"));
+        assert!(text.contains("\"tint\":4"));
+        let back = Session::parse(&text);
+        assert_eq!(back.tints[3], 4);
+        assert_eq!(back.view_tabs()[back.tab].tints[3], 4);
+        assert_eq!(Session::parse("t5=9\nt6=x\nt99=2").tints, vec![0; MAXP]);
+        assert_eq!(Session::parse(&Session::default().to_ini()).tints, vec![0; MAXP]);
+        let mut base = s.clone();
+        base.tints[3] = 0;
+        base.anchor();
+        assert!(layout_differs(&s, &base));
+        assert!(!s.snapshot().contains("win="));
     }
 
     #[test]

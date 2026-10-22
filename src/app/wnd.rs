@@ -413,6 +413,18 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     recent_menu(i);
                 }
             }
+            // Right-click on the header itself (not its buttons or fields): colour label.
+            WM_CONTEXTMENU if wp.0 == h.0 as usize => {
+                let mut p = POINT { x: (lp.0 & 0xffff) as i16 as i32, y: (lp.0 >> 16 & 0xffff) as i16 as i32 };
+                let screen = p;
+                _ = ScreenToClient(h, &mut p);
+                let mut rc = RECT::default();
+                _ = GetClientRect(h, &mut rc);
+                match pane_of(h) {
+                    Some(i) if lp.0 != -1 && p.y < pane_geo(rc.right, rc.bottom, app(|a| a.dpi)).view.top => tint_menu(h, i, screen),
+                    _ => return DefWindowProcW(h, msg, wp, lp),
+                }
+            }
             // mouse side buttons
             WM_APPCOMMAND => match (lp.0 >> 16) & 0x0fff {
                 1 => nav(SBSP_NAVIGATEBACK),

@@ -542,12 +542,13 @@ pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, font, accent, hot) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
         let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
-        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot)
+        let tint = i.and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint)
     });
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
@@ -568,8 +569,20 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
             frame(dc, rc, 1, pal().line);
             fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, pal().line);
         }
+        // colour label: a strip above the buttons, and the number on a chip of that colour
+        if let Some(t) = tint {
+            fill(dc, tint_band(rc.right, dpi, active && edge), t);
+        }
         if let Some(i) = i.filter(|_| pg.num.right > pg.num.left) {
-            text(dc, pg.num, &(i + 1).to_string(), small_font, if active { ink } else { pal().sub }, DT_CENTER);
+            let num_ink = match tint {
+                Some(t) => {
+                    fill(dc, pg.num, t);
+                    on_color(t)
+                }
+                None if active => ink,
+                None => pal().sub,
+            };
+            text(dc, pg.num, &(i + 1).to_string(), small_font, num_ink, DT_CENTER);
         }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
             fill(dc, p, pal().pill);

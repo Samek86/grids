@@ -191,6 +191,25 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     }
 }
 
+/// Colour-label strip along the pane's top edge: inside the border, in the gap above the buttons.
+pub(crate) fn tint_band(w: i32, dpi: i32, active: bool) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let inset = if active { s(2) } else { 1 };
+    let top = pane_geo(w, s(100), dpi).num.top;
+    let thick = s(3).min((top - inset).max(0));
+    RECT { left: inset, top: inset, right: w - inset, bottom: inset + thick }
+}
+
+/// A pane's colour label in the current theme: one of the selection-colour presets. 0 is none.
+pub(crate) fn tint_color(k: u8) -> Option<u32> {
+    (1..=6).contains(&k).then(|| pal().accents[k as usize - 1].1)
+}
+
+pub(crate) fn tint_name(k: u8) -> &'static str {
+    let i = (k as usize).saturating_sub(1).min(5);
+    tr(ACCENT_EN[i], LIGHT.accents[i].0, ACCENT_JA[i])
+}
+
 pub(crate) fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if y < g.top || y >= g.bot {
         return None;
@@ -418,6 +437,19 @@ mod tests {
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn tint_strip_sits_above_the_buttons() {
+        for dpi in [96, 120, 144, 192] {
+            for w in [120, 400] {
+                for active in [false, true] {
+                    let (b, top) = (tint_band(w, dpi, active), pane_geo(w, 300, dpi).num.top);
+                    let border = if active { 2 * dpi / 96 } else { 1 };
+                    assert!(b.top >= border && b.bottom <= top && b.bottom - b.top >= 2, "{dpi} {w} {active}");
+                }
+            }
+        }
     }
 
     #[test]
