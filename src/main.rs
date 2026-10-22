@@ -134,6 +134,14 @@ fn main() -> Result<()> {
         });
         RegisterClassW(&WNDCLASSW {
             style: CS_DBLCLKS,
+            lpfnWndProc: Some(peek_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsPeek"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(tabs_proc),
             hInstance: hinst,
             hCursor: arrow,

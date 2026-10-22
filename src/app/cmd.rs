@@ -86,6 +86,11 @@ pub(crate) unsafe fn select_new_file(i: usize, name: &str) -> bool {
 
 pub(crate) unsafe fn key(m: &MSG) -> bool {
     let vk = m.wParam.0 as u16;
+    // The preview takes its own keys. Pane shortcuts must not act behind it.
+    let peek = app(|a| a.peek);
+    if !peek.0.is_null() && m.hwnd == peek {
+        return false;
+    }
     let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
     let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
     // A conflict dialog is up. Let it see the key.
@@ -180,7 +185,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
         let id = crate::keys::id_of(i);
-        if id == "app.keys" && m.lParam.0 & (1 << 30) != 0 {
+        if matches!(id, "app.keys" | "view.peek") && m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
         return dispatch(id, vk, a, list, shell);
@@ -260,6 +265,8 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "nav.recent" => recent_menu(a),
         "nav.addr" | "nav.addr2" | "nav.addr3" => return focus_ctl(a, ID_EDIT),
         "view.filter" => return focus_ctl(a, ID_FILTER),
+        "view.peek" if list => open_peek(a),
+        "view.peek" => return shell(),
         "focus.next" => cycle_focus(false),
         "focus.prev" => cycle_focus(true),
         "view.hidden" => toggle_hidden(),
