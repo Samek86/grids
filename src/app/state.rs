@@ -92,11 +92,11 @@ pub(crate) struct Desk {
     pub(crate) live_filters: [String; MAXP],
 }
 
-/// A favourites row the user is dragging. `pins` rows are copies, not tree moves.
+/// A favourites row the user is dragging. Explorer rows are copies, not tree moves.
 #[derive(Clone)]
 pub(crate) struct SideDrag {
     pub(crate) id: Vec<usize>,
-    pub(crate) pins: bool,
+    pub(crate) kind: RowKind,
     pub(crate) group: bool,
     pub(crate) file: bool,
     pub(crate) path: String,
@@ -376,6 +376,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.ext = src.ext;
     dst.tree_on = src.tree_on;
     dst.pins_open = src.pins_open;
+    dst.files_open = src.files_open;
     dst.edge = src.edge;
     dst.confirm = src.confirm;
     dst.del = src.del;
