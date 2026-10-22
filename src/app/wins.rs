@@ -132,7 +132,15 @@ pub(crate) unsafe fn snapshot_windows() -> Vec<Value> {
         let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
         if GetWindowPlacement(main, &mut wp).is_ok() {
             let r = wp.rcNormalPosition;
-            let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
+            // Minimized keeps the maximized flag from the last normal or maximized size.
+            let minimized = wp.showCmd == SW_SHOWMINIMIZED.0 as u32;
+            let max = if minimized {
+                app(|a| a.was_max) as i32
+            } else {
+                let on = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32;
+                app(|a| a.was_max = on);
+                on as i32
+            };
             app(|a| a.s.win = Some([r.left, r.top, r.right, r.bottom, max]));
         }
         out.push(app(|a| window_value(&a.s)));

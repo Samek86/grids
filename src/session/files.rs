@@ -27,7 +27,22 @@ pub(crate) unsafe fn save_session() {
         if !same {
             LAST_SAVED.with(|l| *l.borrow_mut() = text);
         }
-        app(|a| a.save_since = None);
+        app(|a| {
+            a.save_since = None;
+            a.save_after = None;
+        });
+    } else {
+        // The old grids.json stays. Try again in 5 seconds, unless a drag or resize is in progress.
+        app(|a| a.save_after = Some(Instant::now() + std::time::Duration::from_secs(5)));
+    }
+}
+
+/// Status timer: a failed write is retried once the wait is over and the window is not being dragged.
+pub(crate) unsafe fn retry_save() {
+    let now = Instant::now();
+    let due = app(|a| !a.drag.is_some() && !a.sizing && a.save_after.is_some_and(|t| t <= now));
+    if due {
+        save_session();
     }
 }
 

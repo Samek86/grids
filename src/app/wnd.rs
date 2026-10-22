@@ -29,7 +29,14 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
         match msg {
             // While the user drags the window edge, lay the panes out once at the end (same cost reason as splitters).
             WM_SIZE => {
-                if !app(|a| a.sizing) {
+                let sizing = app(|a| {
+                    let kind = wp.0 as u32;
+                    if kind != SIZE_MINIMIZED {
+                        a.was_max = kind == SIZE_MAXIMIZED;
+                    }
+                    a.sizing
+                });
+                if !sizing {
                     relayout();
                     redraw_all(); // maximize / restore
                 }
@@ -61,6 +68,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_TIMER if wp.0 == TIMER_STATUS => {
                 update_status();
                 check_dirty();
+                retry_save();
             }
             WM_TIMER if wp.0 == TIMER_SAVE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
@@ -220,6 +228,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let r = &*(lp.0 as *const RECT);
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            // Restart or sign-out does not send WM_CLOSE. Saving here keeps the last folders.
+            WM_ENDSESSION if wp.0 != 0 => save_session(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
