@@ -193,7 +193,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
-        if matches!(id, "app.keys" | "view.peek" | "app.front") && m.lParam.0 & (1 << 30) != 0 {
+        if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather") && m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
         return dispatch(id, vk, a, list, shell);
@@ -280,6 +280,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "focus.prev" => cycle_focus(true),
         "view.hidden" => toggle_hidden(),
         "view.panel" => toggle_tree(),
+        "view.gather" => gather_explorer(),
         "view.zoom" => toggle_zoom(),
         "file.sel" | "file.sel2" if list => {
             app(|a| a.held = Some(vk));
