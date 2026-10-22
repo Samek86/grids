@@ -28,7 +28,22 @@ fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
         // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
-        let mut s = store::load();
+        // A file that is there but unreadable must not be overwritten with defaults.
+        let mut s = loop {
+            match store::load() {
+                Ok(s) => break s,
+                Err(e) => {
+                    let text = HSTRING::from(format!(
+                        "Grids could not read its settings file (grids.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
+                         Grids 설정 파일(grids.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
+                         Grids の設定ファイル (grids.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
+                    ));
+                    if MessageBoxW(None, &text, w!("Grids"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
+                        return Ok(());
+                    }
+                }
+            }
+        };
         let boot = s.boot;
         let restore = session_arg(&args).is_none() && args.is_empty();
         if restore {
@@ -116,6 +131,28 @@ fn main() -> Result<()> {
             hInstance: hinst,
             hCursor: arrow,
             lpszClassName: w!("GridsSide"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(match_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsMatch"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(keys_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsKeys"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(peek_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsPeek"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -215,6 +252,13 @@ mod tests {
         assert_eq!((back.lang, back.single), (Lang::Ja, false));
         assert!(back.to_ini().contains("lang=ja\n"));
         assert!(Session::parse("lang=ko").to_ini().contains("lang=ko\n"));
+        assert!(Session::parse("side=300\ndblup=1\n").hotkey); // an older file is on
+        assert!(!Session::parse("hotkey=0\n").hotkey);
+        assert!(!Session::parse(&Session { hotkey: false, ..Session::default() }.to_ini()).hotkey);
+        let mut cur = Session::default();
+        cur.take_layout(&Session::parse("hotkey=0\n"));
+        assert!(cur.hotkey); // a loaded layout does not change the app-wide hotkey
+        assert!(!layout_differs(&Session { hotkey: false, ..Session::default() }, &Session::default()));
     }
 
     #[test]

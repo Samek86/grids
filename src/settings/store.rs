@@ -29,6 +29,9 @@ fn pins_open() -> bool {
 fn pins_are_open(v: &bool) -> bool {
     *v
 }
+fn is_on(v: &bool) -> bool {
+    *v
+}
 fn files_open() -> bool {
     true
 }
@@ -122,6 +125,9 @@ struct SettingsFile {
     side: i32,
     #[serde(default)]
     layout: LayoutJson,
+    /// Permutation of pane slots since the named session was saved. Empty means they match the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order: Vec<u8>,
     #[serde(default)]
     panes: Vec<PaneJson>,
     #[serde(default = "accent_light")]
@@ -182,6 +188,9 @@ struct SettingsFile {
     dot: bool,
     #[serde(default = "yes")]
     dblup: bool,
+    /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    hotkey: bool,
     #[serde(default = "lang_auto")]
     lang: String,
     #[serde(default = "yes")]
@@ -217,6 +226,7 @@ impl SettingsFile {
             window: None,
             side: 0,
             layout: LayoutJson::default(),
+            order: Vec::new(),
             panes: Vec::new(),
             accent: accent_light(),
             accent_dark: accent_dark(),
@@ -244,6 +254,7 @@ impl SettingsFile {
             autosave: false,
             dot: true,
             dblup: true,
+            hotkey: true,
             lang: lang_auto(),
             single: true,
             session: String::new(),
@@ -287,6 +298,7 @@ impl SettingsFile {
             window: s.win.map(|w| WinJson { left: w[0], top: w[1], right: w[2], bottom: w[3], maximized: w[4] != 0 }),
             side: s.side,
             layout: LayoutJson { columns: s.heights.clone(), colr: s.colr.clone(), rowr: s.rowr.clone(), active: s.active },
+            order: s.order.clone(),
             panes,
             accent: format!("{:06X}", s.accent & 0xFFFFFF),
             accent_dark: format!("{:06X}", s.accent_dark & 0xFFFFFF),
@@ -314,6 +326,7 @@ impl SettingsFile {
             autosave: s.autosave,
             dot: s.dot,
             dblup: s.dblup,
+            hotkey: s.hotkey,
             lang: s.lang.ini().into(),
             single: s.single,
             session: s.file.clone(),
@@ -363,6 +376,7 @@ impl SettingsFile {
         let rowr = &self.layout.rowr;
         let group = |c: usize| if rowr.len() == s.heights.len() { rowr.get(c) } else { rowr.first() };
         s.rowr = s.heights.iter().enumerate().map(|(c, &n)| fix(group(c).cloned().unwrap_or_default(), n)).collect();
+        s.order = if self.order.len() == MAXP && self.order.iter().all(|&n| (n as usize) < MAXP) { self.order.clone() } else { Vec::new() };
         s.active = self.layout.active;
         if s.active >= s.panes() {
             s.active = 0;
@@ -421,6 +435,7 @@ impl SettingsFile {
         s.autosave = self.autosave;
         s.dot = self.dot;
         s.dblup = self.dblup;
+        s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
         s.file = self.session.clone();
@@ -565,28 +580,42 @@ fn bak_path(ini: &Path) -> PathBuf {
     ini.with_extension("ini.bak")
 }
 
-/// Load grids.json from `cfg`, or migrate the first legacy ini and rename it to grids.ini.bak.
-pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
+/// grids.json bytes. Missing is `Ok(None)`. A locked or unreadable file is an error, never defaults.
+pub(crate) fn read_settings_file(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Load grids.json, or migrate a legacy ini. An existing file that cannot be read or parsed is an error,
+/// so a later save does not replace it with defaults.
+pub(crate) fn try_load_at(exe: &Path, cfg: &Path) -> Result<Session, String> {
     let _ = std::fs::create_dir_all(cfg);
     let json_path = cfg.join("grids.json");
-    if json_path.is_file() {
-        if let Ok(raw) = std::fs::read_to_string(&json_path) {
+    match read_settings_file(&json_path)? {
+        Some(raw) => {
             let text = strip_bom(&raw);
-            if let Some(s) = adopt(text) {
-                // The activity-bar choice is retired. Drop it once so the next launch does not see it.
-                let had_panel = serde_json::from_str::<Value>(text).ok().is_some_and(|v| v.get("panel").is_some());
-                if had_panel {
-                    let migrated = current_text();
-                    if migrated != text {
-                        let _ = write_atomic(&json_path, migrated.as_bytes());
-                    }
+            let Some(s) = adopt(text) else {
+                return Err("grids.json is not valid settings".into());
+            };
+            // The activity-bar choice is retired. Drop it once so the next launch does not see it.
+            let had_panel = serde_json::from_str::<Value>(text).ok().is_some_and(|v| v.get("panel").is_some());
+            if had_panel {
+                let migrated = current_text();
+                if migrated != text {
+                    let _ = write_atomic(&json_path, migrated.as_bytes());
                 }
-                return s;
             }
+            Ok(s)
         }
-        remember(SettingsFile::default());
-        return Session::default();
+        None => Ok(load_legacy(exe, cfg)),
     }
+}
+
+fn load_legacy(exe: &Path, cfg: &Path) -> Session {
+    let json_path = cfg.join("grids.json");
     for cand in legacy_candidates(exe, cfg) {
         let Ok(text) = std::fs::read_to_string(&cand) else { continue };
         let s = Session::parse(&text);
@@ -606,18 +635,31 @@ pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
     s
 }
 
-pub(crate) fn load() -> Session {
+/// Same as `try_load_at` for tests that only see a readable file.
+#[cfg(test)]
+pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
+    try_load_at(exe, cfg).unwrap_or_else(|_| {
+        remember(SettingsFile::default());
+        Session::default()
+    })
+}
+
+pub(crate) fn load() -> Result<Session, String> {
     let cfg = config_dir();
     let _ = std::fs::create_dir_all(&cfg);
-    load_at(&exe_dir(), &cfg)
+    try_load_at(&exe_dir(), &cfg)
 }
 
 pub(crate) fn write_settings(text: &str) -> std::io::Result<()> {
     write_atomic(&settings_path(), text.as_bytes())
 }
 
-/// Write `bytes` to a temp file in the same directory, then replace `path`.
+/// Write `bytes` next to `path` and swap it in. A failed swap leaves the previous file in place.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if path.is_dir() {
+        return Err(std::io::Error::other("settings path is a directory"));
+    }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -626,21 +668,32 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp = path.to_path_buf();
     let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "grids.json".into());
     tmp.set_file_name(format!("{name}.tmp"));
-    std::fs::write(&tmp, bytes)?;
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
     let src = HSTRING::from(tmp.to_string_lossy().as_ref());
     let dst = HSTRING::from(path.to_string_lossy().as_ref());
     let moved = unsafe { MoveFileExW(&src, &dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
     if moved.is_ok() {
         return Ok(());
     }
-    let _ = std::fs::remove_file(path);
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
+    // Replace by renaming aside, then back if the new file does not land.
+    let bak = tmp.with_extension("bak");
+    if path.exists() && std::fs::rename(path, &bak).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(std::io::Error::other("could not replace settings"));
     }
+    if std::fs::rename(&tmp, path).is_ok() {
+        let _ = std::fs::remove_file(&bak);
+        return Ok(());
+    }
+    if bak.exists() {
+        let _ = std::fs::rename(&bak, path);
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Err(std::io::Error::other("could not replace settings"))
 }
 
 #[cfg(test)]
@@ -913,7 +966,7 @@ mod tests {
         let mut file = SettingsFile::from_session(&Session::default());
         file.keybindings.insert("copy".into(), serde_json::json!("Ctrl+C"));
         let _ = adopt(&pretty(&file));
-        assert_eq!(crate::keys::lookup(b'K' as u16, true, false, false), Some(i));
+        assert_eq!(crate::keys::lookup(b'K' as u16, true, false, false, false), Some(i));
         let again: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
         assert_eq!(again["keybindings"]["tab.new"], "Ctrl+K");
         assert_eq!(again["keybindings"]["copy"], "Ctrl+C");
@@ -934,6 +987,28 @@ mod tests {
         write_atomic(&path, b"{\"version\":1,\"lang\":\"ja\"}\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"version\":1,\"lang\":\"ja\"}\n");
         assert!(!dir.join("grids.json.tmp").exists());
+        let blocked = dir.join("blocked.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_atomic(&blocked, b"{\"version\":1}\n").is_err());
+        assert!(blocked.is_dir());
+        assert!(!dir.join("blocked.json.tmp").exists());
+    }
+
+    #[test]
+    fn unreadable_settings_are_not_defaults() {
+        let dir = scratch("unread");
+        assert!(read_settings_file(&dir.join("missing.json")).unwrap().is_none());
+        std::fs::write(dir.join("grids.json"), "{\"lang\":\"ko\"}").unwrap();
+        assert!(try_load_at(&dir, &dir).is_ok());
+        let locked = scratch("locked");
+        std::fs::create_dir(locked.join("grids.json")).unwrap();
+        assert!(read_settings_file(&locked.join("grids.json")).is_err());
+        assert!(try_load_at(&locked, &locked).is_err());
+        assert!(locked.join("grids.json").is_dir());
+        let bad = scratch("badjson");
+        std::fs::write(bad.join("grids.json"), "{").unwrap();
+        assert!(try_load_at(&bad, &bad).is_err());
+        assert_eq!(std::fs::read_to_string(bad.join("grids.json")).unwrap(), "{");
     }
 
     #[test]

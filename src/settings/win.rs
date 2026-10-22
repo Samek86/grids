@@ -801,7 +801,10 @@ fn flip(id: u8) {
             }
             return;
         }
-        TG_TREE => app(|a| a.s.tree_on ^= true),
+        TG_TREE => {
+            unsafe { crate::toggle_tree() };
+            return;
+        }
         TG_EDGE => app(|a| a.s.edge ^= true),
         TG_CONFIRM => app(|a| a.s.confirm ^= true),
         TG_AUTOSAVE => app(|a| a.s.autosave ^= true),
@@ -1059,6 +1062,7 @@ unsafe fn reset_keys(h: HWND) {
         return;
     }
     crate::keys::reset_all();
+    crate::apply_hotkey(true);
     crate::save_session();
     refresh();
 }
@@ -1074,6 +1078,7 @@ unsafe fn reset_one(i: usize) {
         }
     }
     crate::keys::rebind(i, chord);
+    crate::apply_hotkey(true);
     crate::save_session();
     refresh();
 }

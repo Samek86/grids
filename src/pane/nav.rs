@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::imports::*;
 use super::*;
 use crate::app::*;
@@ -5,18 +7,128 @@ use crate::ui::*;
 use crate::session::*;
 use crate::shell::*;
 use crate::i18n::*;
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
 // ---------- navigation ----------
 
 pub(crate) unsafe fn navigate(i: usize, path: &str) -> bool {
-    let Some(eb) = eb_of(i) else { return false };
+    go_near(i, path)
+}
+
+pub(crate) unsafe fn try_nav(i: usize, path: &str) -> Result<()> {
+    let eb = eb_of(i).ok_or_else(|| Error::from(E_FAIL))?;
     let mut pidl = std::ptr::null_mut();
-    if SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None).is_err() {
+    SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None)?;
+    let r = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
+    CoTaskMemFree(Some(pidl as _));
+    r
+}
+
+/// The shell's answer for a path that isn't there. Denied, offline, or not ready is something else.
+pub(crate) fn gone(code: HRESULT) -> bool {
+    code == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) || code == HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)
+}
+
+/// Nearest folder above `path` that still exists. Stops at anything but "not found".
+pub(crate) fn near_dir(path: &str, probe: impl Fn(&Path) -> std::io::Result<bool>) -> Option<String> {
+    for p in Path::new(path).ancestors().skip(1) {
+        match probe(p) {
+            Ok(true) => return Some(p.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Nav {
+    Pending,
+    Complete,
+    Failed,
+}
+
+/// A recovery through one pane's navigation events. Returns the missing folder once its parent has opened.
+pub(crate) fn rec_step(rec: &mut Option<(String, String)>, ev: Nav, path: &str) -> Option<String> {
+    let hit = rec.as_ref().is_some_and(|(_, t)| t.eq_ignore_ascii_case(path));
+    match ev {
+        Nav::Pending if !hit => *rec = None,
+        Nav::Failed if hit => *rec = None,
+        Nav::Complete => return rec.take().filter(|_| hit).map(|(m, _)| m),
+        _ => {}
+    }
+    None
+}
+
+/// A local folder that is confirmed missing opens its nearest existing parent.
+/// The status line says so once that parent has opened. Shares are not probed on this thread.
+pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
+    let Err(e) = try_nav(i, path) else { return true };
+    if !gone(e.code()) {
         return false;
     }
+    app(|a| {
+        a.s.recent.retain(|r| !r.eq_ignore_ascii_case(path));
+        if a.s.paths[i].eq_ignore_ascii_case(path) {
+            a.s.paths[i].clear();
+        }
+    });
+    let root = path.get(..3).unwrap_or("");
+    let local = root.len() == 3 && root.as_bytes()[1] == b':' && matches!(GetDriveTypeW(&HSTRING::from(root)), 2 | 3);
+    if !local {
+        return false;
+    }
+    let Some(up) = near_dir(path, |p| std::fs::metadata(p).map(|m| m.is_dir())) else { return false };
+    let Some(eb) = eb_of(i) else { return false };
+    let mut pidl = std::ptr::null_mut();
+    if SHParseDisplayName(&HSTRING::from(up.as_str()), None, &mut pidl, 0, None).is_err() {
+        return false;
+    }
+    let target = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+    let arm = |set: bool| {
+        app(|a| {
+            if let Some(p) = a.panes[i].as_mut() {
+                if set {
+                    p.recover = Some((path.to_string(), target.clone()));
+                } else if p.recover.as_ref().is_some_and(|(_, t)| *t == target) {
+                    p.recover = None;
+                }
+            }
+        })
+    };
+    arm(true);
     let ok = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok();
+    if !ok {
+        arm(false);
+    }
     CoTaskMemFree(Some(pidl as _));
     ok
+}
+
+pub(crate) fn gone_note(a: &mut App, missing: &str, opened: &str) {
+    let live = a.lost > 0 && a.note.as_ref().is_some_and(|(_, t)| Instant::now() < *t);
+    a.lost = if live { a.lost + 1 } else { 1 };
+    let n = a.lost;
+    let text = match (ui(), n) {
+        (_, 1) if ui() == 1 => format!("없는 폴더: {missing} · {opened} 엶"),
+        (_, 1) if ui() == 2 => format!("見つかりません: {missing} · {opened} を開きました"),
+        (_, 1) => format!("Not found: {missing} · opened {opened}"),
+        (1, n) => format!("저장된 폴더 {n}개가 없어 가장 가까운 상위 폴더를 엶"),
+        (2, n) => format!("保存されたフォルダー {n} 件が見つからず、最も近い上位フォルダーを開きました"),
+        (_, n) => format!("{n} saved folders were missing · opened the nearest parent folders"),
+    };
+    a.note = Some((text, Instant::now() + std::time::Duration::from_secs(8)));
+}
+
+pub(crate) unsafe fn rec_event(i: usize, ev: Nav, pidl: *const ITEMIDLIST) {
+    if app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.recover.is_some())) {
+        let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+        app(|a| {
+            if let Some(p) = a.panes[i].as_mut() {
+                rec_step(&mut p.recover, ev, &path);
+            }
+        });
+    }
 }
 
 pub(crate) unsafe fn browse(i: usize, flags: u32) {
@@ -39,6 +151,38 @@ pub(crate) unsafe fn focus_view(i: usize) {
         if let Ok(h) = sv.GetWindow() {
             _ = SetFocus(Some(h));
         }
+    }
+}
+
+/// Remember which of this window's controls had focus as it goes to the back.
+pub(crate) unsafe fn keep_focus(main: HWND) {
+    let f = GetFocus();
+    if IsChild(main, f).as_bool() {
+        app(|a| a.focus_keep = f);
+    }
+}
+
+/// Put focus back on the address, filter, list, folder tree, or favourites it left.
+/// The edits keep their text and caret.
+pub(crate) unsafe fn restore_focus() {
+    let (main, i, k, panel, th, side) = app(|a| (a.main, a.s.active, a.focus_keep, a.s.tree_on, a.tree_hwnd, a.side_hwnd));
+    let shown = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)).is_some_and(|p| IsWindowVisible(p).as_bool());
+    let within = |root: HWND| !root.0.is_null() && (root == k || IsChild(root, k).as_bool());
+    let ok = IsWindow(Some(k)).as_bool()
+        && ((shown && (pane_ctl(i, ID_EDIT) == Some(k) || pane_ctl(i, ID_FILTER) == Some(k)))
+            || view_of::<IShellView>(i).and_then(|sv| sv.GetWindow().ok()).is_some_and(within)
+            || (panel && IsWindowVisible(th).as_bool() && within(th))
+            || (panel && IsWindowVisible(side).as_bool() && within(side)));
+    if ok {
+        if pane_ctl(i, ID_EDIT) == Some(k) {
+            _ = ShowWindow(k, SW_SHOWNA);
+        }
+        _ = SetFocus(Some(k));
+    } else {
+        focus_view(i);
+    }
+    if GetFocus().is_invalid() {
+        _ = SetFocus(Some(main));
     }
 }
 
@@ -80,6 +224,9 @@ pub(crate) unsafe fn addr_reset(i: usize, e: HWND) {
     _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
     focus_view(i);
     show_path_end(e, &disp);
+    if let Ok(p) = GetParent(e) {
+        sync_addr(p);
+    }
 }
 
 // Enter in the address bar: a folder (relative to this pane's) is browsed to, a file opened, else a command
@@ -102,6 +249,7 @@ pub(crate) unsafe fn go_edit(i: usize) {
         ShellExecuteExW(&mut sei).is_ok()
     };
     // Some(true) = browsed, Some(false) = opened or ran
+    let mut resolved = false;
     let done = 'go: {
         if let Some(p) = path {
             // std::path::absolute is GetFullPathNameW: folds `..` and `.`
@@ -115,6 +263,7 @@ pub(crate) unsafe fn go_edit(i: usize) {
                     run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
                 };
                 CoTaskMemFree(Some(pidl as _));
+                resolved = true;
                 break 'go r;
             }
         }
@@ -128,6 +277,23 @@ pub(crate) unsafe fn go_edit(i: usize) {
     match done {
         Some(true) => focus_view(i),
         Some(false) => addr_reset(i, e),
+        None if addr_jumps(done, resolved) => {
+            let picked = app(|a| {
+                let mut favs = fav_folders(&a.s.tree);
+                if favs.is_empty() {
+                    favs = a.s.favs.clone();
+                }
+                jump_pick(&raw, &a.s.recent, &favs, &a.s.paths[i]).map(str::to_string)
+            });
+            match picked {
+                Some(p) if go_near(i, &p) => focus_view(i),
+                Some(_) => {
+                    _ = MessageBeep(MB_ICONWARNING);
+                    focus_view(i);
+                }
+                None => _ = MessageBeep(MB_ICONWARNING),
+            }
+        }
         None => _ = MessageBeep(MB_ICONWARNING),
     }
 }
@@ -153,20 +319,36 @@ pub(crate) unsafe fn open_in(src: usize, dst: usize) {
 }
 
 pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
-    // (pane, shown name, folder it held when the menu opened)
+    // (pane, shown name, folder it held when the menu opened, colour label)
     let items = app(|a| {
         let live = a.panes.iter().enumerate().take(a.s.panes());
         let live = live.filter(|(k, _)| *k != src);
-        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone()))).collect::<Vec<_>>()
+        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone(), a.s.tints.get(k).copied().unwrap_or(0)))).collect::<Vec<_>>()
     });
+    let label = |k: usize, t: u8, disp: &str| {
+        let tag = if t == 0 { String::new() } else { format!(" ({})", tint_name(t)) };
+        HSTRING::from(format!("{} {}{tag}    {disp}", tr("Pane", "패널", "ペイン"), k + 1))
+    };
     let arr = view_of::<IFolderView2>(src).and_then(|fv| fv.GetSelection(false).ok());
     let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
     let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:", "選択したフォルダー（なければ現在のフォルダー）を開くペイン:")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    for (k, disp, _) in &items {
-        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
+    for (k, disp, _, t) in &items {
+        _ = AppendMenuW(menu, MF_STRING, k + 1, &label(*k, *t, disp));
+    }
+    if let Ok(sub) = CreatePopupMenu() {
+        for (k, disp, _, t) in &items {
+            _ = AppendMenuW(sub, MF_STRING, 301 + k, &label(*k, *t, disp));
+        }
+        let flags = if items.is_empty() { MF_POPUP | MF_GRAYED } else { MF_POPUP };
+        _ = AppendMenuW(
+            menu,
+            flags,
+            sub.0 as usize,
+            &HSTRING::from(tr("Swap places with\tCtrl+Alt+Shift+arrows", "자리 바꾸기\tCtrl+Alt+Shift+방향키", "入れ替え\tCtrl+Alt+Shift+方向キー")),
+        );
     }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     match &picked {
@@ -182,10 +364,10 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
                     continue; // always copy: the move submenu stays hidden
                 }
                 let Ok(sub) = CreatePopupMenu() else { continue };
-                for (k, disp, path) in &items {
+                for (k, disp, path, t) in &items {
                     let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
                     let flags = if ok { MF_STRING } else { MF_STRING | MF_GRAYED };
-                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
+                    _ = AppendMenuW(sub, flags, base + k, &label(*k, *t, disp));
                 }
                 _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
             }
@@ -208,10 +390,11 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     match (pick as usize, picked) {
         (0, _) => {}
         (p @ 1..=100, _) => open_in(src, p - 1),
+        (p @ 301..=316, _) => swap_panes(src, p - 301),
         (p, Ok(srcs)) => {
             // only to the folder the menu showed, and only the whole selection it counted
             let (mv, k) = (p > 200, (p - 1) % 100);
-            let shown = items.iter().find(|(i, ..)| *i == k).map(|(.., path)| path.clone());
+            let shown = items.iter().find(|(i, ..)| *i == k).map(|(_, _, path, _)| path.clone());
             let sent = shown.filter(|s| *s == app(|a| a.s.paths[k].clone())).and_then(|dst| {
                 let rename = send_mode(&srcs, &dst, mv)?;
                 Some(start_copy(srcs, dst, rename, mv))
@@ -221,6 +404,31 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
             }
         }
         _ => {}
+    }
+}
+
+/// Right-click on a pane header: a colour label from the selection-colour presets, saved with the session.
+pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
+    let cur = app(|a| a.s.tints.get(i).copied().unwrap_or(0));
+    let Ok(menu) = CreatePopupMenu() else { return };
+    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Pane colour", "패널 색", "ペインの色")));
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    for k in 0..=6u8 {
+        let flags = if k == cur { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let name = if k == 0 { tr("None", "없음", "なし") } else { tint_name(k) };
+        _ = AppendMenuW(menu, flags, k as usize + 1, &HSTRING::from(name));
+    }
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if pick > 0 && (i as usize) < MAXP {
+        app(|a| {
+            if i < a.s.tints.len() {
+                a.s.tints[i] = pick as u8 - 1;
+            }
+        });
+        repaint_header(h);
+        check_dirty();
+        note_save();
     }
 }
 
@@ -249,6 +457,60 @@ pub(crate) unsafe fn recent_menu(i: usize) {
     _ = DestroyMenu(menu);
     if pick > 0 && !navigate(i, &items[pick as usize - 1]) {
         _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
+    }
+    focus_view(i);
+}
+
+/// Filter icon and Alt+↓ while the filter has focus. Pictures, video, music, documents, archives, programs.
+/// "Same type as the selected file" only when exactly one file is selected.
+pub(crate) const FILE_KINDS: [(&str, &str, &str, &str); 6] = [
+    ("Pictures", "사진", "画像", "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.heic;*.tif;*.tiff;*.svg;*.ico"),
+    ("Videos", "동영상", "動画", "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm;*.m4v"),
+    ("Music", "음악", "音楽", "*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"),
+    ("Documents", "문서", "文書", "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.hwp;*.hwpx;*.txt;*.md;*.csv;*.rtf;*.odt"),
+    ("Archives", "압축", "アーカイブ", "*.zip;*.7z;*.rar;*.tar;*.gz;*.iso"),
+    ("Programs", "프로그램", "プログラム", "*.exe;*.msi;*.bat;*.cmd;*.ps1"),
+];
+
+pub(crate) unsafe fn kind_menu(i: usize) {
+    let (Some(h), Some(f)) = (app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)), pane_ctl(i, ID_FILTER)) else { return };
+    let cur = filter_of(i);
+    let arr = view_of::<IFolderView2>(i).and_then(|fv| fv.GetSelection(false).ok()).filter(|a| a.GetCount().is_ok_and(|n| n == 1));
+    let same = arr.and_then(|a| {
+        let it = a.GetItemAt(0).ok()?;
+        let dir = it.GetAttributes(SFGAO_FOLDER).ok()?.0 & SFGAO_FOLDER.0 != 0;
+        same_type(&pwstr(it.GetDisplayName(SIGDN_PARENTRELATIVEPARSING).ok()?), dir)
+    });
+    let Ok(menu) = CreatePopupMenu() else { return };
+    for (k, (en, ko, ja, spec)) in FILE_KINDS.iter().enumerate() {
+        let flags = if cur == *spec { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let shown = spec.split(';').take(2).collect::<Vec<_>>().join(", ");
+        _ = AppendMenuW(menu, flags, k + 1, &HSTRING::from(format!("{}\t{shown}, …", tr(en, ko, ja))));
+    }
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let same_label = tr("Same type as the selected file", "선택한 파일과 같은 형식", "選択したファイルと同じ種類");
+    match &same {
+        Some(s) => _ = AppendMenuW(menu, MF_STRING, 100, &HSTRING::from(format!("{same_label} ({})", s.replace('&', "&&")))),
+        None => _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 100, &HSTRING::from(same_label)),
+    }
+    let clear = if cur.is_empty() && text_of(f).is_empty() { MF_STRING | MF_GRAYED } else { MF_STRING };
+    _ = AppendMenuW(menu, clear, 101, &HSTRING::from(tr("Clear filter", "필터 지우기", "フィルターをクリア")));
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let pg = pane_geo(rc.right, rc.bottom, app(|a| a.dpi));
+    let mut at = POINT { x: pg.filt.left, y: pg.filt.bottom };
+    _ = ClientToScreen(h, &mut at);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
+    _ = DestroyMenu(menu);
+    let spec = match pick {
+        1..=6 => Some(FILE_KINDS[pick - 1].3.to_string()),
+        100 => same,
+        101 => Some(String::new()),
+        _ => None,
+    };
+    if let Some(s) = spec {
+        _ = SetWindowTextW(f, &HSTRING::from(s));
+        apply_filter(i);
     }
     focus_view(i);
 }
@@ -499,7 +761,12 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
-    let Some((h, eb, view, cols)) = app(|a| {
+    if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
+        let opened = short_name(&parse);
+        app(|a| gone_note(a, &missing, &opened));
+        update_status();
+    }
+    let Some((h, eb, view, cols, ticket)) = app(|a| {
         let fs = is_fs(&parse);
         let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
         let path = a.s.paths[i].clone();
@@ -507,9 +774,11 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
+            // The previous folder's icon goes as soon as the browse starts. A new lookup replaces it.
+            (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
             // waiting columns (session, open in) first, else the pane's own; none in shell places
             let cols = p.pending.take().unwrap_or(own);
-            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()))
+            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()), p.ticket)
         })
     }) else {
         return;
@@ -518,6 +787,8 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
         show_path_end(e, &disp);
     }
+    sync_addr(h);
+    request_icon(h, ticket, pidl);
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
     }
@@ -548,6 +819,13 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             sync_tree(&item);
         }
     }
+    // set_layout asked to focus a pane that was not open yet. Once, and only if nothing else took focus.
+    if app(|a| a.focus_req == h && a.s.active == i && std::mem::take(&mut a.focus_req) == h) {
+        let f = GetFocus();
+        if f.0.is_null() || f == app(|a| a.main) {
+            focus_view(i);
+        }
+    }
     hook_ctx(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {
@@ -558,12 +836,16 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
 }
 
 #[implement(IExplorerBrowserEvents)]
-pub(crate) struct Events(pub(crate) usize);
+pub(crate) struct Events(pub(crate) Arc<AtomicUsize>);
 
 impl IExplorerBrowserEvents_Impl for Events_Impl {
-    fn OnNavigationPending(&self, _: *const ITEMIDLIST) -> Result<()> {
+    fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { save_view(self.0) };
+        let i = self.0.load(Ordering::SeqCst);
+        unsafe {
+            rec_event(i, Nav::Pending, pidl);
+            save_view(i);
+        }
         Ok(())
     }
     fn OnViewCreated(&self, _: Ref<IShellView>) -> Result<()> {
@@ -571,18 +853,19 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { on_nav(self.0, pidl) };
+        unsafe { on_nav(self.0.load(Ordering::SeqCst), pidl) };
         Ok(())
     }
-    fn OnNavigationFailed(&self, _: *const ITEMIDLIST) -> Result<()> {
+    fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
+        unsafe { rec_event(self.0.load(Ordering::SeqCst), Nav::Failed, pidl) };
         Ok(())
     }
 }
 
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
 #[implement(IServiceProvider, ICommDlgBrowser)]
-pub(crate) struct Host(pub(crate) usize);
+pub(crate) struct Host(pub(crate) Arc<AtomicUsize>);
 
 impl IServiceProvider_Impl for Host_Impl {
     fn QueryService(&self, service: *const GUID, riid: *const GUID, ppv: *mut *mut core::ffi::c_void) -> Result<()> {
@@ -603,7 +886,7 @@ impl ICommDlgBrowser_Impl for Host_Impl {
     }
     fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
         if change == CDBOSC_SELCHANGE {
-            SEL_REV[self.0].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
+            SEL_REV[self.0.load(Ordering::SeqCst)].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
         }
         Ok(())
     }
@@ -612,7 +895,7 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         let spec = unsafe {
             match sv.ok().ok().and_then(|v| v.GetWindow().ok()) {
                 Some(h) => filter_for_view(h).unwrap_or_default(),
-                None => filter_of(self.0),
+                None => filter_of(self.0.load(Ordering::SeqCst)),
             }
         };
         if spec.is_empty() {
@@ -620,10 +903,12 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         }
         unsafe {
             let sf: IShellFolder = sv.ok()?.cast::<IFolderView>()?.GetFolder()?;
-            let mut attr = SFGAO_FOLDER.0;
-            _ = sf.GetAttributesOf(&[pidl], &mut attr);
-            if attr & SFGAO_FOLDER.0 != 0 {
-                return Ok(()); // folders stay, so a filtered pane can still be navigated
+            let mut attr = SFGAO_FOLDER.0 | SFGAO_STREAM.0;
+            if sf.GetAttributesOf(&[pidl], &mut attr).is_err() {
+                return Ok(()); // unreadable: keep the item
+            }
+            if real_folder(attr) {
+                return Ok(()); // real folders stay, so a filtered pane can still be navigated
             }
             let mut sr = STRRET::default();
             let mut name = PWSTR::null();
@@ -653,7 +938,7 @@ pub(crate) unsafe fn drop_items(d: &Ref<IDataObject>) -> Option<IShellItemArray>
 
 #[implement(IDropTarget)]
 pub(crate) struct PaneDrop {
-    pub(crate) slot: usize,
+    pub(crate) slot: Arc<AtomicUsize>,
     pub(crate) hwnd: HWND,
     pub(crate) ok: Cell<bool>, // the data being dragged holds shell items
     pub(crate) helper: Option<IDropTargetHelper>,
@@ -685,7 +970,7 @@ impl PaneDrop {
         let Some(item) = drop_items(d).and_then(|a| a.GetItemAt(0).ok()) else { return false };
         let is_dir = item.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
         let Some(folder) = (if is_dir { Some(item) } else { item.GetParent().ok() }) else { return false };
-        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot, folder)));
+        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot.load(Ordering::SeqCst), folder)));
         if PostMessageW(Some(self.hwnd), WM_DROP_OPEN, WPARAM(0), LPARAM(0)).is_ok() {
             return true;
         }
@@ -737,6 +1022,44 @@ impl IDropTarget_Impl for PaneDrop_Impl {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod missing_tests {
+    use super::{near_dir, rec_step, Nav};
+    use std::io;
+    use std::path::Path;
+
+    #[test]
+    fn nearest_existing_parent() {
+        let tree = |p: &Path| match p.to_string_lossy().replace('/', "\\").as_str() {
+            r"C:\a\b" => Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+            r"C:\a" => Ok(true),
+            r"C:\" => Ok(true),
+            _ => Err(io::Error::other("denied")),
+        };
+        assert_eq!(near_dir(r"C:\a\b\c", tree).as_deref(), Some(r"C:\a"));
+        let denied = |p: &Path| {
+            if p.ends_with("a") {
+                Err(io::Error::other("denied"))
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "x"))
+            }
+        };
+        assert_eq!(near_dir(r"C:\a\b", denied), None);
+    }
+
+    #[test]
+    fn recovery_waits_for_the_parent() {
+        let mut rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Pending, r"D:\").is_none() && rec.is_none());
+        rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Pending, r"C:\").is_none() && rec.is_some());
+        assert_eq!(rec_step(&mut rec, Nav::Complete, r"C:\").as_deref(), Some(r"C:\gone"));
+        assert!(rec.is_none());
+        rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Failed, r"C:\").is_none() && rec.is_none());
     }
 }
 

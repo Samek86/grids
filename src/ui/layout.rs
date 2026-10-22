@@ -7,6 +7,22 @@ use crate::i18n::*;
 
 // ---------- grid geometry ----------
 
+/// Shrinks `r` into `work` and slides it inside. A rect already inside comes back unchanged.
+pub(crate) fn fit(r: RECT, work: RECT) -> RECT {
+    let w = (r.right - r.left).min(work.right - work.left).max(0);
+    let h = (r.bottom - r.top).min(work.bottom - work.top).max(0);
+    let left = r.left.clamp(work.left, work.right - w);
+    let top = r.top.clamp(work.top, work.bottom - h);
+    RECT { left, top, right: left + w, bottom: top + h }
+}
+
+/// `fit` for a saved normal position, which is in workspace coordinates (origin at the work area's corner).
+pub(crate) fn fit_saved(saved: RECT, mon: RECT, work: RECT) -> RECT {
+    let (dx, dy) = (work.left - mon.left, work.top - mon.top);
+    let r = fit(RECT { left: saved.left + dx, top: saved.top + dy, right: saved.right + dx, bottom: saved.bottom + dy }, work);
+    RECT { left: r.left - dx, top: r.top - dy, right: r.right - dx, bottom: r.bottom - dy }
+}
+
 /// Splits `len` px starting at `start` into cells by `ratios`, with `gap` px splitters between them.
 pub(crate) fn cells(start: i32, len: i32, ratios: &[f64], gap: i32) -> Vec<(i32, i32)> {
     let avail = (len - gap * (ratios.len() as i32 - 1)).max(0) as f64;
@@ -83,6 +99,11 @@ pub(crate) struct Geo {
     pub(crate) zoom: bool, // one pane fills the grid: no splitters
 }
 
+/// A splitter release stores the clamped panel width. While the panel is hidden, the kept width stays.
+pub(crate) fn kept_side(panel: bool, stored: i32, clamped: i32) -> i32 {
+    if panel { clamped } else { stored }
+}
+
 pub(crate) fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
@@ -126,7 +147,40 @@ pub(crate) fn slot(h: &[usize], mut i: usize) -> (usize, usize) {
         }
         i -= n;
     }
-    (h.len() - 1, h[h.len() - 1] - 1)
+    (h.len().saturating_sub(1), h.last().copied().unwrap_or(1).saturating_sub(1))
+}
+
+/// The cell each off-screen slot's pane last had. Runtime only.
+pub(crate) type Homes = [Option<(usize, usize)>; MAXP];
+
+/// Layout `old` to `new`. Slot j shows the pane that was in slot `perm[j]`.
+/// A pane whose cell is in both stays there. A cell that leaves is remembered and comes back.
+/// New cells take the lowest slots that have no home.
+pub(crate) fn remap(old: &[usize], new: &[usize], home: &Homes) -> ([usize; MAXP], Homes) {
+    let has = |(c, r): (usize, usize)| new.get(c).is_some_and(|&n| r < n);
+    let (on, n) = (old.iter().sum::<usize>(), new.iter().sum::<usize>());
+    let mut home = *home;
+    let mut perm = [usize::MAX; MAXP];
+    for j in 0..MAXP {
+        let Some(c) = (if j < on { Some(slot(old, j)) } else { home[j] }) else { continue };
+        if has(c) {
+            perm[new[..c.0].iter().sum::<usize>() + c.1] = j;
+            home[j] = None;
+        } else {
+            home[j] = Some(c);
+        }
+    }
+    let free: Vec<usize> = (0..MAXP).filter(|j| !perm.contains(j) && home[*j].is_none()).collect();
+    let empty: Vec<usize> = (0..n).filter(|&k| perm[k] == usize::MAX).collect();
+    for (k, j) in empty.into_iter().zip(free) {
+        perm[k] = j;
+    }
+    let rest: Vec<usize> = (0..MAXP).filter(|j| !perm[..n].contains(j)).collect();
+    let mut out = [None; MAXP];
+    for (k, j) in (n..MAXP).zip(rest) {
+        (perm[k], out[k]) = (j, home[j]);
+    }
+    (perm, out)
 }
 
 pub(crate) fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
@@ -167,6 +221,54 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
         fav,
         // 2px in, so the active ring stays visible around the list
         view: RECT { left: s(2), top: bar, right: w - s(2), bottom: h - s(2) },
+    }
+}
+
+/// The search icon or filter chip at the left of the filter pill. The edit starts at 24 DIP, so this stays clickable.
+pub(crate) fn filter_icon_rect(filt: RECT, s24: i32) -> Option<RECT> {
+    let r = RECT { right: filt.right.min(filt.left + s24), ..filt };
+    (r.right > r.left).then_some(r)
+}
+
+/// Colour-label strip along the pane's top edge: inside the border, in the gap above the buttons.
+pub(crate) fn tint_band(w: i32, dpi: i32, active: bool) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let inset = if active { s(2) } else { 1 };
+    let top = pane_geo(w, s(100), dpi).num.top;
+    let thick = s(3).min((top - inset).max(0));
+    RECT { left: inset, top: inset, right: w - inset, bottom: inset + thick }
+}
+
+/// A pane's colour label in the current theme: one of the selection-colour presets. 0 is none.
+pub(crate) fn tint_color(k: u8) -> Option<u32> {
+    (1..=6).contains(&k).then(|| pal().accents[k as usize - 1].1)
+}
+
+pub(crate) fn tint_name(k: u8) -> &'static str {
+    let i = (k as usize).saturating_sub(1).min(5);
+    tr(ACCENT_EN[i], LIGHT.accents[i].0, ACCENT_JA[i])
+}
+
+/// A `t` px line down the middle of splitter `d`. None when that splitter is not on screen.
+pub(crate) fn gap_line(g: &Geo, d: Hit, t: i32) -> Option<RECT> {
+    let vbar = |x: i32| RECT { left: x - t / 2, top: g.top, right: x - t / 2 + t, bottom: g.bot };
+    match d {
+        Hit::Side if g.side > 0 => Some(vbar(g.side + g.gap / 2)),
+        Hit::SideSplit if g.side > 0 && g.tree_h > 0 && g.gap > 0 => {
+            let y = g.top + g.tree_h + g.gap / 2;
+            Some(RECT { left: 0, top: y - t / 2, right: g.side, bottom: y - t / 2 + t })
+        }
+        Hit::Col(k) if !g.zoom => {
+            g.xs.get(k + 1)?;
+            Some(vbar(g.xs[k].1 + g.gap / 2))
+        }
+        Hit::Row(c, k) if !g.zoom => {
+            let (x0, x1) = *g.xs.get(c)?;
+            g.ys.get(c)?.get(k + 1)?;
+            let y = g.ys[c][k].1 + g.gap / 2;
+            Some(RECT { left: x0, top: y - t / 2, right: x1, bottom: y - t / 2 + t })
+        }
+        _ => None,
     }
 }
 
@@ -400,6 +502,85 @@ mod tests {
     }
 
     #[test]
+    fn address_icon_slot_is_fixed() {
+        use crate::{addr_icon, crumb_field};
+        for dpi in [96, 144] {
+            let s = |v: i32| v * dpi / 96;
+            let narrow = RECT { left: 0, top: 0, right: s(90) - 1, bottom: s(22) };
+            let wide = RECT { left: 10, top: 4, right: 10 + s(200), bottom: 4 + s(22) };
+            assert!(addr_icon(narrow, dpi).is_none());
+            assert_eq!(crumb_field(narrow, dpi).left, narrow.left + s(8));
+            let r = addr_icon(wide, dpi).unwrap();
+            assert_eq!((r.right - r.left, r.bottom - r.top), (s(16), s(16)));
+            assert_eq!(crumb_field(wide, dpi).left, wide.left + s(26));
+            assert_eq!(crumb_field(wide, dpi).left, crumb_field(wide, dpi).left);
+        }
+    }
+
+    #[test]
+    fn theme_follow_switches_only_when_it_differs() {
+        use crate::theme_target;
+        assert_eq!(theme_target(true, Some(true), false), Some(true));
+        assert_eq!(theme_target(true, Some(false), true), Some(false));
+        assert_eq!(theme_target(true, Some(true), true), None);
+        assert_eq!(theme_target(false, Some(true), false), None);
+        assert_eq!(theme_target(true, None, false), None);
+    }
+
+    #[test]
+    fn gap_lines_mark_real_splitters() {
+        let g = Geo {
+            w: 1000,
+            h: 600,
+            top: 34,
+            bot: 576,
+            pad: 8,
+            gap: 8,
+            side: 240,
+            tree_h: 200,
+            gx: 248,
+            zoom: false,
+            xs: vec![(256, 620), (628, 992)],
+            ys: vec![vec![(34, 300), (308, 576)], vec![(34, 576)]],
+        };
+        for d in [Hit::Side, Hit::SideSplit, Hit::Col(0), Hit::Row(0, 0)] {
+            let r = gap_line(&g, d, 2).unwrap();
+            assert!(r.right > r.left && r.bottom > r.top, "{d:?}");
+        }
+        for d in [Hit::Col(1), Hit::Col(5), Hit::Row(1, 0), Hit::Row(0, 1), Hit::Row(3, 0)] {
+            assert_eq!(gap_line(&g, d, 2), None, "{d:?}");
+        }
+        let hidden = Geo { side: 0, tree_h: 0, gx: 8, ..g.clone() };
+        assert_eq!(gap_line(&hidden, Hit::Side, 2), None);
+        assert_eq!(gap_line(&hidden, Hit::SideSplit, 2), None);
+        let zoomed = Geo { zoom: true, ..g };
+        assert_eq!(gap_line(&zoomed, Hit::Col(0), 2), None);
+        assert_eq!(gap_line(&zoomed, Hit::Row(0, 0), 2), None);
+        assert!(gap_line(&zoomed, Hit::Side, 2).is_some());
+    }
+
+    #[test]
+    fn filter_icon_is_the_pill_s_left_edge() {
+        let wide = RECT { left: 10, top: 2, right: 160, bottom: 24 };
+        let r = filter_icon_rect(wide, 24).unwrap();
+        assert_eq!((r.left, r.right), (10, 34));
+        assert!(filter_icon_rect(RECT { left: 10, right: 10, ..wide }, 24).is_none());
+    }
+
+    #[test]
+    fn tint_strip_sits_above_the_buttons() {
+        for dpi in [96, 120, 144, 192] {
+            for w in [120, 400] {
+                for active in [false, true] {
+                    let (b, top) = (tint_band(w, dpi, active), pane_geo(w, 300, dpi).num.top);
+                    let border = if active { 2 * dpi / 96 } else { 1 };
+                    assert!(b.top >= border && b.bottom <= top && b.bottom - b.top >= 2, "{dpi} {w} {active}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn split_keeps_a_minimum_and_defaults_to_even() {
         assert_eq!(split_heights(400, 0.5, 8, 80), (196, 196));
         assert_eq!(split_heights(400, 0.0, 8, 80), (80, 312));
@@ -410,6 +591,29 @@ mod tests {
         assert!(top >= 1 && bot >= 1);
         assert_eq!(top + bot, 92);
         assert!(side_min(96) == 80 && side_min(192) == 160);
+    }
+
+    #[test]
+    fn window_fits_work_area() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        let work = r(0, 0, 1024, 728);
+        assert_eq!(fit(r(100, 50, 900, 650), work), r(100, 50, 900, 650));
+        assert_eq!(fit(r(26, 26, 1426, 926), work), work);
+        assert_eq!(fit(r(500, 400, 1300, 1000), work), r(224, 128, 1024, 728));
+        let left_mon = r(-1920, 0, 0, 1040);
+        assert_eq!(fit(r(-2100, -50, -1300, 550), left_mon), r(-1920, 0, -1120, 600));
+        assert_eq!(fit(r(-300, 100, 500, 700), left_mon), r(-800, 100, 0, 700));
+        let mon = r(0, 0, 1920, 1080);
+        assert_eq!(fit_saved(r(1500, 900, 2300, 1500), mon, r(0, 40, 1920, 1080)), r(1120, 440, 1920, 1040));
+        let saved = r(100, 100, 900, 700);
+        assert_eq!(fit_saved(saved, mon, r(0, 40, 1920, 1080)), saved);
+    }
+
+    #[test]
+    fn hidden_panel_keeps_its_width() {
+        // Hidden, then a column drag: the clamped 0 must not replace 600.
+        assert_eq!(kept_side(false, 600, 0), 600);
+        assert_eq!(kept_side(true, 600, 536), 536);
     }
 
     #[test]
@@ -442,6 +646,30 @@ mod tests {
         assert_eq!(hit(&g, 244, 66 + 300 + 3), Some(Hit::Side));
         let closed = Geo { side: 0, tree_h: 0, gx: 8, ..g };
         assert_eq!(hit(&closed, 4, 400), None);
+    }
+
+    #[test]
+    fn remap_keeps_cells() {
+        let ident: [usize; MAXP] = std::array::from_fn(|k| k);
+        let run = |steps: &[Vec<usize>]| {
+            let (mut id, mut home) = (ident, [None; MAXP]);
+            for w in steps.windows(2) {
+                let (p, h) = remap(&w[0], &w[1], &home);
+                (id, home) = (p.map(|k| id[k]), h);
+            }
+            id
+        };
+        let tail = |v: &[usize]| v.iter().copied().chain(v.len()..MAXP).collect::<Vec<_>>();
+        assert_eq!(run(&[vec![2, 2], vec![3, 2]])[..], tail(&[0, 1, 4, 2, 3])[..]);
+        assert_eq!(run(&[vec![1, 1, 1, 1], vec![4]])[..], tail(&[0, 4, 5, 6, 1, 2, 3])[..]);
+        for steps in [
+            vec![vec![1, 1, 1, 1], vec![4], vec![1, 1, 1, 1]],
+            vec![vec![3, 3], vec![2, 2], vec![2, 3], vec![3, 3]],
+            vec![vec![3, 2], vec![2, 3], vec![3, 2]],
+            vec![vec![2, 2], vec![2, 2]],
+        ] {
+            assert_eq!(run(&steps), ident, "{steps:?}");
+        }
     }
 }
 

@@ -132,7 +132,15 @@ pub(crate) unsafe fn snapshot_windows() -> Vec<Value> {
         let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
         if GetWindowPlacement(main, &mut wp).is_ok() {
             let r = wp.rcNormalPosition;
-            let max = (wp.showCmd == SW_SHOWMAXIMIZED.0 as u32) as i32;
+            // Minimized keeps the maximized flag from the last normal or maximized size.
+            let minimized = wp.showCmd == SW_SHOWMINIMIZED.0 as u32;
+            let max = if minimized {
+                app(|a| a.was_max) as i32
+            } else {
+                let on = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32;
+                app(|a| a.was_max = on);
+                on as i32
+            };
             app(|a| a.s.win = Some([r.left, r.top, r.right, r.bottom, max]));
         }
         out.push(app(|a| window_value(&a.s)));
@@ -252,25 +260,59 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     prime_theme(app(|a| a.s.dark));
     apply_theme_desk();
     apply_font();
+    refresh_drives(); // laid out by the relayout below; startup does not lay the window out twice
     match win {
         Some([l, t, r, b, max]) => {
+            // Saved position is workspace coordinates. Fit it, and move while still hidden so a
+            // different-DPI monitor changes DPI before the final placement.
+            let saved = RECT { left: l, top: t, right: r, bottom: b };
+            let mut fixed = saved;
+            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(MonitorFromRect(&saved, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+                fixed = fit_saved(saved, mi.rcMonitor, mi.rcWork);
+                let (dx, dy) = (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top);
+                let (w, h) = (fixed.right - fixed.left, fixed.bottom - fixed.top);
+                _ = SetWindowPos(main, None, fixed.left + dx, fixed.top + dy, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             let wp = WINDOWPLACEMENT {
                 length: size_of::<WINDOWPLACEMENT>() as u32,
                 showCmd: if max != 0 { SW_SHOWMAXIMIZED.0 as u32 } else { SW_SHOWNORMAL.0 as u32 },
-                rcNormalPosition: RECT { left: l, top: t, right: r, bottom: b },
+                rcNormalPosition: fixed,
                 ..Default::default()
             };
             _ = SetWindowPlacement(main, &wp);
         }
-        None => _ = ShowWindow(main, SW_SHOWNORMAL),
+        None => {
+            let mut r = RECT::default();
+            _ = GetWindowRect(main, &mut r);
+            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let ok = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool();
+            let f = fit(r, mi.rcWork);
+            if ok && f != r {
+                _ = SetWindowPos(main, None, f.left, f.top, f.right - f.left, f.bottom - f.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            _ = ShowWindow(main, SW_SHOWNORMAL);
+        }
     }
     relayout();
     focus_view(app(|a| a.s.active));
     let file = app(|a| a.s.file.clone());
-    let base = std::fs::read_to_string(&file).ok().map(|t| Session::parse(&t));
-    app(|a| a.base = Some(base.unwrap_or_else(|| a.s.clone())));
+    let saved = std::fs::read_to_string(&file).ok();
+    app(|a| {
+        let base = match &saved {
+            Some(t) => {
+                let mut b = Session::parse(t);
+                b.reorder(&a.s.order);
+                b
+            }
+            None => a.s.clone(),
+        };
+        a.base = Some(base);
+    });
     refresh_save_button();
     SetTimer(Some(main), TIMER_STATUS, 300, None);
+    // Taken by another app: the menu stays unchecked and hotkey stays on, so the next start tries again.
+    try_register_hotkey(main);
     if !seed {
         _ = SetForegroundWindow(main);
     }
