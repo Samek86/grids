@@ -119,6 +119,13 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(keys_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsKeys"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
             style: CS_DBLCLKS,
             lpfnWndProc: Some(tabs_proc),
             hInstance: hinst,

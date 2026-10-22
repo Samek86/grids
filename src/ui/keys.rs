@@ -1,0 +1,357 @@
+// Shortcut list. Rows come from the keymap, so a rebind shows up here without a restart.
+// Ctrl+/ toggles it; holding the keys does that once. Esc, the close mark, or Ctrl+/ again
+// put focus back. A click outside just closes, and focus stays where that click put it.
+
+use crate::imports::*;
+use crate::app::*;
+use crate::i18n::*;
+use crate::pane::focus_view;
+use super::*;
+
+pub(crate) struct KeyRow {
+    pub(crate) keys: Vec<String>,
+    pub(crate) desc: String,
+}
+
+/// `text` is the keymap help: chord lines, a blank line, then "name: what it does".
+/// Caps break on ", " and " / ", so "Ctrl+C/X/V" and "Ctrl+/" stay one cap.
+/// A mouse line without ": " continues the one above.
+pub(crate) fn key_rows(text: &str) -> [Vec<KeyRow>; 2] {
+    let (keys, mouse) = text.split_once("\n\n").unwrap_or((text, ""));
+    let kb = keys
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(k, d)| KeyRow { keys: k.split(", ").flat_map(|p| p.split(" / ")).map(String::from).collect(), desc: d.into() })
+        .collect();
+    let mut ms: Vec<KeyRow> = Vec::new();
+    for l in mouse.lines().filter(|l| !l.is_empty()) {
+        match (l.split_once(": "), ms.last_mut()) {
+            (Some((k, d)), _) => ms.push(KeyRow { keys: vec![k.into()], desc: d.into() }),
+            (None, Some(last)) => {
+                last.desc.push('\n');
+                last.desc.push_str(l);
+            }
+            (None, None) => {}
+        }
+    }
+    [kb, ms]
+}
+
+pub(crate) struct KeyGeoRow {
+    pub(crate) sec: usize,
+    pub(crate) row: RECT,
+    pub(crate) keys: Vec<RECT>,
+    pub(crate) desc: RECT,
+}
+
+pub(crate) struct KeysGeo {
+    pub(crate) h: i32,
+    pub(crate) titles: [RECT; 2],
+    pub(crate) rows: Vec<KeyGeoRow>,
+}
+
+pub(crate) const KEYS_PAD: i32 = 20;
+
+/// Content layout in px. `measure(text, max_w, cap)` is a cap's one-line size, or text wrapped at `max_w`.
+pub(crate) fn keys_layout(secs: &[Vec<KeyRow>; 2], width: i32, dpi: i32, measure: &dyn Fn(&str, i32, bool) -> (i32, i32)) -> KeysGeo {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, gap, cx, cy, cgap) = (s(KEYS_PAD), s(16), s(7), s(3), s(5));
+    let inner = (width - 2 * pad).max(s(80));
+    let lh = measure("Ag", inner, true).1.max(1);
+    let cap_w = |t: &str| measure(t, inner, true).0 + 2 * cx;
+    let (mut one, mut group) = (0, 0);
+    for r in &secs[0] {
+        let caps: Vec<i32> = r.keys.iter().map(|k| cap_w(k)).collect();
+        one = one.max(caps.iter().copied().max().unwrap_or(0));
+        group = group.max(caps.iter().sum::<i32>() + cgap * (caps.len() as i32 - 1).max(0));
+    }
+    let key_w = one.max(group.min(inner * 2 / 5)).min(inner / 2).max(s(40));
+    let (dx, dw, ch) = (pad + key_w + gap, (inner - key_w - gap).max(s(40)), lh + 2 * cy);
+    let mut y = pad;
+    let mut titles = [RECT::default(); 2];
+    let mut rows = Vec::new();
+    for (sec, list) in secs.iter().enumerate() {
+        if sec > 0 {
+            y += s(14);
+        }
+        titles[sec] = RECT { left: pad, top: y, right: pad + inner, bottom: y + lh };
+        y += lh + s(6);
+        for r in list {
+            let mut keys = Vec::new();
+            if sec == 0 {
+                let (mut x, mut line) = (0, 0);
+                for k in &r.keys {
+                    let w = cap_w(k).min(key_w);
+                    if x > 0 && x + w > key_w {
+                        (x, line) = (0, line + 1);
+                    }
+                    let top = y + line * (ch + cgap);
+                    keys.push(RECT { left: pad + x, top, right: pad + x + w, bottom: top + ch });
+                    x += w + cgap;
+                }
+            } else if let Some(name) = r.keys.first() {
+                let h = measure(name, key_w, false).1.max(1);
+                keys.push(RECT { left: pad, top: y + cy, right: pad + key_w, bottom: y + cy + h });
+            }
+            let dh = measure(&r.desc, dw, false).1.max(1);
+            let desc = RECT { left: dx, top: y + cy, right: dx + dw, bottom: y + cy + dh };
+            let bottom = keys.iter().map(|k| k.bottom + if sec == 0 { 0 } else { cy }).chain([desc.bottom + cy]).max().unwrap_or(y);
+            rows.push(KeyGeoRow { sec, row: RECT { left: pad, top: y, right: pad + inner, bottom }, keys, desc });
+            y = bottom + s(6);
+        }
+    }
+    KeysGeo { h: y - s(6) + pad, titles, rows }
+}
+
+pub(crate) unsafe fn keys_geo(width: i32, dpi: i32) -> KeysGeo {
+    let font = app(|a| a.font);
+    let dc = GetDC(None);
+    let measure = |t: &str, max_w: i32, cap: bool| {
+        if !cap {
+            return wrap_text(dc, RECT { right: max_w, ..Default::default() }, t, font, 0, true);
+        }
+        let old = SelectObject(dc, font.into());
+        let mut sz = SIZE::default();
+        _ = GetTextExtentPoint32W(dc, &t.encode_utf16().collect::<Vec<_>>(), &mut sz);
+        SelectObject(dc, old);
+        (sz.cx, sz.cy)
+    };
+    let g = keys_layout(&key_rows(&crate::keys::help_text()), width, dpi, &measure);
+    ReleaseDC(None, dc);
+    g
+}
+
+pub(crate) fn keys_head(dpi: i32) -> i32 {
+    44 * dpi / 96
+}
+
+pub(crate) fn keys_close(width: i32, dpi: i32) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    RECT { left: width - s(44), top: s(6), right: width - s(12), bottom: s(38) }
+}
+
+pub(crate) unsafe fn open_keys() {
+    let (main, dpi, open) = app(|a| (a.main, a.dpi, a.keys_popup));
+    if !open.0.is_null() {
+        _ = SetFocus(Some(open));
+        return;
+    }
+    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    _ = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi);
+    let work = mi.rcWork;
+    let w = (760 * dpi / 96).min((work.right - work.left) * 9 / 10).max(320);
+    let h = (keys_head(dpi) + keys_geo(w, dpi).h).min((work.bottom - work.top) * 9 / 10).max(200);
+    let mut rc = RECT::default();
+    _ = GetWindowRect(main, &mut rc);
+    let x = ((rc.left + rc.right - w) / 2).clamp(work.left, (work.right - w).max(work.left));
+    let y = ((rc.top + rc.bottom - h) / 2).clamp(work.top, (work.bottom - h).max(work.top));
+    let prev = GetFocus();
+    app(|a| (a.keys_prev, a.keys_scroll) = (prev, 0));
+    let title = HSTRING::from(tr("Keyboard shortcuts", "단축키", "ショートカット キー"));
+    let Ok(p) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsKeys"), &title, WS_POPUP | WS_VISIBLE, x, y, w, h, Some(main), None, None, None) else {
+        return;
+    };
+    let square = DWMWCP_DONOTROUND;
+    _ = DwmSetWindowAttribute(p, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
+    app(|a| a.keys_popup = p);
+    _ = SetFocus(Some(p));
+}
+
+/// Esc, the close mark, or Ctrl+/ again. Focus goes back. Losing activation does not call this.
+pub(crate) unsafe fn close_keys() {
+    let (h, prev, active) = app(|a| (a.keys_popup, a.keys_prev, a.s.active));
+    if h.0.is_null() {
+        return;
+    }
+    _ = DestroyWindow(h);
+    if !prev.0.is_null() && IsWindow(Some(prev)).as_bool() {
+        _ = SetFocus(Some(prev));
+    } else {
+        focus_view(active);
+    }
+}
+
+pub(crate) unsafe fn toggle_keys() {
+    if app(|a| a.keys_popup.0.is_null()) {
+        open_keys();
+    } else {
+        close_keys();
+    }
+}
+
+pub(crate) unsafe fn keys_scroll_to(h: HWND, to: impl FnOnce(i32, i32) -> i32) {
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let dpi = app(|a| a.dpi);
+    let page = rc.bottom - keys_head(dpi);
+    let max = (keys_geo(rc.right, dpi).h - page).max(0);
+    if app(|a| {
+        let y = to(a.keys_scroll, page).clamp(0, max);
+        std::mem::replace(&mut a.keys_scroll, y) != y
+    }) {
+        _ = InvalidateRect(Some(h), None, false);
+    }
+}
+
+pub(crate) unsafe fn paint_keys(h: HWND) {
+    let (dpi, font, small, icon_font, scroll) = app(|a| (a.dpi, a.font, a.small_font, a.icon_font, a.keys_scroll));
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let rows = key_rows(&crate::keys::help_text());
+    let g = keys_layout(&rows, rc.right, dpi, &measure_font(font));
+    let s = |v: i32| v * dpi / 96;
+    let head = keys_head(dpi);
+    let down = |r: RECT| RECT { top: r.top + head - scroll, bottom: r.bottom + head - scroll, ..r };
+    buffered(h, |dc, rc| {
+        fill(dc, rc, pal().card);
+        let names = [tr("Keyboard", "키보드", "キーボード"), tr("Mouse and buttons", "마우스·버튼", "マウスとボタン")];
+        for (t, r) in names.iter().zip(g.titles) {
+            text(dc, down(r), t, small, pal().sub, DT_LEFT);
+        }
+        for (gr, r) in g.rows.iter().zip(rows.iter().flatten()) {
+            let row = down(gr.row);
+            if row.bottom < head || row.top > rc.bottom {
+                continue;
+            }
+            for (k, kr) in r.keys.iter().zip(&gr.keys) {
+                let kr = down(*kr);
+                if gr.sec == 0 {
+                    fill(dc, kr, pal().pill);
+                    frame(dc, kr, 1, pal().line);
+                    text(dc, RECT { left: kr.left + s(4), right: kr.right - s(4), ..kr }, k, font, pal().text, DT_CENTER);
+                } else {
+                    wrap_text(dc, kr, k, font, pal().text, false);
+                }
+            }
+            wrap_text(dc, down(gr.desc), &r.desc, font, pal().text, false);
+        }
+        let bar = RECT { bottom: head, ..rc };
+        fill(dc, bar, pal().card);
+        fill(dc, RECT { top: head - 1, ..bar }, pal().line);
+        text(dc, RECT { left: s(KEYS_PAD), ..bar }, tr("Keyboard shortcuts", "단축키", "ショートカット キー"), font, pal().text, DT_LEFT);
+        text(dc, keys_close(rc.right, dpi), "\u{E711}", icon_font, pal().sub, DT_CENTER);
+        let page = rc.bottom - head;
+        if g.h > page && g.h > 0 {
+            let th = (page * page / g.h).max(s(24));
+            let travel = (page - th).max(1);
+            let top = head + scroll * travel / (g.h - page).max(1);
+            fill(dc, RECT { left: rc.right - s(6), top, right: rc.right - s(3), bottom: top + th }, pal().sub);
+        }
+        frame(dc, rc, 1, pal().line);
+    });
+}
+
+fn measure_font(font: HFONT) -> impl Fn(&str, i32, bool) -> (i32, i32) {
+    move |t: &str, max_w: i32, cap: bool| unsafe {
+        let dc = GetDC(None);
+        let size = if cap {
+            let old = SelectObject(dc, font.into());
+            let mut sz = SIZE::default();
+            _ = GetTextExtentPoint32W(dc, &t.encode_utf16().collect::<Vec<_>>(), &mut sz);
+            SelectObject(dc, old);
+            (sz.cx, sz.cy)
+        } else {
+            wrap_text(dc, RECT { right: max_w, ..Default::default() }, t, font, 0, true)
+        };
+        ReleaseDC(None, dc);
+        size
+    }
+}
+
+pub(crate) extern "system" fn keys_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let dpi = app(|a| a.dpi);
+        let s = |v: i32| v * dpi / 96;
+        match msg {
+            WM_PAINT => paint_keys(h),
+            WM_ERASEBKGND => return LRESULT(1),
+            WM_MOUSEWHEEL => keys_scroll_to(h, |y, _| y - s((wp.0 >> 16) as i16 as i32)),
+            WM_LBUTTONUP => {
+                let (x, y) = xy(lp);
+                let mut rc = RECT::default();
+                _ = GetClientRect(h, &mut rc);
+                let r = keys_close(rc.right, dpi);
+                if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                    close_keys();
+                }
+            }
+            WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
+                VK_ESCAPE => close_keys(),
+                VK_UP => keys_scroll_to(h, |y, _| y - s(40)),
+                VK_DOWN => keys_scroll_to(h, |y, _| y + s(40)),
+                VK_PRIOR => keys_scroll_to(h, |y, p| y - p * 9 / 10),
+                VK_NEXT => keys_scroll_to(h, |y, p| y + p * 9 / 10),
+                VK_HOME => keys_scroll_to(h, |_, _| 0),
+                VK_END => keys_scroll_to(h, |_, _| i32::MAX),
+                _ => {}
+            },
+            // A click in another window already moved focus. Close without pulling it back.
+            WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = DestroyWindow(h),
+            WM_DESTROY => app(|a| a.keys_popup = HWND::default()),
+            _ => return DefWindowProcW(h, msg, wp, lp),
+        }
+        LRESULT(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> String {
+        "\
+Ctrl+L, Alt+D / F4\tAddress bar\n\
+F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\
+Ctrl+/\tShortcut list\n\
+\n\
+Layout button: click for an even grid\n\
+Double-click a splitter: split evenly\n\
+already running, they open here.\n"
+            .into()
+    }
+
+    #[test]
+    fn shortcut_rows_keep_chords_together() {
+        let rows = key_rows(&sample());
+        assert_eq!(rows[0][0].keys, ["Ctrl+L", "Alt+D", "F4"]);
+        assert_eq!(rows[0][1].keys, ["F2", "Del", "Ctrl+C/X/V", "F5"]);
+        assert_eq!(rows[0][2].keys, ["Ctrl+/"]);
+        assert_eq!(rows[1].len(), 2);
+        assert!(rows[1][1].desc.contains("already running"));
+        let live = key_rows(&crate::keys::help_text());
+        assert!(live[0].len() >= 10 && live[1].len() >= 4);
+        assert!(live.iter().flatten().all(|r| !r.desc.is_empty() && r.keys.iter().all(|k| !k.is_empty())));
+        assert!(live[0].iter().any(|r| r.keys.iter().any(|k| k == "Ctrl+/")));
+    }
+
+    #[test]
+    fn shortcut_layout_does_not_overlap() {
+        let rows = key_rows(&sample());
+        for dpi in [96, 192] {
+            for dip in [300, 760] {
+                let (cw, lh) = (7 * dpi / 96, 16 * dpi / 96);
+                let measure = |t: &str, max_w: i32, cap: bool| {
+                    let w = t.chars().count() as i32 * cw;
+                    if cap {
+                        (w, lh)
+                    } else {
+                        let lines = t.split('\n').map(|l| ((l.chars().count() as i32 * cw + max_w - 1) / max_w.max(1)).max(1)).sum::<i32>();
+                        (w.min(max_w), lines * lh)
+                    }
+                };
+                let g = keys_layout(&rows, dip * dpi / 96, dpi, &measure);
+                let (pad, gap) = (KEYS_PAD * dpi / 96, 16 * dpi / 96);
+                let mut prev = 0;
+                for r in &g.rows {
+                    assert!(r.row.top >= prev);
+                    for k in &r.keys {
+                        assert!(k.left >= pad && k.right + gap <= r.desc.left && k.bottom <= r.row.bottom);
+                    }
+                    assert!(r.desc.bottom <= r.row.bottom && r.desc.right <= dip * dpi / 96 - pad);
+                    prev = r.row.bottom;
+                }
+                assert!(prev <= g.h && g.titles[1].top > g.titles[0].bottom);
+            }
+        }
+    }
+}

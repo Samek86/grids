@@ -157,7 +157,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 ID_ABOUT => about(h),
                 id @ ID_ACCENT..=1405 => set_accent(pal().accents[id - ID_ACCENT].1),
                 ID_ACCENT_PICK => pick_accent(),
-                ID_KEYS => _ = MessageBoxW(Some(h), &HSTRING::from(crate::keys::help_text()), &HSTRING::from(tr("Keyboard shortcuts", "단축키", "ショートカット キー")), MB_OK),
+                ID_KEYS => toggle_keys(),
                 _ => {}
             },
             WM_INITMENUPOPUP => {

@@ -71,6 +71,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Ctrl+Alt+N | New text file |
 | Ctrl+Shift+N | New folder |
 | Ctrl+, | Settings |
+| Ctrl+/ | Shortcut list, in the app's own colours. Holding the keys opens it once |
 | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu).

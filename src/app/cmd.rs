@@ -141,7 +141,10 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     // F6 leaves the address and the filter. Every other chord stays out of a name being typed.
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
         let id = crate::keys::id_of(i);
-        if matches!(id, "focus.next" | "focus.prev") {
+        if id == "app.keys" && m.lParam.0 & (1 << 30) != 0 {
+            return true; // holding Ctrl+/ toggles once
+        }
+        if matches!(id, "focus.next" | "focus.prev" | "app.keys") {
             return dispatch(id, vk, a, list, shell);
         }
     }
@@ -165,7 +168,11 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         return true;
     }
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
-        return dispatch(crate::keys::id_of(i), vk, a, list, shell);
+        let id = crate::keys::id_of(i);
+        if id == "app.keys" && m.lParam.0 & (1 << 30) != 0 {
+            return true;
+        }
+        return dispatch(id, vk, a, list, shell);
     }
     // Not an app shortcut. F5, Del, and Ctrl+V still belong to the file list
     // unless the user has bound that chord above.
@@ -259,6 +266,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "fav.list" => open_favs(),
         "app.settings" => settings::open(app(|x| x.main)),
         "app.help" => open_help(),
+        "app.keys" => toggle_keys(),
         "win.new" => new_window(),
         _ => return shell(),
     }

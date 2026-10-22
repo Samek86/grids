@@ -35,6 +35,20 @@ pub(crate) unsafe fn text(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, 
     SelectObject(dc, old);
 }
 
+/// Multi-line text wrapped at `r`'s width. `calc` only measures, with the same font and flags.
+pub(crate) unsafe fn wrap_text(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, calc: bool) -> (i32, i32) {
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    if w.is_empty() {
+        return (0, 0);
+    }
+    let old = SelectObject(dc, font.into());
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, cref(rgb));
+    DrawTextW(dc, &mut w, &mut r, DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX | if calc { DT_CALCRECT } else { DRAW_TEXT_FORMAT(0) });
+    SelectObject(dc, old);
+    (r.right - r.left, r.bottom - r.top)
+}
+
 // Paints only the invalid area into an off-screen buffer and blits once (no flicker mid-drag).
 pub(crate) unsafe fn buffered(h: HWND, draw: impl FnOnce(HDC, RECT)) {
     let mut ps = PAINTSTRUCT::default();
