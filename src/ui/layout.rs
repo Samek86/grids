@@ -216,6 +216,29 @@ pub(crate) fn tint_name(k: u8) -> &'static str {
     tr(ACCENT_EN[i], LIGHT.accents[i].0, ACCENT_JA[i])
 }
 
+/// A `t` px line down the middle of splitter `d`. None when that splitter is not on screen.
+pub(crate) fn gap_line(g: &Geo, d: Hit, t: i32) -> Option<RECT> {
+    let vbar = |x: i32| RECT { left: x - t / 2, top: g.top, right: x - t / 2 + t, bottom: g.bot };
+    match d {
+        Hit::Side if g.side > 0 => Some(vbar(g.side + g.gap / 2)),
+        Hit::SideSplit if g.side > 0 && g.tree_h > 0 && g.gap > 0 => {
+            let y = g.top + g.tree_h + g.gap / 2;
+            Some(RECT { left: 0, top: y - t / 2, right: g.side, bottom: y - t / 2 + t })
+        }
+        Hit::Col(k) if !g.zoom => {
+            g.xs.get(k + 1)?;
+            Some(vbar(g.xs[k].1 + g.gap / 2))
+        }
+        Hit::Row(c, k) if !g.zoom => {
+            let (x0, x1) = *g.xs.get(c)?;
+            g.ys.get(c)?.get(k + 1)?;
+            let y = g.ys[c][k].1 + g.gap / 2;
+            Some(RECT { left: x0, top: y - t / 2, right: x1, bottom: y - t / 2 + t })
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if y < g.top || y >= g.bot {
         return None;
@@ -459,6 +482,38 @@ mod tests {
             assert_eq!(crumb_field(wide, dpi).left, wide.left + s(26));
             assert_eq!(crumb_field(wide, dpi).left, crumb_field(wide, dpi).left);
         }
+    }
+
+    #[test]
+    fn gap_lines_mark_real_splitters() {
+        let g = Geo {
+            w: 1000,
+            h: 600,
+            top: 34,
+            bot: 576,
+            pad: 8,
+            gap: 8,
+            side: 240,
+            tree_h: 200,
+            gx: 248,
+            zoom: false,
+            xs: vec![(256, 620), (628, 992)],
+            ys: vec![vec![(34, 300), (308, 576)], vec![(34, 576)]],
+        };
+        for d in [Hit::Side, Hit::SideSplit, Hit::Col(0), Hit::Row(0, 0)] {
+            let r = gap_line(&g, d, 2).unwrap();
+            assert!(r.right > r.left && r.bottom > r.top, "{d:?}");
+        }
+        for d in [Hit::Col(1), Hit::Col(5), Hit::Row(1, 0), Hit::Row(0, 1), Hit::Row(3, 0)] {
+            assert_eq!(gap_line(&g, d, 2), None, "{d:?}");
+        }
+        let hidden = Geo { side: 0, tree_h: 0, gx: 8, ..g.clone() };
+        assert_eq!(gap_line(&hidden, Hit::Side, 2), None);
+        assert_eq!(gap_line(&hidden, Hit::SideSplit, 2), None);
+        let zoomed = Geo { zoom: true, ..g };
+        assert_eq!(gap_line(&zoomed, Hit::Col(0), 2), None);
+        assert_eq!(gap_line(&zoomed, Hit::Row(0, 0), 2), None);
+        assert!(gap_line(&zoomed, Hit::Side, 2).is_some());
     }
 
     #[test]

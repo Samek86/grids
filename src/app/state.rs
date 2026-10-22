@@ -49,6 +49,7 @@ pub(crate) struct Desk {
     pub(crate) dpi: i32,
     pub(crate) panes: Vec<Option<Pane>>,
     pub(crate) drag: Option<Hit>,
+    pub(crate) gap_hot: Option<Hit>, // splitter under the pointer, drawn in the accent colour
     pub(crate) sizing: bool, // inside the window's own move/size loop
     pub(crate) was_max: bool, // maximized when last not minimized (kept while minimized)
     pub(crate) status: String,
@@ -175,6 +176,7 @@ pub(crate) fn blank_desk() -> Desk {
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
         drag: None,
+        gap_hot: None,
         sizing: false,
         was_max: false,
         status: String::new(),
