@@ -139,6 +139,8 @@ pub(crate) struct Session {
     pub(crate) single: bool,           // a second launch opens a new window in this process
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
     pub(crate) tints: Vec<u8>,         // per pane: colour label, 0 = none, 1..=6 = selection colour preset
+    /// Slot i shows what slot `order[i]` held when the session was last saved. Empty means as saved.
+    pub(crate) order: Vec<u8>,
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     pub(crate) bar: bool,              // toolbar
@@ -188,6 +190,7 @@ impl Default for Session {
             single: true,
             cols: vec![String::new(); MAXP],
             tints: vec![0; MAXP],
+            order: Vec::new(),
             theme: 0,
             font: 0,
             bar: true,
@@ -414,6 +417,12 @@ impl Session {
                 "colr" => s.colr = nums(v),
                 "rowr" => rowr = v.split('|').map(nums).collect(),
                 "active" => s.active = v.parse().unwrap_or(0),
+                "order" => {
+                    let o: Vec<u8> = nums(v);
+                    if o.len() == MAXP && o.iter().all(|&n| (n as usize) < MAXP) {
+                        s.order = o;
+                    }
+                }
                 "accent" => s.accent = u32::from_str_radix(v.trim().trim_start_matches('#'), 16).unwrap_or(s.accent) & 0xFFFFFF,
                 "accent_dark" => s.accent_dark = u32::from_str_radix(v.trim(), 16).unwrap_or(s.accent_dark) & 0xFFFFFF,
                 "dark" => {
@@ -505,6 +514,9 @@ impl Session {
         o += &format!("side={}\nsplit={}\ncols={}\n", self.side, self.side_split, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
+        if !self.order.is_empty() {
+            o += &format!("order={}\n", join(&self.order));
+        }
         let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
         o += &format!("theme={theme}\nfont={}\nbar={}\nstat={}\n", self.font, self.bar as u8, self.stat as u8);
         o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
@@ -573,6 +585,7 @@ impl Session {
         c.favs.clear();
         c.tree.clear();
         c.recent.clear();
+        c.order.clear();
         c.to_ini()
     }
 
@@ -583,7 +596,77 @@ impl Session {
         self.tints = o.tints.clone();
         self.tabs = o.view_tabs();
         self.tab = o.tab.min(self.tabs.len().saturating_sub(1));
+        self.order.clear();
     }
+
+    /// Slots i and j trade folders, views, columns, labels and the active tab's filter.
+    /// The active pane goes with its slot.
+    pub(crate) fn swap_slots(&mut self, i: usize, j: usize) {
+        if i >= MAXP || j >= MAXP || i == j {
+            return;
+        }
+        self.paths.swap(i, j);
+        self.views.swap(i, j);
+        self.cols.swap(i, j);
+        self.tints.swap(i, j);
+        if self.tab < self.tabs.len() && i < self.tabs[self.tab].filters.len() && j < self.tabs[self.tab].filters.len() {
+            self.tabs[self.tab].filters.swap(i, j);
+        }
+        if self.active == i {
+            self.active = j;
+        } else if self.active == j {
+            self.active = i;
+        }
+    }
+
+    /// Slot i takes what slot `order[i]` held. An empty or identity order leaves everything where it is.
+    pub(crate) fn reorder(&mut self, order: &[u8]) {
+        if order.len() != MAXP || !order_moved(order) || order.iter().any(|&k| k as usize >= MAXP) {
+            return;
+        }
+        let old = self.clone();
+        for (i, &k) in order.iter().enumerate() {
+            let k = k as usize;
+            self.paths[i] = old.paths[k].clone();
+            self.views[i] = old.views[k];
+            self.cols[i] = old.cols[k].clone();
+            self.tints[i] = old.tints[k];
+        }
+        if self.tab < self.tabs.len() {
+            let old_f = old.tabs[self.tab].filters.clone();
+            for (i, &k) in order.iter().enumerate() {
+                let k = k as usize;
+                if i < self.tabs[self.tab].filters.len() && k < old_f.len() {
+                    self.tabs[self.tab].filters[i] = old_f[k].clone();
+                }
+            }
+        }
+    }
+}
+
+fn order_moved(order: &[u8]) -> bool {
+    order.iter().enumerate().any(|(k, &o)| k != o as usize)
+}
+
+/// Panes i and j trade places in the current state and in the save baseline, so the two still line up.
+/// `order` notes the move, which the session file does not know about.
+pub(crate) fn swap_in(cur: &mut Session, base: Option<&mut Session>, i: usize, j: usize) {
+    cur.swap_slots(i, j);
+    if let Some(b) = base {
+        b.swap_slots(i, j);
+    }
+    if cur.order.is_empty() {
+        cur.order = (0..MAXP as u8).collect();
+    }
+    cur.order.swap(i, j);
+    if !order_moved(&cur.order) {
+        cur.order.clear();
+    }
+}
+
+/// The save dot: panes moved from where the session file has them, or a layout change.
+pub(crate) fn session_dirty(cur: &Session, base: Option<&Session>) -> bool {
+    order_moved(&cur.order) || base.is_some_and(|b| layout_differs(cur, b))
 }
 
 /// Named-session text for one tab: its grid only.
@@ -1109,6 +1192,36 @@ mod crumb_tests {
         assert!(!real_folder(SFGAO_FOLDER.0 | SFGAO_STREAM.0));
         assert!(!real_folder(SFGAO_STREAM.0));
         assert!(!real_folder(0));
+    }
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::*;
+
+    #[test]
+    fn swap_notes_the_order_and_a_second_swap_clears_it() {
+        let mut cur = Session::default();
+        cur.paths[0] = "A".into();
+        cur.paths[1] = "B".into();
+        let mut base = cur.clone();
+        swap_in(&mut cur, Some(&mut base), 0, 1);
+        assert_eq!(cur.paths[0], "B");
+        assert_eq!(base.paths[0], "B");
+        assert!(order_moved(&cur.order));
+        assert!(session_dirty(&cur, Some(&base)));
+        assert!(!layout_differs(&cur, &base));
+        swap_in(&mut cur, Some(&mut base), 0, 1);
+        assert!(cur.order.is_empty());
+        assert_eq!(cur.paths[0], "A");
+        assert!(!session_dirty(&cur, Some(&base)));
+        let mut saved = Session::default();
+        saved.paths[0] = "A".into();
+        saved.paths[1] = "B".into();
+        swap_in(&mut cur, None, 0, 1);
+        saved.reorder(&cur.order);
+        assert_eq!(saved.paths[0], cur.paths[0]);
+        assert_eq!(saved.paths[1], cur.paths[1]);
     }
 }
 

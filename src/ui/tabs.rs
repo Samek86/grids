@@ -244,9 +244,12 @@ pub(crate) unsafe fn attach_live() {
     for i in 0..MAXP {
         let eb = app(|a| a.panes[i].as_ref().map(|p| p.eb.clone()));
         let Some(eb) = eb else { continue };
-        let site: IServiceProvider = Host(i).into();
+        let slot = app(|a| a.panes[i].as_ref().map(|p| p.slot.clone()));
+        let Some(slot) = slot else { continue };
+        slot.store(i, Ordering::SeqCst);
+        let site: IServiceProvider = Host(slot.clone()).into();
         _ = IUnknown_SetSite(&eb, &site);
-        let ev: IExplorerBrowserEvents = Events(i).into();
+        let ev: IExplorerBrowserEvents = Events(slot).into();
         if let Ok(c) = eb.Advise(&ev) {
             app(|a| {
                 if let Some(p) = a.panes[i].as_mut() {

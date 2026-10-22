@@ -21,6 +21,8 @@ pub(crate) struct Pane {
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
     pub(crate) icon: i32,   // current folder in the system image list, -1 = none yet
     pub(crate) ticket: u32, // that lookup; 0 = none asked
+    /// Where this browser sits now. Swap updates it; the Explorer callbacks read it.
+    pub(crate) slot: std::sync::Arc<AtomicUsize>,
 }
 
 pub(crate) struct Desk {

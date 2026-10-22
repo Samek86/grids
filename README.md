@@ -59,6 +59,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Ctrl+PageDown / Ctrl+PageUp | Next / previous pane |
 | Ctrl+1 … Ctrl+9 | Go to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes) |
 | Alt+Shift+← / → / ↑ / ↓ | Pane to the left / right / above / below |
+| Ctrl+Alt+Shift+← / → / ↑ / ↓ | Swap the active pane with the one in that direction (folder, history, filter and columns stay; also ⇄ → Swap places with). The save dot stays until you save or swap back, including after a restart |
 | Alt+← / Alt+→ | Back / forward |
 | Alt+↑ | Parent folder |
 | Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
