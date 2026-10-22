@@ -13,6 +13,25 @@ pub(crate) fn xy(lp: LPARAM) -> (i32, i32) {
     ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
 }
 
+/// Marks the splitter under the pointer. Only the old and new lines are repainted.
+pub(crate) unsafe fn gap_hover(h: HWND, d: Option<Hit>) {
+    let (old, lines) = app(|a| {
+        let old = std::mem::replace(&mut a.gap_hot, d);
+        let g = geo(a);
+        (old, [old, d].map(|k| k.and_then(|k| gap_line(&g, k, 2 * a.dpi / 96))))
+    });
+    if old == d {
+        return;
+    }
+    for r in lines.iter().flatten() {
+        _ = InvalidateRect(Some(h), Some(r), false);
+    }
+    if old.is_none() && d.is_some() {
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
+    }
+}
+
 pub(crate) unsafe fn cursor_for(h: HWND) -> Option<Hit> {
     let mut pt = POINT::default();
     _ = GetCursorPos(&mut pt);
@@ -92,12 +111,17 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
                 if let Some(d) = app(|a| hit(&geo(a), x, y)) {
+                    gap_hover(h, None);
                     app(|a| a.drag = Some(d));
                     SetCapture(h);
                 }
             }
+            WM_MOUSELEAVE => gap_hover(h, None),
             WM_MOUSEMOVE => {
                 let (x, y) = xy(lp);
+                if app(|a| a.drag.is_none()) {
+                    gap_hover(h, app(|a| hit(&geo(a), x, y)));
+                }
                 let moved = app(|a| {
                     let d = a.drag?;
                     let g = geo(a);

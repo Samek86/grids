@@ -377,7 +377,11 @@ pub(crate) unsafe fn name(pidl: *const ITEMIDLIST, kind: SIGDN) -> String {
 
 // Ground, the sidebar plate and the status line. Pane plates are child windows (paint_pane).
 pub(crate) unsafe fn paint_main(h: HWND) {
-    let (g, status, font, dpi) = app(|a| (geo(a), a.status.clone(), a.font, a.dpi));
+    let (g, status, font, dpi, hot) = app(|a| {
+        let g = geo(a);
+        let hot = a.gap_hot.filter(|_| a.drag.is_none()).and_then(|d| gap_line(&g, d, 2 * a.dpi / 96));
+        (g, a.status.clone(), a.font, a.dpi, hot.map(|r| (r, a.s.accent_now())))
+    });
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().bg);
         if g.side > 0 {
@@ -388,6 +392,9 @@ pub(crate) unsafe fn paint_main(h: HWND) {
                 fill(dc, gap, pal().bg);
             }
             frame(dc, side, 1, pal().line);
+        }
+        if let Some((r, c)) = hot {
+            fill(dc, r, c);
         }
         if g.bot < g.h {
             let st = status_rect(&g);
