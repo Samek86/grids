@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::imports::*;
 use super::*;
 use crate::app::*;
@@ -5,6 +7,12 @@ use crate::ui::*;
 use crate::session::*;
 use crate::i18n::*;
 use crate::settings;
+use windows::Win32::UI::Accessibility::{IAccPropServices, CLSID_AccPropServices, PROPID_ACC_NAME};
+use windows::Win32::UI::Controls::{
+    CDIS_FOCUS, LIST_VIEW_GROUP_STATE_FLAGS, LVCDI_GROUP, LVGA_HEADER_CENTER, LVGA_HEADER_RIGHT, LVGF_ALIGN, LVGF_DESCRIPTIONBOTTOM, LVGF_DESCRIPTIONTOP, LVGF_EXTENDEDIMAGE, LVGF_FOOTER, LVGF_HEADER,
+    LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_TITLEIMAGE, LVGGR_HEADER, LVGROUP, LVGROUP_MASK, LVGS_COLLAPSED, LVGS_COLLAPSIBLE, LVGS_FOCUSED, LVGS_SELECTED, LVGS_SUBSETED, LVM_GETGROUPINFO,
+    LVM_GETGROUPRECT, LVM_GETIMAGELIST, LVSIL_GROUPHEADER,
+};
 
 // ---------- panes ----------
 
@@ -32,23 +40,89 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
         add_tip(child(h, w!("BUTTON"), PCWSTR(HSTRING::from(name).as_ptr()), btn, plain, id, font), tip);
     }
     let edit = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_EDIT, font);
+    let filt = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
+    _ = SetWindowSubclass(filt, Some(filter_hint_proc), 4, 0);
+    name_fields(h, i);
     // Folder suggestions as you type, like Explorer's address bar; folders only, since navigate() only browses folders
     _ = SHAutoComplete(edit, SHACF_FILESYS_DIRS | SHACF_AUTOSUGGEST_FORCE_ON | SHACF_AUTOAPPEND_FORCE_OFF);
-    child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
+    add_tip(
+        filt,
+        tr(
+            "Name filter (Ctrl+F) · icon or Alt+↓: file types",
+            "이름 필터 (Ctrl+F) · 아이콘 또는 Alt+↓: 파일 종류",
+            "名前フィルター (Ctrl+F) · アイコンまたは Alt+↓: ファイルの種類",
+        ),
+    );
 
+    let slot = Arc::new(AtomicUsize::new(i));
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
-    let site: IServiceProvider = Host(i).into();
+    let site: IServiceProvider = Host(slot.clone()).into();
     IUnknown_SetSite(&eb, &site)?; // before Initialize, so the view picks up our ICommDlgBrowser
     let fs = FOLDERSETTINGS { ViewMode: FVM_DETAILS.0 as u32, fFlags: FWF_NOWEBVIEW.0 as u32 };
     eb.Initialize(h, &RECT::default(), Some(&fs))?;
     eb.SetOptions(EBO_NOBORDER)?;
-    let ev: IExplorerBrowserEvents = Events(i).into();
+    let ev: IExplorerBrowserEvents = Events(slot.clone()).into();
     let cookie = eb.Advise(&ev)?;
     let helper = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok(); // drag image over the bar
-    let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
+    let dt: IDropTarget = PaneDrop { slot: slot.clone(), hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None, icon: -1, ticket: 0, slot })
+}
+
+const EM_GETMARGINS: u32 = 0xD4;
+
+/// Screen readers otherwise only say "edit". Redone when the language changes or a pane changes slot.
+pub(crate) unsafe fn name_fields(h: HWND, i: usize) {
+    let pane = format!("{} {}", tr("Pane", "패널", "ペイン"), i + 1);
+    a11y_name(GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), Some(&format!("{pane} {}", tr("address", "주소", "アドレス"))));
+    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr("name filter", "이름 필터", "名前フィルター"))));
+}
+
+pub(crate) unsafe fn rename_fields() {
+    let panes: Vec<(HWND, usize)> = app(|a| a.panes.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (p.hwnd, i))).collect());
+    for (h, i) in panes {
+        name_fields(h, i);
+        if let Ok(f) = GetDlgItem(Some(h), ID_FILTER) {
+            _ = InvalidateRect(Some(f), None, true);
+        }
+    }
+}
+
+unsafe fn a11y_name(h: HWND, name: Option<&str>) {
+    if h.0.is_null() {
+        return;
+    }
+    let Ok(acc) = CoCreateInstance::<_, IAccPropServices>(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER) else { return };
+    _ = match name {
+        Some(n) => acc.SetHwndPropStr(h, OBJID_CLIENT.0 as u32, CHILDID_SELF, PROPID_ACC_NAME, &HSTRING::from(n)),
+        None => acc.ClearHwndProps(h, OBJID_CLIENT.0 as u32, CHILDID_SELF, &[PROPID_ACC_NAME]),
+    };
+}
+
+/// Empty, unfocused filter: "Name filter · Ctrl+F" in the field's own font. The edit itself stays.
+unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+    let hint = msg == WM_PAINT && GetWindowTextLengthW(h) == 0 && GetFocus() != h;
+    if hint {
+        _ = InvalidateRect(Some(h), None, true);
+    }
+    let r = DefSubclassProc(h, msg, wp, lp);
+    if msg == WM_SETFOCUS || msg == WM_KILLFOCUS {
+        _ = InvalidateRect(Some(h), None, true);
+    } else if hint {
+        let dc = GetDC(Some(h));
+        let mut rc = RECT::default();
+        _ = GetClientRect(h, &mut rc);
+        rc.left += (SendMessageW(h, EM_GETMARGINS, None, None).0 & 0xffff) as i32;
+        let font = SelectObject(dc, HGDIOBJ(SendMessageW(h, WM_GETFONT, None, None).0 as _));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, cref(blend(pal().sub, pal().text, 0.2)));
+        let mut hint: Vec<u16> = tr("Name filter · Ctrl+F", "이름 필터 · Ctrl+F", "名前フィルター · Ctrl+F").encode_utf16().collect();
+        DrawTextW(dc, &mut hint, &mut rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(dc, font);
+        _ = ReleaseDC(Some(h), dc);
+    }
+    r
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
@@ -64,10 +138,22 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
         if p.as_ref().is_some_and(|p| p.hwnd == a.drop_hover) {
             a.drop_hover = HWND::default();
         }
+        if p.as_ref().is_some_and(|p| p.hwnd == a.focus_req) {
+            a.focus_req = HWND::default();
+        }
         let queued = if a.drop_open.as_ref().is_some_and(|d| d.1 == i) { a.drop_open.take() } else { None };
         (p, queued)
     });
     if let Some(p) = p {
+        drop_icon_request(p.hwnd);
+        for id in [ID_EDIT, ID_FILTER] {
+            if let Ok(c) = GetDlgItem(Some(p.hwnd), id) {
+                a11y_name(c, None);
+                if id == ID_FILTER {
+                    _ = RemoveWindowSubclass(c, Some(filter_hint_proc), 4);
+                }
+            }
+        }
         _ = RevokeDragDrop(p.hwnd);
         _ = p.eb.Unadvise(p.cookie);
         _ = IUnknown_SetSite(&p.eb, None);
@@ -138,16 +224,20 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     };
     let ctl = |id: i32| GetDlgItem(Some(h), id).unwrap_or_default();
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
-    moves.push((ctl(ID_EDIT), inside(pg.addr, s(8), s(6))));
+    // The icon slot is reserved by width, so the edit does not move when the icon arrives.
+    let inset = crumb_field(pg.addr, dpi).left - pg.addr.left;
+    moves.push((ctl(ID_EDIT), inside(pg.addr, inset, s(6))));
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
     show_path_end(ctl(ID_EDIT), &disp);
+    sync_addr(h);
 }
 
 pub(crate) unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label, shown, show_bar, show_side, tree_h, side_h)) = app(|a| {
+    let Some((main, moves, label, shown, drive_vis, show_bar, show_side, tree_h, side_h)) = app(|a| {
+        a.gap_hot = None; // the splitter may be gone; the window is repainted below
         if a.main.0.is_null() {
             return None;
         }
@@ -170,6 +260,16 @@ pub(crate) unsafe fn relayout() {
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
         let gear = right - s(32) - s(4) - s(32);
         moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
+        // Drive letters after the left cluster. In a narrow window the last ones hide rather than cover the gear.
+        x += s(6);
+        let limit = gear - s(12);
+        let mut drive_vis = Vec::new();
+        for &(_, _, h) in &a.drives {
+            let w = s(32);
+            moves.push((h, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
+            drive_vis.push((h, a.s.bar && x + w <= limit));
+            x += w + s(2);
+        }
         let show_bar = a.s.bar;
         let show_side = a.s.tree_on;
         let (tree_h, side_h) = (a.tree_hwnd, a.side_hwnd);
@@ -183,7 +283,7 @@ pub(crate) unsafe fn relayout() {
                 shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_side, tree_h, side_h))
+        Some((a.main, moves, layout_label(&a.s.heights), shown, drive_vis, show_bar, show_side, tree_h, side_h))
     }) else {
         return;
     };
@@ -192,6 +292,9 @@ pub(crate) unsafe fn relayout() {
         if let Ok(b) = GetDlgItem(Some(main), id) {
             _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
         }
+    }
+    for (h, on) in drive_vis {
+        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_side { SW_SHOW } else { SW_HIDE });
@@ -223,18 +326,8 @@ pub(crate) unsafe fn show_bars() {
     let Some((main, bars, rects)) = app(|a| {
         let d = a.drag?;
         let g = geo(a);
-        let t = 3 * a.dpi / 96;
-        let vbar = |x: i32| RECT { left: x - t / 2, top: g.top, right: x - t / 2 + t, bottom: g.bot };
-        let hbar = |(x0, x1): (i32, i32), y: i32| RECT { left: x0, top: y - t / 2, right: x1, bottom: y - t / 2 + t };
-        let rects = match d {
-            Hit::Side => [Some(vbar(g.side + g.gap / 2)), None],
-            Hit::SideSplit => {
-                let y = g.top + g.tree_h + g.gap / 2;
-                [None, Some(RECT { left: 0, top: y - t / 2, right: g.side, bottom: y - t / 2 + t })]
-            }
-            Hit::Col(k) => [Some(vbar(g.xs[k].1 + g.gap / 2)), None],
-            Hit::Row(c, k) => [None, Some(hbar(g.xs[c], g.ys[c][k].1 + g.gap / 2))],
-        };
+        let r = gap_line(&g, d, 3 * a.dpi / 96);
+        let rects = if matches!(d, Hit::Row(..) | Hit::SideSplit) { [None, r] } else { [r, None] };
         Some((a.main, a.bars, rects))
     }) else {
         return;
@@ -260,6 +353,7 @@ pub(crate) unsafe fn end_drag() {
     for b in bars {
         _ = ShowWindow(b, SW_HIDE);
     }
+    refresh_drives(); // one that came or went while the splitter was held
     relayout();
     redraw_all();
     if matches!(kind, Hit::SideSplit) {
@@ -278,6 +372,9 @@ pub(crate) unsafe fn redraw_all() {
 pub(crate) unsafe fn set_active(i: usize) {
     let (old, hs) = app(|a| {
         let old = std::mem::replace(&mut a.s.active, i);
+        if old != i {
+            a.focus_req = HWND::default();
+        }
         (old, [old, i].map(|k| a.panes[k].as_ref().map(|p| p.hwnd)))
     });
     if old != i {
@@ -291,6 +388,7 @@ pub(crate) unsafe fn set_active(i: usize) {
         if let Some(item) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellItem>().ok()) {
             sync_tree(&item);
         }
+        mark_drive();
     }
 }
 
@@ -375,13 +473,13 @@ pub(crate) unsafe fn start_reveal(main: HWND) {
 }
 
 pub(crate) unsafe fn set_accent(c: u32) {
-    let (bars, panes) = app(|a| {
+    let (bars, panes, drives) = app(|a| {
         if a.s.dark {
             a.s.accent_dark = c;
         } else {
             a.s.accent = c;
         }
-        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>())
+        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.drives.iter().map(|d| d.2).collect::<Vec<_>>())
     });
     let old = SetClassLongPtrW(bars[0], GCLP_HBRBACKGROUND, CreateSolidBrush(cref(c)).0 as isize);
     if old != 0 {
@@ -389,6 +487,9 @@ pub(crate) unsafe fn set_accent(c: u32) {
     }
     for p in panes {
         repaint_header(p); // all of them: inactive panes show the accent in their filter badge
+    }
+    for h in drives {
+        _ = InvalidateRect(Some(h), None, false); // the active drive's underline
     }
     drop_group_brushes();
     settings::redraw();
@@ -432,6 +533,50 @@ pub(crate) unsafe fn dark_list(pane: HWND) {
         }
         _ = InvalidateRect(Some(lv), None, true);
     }
+}
+
+/// Puts a list back to the light-theme colours. Subclasses stay, and they do nothing while dark mode is off.
+pub(crate) unsafe fn light_list(pane: HWND) {
+    extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
+        let mut c = [0u16; 32];
+        let n = unsafe { GetClassNameW(h, &mut c) } as usize;
+        if String::from_utf16_lossy(&c[..n]) == "SysListView32" {
+            unsafe { (*(out.0 as *mut Vec<HWND>)).push(h) };
+        }
+        true.into()
+    }
+    let mut lists: Vec<HWND> = Vec::new();
+    _ = EnumChildWindows(Some(pane), Some(collect), LPARAM(&mut lists as *mut _ as isize));
+    let (bg, text) = (GetSysColor(COLOR_WINDOW) as isize, GetSysColor(COLOR_WINDOWTEXT) as isize);
+    for lv in lists {
+        _ = SetWindowTheme(lv, w!("Explorer"), PCWSTR::null());
+        SendMessageW(lv, LVM_SETBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
+        let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+        if !header.0.is_null() {
+            _ = SetWindowTheme(header, w!("ItemsView"), PCWSTR::null());
+        }
+        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        if !tip.0.is_null() {
+            _ = SetWindowTheme(tip, PCWSTR::null(), PCWSTR::null());
+        }
+        _ = InvalidateRect(Some(lv), None, true);
+    }
+}
+
+/// Windows app mode. None when the value is not there, so a missing key is not treated as light.
+pub(crate) unsafe fn system_dark() -> Option<bool> {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let (mut v, mut n) = (0u32, 4u32);
+    let key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let r = RegGetValueW(HKEY_CURRENT_USER, key, w!("AppsUseLightTheme"), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as _), Some(&mut n));
+    r.is_ok().then_some(v == 0)
+}
+
+/// The dark flag to switch to while following Windows. None when following is off, the setting is unknown, or it already matches.
+pub(crate) fn theme_target(auto: bool, sys: Option<bool>, cur: bool) -> Option<bool> {
+    sys.filter(|&d| auto && d != cur)
 }
 
 // The view re-sets the sorted column through an internal interface (no window message to catch),
@@ -501,6 +646,10 @@ pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARA
     if msg == WM_NOTIFY && DARK_ON.load(Ordering::Relaxed) && (*(lp.0 as *const NMHDR)).code == NM_CUSTOMDRAW {
         let cd = &mut *(lp.0 as *mut NMLVCUSTOMDRAW);
         let stage = cd.nmcd.dwDrawStage.0;
+        // A plain group title is drawn here. Anything richer stays on the list's own drawing.
+        if cd.dwItemType == LVCDI_GROUP && (stage == CDDS_PREPAINT.0 || stage == CDDS_ITEMPREPAINT.0) && draw_group_header(cd) {
+            return LRESULT(CDRF_SKIPDEFAULT as isize);
+        }
         if stage == CDDS_PREPAINT.0 {
             return LRESULT(r.0 | CDRF_NOTIFYITEMDRAW as isize);
         }
@@ -512,6 +661,96 @@ pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARA
         }
     }
     r
+}
+
+/// Dark-theme group title ("Devices and drives" on This PC): flat card, light text, a hairline.
+/// A subtitle, task, image, or a failed lookup returns false and the list draws it.
+pub(crate) unsafe fn draw_group_header(cd: &NMLVCUSTOMDRAW) -> bool {
+    let (dc, lv, id) = (cd.nmcd.hdc, cd.nmcd.hdr.hwndFrom, cd.nmcd.dwItemSpec);
+    let mut head = [0u16; 260];
+    let mut more = [[0u16; 64]; 5];
+    let [sub, task, top, bottom, foot] = more.each_mut().map(|b| PWSTR(b.as_mut_ptr()));
+    let mask = [LVGF_HEADER, LVGF_ALIGN, LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_DESCRIPTIONTOP, LVGF_DESCRIPTIONBOTTOM, LVGF_FOOTER, LVGF_TITLEIMAGE, LVGF_EXTENDEDIMAGE];
+    let states = LVGS_COLLAPSIBLE.0 | LVGS_COLLAPSED.0 | LVGS_SELECTED.0 | LVGS_FOCUSED.0 | LVGS_SUBSETED.0;
+    let mut g = LVGROUP {
+        cbSize: size_of::<LVGROUP>() as u32,
+        mask: LVGROUP_MASK(mask.iter().fold(0, |m, f| m | f.0)),
+        stateMask: LIST_VIEW_GROUP_STATE_FLAGS(states),
+        pszHeader: PWSTR(head.as_mut_ptr()),
+        cchHeader: head.len() as i32,
+        pszSubtitle: sub,
+        cchSubtitle: 64,
+        pszTask: task,
+        cchTask: 64,
+        pszDescriptionTop: top,
+        cchDescriptionTop: 64,
+        pszDescriptionBottom: bottom,
+        cchDescriptionBottom: 64,
+        pszFooter: foot,
+        cchFooter: 64,
+        ..Default::default()
+    };
+    if SendMessageW(lv, LVM_GETGROUPINFO, Some(WPARAM(id)), Some(LPARAM(&mut g as *mut _ as isize))).0 == -1 {
+        return false;
+    }
+    let st = g.state.0;
+    let n = head.iter().position(|&c| c == 0).unwrap_or(0);
+    if n == 0 || more.iter().any(|b| b[0] != 0) || st & LVGS_SUBSETED.0 != 0 {
+        return false;
+    }
+    let images = SendMessageW(lv, LVM_GETIMAGELIST, Some(WPARAM(LVSIL_GROUPHEADER as usize)), None).0 != 0;
+    if images && (g.iTitleImage >= 0 || g.iExtendedImage >= 0) {
+        return false;
+    }
+    let mut rc = RECT { top: LVGGR_HEADER as i32, ..Default::default() };
+    if SendMessageW(lv, LVM_GETGROUPRECT, Some(WPARAM(id)), Some(LPARAM(&mut rc as *mut _ as isize))).0 == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return false;
+    }
+    let s = |v: i32| v * GetDpiForWindow(lv) as i32 / 96;
+    let bg = if st & LVGS_SELECTED.0 != 0 {
+        blend(pal().card, pal().text, 0.16)
+    } else if cd.nmcd.uItemState.0 & CDIS_HOT.0 != 0 {
+        blend(pal().card, pal().text, 0.08)
+    } else {
+        pal().card
+    };
+    fill(dc, rc, bg);
+    let collapsible = st & LVGS_COLLAPSIBLE.0 != 0;
+    let bx = if collapsible { rc.bottom - rc.top } else { 0 };
+    let r = RECT { left: rc.left + s(8), right: rc.right - bx - s(8), ..rc };
+    let align = if g.uAlign.0 & LVGA_HEADER_RIGHT.0 != 0 {
+        DT_RIGHT
+    } else if g.uAlign.0 & LVGA_HEADER_CENTER.0 != 0 {
+        DT_CENTER
+    } else {
+        DT_LEFT
+    };
+    let font = HFONT(SendMessageW(lv, WM_GETFONT, None, None).0 as _);
+    text(dc, r, &String::from_utf16_lossy(&head[..n]), font, pal().text, align);
+    let cy = (rc.top + rc.bottom) / 2;
+    if align == DT_LEFT {
+        let old = SelectObject(dc, font.into());
+        let mut sz = SIZE::default();
+        _ = GetTextExtentPoint32W(dc, &head[..n], &mut sz);
+        SelectObject(dc, old);
+        let x = r.left + sz.cx + s(8);
+        if x < r.right {
+            fill(dc, RECT { left: x, top: cy, right: r.right, bottom: cy + 1 }, pal().line);
+        }
+    }
+    if collapsible {
+        let up = st & LVGS_COLLAPSED.0 == 0;
+        let (cx, t, arm) = (rc.right - bx / 2, s(1).max(1), s(4));
+        for k in 0..=arm {
+            let y = cy - arm / 2 + if up { k } else { arm - k };
+            fill(dc, RECT { left: cx - k, top: y, right: cx - k + t, bottom: y + t }, pal().sub);
+            fill(dc, RECT { left: cx + k, top: y, right: cx + k + t, bottom: y + t }, pal().sub);
+        }
+    }
+    if cd.nmcd.uItemState.0 & CDIS_FOCUS.0 != 0 || st & LVGS_FOCUSED.0 != 0 {
+        frame(dc, rc, 1, pal().sub);
+    }
+    true
 }
 
 // Undocumented but long-stable uxtheme exports (Windows 10 1903+): app-wide dark mode, which is what
@@ -614,22 +853,45 @@ pub(crate) unsafe fn apply_theme_desk() {
         tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
     set_accent(accent);
-    // Every tab's Explorer windows follow the theme. Their folders, filters and columns are already on the tab.
-    remember_tabs();
-    let filters = app(|a| a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default());
-    destroy_every_pane();
-    put_filters(&filters);
-    app(|a| {
-        let n = a.s.tabs.len().max(1);
-        a.park = (0..n).map(|_| no_panes()).collect();
-        a.park_lru.clear();
+    let panes = app(|a| {
+        let mut hs: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
+        for tab in &a.park {
+            hs.extend(tab.iter().flatten().map(|p| p.hwnd));
+        }
+        hs
     });
-    relayout();
-    sync_filter_edits();
+    for p in panes {
+        if DARK_ON.load(Ordering::Relaxed) {
+            dark_list(p);
+        } else {
+            light_list(p);
+        }
+    }
     redraw_all();
+    let popups = app(|a| {
+        let match_h = a.matcher.as_ref().map(|m| m.hwnd).unwrap_or_default();
+        [a.fav_popup, a.load, a.grid, a.keys_popup, a.peek, match_h]
+    });
+    for h in popups {
+        if !h.0.is_null() && IsWindow(Some(h)).as_bool() {
+            _ = RedrawWindow(Some(h), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+        }
+    }
 }
 
-// Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
+/// Follow Windows when that mode is on and the setting differs from the panes.
+pub(crate) unsafe fn theme_sync() {
+    let (auto, cur) = app(|a| (a.s.theme == 0, a.s.dark));
+    if let Some(d) = theme_target(auto, system_dark(), cur) {
+        app(|a| a.s.dark = d);
+        publish_shared();
+        prime_theme(d);
+        across_windows(|| apply_theme_desk());
+        note_save();
+    }
+}
+
+// Applies the current theme in place. Explorer views stay, so history, filter, selection, scroll and a typed address stay.
 pub(crate) unsafe fn apply_theme() {
     let dark = resolve_dark(app(|a| a.s.theme));
     app(|a| a.s.dark = dark);
@@ -802,6 +1064,84 @@ pub(crate) unsafe fn move_pane(dx: i32, dy: i32) {
     }
 }
 
+/// The live pane on screen next to the active one.
+fn active_neighbour(dx: i32, dy: i32) -> Option<usize> {
+    let (cells, cur) = app(|a| {
+        let g = geo(a);
+        let cells = (0..a.s.panes()).filter(|&i| a.panes[i].is_some()).map(|i| (i, cell_rect(&g, &a.s.heights, i))).collect::<Vec<_>>();
+        (cells, a.s.active)
+    });
+    neighbour(&cells, cur, dx, dy)
+}
+
+/// Ctrl+Alt+Shift+arrow: the active pane trades places with the one in that direction and stays active.
+pub(crate) unsafe fn swap_dir(dx: i32, dy: i32) {
+    if let Some(j) = active_neighbour(dx, dy) {
+        swap_panes(app(|a| a.s.active), j);
+    }
+}
+
+/// Two panes trade places. Nothing is rebuilt, so each keeps its folder, history, selection, scroll, filter and columns.
+pub(crate) unsafe fn swap_panes(i: usize, j: usize) {
+    let Some([si, sj]) = app(|a| {
+        let live = |k: usize| k < a.s.panes() && a.panes[k].is_some();
+        (i != j && live(i) && live(j) && a.drag.is_none()).then(|| [i, j].map(|k| a.panes[k].as_ref().map(|p| p.slot.clone()).unwrap_or_default()))
+    }) else {
+        return;
+    };
+    {
+        // Filters and slots together, so a view thread sees both before or both after.
+        let mut f = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
+        f.swap(i, j);
+        si.store(j, Ordering::SeqCst);
+        sj.store(i, Ordering::SeqCst);
+    }
+    let panes = app(|a| {
+        a.live_filters.swap(i, j);
+        a.panes.swap(i, j);
+        let mut base = a.base.take();
+        swap_in(&mut a.s, base.as_mut(), i, j);
+        a.base = base;
+        a.s.anchor();
+        a.zoom = None;
+        let to = |k: &mut usize| {
+            if *k == i {
+                *k = j;
+            } else if *k == j {
+                *k = i;
+            }
+        };
+        if let Some(d) = a.drop_open.as_mut() {
+            to(&mut d.1);
+        }
+        if let Some(m) = a.matcher.as_mut() {
+            to(&mut m.pane);
+        }
+        if let Some(k) = a.kids.as_mut() {
+            to(&mut k.i);
+        }
+        to(&mut a.peek_pane);
+        a.status_key.clear();
+        a.dirty = a.s.dot && session_dirty(&a.s, a.base.as_ref());
+        [i, j].map(|k| a.panes[k].as_ref().map(|p| p.hwnd))
+    });
+    for k in [i, j] {
+        SEL_REV[k].fetch_add(1, Ordering::Relaxed);
+    }
+    NAV_GEN.fetch_add(1, Ordering::SeqCst);
+    relayout();
+    for (k, h) in panes.into_iter().enumerate() {
+        if let Some(h) = h {
+            name_fields(h, if k == 0 { i } else { j });
+        }
+    }
+    redraw_all();
+    refresh_save_button();
+    note_save();
+    set_active(j);
+    focus_view(j);
+}
+
 // Like tmux's pane zoom: the active pane takes the whole grid until toggled back or another pane is picked.
 pub(crate) unsafe fn toggle_zoom() {
     if app(|a| a.drag.is_some() || a.s.panes() <= 1) {
@@ -816,13 +1156,111 @@ pub(crate) unsafe fn toggle_zoom() {
     focus_view(i);
 }
 
-pub(crate) unsafe fn set_layout(h: Vec<usize>) {
-    app(|a| {
-        a.zoom = None;
-        a.s.set_heights(h);
+/// The left panel (folder tree and favourites) gives its room to the panes. The width is kept.
+pub(crate) unsafe fn toggle_tree() {
+    if app(|a| a.drag.is_some()) {
+        return;
+    }
+    let f = GetFocus();
+    let (had, i) = app(|a| {
+        a.s.tree_on ^= true;
+        let on = |h: HWND| !h.0.is_null() && (h == f || IsChild(h, f).as_bool());
+        (on(a.tree_hwnd) || on(a.side_hwnd), a.s.active)
     });
     relayout();
     redraw_all();
+    if had {
+        focus_view(i);
+    }
+    save_session();
+    settings::redraw();
+}
+
+pub(crate) unsafe fn set_layout(h: Vec<usize>) {
+    if h.is_empty() || h.iter().any(|&n| n == 0) {
+        return;
+    }
+    app(|a| a.focus_req = HWND::default());
+    for i in 0..MAXP {
+        save_view(i);
+    }
+    let (perm, slots) = app(|a| {
+        let (perm, home) = remap(&a.s.heights, &h, &a.home);
+        a.home = home;
+        (perm, perm.map(|k| a.panes.get(k).and_then(|p| p.as_ref()).map(|p| p.slot.clone())))
+    });
+    {
+        let mut f = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
+        let old = f.clone();
+        for (j, &k) in perm.iter().enumerate() {
+            f[j] = old[k].clone();
+            if let Some(s) = &slots[j] {
+                s.store(j, Ordering::SeqCst);
+            }
+        }
+    }
+    let revs = SEL_REV.each_ref().map(|r| r.load(Ordering::Relaxed));
+    for (j, &k) in perm.iter().enumerate() {
+        SEL_REV[j].store(revs[k], Ordering::Relaxed);
+    }
+    let gone = app(|a| {
+        let (old_h, old_active) = (a.s.heights.clone(), a.s.active);
+        let old_f = a.live_filters.clone();
+        for (j, &k) in perm.iter().enumerate() {
+            a.live_filters[j] = old_f[k].clone();
+        }
+        let mut taken: Vec<Option<Pane>> = a.panes.iter_mut().map(Option::take).collect();
+        a.panes = perm.iter().map(|&k| taken.get_mut(k).and_then(Option::take)).collect();
+        let mut base = a.base.take();
+        permute_in(&mut a.s, base.as_mut(), &perm);
+        a.base = base;
+        a.s.anchor();
+        let to = |k: &mut usize| *k = perm.iter().position(|&p| p == *k).unwrap_or(*k);
+        if let Some(d) = a.drop_open.as_mut() {
+            to(&mut d.1);
+        }
+        if let Some(m) = a.matcher.as_mut() {
+            to(&mut m.pane);
+        }
+        if let Some(k) = a.kids.as_mut() {
+            to(&mut k.i);
+        }
+        to(&mut a.peek_pane);
+        a.zoom = None;
+        a.status_key.clear();
+        let n: usize = h.iter().sum();
+        // permute_in already moved `active` with its pane. Off the new grid means that cell is gone.
+        let gone = a.s.active >= n;
+        if gone {
+            let (c, r) = slot(&old_h, old_active);
+            let c = c.min(h.len() - 1);
+            a.s.active = h[..c].iter().sum::<usize>() + r.min(h[c] - 1);
+        }
+        a.s.set_heights(h);
+        a.dirty = a.s.dot && session_dirty(&a.s, a.base.as_ref());
+        gone
+    });
+    NAV_GEN.fetch_add(1, Ordering::SeqCst);
+    relayout();
+    let named = app(|a| a.panes.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (p.hwnd, i))).collect::<Vec<_>>());
+    for (hwnd, i) in named {
+        name_fields(hwnd, i);
+    }
+    redraw_all();
+    refresh_save_button();
+    note_save();
+    if gone {
+        let i = app(|a| a.s.active);
+        if view_of::<IShellView>(i).is_some() {
+            if let Some(item) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellItem>().ok()) {
+                sync_tree(&item);
+            }
+            focus_view(i);
+        } else {
+            app(|a| a.focus_req = a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd).unwrap_or_default());
+        }
+        mark_drive();
+    }
 }
 
 // Same switch as Explorer's "Hidden items" (global shell setting).

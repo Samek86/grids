@@ -18,6 +18,11 @@ pub(crate) struct Pane {
     pub(crate) disp: String,
     pub(crate) pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
     pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
+    pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
+    pub(crate) icon: i32,   // current folder in the system image list, -1 = none yet
+    pub(crate) ticket: u32, // that lookup; 0 = none asked
+    /// Where this browser sits now. Swap updates it; the Explorer callbacks read it.
+    pub(crate) slot: std::sync::Arc<AtomicUsize>,
 }
 
 pub(crate) struct Desk {
@@ -37,6 +42,9 @@ pub(crate) struct Desk {
     pub(crate) side_edit: HWND,
     pub(crate) side_edit_at: Vec<usize>,
     pub(crate) tree_input: bool, // a click/key reached the tree since its last selection change
+    pub(crate) focus_keep: HWND, // focus when this window last went to the back
+    pub(crate) click_nc: bool,   // the activating click was outside the client (title bar)
+    pub(crate) focus_wait: bool, // TIMER_FOCUS is running
     pub(crate) font: HFONT,
     pub(crate) icon_font: HFONT,
     pub(crate) bold_font: HFONT, // favourite group labels; created on first paint, freed on DPI change and close
@@ -46,7 +54,9 @@ pub(crate) struct Desk {
     pub(crate) dpi: i32,
     pub(crate) panes: Vec<Option<Pane>>,
     pub(crate) drag: Option<Hit>,
+    pub(crate) gap_hot: Option<Hit>, // splitter under the pointer, drawn in the accent colour
     pub(crate) sizing: bool, // inside the window's own move/size loop
+    pub(crate) was_max: bool, // maximized when last not minimized (kept while minimized)
     pub(crate) status: String,
     pub(crate) status_key: String,
     pub(crate) status_base: (String, Option<(u64, bool, bool)>, String), // text before / after the selection size, (file bytes, has folders, partial)
@@ -56,12 +66,27 @@ pub(crate) struct Desk {
     pub(crate) small_font: HFONT,
     pub(crate) load: HWND, // load popup while open
     pub(crate) load_closed: Option<Instant>,
-    pub(crate) load_hot: Option<usize>, // card index, or LOAD_SAVE_AS / LOAD_FOLDER
+    pub(crate) load_hot: Option<usize>, // card index, or LOAD_SAVE_AS / LOAD_FOLDER / LOAD_DEL + card
+    pub(crate) load_edit: HWND,         // rename box on a card; made on first use, hidden when done
+    pub(crate) load_editing: Option<usize>, // card being renamed
     pub(crate) fav_popup: HWND,
     pub(crate) fav_closed: Option<Instant>,
     pub(crate) fav_hot: Option<(usize, bool)>, // (row, on its ✕)
     pub(crate) fav_prev: HWND,                 // focus before the popup opened; Esc goes back there
+    pub(crate) keys_popup: HWND,               // shortcut window; null while closed
+    pub(crate) keys_prev: HWND,                // focus to restore when that window is closed on purpose
+    pub(crate) peek: HWND,                     // F3 quick look while open
+    pub(crate) peek_pane: usize,               // pane whose focused item it shows
+    pub(crate) peek_name: String,
+    pub(crate) keys_scroll: i32,
+    pub(crate) crumb_hot: Option<(HWND, usize)>, // pane, crumb under the pointer
+    pub(crate) kids: Option<KidsAsk>,            // a '›' whose subfolder list has not come back yet
+    pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
+    pub(crate) ilist: Option<windows::Win32::UI::Controls::IImageList>, // system small icons, shared, never freed
+    pub(crate) drives: Vec<(u8, u32, HWND)>, // toolbar buttons, A→Z: letter, drive type, button
+    pub(crate) drive_mask: u32,              // GetLogicalDrives() they were built for
+    pub(crate) drive_mark: Option<u8>,       // the active pane's drive, underlined
     pub(crate) hover: HWND, // owner-drawn button under the mouse
     pub(crate) tip: HWND,
     pub(crate) bars: [HWND; 2], // splitter guide bars (vertical, horizontal)
@@ -72,7 +97,12 @@ pub(crate) struct Desk {
     pub(crate) grid_preset: Option<usize>,    // preset tile under the mouse
     pub(crate) grid_closed: Option<Instant>,
     pub(crate) zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
-    pub(crate) note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
+    pub(crate) home: Homes,         // cell each off-screen slot last had, so a returning cell gets its pane back
+    pub(crate) focus_req: HWND,     // pane to focus once, when the folder set_layout put in its place opens
+    pub(crate) note: Option<(String, Instant)>, // status line confirmation and when it expires (runtime only)
+    pub(crate) held: Option<u16>,               // key whose auto-repeat is swallowed until release
+    pub(crate) match_last: String,              // last pattern typed into the select box
+    pub(crate) matcher: Option<MatchBox>,
     pub(crate) drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
     pub(crate) drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
     pub(crate) park: Vec<Vec<Option<Pane>>>,             // hidden browsers, parallel to s.tabs; empty once evicted
@@ -92,6 +122,15 @@ pub(crate) struct Desk {
     pub(crate) live_filters: [String; MAXP],
 }
 
+/// The small pattern box over a file list (Num+ / Num−).
+pub(crate) struct MatchBox {
+    pub(crate) hwnd: HWND,
+    pub(crate) edit: HWND,
+    pub(crate) pane: usize,
+    pub(crate) path: String,
+    pub(crate) desel: bool,
+}
+
 /// A favourites row the user is dragging. Explorer rows are copies, not tree moves.
 #[derive(Clone)]
 pub(crate) struct SideDrag {
@@ -106,6 +145,11 @@ pub(crate) struct SideDrag {
 pub(crate) struct App {
     pub(crate) desks: Vec<Desk>,
     pub(crate) cur: usize,
+    /// A failed grids.json write is tried again after this instant. Not mid-drag.
+    pub(crate) save_after: Option<Instant>,
+    pub(crate) hot_on: bool,    // the global hotkey is really registered (s.hotkey is only the wish)
+    pub(crate) hot_hwnd: HWND,  // the window that owns that registration
+    pub(crate) last_front: usize, // desk that was active most recently
 }
 
 impl Deref for App {
@@ -139,6 +183,9 @@ pub(crate) fn blank_desk() -> Desk {
         side_edit: HWND::default(),
         side_edit_at: Vec::new(),
         tree_input: false,
+        focus_keep: HWND::default(),
+        click_nc: false,
+        focus_wait: false,
         font: HFONT::default(),
         icon_font: HFONT::default(),
         bold_font: HFONT::default(),
@@ -148,7 +195,9 @@ pub(crate) fn blank_desk() -> Desk {
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
         drag: None,
+        gap_hot: None,
         sizing: false,
+        was_max: false,
         status: String::new(),
         status_key: String::new(),
         status_base: Default::default(),
@@ -159,11 +208,26 @@ pub(crate) fn blank_desk() -> Desk {
         load: HWND::default(),
         load_closed: None,
         load_hot: None,
+        load_edit: HWND::default(),
+        load_editing: None,
         fav_popup: HWND::default(),
         fav_closed: None,
         fav_hot: None,
         fav_prev: HWND::default(),
+        keys_popup: HWND::default(),
+        keys_prev: HWND::default(),
+        peek: HWND::default(),
+        peek_pane: 0,
+        peek_name: String::new(),
+        keys_scroll: 0,
+        crumb_hot: None,
+        kids: None,
+        lost: 0,
         cards: Vec::new(),
+        ilist: None,
+        drives: Vec::new(),
+        drive_mask: 0,
+        drive_mark: None,
         hover: HWND::default(),
         tip: HWND::default(),
         bars: [HWND::default(); 2],
@@ -174,7 +238,12 @@ pub(crate) fn blank_desk() -> Desk {
         grid_preset: None,
         grid_closed: None,
         zoom: None,
+        home: [None; MAXP],
+        focus_req: HWND::default(),
         note: None,
+        held: None,
+        match_last: String::new(),
+        matcher: None,
         drop_hover: HWND::default(),
         drop_open: None,
         park: Vec::new(),
@@ -195,7 +264,7 @@ pub(crate) fn blank_desk() -> Desk {
 }
 
 thread_local! {
-    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0 });
+    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, save_after: None, hot_on: false, hot_hwnd: HWND::default(), last_front: 0 });
 }
 
 pub(crate) fn no_panes() -> Vec<Option<Pane>> {
@@ -297,7 +366,7 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if h.0.is_null() || d.main.0.is_null() {
         return false;
     }
-    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || d.bars.contains(&h) {
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || h == d.peek || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
         return true;
     }
     unsafe { IsChild(d.main, h).as_bool() }
@@ -387,6 +456,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.autosave = src.autosave;
     dst.dot = src.dot;
     dst.dblup = src.dblup;
+    dst.hotkey = src.hotkey;
     dst.lang = src.lang;
     dst.single = src.single;
     dst.favs = src.favs.clone();

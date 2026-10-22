@@ -22,6 +22,8 @@ pub(crate) struct Tab {
     pub(crate) views: Vec<(i32, i32)>,
     pub(crate) cols: Vec<String>,
     pub(crate) filters: Vec<String>,
+    /// Per pane: 0 none, 1..=6 a selection-colour preset of the current theme. Separate from the tab stripe.
+    pub(crate) tints: Vec<u8>,
 }
 
 pub(crate) fn pad_filters(mut f: Vec<String>) -> Vec<String> {
@@ -44,6 +46,7 @@ impl Tab {
             views: s.views.clone(),
             cols: s.cols.clone(),
             filters: pad_filters(filters),
+            tints: s.tints.clone(),
         }
     }
 }
@@ -127,6 +130,7 @@ pub(crate) struct Session {
     pub(crate) accent_dark: u32,       // selection colour, dark theme
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
+    pub(crate) hotkey: bool,           // global hotkey brings Grids forward; the chord is in the keymap
     pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
     pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
@@ -134,6 +138,9 @@ pub(crate) struct Session {
     pub(crate) lang: Lang,             // UI language preference; Auto follows Windows
     pub(crate) single: bool,           // a second launch opens a new window in this process
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
+    pub(crate) tints: Vec<u8>,         // per pane: colour label, 0 = none, 1..=6 = selection colour preset
+    /// Slot i shows what slot `order[i]` held when the session was last saved. Empty means as saved.
+    pub(crate) order: Vec<u8>,
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     pub(crate) bar: bool,              // toolbar
@@ -174,6 +181,7 @@ impl Default for Session {
             accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
+            hotkey: true,
             file: String::new(),
             favs: Vec::new(),
             tree: Vec::new(),
@@ -181,6 +189,8 @@ impl Default for Session {
             lang: Lang::Auto,
             single: true,
             cols: vec![String::new(); MAXP],
+            tints: vec![0; MAXP],
+            order: Vec::new(),
             theme: 0,
             font: 0,
             bar: true,
@@ -224,6 +234,7 @@ impl PartialEq for Session {
             && self.accent_dark == o.accent_dark
             && self.dark == o.dark
             && self.dblup == o.dblup
+            && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
             && self.tree == o.tree
@@ -231,6 +242,7 @@ impl PartialEq for Session {
             && self.lang == o.lang
             && self.single == o.single
             && self.cols == o.cols
+            && self.tints == o.tints
             && self.theme == o.theme
             && self.font == o.font
             && self.bar == o.bar
@@ -355,6 +367,7 @@ impl Session {
         self.paths = t.paths;
         self.views = t.views;
         self.cols = t.cols;
+        self.tints = t.tints;
     }
 
     pub(crate) fn accent_now(&self) -> u32 {
@@ -404,6 +417,12 @@ impl Session {
                 "colr" => s.colr = nums(v),
                 "rowr" => rowr = v.split('|').map(nums).collect(),
                 "active" => s.active = v.parse().unwrap_or(0),
+                "order" => {
+                    let o: Vec<u8> = nums(v);
+                    if o.len() == MAXP && o.iter().all(|&n| (n as usize) < MAXP) {
+                        s.order = o;
+                    }
+                }
                 "accent" => s.accent = u32::from_str_radix(v.trim().trim_start_matches('#'), 16).unwrap_or(s.accent) & 0xFFFFFF,
                 "accent_dark" => s.accent_dark = u32::from_str_radix(v.trim(), 16).unwrap_or(s.accent_dark) & 0xFFFFFF,
                 "dark" => {
@@ -441,6 +460,7 @@ impl Session {
                 "autosave" => s.autosave = v.trim() == "1",
                 "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
+                "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
                 "session" => s.file = v.trim().to_string(),
@@ -459,6 +479,8 @@ impl Session {
                         s.views[i] = (*m, *z);
                     } else if let Some(i) = slot('c') {
                         s.cols[i] = v.trim().to_string();
+                    } else if let Some(i) = slot('t') {
+                        s.tints[i] = v.trim().parse().ok().filter(|&k| k <= 6).unwrap_or(0);
                     }
                 }
             }
@@ -492,6 +514,9 @@ impl Session {
         o += &format!("side={}\nsplit={}\ncols={}\n", self.side, self.side_split, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
+        if !self.order.is_empty() {
+            o += &format!("order={}\n", join(&self.order));
+        }
         let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
         o += &format!("theme={theme}\nfont={}\nbar={}\nstat={}\n", self.font, self.bar as u8, self.stat as u8);
         o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
@@ -508,7 +533,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\nlang={}\nsingle={}\n", self.dblup as u8, self.lang.ini(), self.single as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
@@ -527,6 +552,9 @@ impl Session {
             }
             if !self.cols[i].is_empty() {
                 o += &format!("c{i}={}\n", self.cols[i]);
+            }
+            if self.tints[i] != 0 {
+                o += &format!("t{i}={}\n", self.tints[i]);
             }
         }
         let tabs = self.view_tabs();
@@ -557,6 +585,7 @@ impl Session {
         c.favs.clear();
         c.tree.clear();
         c.recent.clear();
+        c.order.clear();
         c.to_ini()
     }
 
@@ -564,9 +593,98 @@ impl Session {
     pub(crate) fn take_layout(&mut self, o: &Session) {
         (self.heights, self.colr, self.rowr) = (o.heights.clone(), o.colr.clone(), o.rowr.clone());
         (self.active, self.paths, self.views, self.cols) = (o.active, o.paths.clone(), o.views.clone(), o.cols.clone());
+        self.tints = o.tints.clone();
         self.tabs = o.view_tabs();
         self.tab = o.tab.min(self.tabs.len().saturating_sub(1));
+        self.order.clear();
     }
+
+    /// Slots i and j trade folders, views, columns, labels and the active tab's filter.
+    /// The active pane goes with its slot.
+    pub(crate) fn swap_slots(&mut self, i: usize, j: usize) {
+        if i >= MAXP || j >= MAXP || i == j {
+            return;
+        }
+        self.paths.swap(i, j);
+        self.views.swap(i, j);
+        self.cols.swap(i, j);
+        self.tints.swap(i, j);
+        if self.tab < self.tabs.len() && i < self.tabs[self.tab].filters.len() && j < self.tabs[self.tab].filters.len() {
+            self.tabs[self.tab].filters.swap(i, j);
+        }
+        if self.active == i {
+            self.active = j;
+        } else if self.active == j {
+            self.active = i;
+        }
+    }
+
+    /// Slot i takes what slot `order[i]` held. An empty or identity order leaves everything where it is.
+    pub(crate) fn reorder(&mut self, order: &[u8]) {
+        if order.len() != MAXP || !order_moved(order) || order.iter().any(|&k| k as usize >= MAXP) {
+            return;
+        }
+        let old = self.clone();
+        for (i, &k) in order.iter().enumerate() {
+            let k = k as usize;
+            self.paths[i] = old.paths[k].clone();
+            self.views[i] = old.views[k];
+            self.cols[i] = old.cols[k].clone();
+            self.tints[i] = old.tints[k];
+        }
+        if self.tab < self.tabs.len() {
+            let old_f = old.tabs[self.tab].filters.clone();
+            for (i, &k) in order.iter().enumerate() {
+                let k = k as usize;
+                if i < self.tabs[self.tab].filters.len() && k < old_f.len() {
+                    self.tabs[self.tab].filters[i] = old_f[k].clone();
+                }
+            }
+        }
+    }
+}
+
+fn order_moved(order: &[u8]) -> bool {
+    order.iter().enumerate().any(|(k, &o)| k != o as usize)
+}
+
+/// Panes i and j trade places in the current state and in the save baseline, so the two still line up.
+/// `order` notes the move, which the session file does not know about.
+pub(crate) fn swap_in(cur: &mut Session, base: Option<&mut Session>, i: usize, j: usize) {
+    cur.swap_slots(i, j);
+    if let Some(b) = base {
+        b.swap_slots(i, j);
+    }
+    if cur.order.is_empty() {
+        cur.order = (0..MAXP as u8).collect();
+    }
+    cur.order.swap(i, j);
+    if !order_moved(&cur.order) {
+        cur.order.clear();
+    }
+}
+
+/// Every slot takes what `perm[slot]` held, in the current state and the save baseline.
+/// `order` records the move the same way a single swap does.
+pub(crate) fn permute_in(cur: &mut Session, base: Option<&mut Session>, perm: &[usize; MAXP]) {
+    let p = perm.map(|k| k as u8);
+    for s in std::iter::once(&mut *cur).chain(base) {
+        let act = s.active;
+        s.reorder(&p);
+        s.active = perm.iter().position(|&k| k == act).unwrap_or(0);
+    }
+    if cur.order.is_empty() {
+        cur.order = (0..MAXP as u8).collect();
+    }
+    cur.order = p.iter().map(|&k| cur.order[k as usize]).collect();
+    if !order_moved(&cur.order) {
+        cur.order.clear();
+    }
+}
+
+/// The save dot: panes moved from where the session file has them, or a layout change.
+pub(crate) fn session_dirty(cur: &Session, base: Option<&Session>) -> bool {
+    order_moved(&cur.order) || base.is_some_and(|b| layout_differs(cur, b))
 }
 
 /// Named-session text for one tab: its grid only.
@@ -591,7 +709,8 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
     let mut panes = Vec::new();
     for i in 0..MAXP {
         let filter = t.filters.get(i).cloned().unwrap_or_default();
-        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() {
+        let tint = t.tints.get(i).copied().unwrap_or(0);
+        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() && tint == 0 {
             continue;
         }
         let mut p = serde_json::Map::new();
@@ -607,6 +726,9 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
         }
         if !filter.is_empty() {
             p.insert("filter".into(), Value::String(filter));
+        }
+        if tint != 0 {
+            p.insert("tint".into(), Value::from(tint));
         }
         panes.push(Value::Object(p));
     }
@@ -671,6 +793,7 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
     let mut views = vec![(0i32, 0i32); MAXP];
     let mut cols = vec![String::new(); MAXP];
     let mut filters = vec![String::new(); MAXP];
+    let mut tints = vec![0u8; MAXP];
     if let Some(panes) = obj.get("panes").and_then(|p| p.as_array()) {
         for p in panes {
             let Some(o) = p.as_object() else { continue };
@@ -694,10 +817,13 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
             if let Some(f) = o.get("filter").and_then(|x| x.as_str()) {
                 filters[i] = f.to_string();
             }
+            if let Some(t) = o.get("tint").and_then(|x| x.as_u64()) {
+                tints[i] = if t <= 6 { t as u8 } else { 0 };
+            }
         }
     }
     let name = if name.is_empty() { "1".into() } else { name };
-    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters })
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints })
 }
 
 pub(crate) fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
@@ -750,6 +876,7 @@ pub(crate) fn layout_differs(cur: &Session, base: &Session) -> bool {
             || c.rowr.iter().zip(&b.rowr).any(|(a, b)| !near(a, b))
             || (0..c.panes()).any(|i| b.views[i].0 != 0 && c.views[i] != b.views[i])
             || (0..c.panes()).any(|i| !b.cols[i].is_empty() && c.cols[i] != b.cols[i])
+            || (0..c.panes()).any(|i| c.tints.get(i) != b.tints.get(i))
     };
     if grid(cur, base) || cur.tab != base.tab || cur.tabs.len() != base.tabs.len() {
         return true;
@@ -765,12 +892,84 @@ pub(crate) fn layout_differs(cur: &Session, base: &Session) -> bool {
             || a.rowr.iter().zip(&b.rowr).any(|(x, y)| !near(x, y))
             || (0..n).any(|k| b.views.get(k).is_some_and(|v| v.0 != 0) && a.views.get(k) != b.views.get(k))
             || (0..n).any(|k| b.cols.get(k).is_some_and(|c| !c.is_empty()) && a.cols.get(k) != b.cols.get(k))
+            || (0..n).any(|k| a.tints.get(k) != b.tints.get(k))
     })
 }
 
 // Drives, folders and shares; not shell places like This PC or the Recycle Bin, whose columns are their own.
 pub(crate) fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
+}
+
+/// `a.PDF` becomes `*.PDF` for "same type as the selected file". Folders and names without an extension do not.
+pub(crate) fn same_type(name: &str, is_dir: bool) -> Option<String> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    let bad = is_dir || stem.is_empty() || ext.is_empty() || ext.contains([';', '*', '?']);
+    (!bad).then(|| format!("*.{ext}"))
+}
+
+/// A folder you can browse. ZIP, CAB and the like are FOLDER|STREAM, so a filter treats them as files.
+pub(crate) fn real_folder(attr: u32) -> bool {
+    attr & SFGAO_FOLDER.0 != 0 && attr & SFGAO_STREAM.0 == 0
+}
+
+/// Address crumbs of a parsing name: (shown name, folder to open). The drive or `\\server\share` is first.
+/// Shell places such as This PC have none.
+pub(crate) fn crumbs(parse: &str) -> Vec<(String, String)> {
+    if !is_fs(parse) {
+        return Vec::new();
+    }
+    let (root, go, rest) = match parse.strip_prefix(r"\\") {
+        Some(unc) => {
+            let mut it = unc.splitn(3, '\\');
+            let root = format!(r"\\{}", it.by_ref().take(2).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\\"));
+            (root.clone(), root, it.next().unwrap_or(""))
+        }
+        None => {
+            if parse.len() < 3 {
+                return Vec::new();
+            }
+            (parse[..2].to_string(), parse[..3].to_string(), &parse[3..])
+        }
+    };
+    let mut path = root.clone();
+    let mut out = vec![(root, go)];
+    for part in rest.split('\\').filter(|p| !p.is_empty()) {
+        path = format!(r"{path}\{part}");
+        out.push((part.to_string(), path.clone()));
+    }
+    out
+}
+
+/// Crumb widths `w` into `avail` px: (first crumb shown, whether '…' is shown, width of the last).
+/// Everything when it fits. Otherwise the current folder, cut to fit, then parents nearest first, leaving room for '…'.
+pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> (usize, bool, i32) {
+    let n = w.len();
+    if n == 0 || avail < min {
+        return (n, false, 0);
+    }
+    if w.iter().sum::<i32>() + sep * (n as i32 - 1) <= avail {
+        return (0, false, w[n - 1]);
+    }
+    let last = w[n - 1].min(avail);
+    let (mut first, mut used) = (n - 1, last);
+    for k in (0..n - 1).rev() {
+        if used + w[k] + sep + if k > 0 { ell + sep } else { 0 } > avail {
+            break;
+        }
+        used += w[k] + sep;
+        first = k;
+    }
+    (first, first > 0 && used + ell + sep <= avail, last)
+}
+
+/// `crumb_fit`, keeping a slot for a `›` after the current folder when that still leaves `min`.
+/// Shell places and a field too narrow for that chevron lay out as before.
+/// `(first, '…' shown, last width, tail '›')`.
+pub(crate) fn crumb_fit_tail(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32, fs: bool) -> (usize, bool, i32, bool) {
+    let tail = fs && sep >= 0 && min >= 0 && avail >= sep.saturating_add(min);
+    let (first, more, last) = crumb_fit(w, if tail { avail - sep } else { avail }, sep, ell, min);
+    (first, more, last, tail)
 }
 
 pub(crate) const RECENT: usize = 20;
@@ -791,6 +990,37 @@ pub(crate) fn visit(list: &mut Vec<String>, old: &str, new: &str) {
 // The recent menu of a pane: everything but the folder it shows.
 pub(crate) fn recent_items(list: &[String], cur: &str) -> Vec<String> {
     list.iter().filter(|p| !p.eq_ignore_ascii_case(cur)).cloned().collect()
+}
+
+/// Address text that names no path: the recent folder (newest first), then a favourite folder,
+/// whose name equals it, else starts with it, else contains it. The folder on display is skipped.
+pub(crate) fn jump_pick<'a>(q: &str, recent: &'a [String], favs: &'a [String], cur: &str) -> Option<&'a str> {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() || q.contains(['\\', '/', ':', '"']) {
+        return None;
+    }
+    let score_name = |n: &str| {
+        let n = n.to_lowercase();
+        if n == q {
+            Some(0u8)
+        } else if n.starts_with(&q) {
+            Some(1)
+        } else {
+            n.contains(&q).then_some(2)
+        }
+    };
+    let score = |p: &str| {
+        let path = fav_path(p);
+        [short_name(path), fav_label(p)].iter().filter_map(|n| score_name(n)).min()
+    };
+    let all = recent.iter().chain(favs).filter(|p| is_fs(fav_path(p)) && !fav_path(p).eq_ignore_ascii_case(cur));
+    all.filter_map(|p| Some((score(p)?, p))).min_by_key(|(s, _)| *s).map(|(_, p)| fav_path(p))
+}
+
+/// Enter in the address bar fell through (`done` is None): jump only when the text named no path.
+/// A path that resolved but would not open just beeps.
+pub(crate) fn addr_jumps(done: Option<bool>, resolved: bool) -> bool {
+    done.is_none() && !resolved
 }
 
 // A view's columns: visible ones in order with their widths, then the sort columns, each property as
@@ -874,5 +1104,142 @@ pub(crate) fn filter_spec(text: &str) -> String {
     let parts = text.split(';').map(str::trim).filter(|t| !t.is_empty());
     let parts = parts.map(|t| if t.contains(['*', '?']) { t.to_string() } else { format!("*{t}*") });
     parts.collect::<Vec<_>>().join(";")
+}
+
+#[cfg(test)]
+mod crumb_tests {
+    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, same_type, Session};
+    use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
+    use crate::MAXP;
+    use crate::THIS_PC;
+
+    #[test]
+    fn address_crumbs() {
+        let c = |p: &str| crumbs(p).into_iter().map(|(n, g)| format!("{n}={g}")).collect::<Vec<_>>();
+        assert_eq!(c("C:\\"), [r"C:=C:\"]);
+        assert_eq!(c(r"C:\Users\Public\"), [r"C:=C:\", r"Users=C:\Users", r"Public=C:\Users\Public"]);
+        assert_eq!(c(r"\\srv\share\a"), [r"\\srv\share=\\srv\share", r"a=\\srv\share\a"]);
+        assert!(crumbs(THIS_PC).is_empty());
+        assert!(crumbs("C:").is_empty());
+        let p = r"D:\x\y y\z";
+        assert!(crumbs(p).iter().all(|(_, g)| p.starts_with(g.as_str())));
+    }
+
+    #[test]
+    fn crumb_fits() {
+        let f = |w: &[i32], avail| crumb_fit(w, avail, 4, 20, 16);
+        assert_eq!(f(&[30, 40, 50], 500), (0, false, 50));
+        assert_eq!(f(&[14, 15, 15], 52), (0, false, 15));
+        assert_eq!(f(&[14, 15, 15], 51), (2, true, 15));
+        assert_eq!(f(&[10, 200], 100), (1, false, 100));
+        assert_eq!(f(&[30, 10, 50], 70), (2, false, 50));
+        assert_eq!(f(&[30, 10, 50], 78), (2, true, 50));
+        assert_eq!(f(&[30, 40], 15), (2, false, 0));
+        assert_eq!(f(&[30, 40], 0), (2, false, 0));
+        assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn crumb_tail_room() {
+        let f = |avail, fs| super::crumb_fit_tail(&[30, 40], avail, 4, 20, 16, fs);
+        assert_eq!(f(16, true), (1, false, 16, false)); // too narrow for the '›': the current folder is still shown
+        assert_eq!(f(19, true), (1, false, 19, false));
+        assert_eq!(f(20, true), (1, false, 16, true));
+        assert_eq!(f(500, true), (0, false, 40, true));
+        assert!(!f(500, false).3); // a shell place never grows a tail
+        assert!(!f(16, false).3);
+        assert_eq!(f(0, true).3, false);
+    }
+
+    #[test]
+    fn jump_picks() {
+        let v = |s: &[&str]| s.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let recent = v(&[r"C:\Users\me\Downloads", r"C:\Work\down", r"D:\Old Downloads", r"D:\문서\보고서 2026", THIS_PC]);
+        let favs = v(&[r"E:\Down", r"\\srv\share", r"C:\", "C:\\Work\\proj\t보고서"]);
+        let pick = |q: &str, cur: &str| jump_pick(q, &recent, &favs, cur);
+        assert_eq!(pick("down", ""), Some(r"C:\Work\down"));
+        assert_eq!(pick("DOWNL", ""), Some(r"C:\Users\me\Downloads"));
+        assert_eq!(pick("loads", ""), Some(r"C:\Users\me\Downloads"));
+        assert_eq!(pick("  down  ", r"c:\work\DOWN"), Some(r"E:\Down"));
+        assert_eq!(pick("보고", ""), Some(r"D:\문서\보고서 2026"));
+        assert_eq!(pick("보고서", ""), Some(r"C:\Work\proj"));
+        assert_eq!(pick("share", ""), Some(r"\\srv\share"));
+        assert_eq!(pick("c", ""), Some(r"C:\"));
+        assert_eq!(pick("this", ""), None);
+        for q in ["", "   ", r"down\x", "a/b", "c:", "\"down\"", "nothing"] {
+            assert_eq!(pick(q, ""), None, "{q:?}");
+        }
+        assert!(addr_jumps(None, false));
+        assert!(!addr_jumps(None, true));
+        assert!(!addr_jumps(Some(true), false) && !addr_jumps(Some(false), false));
+    }
+
+    #[test]
+    fn pane_tint_round_trip() {
+        let mut s = Session::default();
+        s.tints[3] = 4;
+        s.anchor();
+        let text = s.to_ini();
+        assert!(text.contains("t3=4\n"));
+        assert!(text.contains("\"tint\":4"));
+        let back = Session::parse(&text);
+        assert_eq!(back.tints[3], 4);
+        assert_eq!(back.view_tabs()[back.tab].tints[3], 4);
+        assert_eq!(Session::parse("t5=9\nt6=x\nt99=2").tints, vec![0; MAXP]);
+        assert_eq!(Session::parse(&Session::default().to_ini()).tints, vec![0; MAXP]);
+        let mut base = s.clone();
+        base.tints[3] = 0;
+        base.anchor();
+        assert!(layout_differs(&s, &base));
+        assert!(!s.snapshot().contains("win="));
+    }
+
+    #[test]
+    fn same_type_uses_the_extension() {
+        assert_eq!(same_type("a.PDF", false).as_deref(), Some("*.PDF"));
+        assert_eq!(same_type("a.b.c", false).as_deref(), Some("*.c"));
+        assert_eq!(same_type("a.PDF", true), None);
+        assert_eq!(same_type("noext", false), None);
+        assert_eq!(same_type(".gitignore", false), None);
+        assert_eq!(same_type("a.x;y", false), None);
+    }
+
+    #[test]
+    fn archives_match_by_name() {
+        assert!(real_folder(SFGAO_FOLDER.0));
+        assert!(!real_folder(SFGAO_FOLDER.0 | SFGAO_STREAM.0));
+        assert!(!real_folder(SFGAO_STREAM.0));
+        assert!(!real_folder(0));
+    }
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::*;
+
+    #[test]
+    fn swap_notes_the_order_and_a_second_swap_clears_it() {
+        let mut cur = Session::default();
+        cur.paths[0] = "A".into();
+        cur.paths[1] = "B".into();
+        let mut base = cur.clone();
+        swap_in(&mut cur, Some(&mut base), 0, 1);
+        assert_eq!(cur.paths[0], "B");
+        assert_eq!(base.paths[0], "B");
+        assert!(order_moved(&cur.order));
+        assert!(session_dirty(&cur, Some(&base)));
+        assert!(!layout_differs(&cur, &base));
+        swap_in(&mut cur, Some(&mut base), 0, 1);
+        assert!(cur.order.is_empty());
+        assert_eq!(cur.paths[0], "A");
+        assert!(!session_dirty(&cur, Some(&base)));
+        let mut saved = Session::default();
+        saved.paths[0] = "A".into();
+        saved.paths[1] = "B".into();
+        swap_in(&mut cur, None, 0, 1);
+        saved.reorder(&cur.order);
+        assert_eq!(saved.paths[0], cur.paths[0]);
+        assert_eq!(saved.paths[1], cur.paths[1]);
+    }
 }
 

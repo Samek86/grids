@@ -209,6 +209,7 @@ pub(crate) fn resum_sizes() {
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
 // Other ticks only merge the folder size worker's progress into the stored text.
 pub(crate) unsafe fn update_status() {
+    mark_drive();
     let (i, path, main) = app(|a| (a.s.active, a.s.paths[a.s.active].clone(), a.main));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
@@ -230,8 +231,12 @@ pub(crate) unsafe fn update_status() {
     let Some(rc) = app(|a| {
         let (head, size, tail) = a.status_base.clone();
         let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
-        // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
-        a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
+        if let Some(saved) = SAVED.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            a.note = Some((saved, Instant::now() + std::time::Duration::from_secs(5)));
+            a.lost = 0;
+        }
+        // a confirmation leads until its expiry: the line's end gets cut when it's too long
+        a.note = a.note.take().filter(|(_, until)| Instant::now() < *until);
         let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
         let status = format!("{note}{head}{size}{tail}");
         (a.status != status).then(|| {

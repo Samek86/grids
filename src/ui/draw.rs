@@ -1,3 +1,5 @@
+use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL};
+
 use crate::imports::*;
 use super::*;
 use crate::app::*;
@@ -33,6 +35,20 @@ pub(crate) unsafe fn text(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, 
     SetTextColor(dc, cref(rgb));
     DrawTextW(dc, &mut w, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(dc, old);
+}
+
+/// Multi-line text wrapped at `r`'s width. `calc` only measures, with the same font and flags.
+pub(crate) unsafe fn wrap_text(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, calc: bool) -> (i32, i32) {
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    if w.is_empty() {
+        return (0, 0);
+    }
+    let old = SelectObject(dc, font.into());
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, cref(rgb));
+    DrawTextW(dc, &mut w, &mut r, DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX | if calc { DT_CALCRECT } else { DRAW_TEXT_FORMAT(0) });
+    SelectObject(dc, old);
+    (r.right - r.left, r.bottom - r.top)
 }
 
 // Paints only the invalid area into an off-screen buffer and blits once (no flicker mid-drag).
@@ -98,6 +114,15 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
     }
     let s = |v: i32| v * dpi / 96;
+    if (ID_DRIVE..ID_DRIVE + 26).contains(&id) {
+        // The active pane's drive: full-strength letter over a selection-colour underline.
+        let (mark, accent) = app(|a| (a.drive_mark, a.s.accent_now()));
+        let marked = mark == Some(b'A' + (id - ID_DRIVE) as u8);
+        if marked {
+            fill(dc, RECT { left: rc.left + s(7), top: rc.bottom - s(2), right: rc.right - s(7), bottom: rc.bottom }, accent);
+        }
+        return text(dc, rc, &text_of(d.hwndItem), font, if marked { pal().text } else { fg }, DT_CENTER);
+    }
     if id == ID_TB_LAYOUT {
         // the one label in the chrome: the current grid
         let icon = RECT { left: rc.left + s(4), right: rc.left + s(22), ..rc };
@@ -230,6 +255,35 @@ pub(crate) unsafe fn draw_star(dc: HDC, rc: RECT, rgb: u32, kind: Star, dpi: i32
     _ = DeleteObject(bmp.into());
 }
 
+/// Premultiplied top-down BGRA (`w`×`h`) drawn into `to` through a throwaway DIB.
+pub(crate) unsafe fn blit_bgra(dc: HDC, to: RECT, w: i32, h: i32, px: &[u8]) {
+    if w <= 0 || h <= 0 || px.len() < (w as usize) * (h as usize) * 4 {
+        return;
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let Ok(bmp) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else { return };
+    std::slice::from_raw_parts_mut(bits as *mut u8, (w as usize) * (h as usize) * 4).copy_from_slice(&px[..(w as usize) * (h as usize) * 4]);
+    let mem = CreateCompatibleDC(Some(dc));
+    let old = SelectObject(mem, bmp.into());
+    let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+    _ = AlphaBlend(dc, to.left, to.top, to.right - to.left, to.bottom - to.top, mem, 0, 0, w, h, blend);
+    SelectObject(mem, old);
+    _ = DeleteDC(mem);
+    _ = DeleteObject(bmp.into());
+}
+
 // Repaints the save icon and puts the session name / unsaved state into its tooltip.
 pub(crate) unsafe fn refresh_save_button() {
     let (main, tip, file, dirty) = app(|a| (a.main, a.tip, a.s.file.clone(), a.dirty));
@@ -270,7 +324,7 @@ pub(crate) unsafe fn check_dirty() {
                 }
             }
         }
-        let d = a.s.dot && a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
+        let d = a.s.dot && session_dirty(&a.s, a.base.as_ref());
         std::mem::replace(&mut a.dirty, d) != d
     });
     if changed {
@@ -332,7 +386,11 @@ pub(crate) unsafe fn name(pidl: *const ITEMIDLIST, kind: SIGDN) -> String {
 
 // Ground, the sidebar plate and the status line. Pane plates are child windows (paint_pane).
 pub(crate) unsafe fn paint_main(h: HWND) {
-    let (g, status, font, dpi) = app(|a| (geo(a), a.status.clone(), a.font, a.dpi));
+    let (g, status, font, dpi, hot) = app(|a| {
+        let g = geo(a);
+        let hot = a.gap_hot.filter(|_| a.drag.is_none()).and_then(|d| gap_line(&g, d, 2 * a.dpi / 96));
+        (g, a.status.clone(), a.font, a.dpi, hot.map(|r| (r, a.s.accent_now())))
+    });
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().bg);
         if g.side > 0 {
@@ -344,6 +402,9 @@ pub(crate) unsafe fn paint_main(h: HWND) {
             }
             frame(dc, side, 1, pal().line);
         }
+        if let Some((r, c)) = hot {
+            fill(dc, r, c);
+        }
         if g.bot < g.h {
             let st = status_rect(&g);
             text(dc, RECT { left: g.pad + 4 * dpi / 96, ..st }, &status, font, pal().sub, DT_LEFT);
@@ -351,19 +412,386 @@ pub(crate) unsafe fn paint_main(h: HWND) {
     });
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) enum Crumb {
+    Here,
+    Go(String),
+    More(Vec<(String, String)>), // folded parents, nearest first
+    /// `›`: the folder on its left, and the crumb shown after it (bold in the menu).
+    Kids(String, Option<String>),
+}
+
+/// The folder icon's square at the front of the address pill. None when the pill is too narrow.
+/// The slot depends only on the pill's size, so crumbs and the edit do not shift when an icon arrives.
+pub(crate) fn addr_icon(addr: RECT, dpi: i32) -> Option<RECT> {
+    let s = |v: i32| v * dpi / 96;
+    if addr.right - addr.left < s(90) {
+        return None;
+    }
+    let (left, top) = (addr.left + s(6), addr.top + (addr.bottom - addr.top - s(16)) / 2);
+    Some(RECT { left, top, right: left + s(16), bottom: top + s(16) })
+}
+
+/// Where crumbs sit in the address pill: the edit's horizontal span, a little inside the pill vertically.
+pub(crate) fn crumb_field(addr: RECT, dpi: i32) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let left = addr.left + if addr_icon(addr, dpi).is_some() { s(26) } else { s(8) };
+    RECT { left, top: addr.top + s(3), right: (addr.right - s(6)).max(left), bottom: addr.bottom - s(3) }
+}
+
+pub(crate) fn addr_rect(h: HWND, dpi: i32) -> RECT {
+    let mut rc = RECT::default();
+    unsafe { _ = GetClientRect(h, &mut rc) };
+    pane_geo(rc.right, rc.bottom, dpi).addr
+}
+
+/// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
+pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
+    let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
+        return Vec::new();
+    };
+    let s = |v: i32| v * dpi / 96;
+    let mut items = crumbs(&parse);
+    let fs = !items.is_empty();
+    if items.is_empty() {
+        let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp };
+        items.push((name, String::new()));
+    }
+    let old = SelectObject(dc, font.into());
+    let width = |t: &str| {
+        let w: Vec<u16> = t.encode_utf16().collect();
+        let mut sz = SIZE::default();
+        _ = GetTextExtentPoint32W(dc, &w, &mut sz);
+        sz.cx
+    };
+    let w: Vec<i32> = items.iter().map(|(n, _)| width(n) + 2 * s(4)).collect();
+    let (sep, ell) = (width("›") + 2 * s(2), width("…") + 2 * s(4));
+    SelectObject(dc, old);
+    let (first, more, last, tail) = crumb_fit_tail(&w, field.right - field.left, sep, ell, s(16), fs);
+    let mut out = Vec::new();
+    let mut x = field.left;
+    let mut put = |wd: i32, label: &str, c: Crumb| {
+        out.push((RECT { left: x, right: x + wd, ..field }, label.to_string(), c));
+        x += wd;
+    };
+    let kids = |k: usize| Crumb::Kids(items[k].1.clone(), items.get(k + 1).map(|n| n.0.clone()));
+    if more {
+        put(ell, "…", Crumb::More(items[..first].iter().rev().cloned().collect()));
+        put(sep, "›", kids(first - 1));
+    }
+    for k in first..items.len() {
+        if k + 1 == items.len() {
+            put(last, &items[k].0, Crumb::Here);
+            if tail {
+                put(sep, "›", kids(k));
+            }
+        } else {
+            put(w[k], &items[k].0, Crumb::Go(items[k].1.clone()));
+            put(sep, "›", kids(k));
+        }
+    }
+    out.retain_mut(|(r, ..)| {
+        (r.left, r.right) = (r.left.max(field.left), r.right.min(field.right));
+        r.right > r.left
+    });
+    out
+}
+
+/// None when the edit is showing or the point misses the pill. Some(None) is empty space on the pill.
+pub(crate) unsafe fn crumb_at(h: HWND, i: usize, x: i32, y: i32) -> Option<Option<(usize, RECT, Crumb)>> {
+    if GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| IsWindowVisible(e).as_bool()) {
+        return None;
+    }
+    let (dpi, font) = app(|a| (a.dpi, a.font));
+    let inr = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+    let addr = addr_rect(h, dpi);
+    if !inr(&addr) {
+        return None;
+    }
+    let dc = GetDC(Some(h));
+    let items = crumb_layout(dc, font, i, crumb_field(addr, dpi));
+    ReleaseDC(Some(h), dc);
+    Some(items.into_iter().enumerate().find(|(_, (r, ..))| inr(r)).map(|(k, (r, _, c))| (k, r, c)))
+}
+
+/// The address edit shows only while it is focused or its text is not the folder on display.
+pub(crate) unsafe fn sync_addr(h: HWND) {
+    let Ok(e) = GetDlgItem(Some(h), ID_EDIT) else { return };
+    let disp = app(|a| {
+        if a.crumb_hot.is_some_and(|(w, _)| w == h) {
+            a.crumb_hot = None;
+        }
+        a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone())
+    });
+    let show = GetFocus() == e || text_of(e) != disp.unwrap_or_default();
+    _ = ShowWindow(e, if show { SW_SHOWNA } else { SW_HIDE });
+    _ = InvalidateRect(Some(h), None, false);
+}
+
+pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
+    let target = match crumb_at(h, i, x, y) {
+        None => return,
+        Some(Some((_, _, Crumb::Go(p)))) => Some(p),
+        Some(Some((_, r, Crumb::More(list)))) => {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (k, (n, _)) in list.iter().enumerate() {
+                _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(n.replace('&', "&&")));
+            }
+            let mut p = POINT { x: r.left, y: r.bottom };
+            _ = ClientToScreen(h, &mut p);
+            let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, None, h, None).0;
+            _ = DestroyMenu(menu);
+            (pick > 0).then(|| list.get(pick as usize - 1).map(|(_, path)| path.clone())).flatten()
+        }
+        // The worker lists the folder. The menu opens on WM_KIDS. Focus moves first, so a key
+        // pressed meanwhile (which cancels the list) belongs to this pane, and the request
+        // records the pane as it is after that.
+        Some(Some((_, _, Crumb::Kids(dir, next)))) => {
+            kids_cancel();
+            focus_view(i);
+            let Some((ph, path, dpi)) = app(|a| Some((a.panes[i].as_ref()?.hwnd, a.s.paths[i].clone(), a.dpi))) else { return };
+            let id = want_kids(ph, &dir, hidden());
+            app(|a| a.kids = Some(KidsAsk { id, hwnd: ph, i, path, gen: gen(), dir, next }));
+            _ = InvalidateRect(Some(ph), Some(&addr_rect(ph, dpi)), false);
+            return;
+        }
+        Some(_) => {
+            _ = focus_ctl(i, ID_EDIT);
+            return;
+        }
+    };
+    if target.as_deref().is_some_and(|p| !p.is_empty() && !navigate(i, p)) {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    focus_view(i);
+}
+
+/// Posted when a subfolder list is ready. wParam is the request id. The names stay in `KIDS`.
+pub(crate) const WM_KIDS: u32 = WM_APP + 49;
+
+/// A `›` click waiting for its list. Checked again before the menu opens.
+pub(crate) struct KidsAsk {
+    pub(crate) id: usize,
+    pub(crate) hwnd: HWND,
+    pub(crate) i: usize,
+    pub(crate) path: String, // the pane's folder when the click happened
+    pub(crate) gen: usize,
+    pub(crate) dir: String, // folder being listed
+    pub(crate) next: Option<String>,
+}
+
+impl KidsAsk {
+    /// A `WM_KIDS` from an older request, or another pane, leaves this one alone.
+    pub(crate) fn owns(&self, id: usize, h: HWND) -> bool {
+        self.id == id && self.hwnd == h
+    }
+}
+
+pub(crate) type KidsList = std::result::Result<(Vec<String>, bool), ()>; // (names, cut short), Err = unreadable
+
+/// One worker, newest request only. `id` moves on every ask or cancel. A result is kept
+/// only for the current id, and handed out only to that id.
+/// One worker: a dead share's `read_dir` holds up the next `›`, which stays in the waiting mark.
+pub(crate) struct KidsJob {
+    pub(crate) id: usize,
+    pub(crate) hwnd: isize,
+    pub(crate) dir: String,
+    pub(crate) hidden: bool,
+    pub(crate) result: Option<(usize, KidsList)>,
+}
+
+impl KidsJob {
+    pub(crate) fn ask(&mut self, hwnd: isize, dir: &str, hidden: bool) -> usize {
+        (self.id, self.hwnd, self.dir, self.hidden, self.result) = (self.id + 1, hwnd, dir.to_string(), hidden, None);
+        self.id
+    }
+
+    pub(crate) fn publish(&mut self, id: usize, r: KidsList) -> bool {
+        if self.id != id {
+            return false;
+        }
+        self.result = Some((id, r));
+        true
+    }
+
+    pub(crate) fn take(&mut self, id: usize) -> Option<KidsList> {
+        self.result.take_if(|(k, _)| *k == id).map(|(_, r)| r)
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        (self.id, self.result) = (self.id + 1, None);
+        self.dir.clear();
+    }
+}
+
+pub(crate) static KIDS: Mutex<KidsJob> = Mutex::new(KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None });
+pub(crate) static KIDS_WAKE: Condvar = Condvar::new();
+pub(crate) const KIDS_MAX: usize = 500;
+
+pub(crate) fn kids_job() -> std::sync::MutexGuard<'static, KidsJob> {
+    KIDS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn want_kids(h: HWND, dir: &str, hidden: bool) -> usize {
+    let id = kids_job().ask(h.0 as isize, dir, hidden);
+    static WORKER: Once = Once::new();
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-kids".into()).spawn(kids_worker));
+    KIDS_WAKE.notify_one();
+    id
+}
+
+/// Lives until the process ends. The lock is never held across the directory read.
+pub(crate) fn kids_worker() {
+    use std::os::windows::fs::MetadataExt;
+    let mut seen = 0usize;
+    loop {
+        let (id, hwnd, dir, hidden) = {
+            let mut j = kids_job();
+            while j.id == seen || j.dir.is_empty() {
+                j = KIDS_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
+            }
+            (j.id, j.hwnd, j.dir.clone(), j.hidden)
+        };
+        seen = id;
+        let read = std::fs::read_dir(&dir).map_err(|_| ());
+        let r = read.map(|rd| {
+            let named = rd.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), e.metadata().ok()?.file_attributes())));
+            kid_names(named, hidden)
+        });
+        if kids_job().publish(id, r) {
+            unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_KIDS, WPARAM(id), LPARAM(0)) };
+        }
+    }
+}
+
+/// Subfolders from `(name, attributes)`. Hidden ones only when the shell shows them.
+/// Hidden and system together are never listed, the same as Explorer. Order is Explorer's
+/// (`2` before `10`). At most `KIDS_MAX`. Returns `(names, cut short)`.
+pub(crate) fn kid_names(all: impl Iterator<Item = (String, u32)>, show_hidden: bool) -> (Vec<String>, bool) {
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+    let (dir, hid, hs) = (FILE_ATTRIBUTE_DIRECTORY.0, FILE_ATTRIBUTE_HIDDEN.0, FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0);
+    let mut v: Vec<HSTRING> = all
+        .filter(|&(_, a)| a & dir != 0 && a & hs != hs && (show_hidden || a & hid == 0))
+        .map(|(n, _)| HSTRING::from(n))
+        .collect();
+    v.sort_by(|a, b| unsafe { StrCmpLogicalW(a, b) }.cmp(&0));
+    let cut = v.len() > KIDS_MAX;
+    (v.iter().take(KIDS_MAX).map(|n| n.to_string_lossy()).collect(), cut)
+}
+
+/// Where the `›` of `dir` sits in a fresh layout. None once that chevron has folded away.
+pub(crate) fn kids_anchor(items: &[(RECT, String, Crumb)], dir: &str) -> Option<RECT> {
+    items.iter().find(|(_, _, c)| matches!(c, Crumb::Kids(d, _) if d == dir)).map(|(r, ..)| *r)
+}
+
+/// A click, a key, a resize, or a DPI change drops a waiting `›` list.
+pub(crate) unsafe fn kids_cancel() {
+    let Some((h, dpi)) = app(|a| a.kids.take().map(|k| (k.hwnd, a.dpi))) else { return };
+    kids_job().cancel();
+    _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
+}
+
+/// `WM_KIDS`: the list is in. Shown only while it is still this request, the pane still shows
+/// the same folder, nothing is being resized, Grids is in front, and the `›` is still laid out
+/// where it is now.
+pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
+    if !app(|a| a.kids.as_ref().is_some_and(|k| k.owns(id, h))) {
+        return;
+    }
+    let Some(list) = kids_job().take(id) else { return };
+    let Some(k) = app(|a| a.kids.take()) else { return };
+    let (dpi, font, main) = app(|a| (a.dpi, a.font, a.main));
+    let addr = addr_rect(h, dpi);
+    _ = InvalidateRect(Some(h), Some(&addr), false);
+    let same = app(|a| a.panes[k.i].as_ref().is_some_and(|p| p.hwnd == h) && a.s.paths[k.i] == k.path && !a.sizing);
+    if !same || gen() != k.gen || GetForegroundWindow() != main || GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| IsWindowVisible(e).as_bool()) {
+        return;
+    }
+    let dc = GetDC(Some(h));
+    let items = crumb_layout(dc, font, k.i, crumb_field(addr, dpi));
+    ReleaseDC(Some(h), dc);
+    let Some(r) = kids_anchor(&items, &k.dir) else { return };
+    let Ok(menu) = CreatePopupMenu() else { return };
+    let gray = |t: &str| _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(t));
+    let names = match &list {
+        Ok((names, cut)) => {
+            for (n, name) in names.iter().enumerate() {
+                _ = AppendMenuW(menu, MF_STRING, n + 1, &HSTRING::from(name.replace('&', "&&")));
+                if k.next.as_ref().is_some_and(|x| x.eq_ignore_ascii_case(name)) {
+                    _ = SetMenuDefaultItem(menu, n as u32 + 1, 0); // the folder this pane is in: bold
+                }
+            }
+            if *cut {
+                gray("…");
+            } else if names.is_empty() {
+                gray(tr("No subfolders", "하위 폴더 없음", "サブフォルダーなし"));
+            }
+            names.as_slice()
+        }
+        Err(()) => {
+            gray(tr("Can't open this folder", "이 폴더를 열 수 없음", "このフォルダーを開けません"));
+            &[]
+        }
+    };
+    let mut p = POINT { x: r.left, y: r.bottom };
+    _ = ClientToScreen(h, &mut p);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if let Some(name) = names.get((pick as usize).wrapping_sub(1)) {
+        if !navigate(k.i, &format!("{}\\{name}", k.dir.trim_end_matches('\\'))) {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+    }
+    focus_view(k.i);
+}
+
+pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
+    let (changed, became) = app(|a| {
+        let next = at.map(|k| (h, k));
+        let old = a.crumb_hot;
+        if old == next {
+            return (false, false);
+        }
+        a.crumb_hot = next;
+        (true, next.is_some() && old.is_none_or(|(w, _)| w != h))
+    });
+    if !changed {
+        return;
+    }
+    let dpi = app(|a| a.dpi);
+    _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
+    if became {
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
+    }
+}
+
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, accent) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
-        (active, i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
+        let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
+        let tint = i.and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
+        let folder = i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon);
+        let waiting = a.kids.as_ref().filter(|k| k.hwnd == h).map(|k| k.dir.clone());
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting)
     });
+    let ilist = match app(|a| a.ilist.clone()) {
+        None if folder >= 0 => {
+            let l = SHGetImageList::<IImageList>(SHIL_SMALL as i32).ok();
+            app(|a| a.ilist = l.clone());
+            l
+        }
+        l => l,
+    };
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
     let focus = GetFocus();
     let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
     let (addr_on, filt_on) = (focused(ID_EDIT), focused(ID_FILTER));
+    let crumbs_on = GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| !IsWindowVisible(e).as_bool());
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let pg = pane_geo(rc.right, rc.bottom, dpi);
@@ -377,13 +805,62 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
             frame(dc, rc, 1, pal().line);
             fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, pal().line);
         }
+        // colour label: a strip above the buttons, and the number on a chip of that colour
+        if let Some(t) = tint {
+            fill(dc, tint_band(rc.right, dpi, active && edge), t);
+        }
         if let Some(i) = i.filter(|_| pg.num.right > pg.num.left) {
-            text(dc, pg.num, &(i + 1).to_string(), small_font, if active { ink } else { pal().sub }, DT_CENTER);
+            let num_ink = match tint {
+                Some(t) => {
+                    fill(dc, pg.num, t);
+                    on_color(t)
+                }
+                None if active => ink,
+                None => pal().sub,
+            };
+            text(dc, pg.num, &(i + 1).to_string(), small_font, num_ink, DT_CENTER);
         }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
             fill(dc, p, pal().pill);
             if on {
                 frame(dc, p, 1, if active { ink } else { accent });
+            }
+        }
+        if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
+            if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
+                _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
+                _ = DestroyIcon(icon);
+            }
+        }
+        if let Some(i) = i.filter(|_| crumbs_on) {
+            for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
+                let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
+                if wait {
+                    fill(dc, r, blend(pal().pill, accent, 0.25));
+                } else if hot == Some(k) {
+                    fill(dc, r, blend(pal().pill, pal().text, 0.08));
+                }
+                if matches!(c, Crumb::Kids(..)) {
+                    if wait {
+                        // `…` is a little wider than the `›` slot, so it reaches into the neighbours' padding.
+                        let mut w: Vec<u16> = "…".encode_utf16().collect();
+                        let mut rr = r;
+                        let old = SelectObject(dc, font.into());
+                        SetBkMode(dc, TRANSPARENT);
+                        SetTextColor(dc, cref(pal().sub));
+                        DrawTextW(dc, &mut w, &mut rr, DT_CENTER | DT_NOCLIP | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                        SelectObject(dc, old);
+                    } else {
+                        text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    }
+                    continue;
+                }
+                if matches!(c, Crumb::More(_)) {
+                    text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    continue;
+                }
+                let ink = if c == Crumb::Here { pal().text } else { pal().sub };
+                text(dc, RECT { left: r.left + s(4), right: r.right - s(4), ..r }, &label, font, ink, DT_LEFT);
             }
         }
         if filtered {
@@ -397,5 +874,50 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
             text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
         }
     });
+}
+
+#[cfg(test)]
+mod kids_tests {
+    use super::*;
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+
+    #[test]
+    fn kid_name_rules() {
+        let (d, h, sy) = (FILE_ATTRIBUTE_DIRECTORY.0, FILE_ATTRIBUTE_HIDDEN.0, FILE_ATTRIBUTE_SYSTEM.0);
+        let all = || [("10", d), ("2", d), ("file.txt", FILE_ATTRIBUTE_ARCHIVE.0), ("Secret", d | h), ("Config.Msi", d | h | sy), ("a", d | sy)];
+        let names = |show| kid_names(all().into_iter().map(|(n, a)| (n.to_string(), a)), show);
+        assert_eq!(names(false), (vec!["2".to_string(), "10".into(), "a".into()], false));
+        assert_eq!(names(true), (vec!["2".to_string(), "10".into(), "a".into(), "Secret".into()], false));
+        let (v, cut) = kid_names((0..501).map(|k| (format!("f{k}"), d)), false);
+        assert_eq!((v.len(), cut, v[0].as_str(), v[499].as_str()), (500, true, "f0", "f499"));
+        assert!(!kid_names((0..500).map(|k| (format!("f{k}"), d)), false).1);
+    }
+
+    #[test]
+    fn kids_late_results_dropped() {
+        let mut j = KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None };
+        let a = j.ask(1, r"C:\Users", false);
+        assert!(j.publish(a, Ok((vec!["A".into()], false))));
+        let b = j.ask(1, r"C:\", false);
+        assert!(!j.publish(a, Ok((vec!["A".into()], false))));
+        assert!(j.take(a).is_none() && j.take(b).is_none());
+        assert!(j.publish(b, Err(())));
+        assert!(j.take(b).is_some() && j.take(b).is_none());
+        let w = HWND(1 as _);
+        let ask = KidsAsk { id: b, hwnd: w, i: 0, path: r"C:\Users\Public".into(), gen: 0, dir: r"C:\".into(), next: None };
+        assert!(!ask.owns(a, w) && ask.owns(b, w) && !ask.owns(b, HWND(2 as _)));
+        j.cancel();
+        assert!(!j.publish(b, Err(())) && j.dir.is_empty());
+    }
+
+    #[test]
+    fn kids_anchor_follows_layout() {
+        let r = |l| RECT { left: l, top: 0, right: l + 10, bottom: 20 };
+        let kids = |d: &str| Crumb::Kids(d.into(), None);
+        let wide = vec![(r(0), "C:".into(), Crumb::Go(r"C:\".into())), (r(10), "›".into(), kids(r"C:\")), (r(20), "Users".into(), Crumb::Here)];
+        assert_eq!(kids_anchor(&wide, r"C:\"), Some(r(10)));
+        let folded = vec![(r(0), "…".into(), Crumb::More(Vec::new())), (r(30), "›".into(), kids(r"C:\Users")), (r(40), "Users".into(), Crumb::Here)];
+        assert_eq!(kids_anchor(&folded, r"C:\"), None);
+    }
 }
 
