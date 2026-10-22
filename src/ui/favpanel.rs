@@ -514,6 +514,29 @@ fn unpin_path(path: &str) {
     }
 }
 
+fn side_inside(h: HWND, x: i32, y: i32) -> bool {
+    let mut rc = RECT::default();
+    unsafe { _ = GetClientRect(h, &mut rc) };
+    x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
+}
+
+fn nudge_side(down: bool) {
+    let list = rows();
+    let Some(row) = app(|a| a.side_sel).and_then(|i| list.get(i).cloned()).filter(|r| r.in_tree()) else { return };
+    let moved = app(|a| {
+        let id = nudge_node(&mut a.s.tree, &row.id, down);
+        if id.is_some() {
+            a.s.sync_favs();
+        }
+        id
+    });
+    if let Some(id) = moved {
+        let i = tree_pos(&rows(), &id);
+        app(|a| a.side_sel = i);
+        changed();
+    }
+}
+
 fn finish_drop() {
     let list = rows();
     let (drag, onto) = app(|a| {
@@ -710,17 +733,47 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_LBUTTONUP => {
-                let y = xy(lp).1;
+                let (x, y) = xy(lp);
                 let dragged = app(|a| a.side_drag.is_some());
                 if dragged {
-                    _ = track_drop(y);
-                    finish_drop();
+                    // Outside the panel the drop is cancelled. Inside, the slot is this release point.
+                    if !side_inside(h, x, y) {
+                        app(|a| {
+                            a.side_drag = None;
+                            a.side_drop = None;
+                            a.side_press = None;
+                        });
+                        repaint_side();
+                    } else {
+                        _ = track_drop(y);
+                        finish_drop();
+                    }
                 } else {
                     app(|a| {
                         a.side_press = None;
                     });
                 }
                 _ = ReleaseCapture();
+            }
+            WM_CAPTURECHANGED => {
+                let paint = app(|a| {
+                    let paint = a.side_drag.is_some();
+                    a.side_drag = None;
+                    a.side_drop = None;
+                    a.side_press = None;
+                    paint
+                });
+                if paint {
+                    _ = InvalidateRect(Some(h), None, false);
+                }
+            }
+            WM_SYSKEYDOWN => {
+                let vk = wp.0 as u16;
+                let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
+                if fav_step(vk, down(VK_CONTROL), down(VK_MENU), down(VK_SHIFT)).is_none() || app(|a| a.side_drag.is_some() || !a.side_edit_at.is_empty()) {
+                    return DefWindowProcW(h, msg, wp, lp);
+                }
+                nudge_side(vk == VK_DOWN.0);
             }
             WM_LBUTTONDBLCLK => {
                 let y = xy(lp).1;

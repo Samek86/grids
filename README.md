@@ -72,7 +72,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Ctrl+Shift+E | Show or hide the left panel (folder tree and favourites). The width comes back as it was |
 | Ctrl+Shift+O | Open the folders of open Explorer windows and tabs in panes, from the active pane on (also View menu; panes already showing one of them stay put) |
 | Ctrl+S | Save the current session |
-| Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
+| Ctrl+B | Favourites (↑/↓, Enter to open, Del to remove). With the panel or this list focused, Alt+↑/↓ moves the selected row. Dragging in the panel reorders it; letting go outside cancels |
 | Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
 | Ctrl+Shift+C | Copy the full path of the selected items (or of the current folder) |
 | Ctrl+Alt+N | New text file |

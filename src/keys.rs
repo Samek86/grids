@@ -94,7 +94,7 @@ const CMDS: &[Cmd] = &[
     cmd("file.new", FILE, s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), 0x4E, true, false, true, false, false),
     cmd("file.dir", FILE, s("New folder", "새 폴더", "新しいフォルダー"), 0x4E, true, true, false, false, false),
     cmd("sess.save", SESS, s("Save session", "세션 저장", "セッションを保存"), 0x53, true, false, false, false, false),
-    cmd("fav.list", FAV, s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), 0x42, true, false, false, false, false),
+    cmd("fav.list", FAV, s("Favourites", "즐겨찾기", "お気に入り"), 0x42, true, false, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false, false),
     cmd("app.help", HELP, s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), 0x70, false, false, false, false, false),
     cmd("app.keys", HELP, s("Shortcut list", "단축키 목록", "ショートカット一覧"), 0xBF, true, false, false, false, false),
