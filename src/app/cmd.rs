@@ -128,6 +128,18 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return true;
     }
+    // The rename box on a session card. Enter and Esc are its own; the rest is typing.
+    if !m.hwnd.0.is_null() && m.hwnd == app(|a| a.load_edit) && app(|a| a.load_editing.is_some()) {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN => {
+                app(|x| x.held = Some(VK_RETURN.0));
+                commit_load_rename();
+            }
+            VK_ESCAPE => _ = end_load_rename(),
+            _ => return false,
+        }
+        return true;
+    }
     if m.hwnd == app(|a| a.tab_edit) && app(|a| a.tab_renaming.is_some()) {
         match VIRTUAL_KEY(vk) {
             VK_RETURN => end_rename(true),

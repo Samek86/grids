@@ -64,7 +64,9 @@ pub(crate) struct Desk {
     pub(crate) small_font: HFONT,
     pub(crate) load: HWND, // load popup while open
     pub(crate) load_closed: Option<Instant>,
-    pub(crate) load_hot: Option<usize>, // card index, or LOAD_SAVE_AS / LOAD_FOLDER
+    pub(crate) load_hot: Option<usize>, // card index, or LOAD_SAVE_AS / LOAD_FOLDER / LOAD_DEL + card
+    pub(crate) load_edit: HWND,         // rename box on a card; made on first use, hidden when done
+    pub(crate) load_editing: Option<usize>, // card being renamed
     pub(crate) fav_popup: HWND,
     pub(crate) fav_closed: Option<Instant>,
     pub(crate) fav_hot: Option<(usize, bool)>, // (row, on its ✕)
@@ -202,6 +204,8 @@ pub(crate) fn blank_desk() -> Desk {
         load: HWND::default(),
         load_closed: None,
         load_hot: None,
+        load_edit: HWND::default(),
+        load_editing: None,
         fav_popup: HWND::default(),
         fav_closed: None,
         fav_hot: None,

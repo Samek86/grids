@@ -40,7 +40,7 @@ pub(crate) unsafe fn apply_font() {
     _ = GetTextMetricsW(dc, &mut tm);
     SelectObject(dc, old);
     ReleaseDC(None, dc);
-    let (old, old_icon, old_bold, panes, edit) = app(|a| {
+    let (old, old_icon, old_bold, panes, edit, load_edit) = app(|a| {
         a.fh = tm.tmHeight;
         let old_small = std::mem::replace(&mut a.small_font, small);
         if !old_small.is_invalid() {
@@ -55,10 +55,12 @@ pub(crate) unsafe fn apply_font() {
         for set in &a.park {
             panes.extend(set.iter().flatten().map(|p| p.hwnd));
         }
-        (old, old_icon, old_bold, panes, a.tab_edit)
+        (old, old_icon, old_bold, panes, a.tab_edit, a.load_edit)
     });
-    if !edit.0.is_null() {
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+    for e in [edit, load_edit] {
+        if !e.0.is_null() {
+            SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+        }
     }
     for p in panes {
         for id in [ID_EDIT, ID_FILTER] {
