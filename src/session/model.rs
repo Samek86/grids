@@ -796,6 +796,13 @@ pub(crate) fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
 }
 
+/// `a.PDF` becomes `*.PDF` for "same type as the selected file". Folders and names without an extension do not.
+pub(crate) fn same_type(name: &str, is_dir: bool) -> Option<String> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    let bad = is_dir || stem.is_empty() || ext.is_empty() || ext.contains([';', '*', '?']);
+    (!bad).then(|| format!("*.{ext}"))
+}
+
 /// A folder you can browse. ZIP, CAB and the like are FOLDER|STREAM, so a filter treats them as files.
 pub(crate) fn real_folder(attr: u32) -> bool {
     attr & SFGAO_FOLDER.0 != 0 && attr & SFGAO_STREAM.0 == 0
@@ -987,7 +994,7 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, Session};
+    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, same_type, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::MAXP;
     use crate::THIS_PC;
@@ -1059,6 +1066,16 @@ mod crumb_tests {
         base.anchor();
         assert!(layout_differs(&s, &base));
         assert!(!s.snapshot().contains("win="));
+    }
+
+    #[test]
+    fn same_type_uses_the_extension() {
+        assert_eq!(same_type("a.PDF", false).as_deref(), Some("*.PDF"));
+        assert_eq!(same_type("a.b.c", false).as_deref(), Some("*.c"));
+        assert_eq!(same_type("a.PDF", true), None);
+        assert_eq!(same_type("noext", false), None);
+        assert_eq!(same_type(".gitignore", false), None);
+        assert_eq!(same_type("a.x;y", false), None);
     }
 
     #[test]
