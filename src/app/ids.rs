@@ -49,6 +49,7 @@ pub(crate) const TIMER_NEWF: usize = 6; // on a pane: select and rename a folder
 pub(crate) const TIMER_NEWFILE: usize = 7; // on a pane: select and rename a file just created
 pub(crate) const TIMER_WINS: usize = 8; // after the first window is shown, open the other saved windows
 pub(crate) const TIMER_ICON: usize = 9; // favourites: pre-warm shell icon indexes after the first paint
+pub(crate) const TIMER_PINS: usize = 10; // favourites: re-read Explorer pins after a pin or unpin
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;

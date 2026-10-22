@@ -23,6 +23,12 @@ fn yes() -> bool {
 fn half_split() -> f64 {
     0.5
 }
+fn pins_open() -> bool {
+    true
+}
+fn pins_are_open(v: &bool) -> bool {
+    *v
+}
 fn is_half_split(v: &f64) -> bool {
     (v - 0.5).abs() < 1e-6
 }
@@ -143,6 +149,9 @@ struct SettingsFile {
     /// Folder tree's share of the left panel. Favourites use the rest. Missing means even.
     #[serde(default = "half_split", skip_serializing_if = "is_half_split")]
     side_split: f64,
+    /// Explorer pins group expanded. The pinned folders themselves are not stored.
+    #[serde(default = "pins_open", skip_serializing_if = "pins_are_open")]
+    explorer_pins_open: bool,
     #[serde(default = "yes")]
     edge: bool,
     #[serde(default = "yes")]
@@ -213,6 +222,7 @@ impl SettingsFile {
             tree: true,
             panel: String::new(),
             side_split: 0.5,
+            explorer_pins_open: true,
             edge: true,
             confirm: true,
             del: 0,
@@ -281,6 +291,7 @@ impl SettingsFile {
             tree: s.tree_on,
             panel: String::new(),
             side_split: crate::sane_split(s.side_split),
+            explorer_pins_open: s.pins_open,
             edge: s.edge,
             confirm: s.confirm,
             del: s.del,
@@ -386,6 +397,7 @@ impl SettingsFile {
         s.ext = self.ext;
         s.tree_on = self.tree;
         s.side_split = crate::sane_split(self.side_split);
+        s.pins_open = self.explorer_pins_open;
         s.edge = self.edge;
         s.confirm = self.confirm;
         s.del = if self.del == 1 { 1 } else { 0 };
@@ -728,6 +740,27 @@ mod tests {
         assert_eq!(back.favs, vec![r"C:\a\note.txt".to_string() + "\tnote", r"D:\Photos".into()]);
         assert!(back.is_fav(r"C:\a\note.txt"));
         assert!(back.tree[0].children[0].file);
+    }
+
+    #[test]
+    fn explorer_pins_open_round_trips_and_stays_out_of_the_tree() {
+        let fresh = adopt("{}").unwrap();
+        assert!(fresh.pins_open);
+        let text = sync_text(&fresh);
+        assert!(serde_json::from_str::<Value>(&text).unwrap().get("explorer_pins_open").is_none());
+
+        let mut closed = fresh.clone();
+        closed.pins_open = false;
+        closed.tree.push(crate::FavNode::leaf(r"D:\Photos", "", false));
+        closed.sync_favs();
+        let saved: Value = serde_json::from_str(&sync_text(&closed)).unwrap();
+        assert_eq!(saved["explorer_pins_open"], false);
+        let tree = saved["favorites_tree"].as_array().unwrap();
+        assert!(tree.iter().all(|n| n.get("name").and_then(|v| v.as_str()) != Some("Explorer pins")));
+        let back = adopt(&saved.to_string()).unwrap();
+        assert!(!back.pins_open);
+        assert_eq!(back.tree.len(), 1);
+        assert_eq!(back.tree[0].path, r"D:\Photos");
     }
 
     #[test]

@@ -2,6 +2,8 @@
 // The flat `favs` list is the leaves, depth-first, so the star, the settings
 // page, and an old `fav=` line keep working. Groups live only in the tree.
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 
 use super::{fav_path, short_name, Session};
@@ -38,6 +40,176 @@ pub(crate) struct FavRow {
     pub(crate) open: bool,
     pub(crate) name: String,
     pub(crate) path: String,
+    /// Explorer pins header or one of its folders. Those rows are not nodes of `favorites_tree`.
+    pub(crate) pins: bool,
+}
+
+/// One child of Quick Access, before the pinned-folder filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PinCand {
+    pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) pinned: bool,
+    pub(crate) folder: bool,
+}
+
+/// A filesystem folder that is pinned in Explorer. Order is Quick Access order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Pinned {
+    pub(crate) path: String,
+    pub(crate) name: String,
+}
+
+/// What an internal favourites drag should do when it lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SideAct {
+    /// Move a node inside the favourites tree.
+    Move,
+    /// Pin this folder in Explorer. The favourites node stays where it is.
+    Pin,
+    /// Copy an Explorer pin into the favourites tree. The pin stays pinned.
+    Copy,
+    /// No indicator and no change. Pin rows do not reorder, and files do not pin.
+    None,
+}
+
+/// Path kept for navigation and for case-insensitive identity. Drive roots keep their slash.
+pub(crate) fn tidy_path(path: &str) -> String {
+    let t = path.trim();
+    let stripped = t.trim_end_matches(['\\', '/']);
+    if stripped.is_empty() {
+        return String::new();
+    }
+    if stripped.ends_with(':') {
+        format!("{stripped}\\")
+    } else {
+        stripped.to_string()
+    }
+}
+
+fn pin_key(path: &str) -> String {
+    tidy_path(path).to_ascii_lowercase()
+}
+
+/// Pinned filesystem folders, in enumeration order. Files, unpinned items, empty paths, and
+/// a later copy of the same path are left out.
+pub(crate) fn pinned_folders(items: &[PinCand]) -> Vec<Pinned> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for it in items {
+        if !it.pinned || !it.folder {
+            continue;
+        }
+        let path = tidy_path(&it.path);
+        let key = pin_key(&path);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        let name = it.name.trim();
+        let name = if name.is_empty() { short_name(&path) } else { name.to_string() };
+        out.push(Pinned { path, name });
+    }
+    out
+}
+
+/// A drop onto the pins group is accepted only when every item is a filesystem folder.
+/// Any file, or a folder with no filesystem path, refuses the whole drop.
+pub(crate) fn pin_drop_paths(items: &[(String, bool)]) -> Option<Vec<String>> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (path, folder) in items {
+        let path = tidy_path(path);
+        if !folder || path.is_empty() {
+            return None;
+        }
+        if !out.iter().any(|p: &String| p.eq_ignore_ascii_case(&path)) {
+            out.push(path);
+        }
+    }
+    Some(out)
+}
+
+/// `src_path_empty` is a group or a leaf that has nothing to pin.
+pub(crate) fn side_act(src_pins: bool, src_group: bool, src_file: bool, src_path_empty: bool, dst_pins: bool) -> SideAct {
+    if dst_pins {
+        if !src_pins && !src_group && !src_file && !src_path_empty {
+            SideAct::Pin
+        } else {
+            SideAct::None
+        }
+    } else if src_pins && !src_group && !src_path_empty {
+        SideAct::Copy
+    } else if src_pins {
+        SideAct::None
+    } else {
+        SideAct::Move
+    }
+}
+
+/// True when a Quick Access re-read is allowed. `last` is when the previous read finished.
+pub(crate) fn pins_due(last: Option<Instant>, now: Instant, wait: Duration) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.saturating_duration_since(t) >= wait,
+    }
+}
+
+/// The pins group, then its folders when `open`, then the favourites tree. Favourite ids are unchanged.
+pub(crate) fn compose_side(tree: &[FavNode], open: bool, pins: &[Pinned], label: &str) -> Vec<FavRow> {
+    let mut out = Vec::new();
+    out.push(FavRow {
+        id: Vec::new(),
+        depth: 0,
+        group: true,
+        file: false,
+        open,
+        name: label.to_string(),
+        path: String::new(),
+        pins: true,
+    });
+    if open {
+        for (i, p) in pins.iter().enumerate() {
+            out.push(FavRow {
+                id: vec![i],
+                depth: 1,
+                group: false,
+                file: false,
+                open: false,
+                name: p.name.clone(),
+                path: p.path.clone(),
+                pins: true,
+            });
+        }
+    }
+    out.extend(visible_rows(tree));
+    out
+}
+
+/// Insert a copy of a folder at the drop position. Does nothing if that path is already a favourite.
+pub(crate) fn copy_leaf(tree: &mut Vec<FavNode>, path: &str, name: &str, onto: &[usize], zone: u8) -> Option<Vec<usize>> {
+    let path = tidy_path(path);
+    if path.is_empty() || onto.is_empty() || contains_path(tree, &path) {
+        return None;
+    }
+    let into = zone == 1 && is_group_id(tree, onto);
+    if zone == 1 && !into {
+        return None;
+    }
+    let parent: Vec<usize> = if into { onto.to_vec() } else { onto[..onto.len() - 1].to_vec() };
+    let index = if into {
+        child_len(tree, onto)
+    } else if zone == 0 {
+        onto[onto.len() - 1]
+    } else {
+        onto[onto.len() - 1] + 1
+    };
+    insert_child(tree, &parent, index, FavNode::leaf(&path, name, false))?;
+    let index = index.min(child_len(tree, &parent).saturating_sub(1));
+    let mut id = parent;
+    id.push(index);
+    Some(id)
 }
 
 pub(crate) fn node_label(n: &FavNode) -> String {
@@ -167,6 +339,7 @@ pub(crate) fn visible_rows(tree: &[FavNode]) -> Vec<FavRow> {
                 open: n.open,
                 name: node_label(n),
                 path: n.path.clone(),
+                pins: false,
             });
             if n.is_group() && n.open {
                 walk(&n.children, prefix, depth.saturating_add(1), out);
@@ -557,5 +730,85 @@ mod tests {
         assert_eq!(closed[0].name, "Desk");
         assert!(closed[0].open, "the group that received the drop is expanded");
         assert!(closed[0].children.iter().any(|n| n.name == "Jobs"));
+    }
+
+    fn cand(path: &str, name: &str, pinned: bool, folder: bool) -> PinCand {
+        PinCand { path: path.into(), name: name.into(), pinned, folder }
+    }
+
+    #[test]
+    fn pinned_folders_keep_shell_order_and_drop_files() {
+        let pins = pinned_folders(&[
+            cand(r"D:\z", "Zed", true, true),
+            cand(r"C:\file.txt", "note", true, false),
+            cand(r"C:\a", "A", false, true),
+            cand("", "This PC", true, true),
+            cand(r"  ", "blank", true, true),
+            cand(r"d:\z\", "again", true, true),
+            cand(r"E:\c", "", true, true),
+            cand(r"C:\", "Drive", true, false),
+        ]);
+        assert_eq!(pins.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), [r"D:\z", r"E:\c"]);
+        assert_eq!(pins[0].name, "Zed");
+        assert_eq!(pins[1].name, "c", "an empty shell name falls back to the folder name");
+        assert_eq!(tidy_path(r"C:\"), r"C:\");
+        assert_eq!(tidy_path("C:"), r"C:\");
+        assert!(pin_drop_paths(&[(r"C:\a".into(), true), (r"c:\a\".into(), true)]).unwrap() == vec![r"C:\a".to_string()]);
+        assert!(pin_drop_paths(&[(r"C:\a".into(), true), (r"C:\b.txt".into(), false)]).is_none());
+        assert!(pin_drop_paths(&[(r"C:\b.txt".into(), false)]).is_none());
+        assert!(pin_drop_paths(&[(String::new(), true)]).is_none());
+        assert!(pin_drop_paths(&[]).is_none());
+    }
+
+    #[test]
+    fn explorer_pins_lead_the_list_and_are_not_tree_nodes() {
+        let tree = jobs_and_desk();
+        let pins = pinned_folders(&[cand(r"D:\z", "Zed", true, true), cand(r"E:\c", "Cee", true, true)]);
+        let rows = compose_side(&tree, true, &pins, "Explorer pins");
+        assert!(rows[0].pins && rows[0].group && rows[0].open && rows[0].id.is_empty());
+        assert_eq!(rows[0].name, "Explorer pins");
+        assert_eq!((rows[1].path.as_str(), rows[1].depth, rows[1].file, rows[1].pins), (r"D:\z", 1, false, true));
+        assert_eq!(rows[2].path, r"E:\c");
+        let jobs = rows.iter().find(|r| r.name == "Jobs").unwrap();
+        assert!(!jobs.pins && jobs.id == vec![0] && jobs.depth == 0);
+        let closed = compose_side(&tree, false, &pins, "Explorer pins");
+        assert!(closed.iter().filter(|r| r.pins).all(|r| r.group));
+        assert_eq!(closed[1].name, "Jobs");
+        assert_eq!(labels(&tree), "Jobs/a/b/Desk/c/d");
+    }
+
+    #[test]
+    fn pin_rows_do_not_reorder_and_a_folder_drop_pins() {
+        assert_eq!(side_act(true, false, false, false, true), SideAct::None, "a pin cannot be reordered inside the group");
+        assert_eq!(side_act(true, true, false, true, false), SideAct::None, "the pins header is not dragged into favourites");
+        assert_eq!(side_act(false, false, true, false, true), SideAct::None, "a file dropped on the group is refused");
+        assert_eq!(side_act(false, true, false, true, true), SideAct::None, "a group is not a folder to pin");
+        assert_eq!(side_act(false, false, false, false, true), SideAct::Pin);
+        assert_eq!(side_act(true, false, false, false, false), SideAct::Copy);
+        assert_eq!(side_act(false, false, false, false, false), SideAct::Move);
+        assert_eq!(side_act(false, false, true, false, false), SideAct::Move);
+
+        let now = Instant::now();
+        let wait = Duration::from_secs(2);
+        assert!(pins_due(None, now, wait));
+        assert!(!pins_due(Some(now), now, wait));
+        assert!(!pins_due(Some(now.checked_sub(Duration::from_millis(1999)).unwrap()), now, wait));
+        assert!(pins_due(Some(now.checked_sub(Duration::from_secs(2)).unwrap()), now, wait));
+    }
+
+    #[test]
+    fn copying_a_pin_into_favourites_leaves_the_original() {
+        let mut tree = jobs_and_desk();
+        let before = tree.clone();
+        let id = copy_leaf(&mut tree, r"E:\pin\", "Pin", &[1], 1).unwrap();
+        assert_eq!(id, vec![1, 2]);
+        assert_eq!(tree[1].children.last().map(|n| n.path.as_str()), Some(r"E:\pin"));
+        assert_eq!(tree[0], before[0], "the other group is untouched");
+        assert!(copy_leaf(&mut tree, r"e:\pin", "Pin", &[0], 1).is_none(), "the same folder is not added twice");
+        assert!(copy_leaf(&mut tree, r"E:\other", "O", &[1, 0], 1).is_none(), "a leaf has no inside");
+        let id = copy_leaf(&mut tree, r"E:\other", "", &[0, 0], 0).unwrap();
+        assert_eq!(id, vec![0, 0]);
+        assert_eq!(tree[0].children[0].path, r"E:\other");
+        assert_eq!(tree[0].children[1].name, "a");
     }
 }
