@@ -44,7 +44,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 
 ## Keyboard shortcuts
 
-These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone.
+These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone. F6 still leaves those fields.
 
 | Keys | Action |
 | --- | --- |
@@ -60,6 +60,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
 | Ctrl+L, Alt+D, F4 | Address bar: also `..` or a subfolder name, a file to open, or a command such as `cmd`, `wt`, `powershell` (runs in this pane's folder) |
 | Ctrl+F | Name filter |
+| F6 / Shift+F6 | Next / previous focus: file list, address, filter, folder tree, favourites |
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
 | Ctrl+S | Save the current session |

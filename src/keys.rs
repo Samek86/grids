@@ -76,6 +76,8 @@ const CMDS: &[Cmd] = &[
     cmd("nav.addr2", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x44, false, false, true, false),
     cmd("nav.addr3", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x73, false, false, false, false),
     cmd("view.filter", VIEW, s("Filter", "필터", "フィルター"), 0x46, true, false, false, false),
+    cmd("focus.next", VIEW, s("Next focus", "다음 포커스", "次のフォーカス"), 0x75, false, false, false, false),
+    cmd("focus.prev", VIEW, s("Previous focus", "이전 포커스", "前のフォーカス"), 0x75, false, true, false, false),
     cmd("view.hidden", VIEW, s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), 0x48, true, false, false, false),
     cmd("view.zoom", VIEW, s("Maximise / restore the pane", "패널 크게 보기 / 복원", "ペインを最大化 / 元に戻す"), 0x4D, true, true, false, false),
     cmd("file.path", FILE, s("Copy full path", "전체 경로 복사", "フルパスをコピー"), 0x43, true, true, false, false),
@@ -555,6 +557,8 @@ mod tests {
             ("app.settings", "Ctrl+,"),
             ("app.help", "F1"),
             ("view.zoom", "Ctrl+Shift+M"),
+            ("focus.next", "F6"),
+            ("focus.prev", "Shift+F6"),
             ("win.new", "Ctrl+N"),
         ];
         for (id, text) in want {
