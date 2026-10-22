@@ -1,5 +1,6 @@
 mod draw;
 mod favpanel;
+mod keys;
 mod ficons;
 mod font;
 mod layout;
@@ -9,6 +10,7 @@ mod theme;
 pub(crate) use favpanel::*;
 pub(crate) use ficons::*;
 pub(crate) use draw::*;
+pub(crate) use keys::*;
 pub(crate) use font::*;
 pub(crate) use layout::*;
 pub(crate) use tabs::*;

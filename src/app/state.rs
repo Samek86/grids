@@ -61,6 +61,9 @@ pub(crate) struct Desk {
     pub(crate) fav_closed: Option<Instant>,
     pub(crate) fav_hot: Option<(usize, bool)>, // (row, on its ✕)
     pub(crate) fav_prev: HWND,                 // focus before the popup opened; Esc goes back there
+    pub(crate) keys_popup: HWND,               // shortcut window; null while closed
+    pub(crate) keys_prev: HWND,                // focus to restore when that window is closed on purpose
+    pub(crate) keys_scroll: i32,
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) hover: HWND, // owner-drawn button under the mouse
     pub(crate) tip: HWND,
@@ -163,6 +166,9 @@ pub(crate) fn blank_desk() -> Desk {
         fav_closed: None,
         fav_hot: None,
         fav_prev: HWND::default(),
+        keys_popup: HWND::default(),
+        keys_prev: HWND::default(),
+        keys_scroll: 0,
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),
@@ -297,7 +303,7 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if h.0.is_null() || d.main.0.is_null() {
         return false;
     }
-    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || d.bars.contains(&h) {
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || d.bars.contains(&h) {
         return true;
     }
     unsafe { IsChild(d.main, h).as_bool() }

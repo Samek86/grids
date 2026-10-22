@@ -88,6 +88,7 @@ const CMDS: &[Cmd] = &[
     cmd("fav.list", FAV, s("Favourites list", "즐겨찾기 목록", "お気に入り一覧"), 0x42, true, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false),
     cmd("app.help", HELP, s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), 0x70, false, false, false, false),
+    cmd("app.keys", HELP, s("Shortcut list", "단축키 목록", "ショートカット一覧"), 0xBF, true, false, false, false),
     cmd("win.new", WIN, s("New window", "새 창", "新しいウィンドウ"), 0x4E, true, false, false, false),
 ];
 
@@ -383,6 +384,7 @@ fn key_name(vk: u16) -> String {
         0x60..=0x69 => format!("Num{}", vk - 0x60),
         0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
         0xBC => ",".into(),
+        0xBF => "/".into(),
         _ => format!("VK_{vk:02X}"),
     }
 }
@@ -431,6 +433,7 @@ fn parse_key(k: &str) -> Option<u16> {
         "↑" => return Some(0x26),
         "↓" => return Some(0x28),
         "," => return Some(0xBC),
+        "/" => return Some(0xBF),
         _ => {}
     }
     let low = k.to_ascii_lowercase();
@@ -448,6 +451,7 @@ fn parse_key(k: &str) -> Option<u16> {
         "back" | "backspace" => Some(0x08),
         "del" | "delete" => Some(0x2E),
         "comma" => Some(0xBC),
+        "slash" | "/" => Some(0xBF),
         _ => parse_key_more(&low, k),
     }
 }
@@ -557,6 +561,7 @@ mod tests {
             ("file.dir", "Ctrl+Shift+N"),
             ("app.settings", "Ctrl+,"),
             ("app.help", "F1"),
+            ("app.keys", "Ctrl+/"),
             ("view.zoom", "Ctrl+Shift+M"),
             ("view.panel", "Ctrl+Shift+E"),
             ("focus.next", "F6"),
