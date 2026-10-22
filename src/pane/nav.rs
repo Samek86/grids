@@ -215,6 +215,7 @@ pub(crate) unsafe fn go_edit(i: usize) {
         ShellExecuteExW(&mut sei).is_ok()
     };
     // Some(true) = browsed, Some(false) = opened or ran
+    let mut resolved = false;
     let done = 'go: {
         if let Some(p) = path {
             // std::path::absolute is GetFullPathNameW: folds `..` and `.`
@@ -228,6 +229,7 @@ pub(crate) unsafe fn go_edit(i: usize) {
                     run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
                 };
                 CoTaskMemFree(Some(pidl as _));
+                resolved = true;
                 break 'go r;
             }
         }
@@ -241,6 +243,23 @@ pub(crate) unsafe fn go_edit(i: usize) {
     match done {
         Some(true) => focus_view(i),
         Some(false) => addr_reset(i, e),
+        None if addr_jumps(done, resolved) => {
+            let picked = app(|a| {
+                let mut favs = fav_folders(&a.s.tree);
+                if favs.is_empty() {
+                    favs = a.s.favs.clone();
+                }
+                jump_pick(&raw, &a.s.recent, &favs, &a.s.paths[i]).map(str::to_string)
+            });
+            match picked {
+                Some(p) if go_near(i, &p) => focus_view(i),
+                Some(_) => {
+                    _ = MessageBeep(MB_ICONWARNING);
+                    focus_view(i);
+                }
+                None => _ = MessageBeep(MB_ICONWARNING),
+            }
+        }
         None => _ = MessageBeep(MB_ICONWARNING),
     }
 }
