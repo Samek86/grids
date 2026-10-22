@@ -81,7 +81,7 @@ Rust GNU 툴체인(`x86_64-pc-windows-gnu`)과 MSYS2의 MinGW 도구(`C:\msys64\
 build.cmd
 ```
 
-`target\release\grids.exe`를 빌드해 프로젝트 폴더에 `grids.exe`로 복사합니다. 앱 아이콘(`app.ico`)은 `icon.py`로 다시 그립니다.
+`target\release\grids.exe`를 빌드해 `build\grids.exe`로 복사합니다. 앱 아이콘(`app.ico`)은 `icon.py`로 다시 그립니다.
 
 ## 감사
 
