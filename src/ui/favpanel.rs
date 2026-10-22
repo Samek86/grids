@@ -631,8 +631,14 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 request_pins(true);
             }
             WM_PINS => {
+                // Row count changed under the panel. Reclamp the scroll, then paint now:
+                // a later WM_PAINT may never arrive while the queue stays busy.
                 clamp_side_scroll();
                 _ = InvalidateRect(Some(h), None, false);
+                _ = UpdateWindow(h);
+                if !pins_loaded() {
+                    _ = SetTimer(Some(h), TIMER_PINS, 700, None);
+                }
             }
             WM_PAINT => paint_side(h),
             WM_ERASEBKGND => return LRESULT(1),
