@@ -208,6 +208,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
                 ID_HIDDEN => toggle_hidden(),
                 ID_PANEL => toggle_tree(),
+                ID_GATHER => gather_explorer(),
                 ID_HOTKEY => toggle_hotkey(),
                 ID_FOLLOW => {
                     let follow = app(|a| {
@@ -266,6 +267,14 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 if let Some(i) = crate::keys::index("view.panel") {
                     let label = format!("{}\t{}", tr("Left panel", "왼쪽 패널", "左のパネル"), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_PANEL as u32, MF_BYCOMMAND | MF_STRING, ID_PANEL as usize, &HSTRING::from(label));
+                }
+                if let Some(i) = crate::keys::index("view.gather") {
+                    let label = format!(
+                        "{}\t{}",
+                        tr("Open folders from Explorer windows", "탐색기 창의 폴더 가져오기", "エクスプローラーのウィンドウからフォルダーを開く"),
+                        crate::keys::chord_text(i)
+                    );
+                    _ = ModifyMenuW(menu, ID_GATHER as u32, MF_BYCOMMAND | MF_STRING, ID_GATHER as usize, &HSTRING::from(label));
                 }
                 check(ID_DBLUP, dblup);
                 check(ID_LANG_AUTO, lang == Lang::Auto);
@@ -820,6 +829,16 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
     item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
     item(view, MF_STRING, ID_PANEL, tr("Left panel\tCtrl+Shift+E", "왼쪽 패널\tCtrl+Shift+E", "左のパネル\tCtrl+Shift+E"))?;
+    item(
+        view,
+        MF_STRING,
+        ID_GATHER,
+        tr(
+            "Open folders from Explorer windows\tCtrl+Shift+O",
+            "탐색기 창의 폴더 가져오기\tCtrl+Shift+O",
+            "エクスプローラーのウィンドウからフォルダーを開く\tCtrl+Shift+O",
+        ),
+    )?;
     item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
     item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
     item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;

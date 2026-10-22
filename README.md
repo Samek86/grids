@@ -70,6 +70,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
 | Ctrl+Shift+E | Show or hide the left panel (folder tree and favourites). The width comes back as it was |
+| Ctrl+Shift+O | Open the folders of open Explorer windows and tabs in panes, from the active pane on (also View menu; panes already showing one of them stay put) |
 | Ctrl+S | Save the current session |
 | Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
 | Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
