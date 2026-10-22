@@ -801,7 +801,10 @@ fn flip(id: u8) {
             }
             return;
         }
-        TG_TREE => app(|a| a.s.tree_on ^= true),
+        TG_TREE => {
+            unsafe { crate::toggle_tree() };
+            return;
+        }
         TG_EDGE => app(|a| a.s.edge ^= true),
         TG_CONFIRM => app(|a| a.s.confirm ^= true),
         TG_AUTOSAVE => app(|a| a.s.autosave ^= true),

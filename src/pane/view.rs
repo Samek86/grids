@@ -816,6 +816,26 @@ pub(crate) unsafe fn toggle_zoom() {
     focus_view(i);
 }
 
+/// The left panel (folder tree and favourites) gives its room to the panes. The width is kept.
+pub(crate) unsafe fn toggle_tree() {
+    if app(|a| a.drag.is_some()) {
+        return;
+    }
+    let f = GetFocus();
+    let (had, i) = app(|a| {
+        a.s.tree_on ^= true;
+        let on = |h: HWND| !h.0.is_null() && (h == f || IsChild(h, f).as_bool());
+        (on(a.tree_hwnd) || on(a.side_hwnd), a.s.active)
+    });
+    relayout();
+    redraw_all();
+    if had {
+        focus_view(i);
+    }
+    save_session();
+    settings::redraw();
+}
+
 pub(crate) unsafe fn set_layout(h: Vec<usize>) {
     app(|a| {
         a.zoom = None;

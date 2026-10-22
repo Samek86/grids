@@ -63,6 +63,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | F6 / Shift+F6 | Next / previous focus: file list, address, filter, folder tree, favourites |
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
+| Ctrl+Shift+E | Show or hide the left panel (folder tree and favourites). The width comes back as it was |
 | Ctrl+S | Save the current session |
 | Ctrl+B | Favourites list (↑/↓, Enter to open, Del to remove) |
 | Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |

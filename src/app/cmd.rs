@@ -245,6 +245,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "focus.next" => cycle_focus(false),
         "focus.prev" => cycle_focus(true),
         "view.hidden" => toggle_hidden(),
+        "view.panel" => toggle_tree(),
         "view.zoom" => toggle_zoom(),
         "file.path" => {
             if !list {
