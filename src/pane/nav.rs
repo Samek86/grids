@@ -414,6 +414,60 @@ pub(crate) unsafe fn recent_menu(i: usize) {
     focus_view(i);
 }
 
+/// Filter icon and Alt+↓ while the filter has focus. Pictures, video, music, documents, archives, programs.
+/// "Same type as the selected file" only when exactly one file is selected.
+pub(crate) const FILE_KINDS: [(&str, &str, &str, &str); 6] = [
+    ("Pictures", "사진", "画像", "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.heic;*.tif;*.tiff;*.svg;*.ico"),
+    ("Videos", "동영상", "動画", "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm;*.m4v"),
+    ("Music", "음악", "音楽", "*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"),
+    ("Documents", "문서", "文書", "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.hwp;*.hwpx;*.txt;*.md;*.csv;*.rtf;*.odt"),
+    ("Archives", "압축", "アーカイブ", "*.zip;*.7z;*.rar;*.tar;*.gz;*.iso"),
+    ("Programs", "프로그램", "プログラム", "*.exe;*.msi;*.bat;*.cmd;*.ps1"),
+];
+
+pub(crate) unsafe fn kind_menu(i: usize) {
+    let (Some(h), Some(f)) = (app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)), pane_ctl(i, ID_FILTER)) else { return };
+    let cur = filter_of(i);
+    let arr = view_of::<IFolderView2>(i).and_then(|fv| fv.GetSelection(false).ok()).filter(|a| a.GetCount().is_ok_and(|n| n == 1));
+    let same = arr.and_then(|a| {
+        let it = a.GetItemAt(0).ok()?;
+        let dir = it.GetAttributes(SFGAO_FOLDER).ok()?.0 & SFGAO_FOLDER.0 != 0;
+        same_type(&pwstr(it.GetDisplayName(SIGDN_PARENTRELATIVEPARSING).ok()?), dir)
+    });
+    let Ok(menu) = CreatePopupMenu() else { return };
+    for (k, (en, ko, ja, spec)) in FILE_KINDS.iter().enumerate() {
+        let flags = if cur == *spec { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let shown = spec.split(';').take(2).collect::<Vec<_>>().join(", ");
+        _ = AppendMenuW(menu, flags, k + 1, &HSTRING::from(format!("{}\t{shown}, …", tr(en, ko, ja))));
+    }
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let same_label = tr("Same type as the selected file", "선택한 파일과 같은 형식", "選択したファイルと同じ種類");
+    match &same {
+        Some(s) => _ = AppendMenuW(menu, MF_STRING, 100, &HSTRING::from(format!("{same_label} ({})", s.replace('&', "&&")))),
+        None => _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 100, &HSTRING::from(same_label)),
+    }
+    let clear = if cur.is_empty() && text_of(f).is_empty() { MF_STRING | MF_GRAYED } else { MF_STRING };
+    _ = AppendMenuW(menu, clear, 101, &HSTRING::from(tr("Clear filter", "필터 지우기", "フィルターをクリア")));
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let pg = pane_geo(rc.right, rc.bottom, app(|a| a.dpi));
+    let mut at = POINT { x: pg.filt.left, y: pg.filt.bottom };
+    _ = ClientToScreen(h, &mut at);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
+    _ = DestroyMenu(menu);
+    let spec = match pick {
+        1..=6 => Some(FILE_KINDS[pick - 1].3.to_string()),
+        100 => same,
+        101 => Some(String::new()),
+        _ => None,
+    };
+    if let Some(s) = spec {
+        _ = SetWindowTextW(f, &HSTRING::from(s));
+        apply_filter(i);
+    }
+    focus_view(i);
+}
+
 pub(crate) unsafe fn apply_filter(i: usize) {
     let Some(f) = pane_ctl(i, ID_FILTER) else { return };
     let spec = filter_spec(&text_of(f));

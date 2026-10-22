@@ -342,9 +342,20 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_MOUSELEAVE => crumb_hover(h, None),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
+                let on_kind = {
+                    let dpi = app(|a| a.dpi);
+                    let mut rc = RECT::default();
+                    _ = GetClientRect(h, &mut rc);
+                    filter_icon_rect(pane_geo(rc.right, rc.bottom, dpi).filt, 24 * dpi / 96)
+                        .is_some_and(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+                };
                 if let Some(i) = pane_of(h) {
                     set_active(i);
-                    crumb_click(h, i, x, y);
+                    if on_kind {
+                        kind_menu(i);
+                    } else {
+                        crumb_click(h, i, x, y);
+                    }
                 }
             }
             WM_LBUTTONDBLCLK => {
@@ -352,7 +363,13 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let dpi = app(|a| a.dpi);
                 let addr = addr_rect(h, dpi);
                 let on_addr = x >= addr.left && x < addr.right && y >= addr.top && y < addr.bottom;
-                if !on_addr {
+                let on_kind = {
+                    let mut rc = RECT::default();
+                    _ = GetClientRect(h, &mut rc);
+                    filter_icon_rect(pane_geo(rc.right, rc.bottom, dpi).filt, 24 * dpi / 96)
+                        .is_some_and(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+                };
+                if !on_addr && !on_kind {
                     if let Some(i) = pane_of(h) {
                         set_active(i);
                         toggle_zoom();

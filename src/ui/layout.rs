@@ -191,6 +191,12 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     }
 }
 
+/// The search icon or filter chip at the left of the filter pill. The edit starts at 24 DIP, so this stays clickable.
+pub(crate) fn filter_icon_rect(filt: RECT, s24: i32) -> Option<RECT> {
+    let r = RECT { right: filt.right.min(filt.left + s24), ..filt };
+    (r.right > r.left).then_some(r)
+}
+
 /// Colour-label strip along the pane's top edge: inside the border, in the gap above the buttons.
 pub(crate) fn tint_band(w: i32, dpi: i32, active: bool) -> RECT {
     let s = |v: i32| v * dpi / 96;
@@ -453,6 +459,14 @@ mod tests {
             assert_eq!(crumb_field(wide, dpi).left, wide.left + s(26));
             assert_eq!(crumb_field(wide, dpi).left, crumb_field(wide, dpi).left);
         }
+    }
+
+    #[test]
+    fn filter_icon_is_the_pill_s_left_edge() {
+        let wide = RECT { left: 10, top: 2, right: 160, bottom: 24 };
+        let r = filter_icon_rect(wide, 24).unwrap();
+        assert_eq!((r.left, r.right), (10, 34));
+        assert!(filter_icon_rect(RECT { left: 10, right: 10, ..wide }, 24).is_none());
     }
 
     #[test]

@@ -179,6 +179,12 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
                 apply_filter(a);
                 focus_view(a);
             }
+            // Alt+↓ in the filter is the file-kind menu. Recent folders keeps Alt+↓ everywhere else.
+            VK_DOWN if filt && alt && !ctrl && !shift => {
+                if m.lParam.0 & (1 << 30) == 0 {
+                    kind_menu(a);
+                }
+            }
             _ => return false,
         }
         return true;
