@@ -80,7 +80,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Ctrl+Shift+N | New folder |
 | Ctrl+, | Settings |
 | Ctrl+/ | Shortcut list, in the app's own colours. Holding the keys opens it once |
-| F2, Del, Ctrl+C / X / V, F5 | Same as Explorer |
+| F2, Del, Ctrl+C / X / V, F5 | Same as Explorer. Ctrl+V of a copied picture (screenshot or a browser image) saves a PNG in the folder and leaves the selection, focus and folder as they were. The status line shows the file name |
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu). A splitter under the pointer shows a thin line in the selection colour, including the left-panel edge and the divider between the folder tree and favourites.
 
