@@ -156,6 +156,15 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return true;
     }
+    // Plain Alt+↑/↓ in the favourites panel or its list reorders that row.
+    // It must not send the pane behind it to the parent folder.
+    if fav_step(vk, ctrl, alt, shift).is_some() {
+        let (side, fav) = app(|a| (a.side_hwnd, a.fav_popup));
+        let on = |root: HWND| !root.0.is_null() && (m.hwnd == root || IsChild(root, m.hwnd).as_bool());
+        if on(side) || on(fav) {
+            return false;
+        }
+    }
     if let Some(i) = pane_of(m.hwnd) {
         set_active(i);
     }

@@ -770,6 +770,30 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     _ => {}
                 }
             }
+            WM_SYSKEYDOWN => {
+                let vk = wp.0 as u16;
+                let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
+                if fav_step(vk, down(VK_CONTROL), down(VK_MENU), down(VK_SHIFT)).is_none() {
+                    return DefWindowProcW(h, msg, wp, lp);
+                }
+                let rows = fav_rows();
+                let Some(row) = app(|a| a.fav_hot).and_then(|(k, _)| rows.get(k).cloned()).filter(|r| r.in_tree()) else {
+                    return LRESULT(0);
+                };
+                let moved = app(|a| {
+                    let id = nudge_node(&mut a.s.tree, &row.id, vk == VK_DOWN.0);
+                    if id.is_some() {
+                        a.s.sync_favs();
+                    }
+                    id
+                });
+                if let Some(id) = moved {
+                    let i = fav_rows().iter().position(|r| r.id == id);
+                    app(|a| a.fav_hot = i.map(|k| (k, false)));
+                    favs_changed();
+                    _ = InvalidateRect(Some(h), None, false);
+                }
+            }
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
             WM_DESTROY => app(|a| (a.fav_popup, a.fav_closed) = (HWND::default(), Some(Instant::now()))),
             _ => return DefWindowProcW(h, msg, wp, lp),

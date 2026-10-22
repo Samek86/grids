@@ -519,6 +519,47 @@ pub(crate) fn rename_leaf(tree: &mut Vec<FavNode>, index: usize, name: &str) -> 
     rename_at(tree, &id, name)
 }
 
+/// Plain Alt+↑/↓. Anything with Ctrl or Shift stays a pane shortcut.
+pub(crate) fn fav_step(vk: u16, ctrl: bool, alt: bool, shift: bool) -> Option<i32> {
+    match vk {
+        0x26 | 0x28 if alt && !ctrl && !shift => Some(if vk == 0x26 { -1 } else { 1 }),
+        _ => None,
+    }
+}
+
+/// Move `id` one place among its siblings. The first child moves out before its group;
+/// the last child moves out after it. None at the ends of the root.
+pub(crate) fn nudge_node(tree: &mut Vec<FavNode>, id: &[usize], down: bool) -> Option<Vec<usize>> {
+    if id.is_empty() {
+        return None;
+    }
+    let parent = &id[..id.len() - 1];
+    let index = *id.last()?;
+    let n = child_len(tree, parent);
+    if index >= n {
+        return None;
+    }
+    if down {
+        if index + 1 < n {
+            let mut onto = parent.to_vec();
+            onto.push(index + 1);
+            apply_drop(tree, id, &onto, 2)
+        } else if !parent.is_empty() {
+            apply_drop(tree, id, parent, 2)
+        } else {
+            None
+        }
+    } else if index > 0 {
+        let mut onto = parent.to_vec();
+        onto.push(index - 1);
+        apply_drop(tree, id, &onto, 0)
+    } else if !parent.is_empty() {
+        apply_drop(tree, id, parent, 0)
+    } else {
+        None
+    }
+}
+
 /// Same result as removing the flat leaf `from` and inserting it at `to`.
 pub(crate) fn reorder_leaves(tree: &mut Vec<FavNode>, from: usize, to: usize) -> bool {
     if from == to {
@@ -736,6 +777,35 @@ mod tests {
 
     fn work() -> Vec<FavNode> {
         tree_from_flat(&["C:\\WORK\tWork".into(), "D:\\Photos".into()])
+    }
+
+    #[test]
+    fn nudge_swaps_siblings_and_steps_out_of_a_group() {
+        let mut tree = work();
+        assert!(nudge_node(&mut tree, &[0], false).is_none());
+        assert_eq!(tree[0].name, "Work");
+        assert_eq!(nudge_node(&mut tree, &[0], true).unwrap(), vec![1]);
+        assert_eq!(tree[0].path, r"D:\Photos");
+        assert_eq!(tree[1].name, "Work");
+        assert!(nudge_node(&mut tree, &[1], true).is_none());
+        assert_eq!((fav_step(0x26, false, true, false), fav_step(0x28, false, true, false)), (Some(-1), Some(1)));
+        for (c, a, s) in [(true, true, false), (false, true, true), (true, true, true), (false, false, false)] {
+            assert_eq!((fav_step(0x26, c, a, s), fav_step(0x28, c, a, s)), (None, None));
+        }
+        assert_eq!(fav_step(0x25, false, true, false), None);
+
+        assert!(add_group(&mut tree, &[], "Jobs"));
+        let jobs = tree.iter().position(|n| n.is_group()).unwrap();
+        tree[jobs].children.push(FavNode::leaf(r"C:\a", "a", false));
+        tree[jobs].children.push(FavNode::leaf(r"C:\b", "b", false));
+        assert_eq!(nudge_node(&mut tree, &[jobs, 0], true).unwrap(), vec![jobs, 1]);
+        assert_eq!(tree[jobs].children[0].name, "b");
+        assert_eq!(tree[jobs].children[1].name, "a");
+        // The first child steps out to just before the group.
+        assert_eq!(nudge_node(&mut tree, &[jobs, 0], false).unwrap(), vec![jobs]);
+        assert_eq!(tree[jobs].name, "b");
+        assert!(tree[jobs + 1].is_group());
+        assert_eq!(tree[jobs + 1].children[0].name, "a");
     }
 
     #[test]
