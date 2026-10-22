@@ -19,6 +19,8 @@ pub(crate) struct Pane {
     pub(crate) pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
     pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
+    pub(crate) icon: i32,   // current folder in the system image list, -1 = none yet
+    pub(crate) ticket: u32, // that lookup; 0 = none asked
 }
 
 pub(crate) struct Desk {
@@ -72,6 +74,7 @@ pub(crate) struct Desk {
     pub(crate) crumb_hot: Option<(HWND, usize)>, // pane, crumb under the pointer
     pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
+    pub(crate) ilist: Option<windows::Win32::UI::Controls::IImageList>, // system small icons, shared, never freed
     pub(crate) hover: HWND, // owner-drawn button under the mouse
     pub(crate) tip: HWND,
     pub(crate) bars: [HWND; 2], // splitter guide bars (vertical, horizontal)
@@ -197,6 +200,7 @@ pub(crate) fn blank_desk() -> Desk {
         crumb_hot: None,
         lost: 0,
         cards: Vec::new(),
+        ilist: None,
         hover: HWND::default(),
         tip: HWND::default(),
         bars: [HWND::default(); 2],

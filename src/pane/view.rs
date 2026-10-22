@@ -53,7 +53,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None, icon: -1, ticket: 0 })
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
@@ -73,6 +73,7 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
         (p, queued)
     });
     if let Some(p) = p {
+        drop_icon_request(p.hwnd);
         _ = RevokeDragDrop(p.hwnd);
         _ = p.eb.Unadvise(p.cookie);
         _ = IUnknown_SetSite(&p.eb, None);
@@ -143,7 +144,9 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     };
     let ctl = |id: i32| GetDlgItem(Some(h), id).unwrap_or_default();
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
-    moves.push((ctl(ID_EDIT), inside(pg.addr, s(8), s(6))));
+    // The icon slot is reserved by width, so the edit does not move when the icon arrives.
+    let inset = crumb_field(pg.addr, dpi).left - pg.addr.left;
+    moves.push((ctl(ID_EDIT), inside(pg.addr, inset, s(6))));
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
