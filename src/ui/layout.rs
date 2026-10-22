@@ -7,6 +7,22 @@ use crate::i18n::*;
 
 // ---------- grid geometry ----------
 
+/// Shrinks `r` into `work` and slides it inside. A rect already inside comes back unchanged.
+pub(crate) fn fit(r: RECT, work: RECT) -> RECT {
+    let w = (r.right - r.left).min(work.right - work.left).max(0);
+    let h = (r.bottom - r.top).min(work.bottom - work.top).max(0);
+    let left = r.left.clamp(work.left, work.right - w);
+    let top = r.top.clamp(work.top, work.bottom - h);
+    RECT { left, top, right: left + w, bottom: top + h }
+}
+
+/// `fit` for a saved normal position, which is in workspace coordinates (origin at the work area's corner).
+pub(crate) fn fit_saved(saved: RECT, mon: RECT, work: RECT) -> RECT {
+    let (dx, dy) = (work.left - mon.left, work.top - mon.top);
+    let r = fit(RECT { left: saved.left + dx, top: saved.top + dy, right: saved.right + dx, bottom: saved.bottom + dy }, work);
+    RECT { left: r.left - dx, top: r.top - dy, right: r.right - dx, bottom: r.bottom - dy }
+}
+
 /// Splits `len` px starting at `start` into cells by `ratios`, with `gap` px splitters between them.
 pub(crate) fn cells(start: i32, len: i32, ratios: &[f64], gap: i32) -> Vec<(i32, i32)> {
     let avail = (len - gap * (ratios.len() as i32 - 1)).max(0) as f64;
@@ -415,6 +431,22 @@ mod tests {
         assert!(top >= 1 && bot >= 1);
         assert_eq!(top + bot, 92);
         assert!(side_min(96) == 80 && side_min(192) == 160);
+    }
+
+    #[test]
+    fn window_fits_work_area() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        let work = r(0, 0, 1024, 728);
+        assert_eq!(fit(r(100, 50, 900, 650), work), r(100, 50, 900, 650));
+        assert_eq!(fit(r(26, 26, 1426, 926), work), work);
+        assert_eq!(fit(r(500, 400, 1300, 1000), work), r(224, 128, 1024, 728));
+        let left_mon = r(-1920, 0, 0, 1040);
+        assert_eq!(fit(r(-2100, -50, -1300, 550), left_mon), r(-1920, 0, -1120, 600));
+        assert_eq!(fit(r(-300, 100, 500, 700), left_mon), r(-800, 100, 0, 700));
+        let mon = r(0, 0, 1920, 1080);
+        assert_eq!(fit_saved(r(1500, 900, 2300, 1500), mon, r(0, 40, 1920, 1080)), r(1120, 440, 1920, 1040));
+        let saved = r(100, 100, 900, 700);
+        assert_eq!(fit_saved(saved, mon, r(0, 40, 1920, 1080)), saved);
     }
 
     #[test]

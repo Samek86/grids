@@ -254,15 +254,36 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     apply_font();
     match win {
         Some([l, t, r, b, max]) => {
+            // Saved position is workspace coordinates. Fit it, and move while still hidden so a
+            // different-DPI monitor changes DPI before the final placement.
+            let saved = RECT { left: l, top: t, right: r, bottom: b };
+            let mut fixed = saved;
+            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(MonitorFromRect(&saved, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+                fixed = fit_saved(saved, mi.rcMonitor, mi.rcWork);
+                let (dx, dy) = (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top);
+                let (w, h) = (fixed.right - fixed.left, fixed.bottom - fixed.top);
+                _ = SetWindowPos(main, None, fixed.left + dx, fixed.top + dy, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             let wp = WINDOWPLACEMENT {
                 length: size_of::<WINDOWPLACEMENT>() as u32,
                 showCmd: if max != 0 { SW_SHOWMAXIMIZED.0 as u32 } else { SW_SHOWNORMAL.0 as u32 },
-                rcNormalPosition: RECT { left: l, top: t, right: r, bottom: b },
+                rcNormalPosition: fixed,
                 ..Default::default()
             };
             _ = SetWindowPlacement(main, &wp);
         }
-        None => _ = ShowWindow(main, SW_SHOWNORMAL),
+        None => {
+            let mut r = RECT::default();
+            _ = GetWindowRect(main, &mut r);
+            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let ok = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool();
+            let f = fit(r, mi.rcWork);
+            if ok && f != r {
+                _ = SetWindowPos(main, None, f.left, f.top, f.right - f.left, f.bottom - f.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            _ = ShowWindow(main, SW_SHOWNORMAL);
+        }
     }
     relayout();
     focus_view(app(|a| a.s.active));
