@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::imports::*;
 use super::*;
 use crate::app::*;
@@ -52,19 +54,20 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
         ),
     );
 
+    let slot = Arc::new(AtomicUsize::new(i));
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
-    let site: IServiceProvider = Host(i).into();
+    let site: IServiceProvider = Host(slot.clone()).into();
     IUnknown_SetSite(&eb, &site)?; // before Initialize, so the view picks up our ICommDlgBrowser
     let fs = FOLDERSETTINGS { ViewMode: FVM_DETAILS.0 as u32, fFlags: FWF_NOWEBVIEW.0 as u32 };
     eb.Initialize(h, &RECT::default(), Some(&fs))?;
     eb.SetOptions(EBO_NOBORDER)?;
-    let ev: IExplorerBrowserEvents = Events(i).into();
+    let ev: IExplorerBrowserEvents = Events(slot.clone()).into();
     let cookie = eb.Advise(&ev)?;
     let helper = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok(); // drag image over the bar
-    let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
+    let dt: IDropTarget = PaneDrop { slot: slot.clone(), hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None, icon: -1, ticket: 0 })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None, icon: -1, ticket: 0, slot })
 }
 
 const EM_GETMARGINS: u32 = 0xD4;
@@ -1053,6 +1056,84 @@ pub(crate) unsafe fn move_pane(dx: i32, dy: i32) {
         set_active(j);
         focus_view(j);
     }
+}
+
+/// The live pane on screen next to the active one.
+fn active_neighbour(dx: i32, dy: i32) -> Option<usize> {
+    let (cells, cur) = app(|a| {
+        let g = geo(a);
+        let cells = (0..a.s.panes()).filter(|&i| a.panes[i].is_some()).map(|i| (i, cell_rect(&g, &a.s.heights, i))).collect::<Vec<_>>();
+        (cells, a.s.active)
+    });
+    neighbour(&cells, cur, dx, dy)
+}
+
+/// Ctrl+Alt+Shift+arrow: the active pane trades places with the one in that direction and stays active.
+pub(crate) unsafe fn swap_dir(dx: i32, dy: i32) {
+    if let Some(j) = active_neighbour(dx, dy) {
+        swap_panes(app(|a| a.s.active), j);
+    }
+}
+
+/// Two panes trade places. Nothing is rebuilt, so each keeps its folder, history, selection, scroll, filter and columns.
+pub(crate) unsafe fn swap_panes(i: usize, j: usize) {
+    let Some([si, sj]) = app(|a| {
+        let live = |k: usize| k < a.s.panes() && a.panes[k].is_some();
+        (i != j && live(i) && live(j) && a.drag.is_none()).then(|| [i, j].map(|k| a.panes[k].as_ref().map(|p| p.slot.clone()).unwrap_or_default()))
+    }) else {
+        return;
+    };
+    {
+        // Filters and slots together, so a view thread sees both before or both after.
+        let mut f = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
+        f.swap(i, j);
+        si.store(j, Ordering::SeqCst);
+        sj.store(i, Ordering::SeqCst);
+    }
+    let panes = app(|a| {
+        a.live_filters.swap(i, j);
+        a.panes.swap(i, j);
+        let mut base = a.base.take();
+        swap_in(&mut a.s, base.as_mut(), i, j);
+        a.base = base;
+        a.s.anchor();
+        a.zoom = None;
+        let to = |k: &mut usize| {
+            if *k == i {
+                *k = j;
+            } else if *k == j {
+                *k = i;
+            }
+        };
+        if let Some(d) = a.drop_open.as_mut() {
+            to(&mut d.1);
+        }
+        if let Some(m) = a.matcher.as_mut() {
+            to(&mut m.pane);
+        }
+        if let Some(k) = a.kids.as_mut() {
+            to(&mut k.i);
+        }
+        to(&mut a.peek_pane);
+        a.status_key.clear();
+        a.dirty = a.s.dot && session_dirty(&a.s, a.base.as_ref());
+        [i, j].map(|k| a.panes[k].as_ref().map(|p| p.hwnd))
+    });
+    for k in [i, j] {
+        SEL_REV[k].fetch_add(1, Ordering::Relaxed);
+    }
+    NAV_GEN.fetch_add(1, Ordering::SeqCst);
+    relayout();
+    for (k, h) in panes.into_iter().enumerate() {
+        if let Some(h) = h {
+            name_fields(h, if k == 0 { i } else { j });
+        }
+    }
+    redraw_all();
+    refresh_save_button();
+    note_save();
+    set_active(j);
+    focus_view(j);
 }
 
 // Like tmux's pane zoom: the active pane takes the whole grid until toggled back or another pane is picked.

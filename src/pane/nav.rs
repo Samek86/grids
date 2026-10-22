@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::imports::*;
 use super::*;
 use crate::app::*;
@@ -336,6 +338,18 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     for (k, disp, _, t) in &items {
         _ = AppendMenuW(menu, MF_STRING, k + 1, &label(*k, *t, disp));
     }
+    if let Ok(sub) = CreatePopupMenu() {
+        for (k, disp, _, t) in &items {
+            _ = AppendMenuW(sub, MF_STRING, 301 + k, &label(*k, *t, disp));
+        }
+        let flags = if items.is_empty() { MF_POPUP | MF_GRAYED } else { MF_POPUP };
+        _ = AppendMenuW(
+            menu,
+            flags,
+            sub.0 as usize,
+            &HSTRING::from(tr("Swap places with\tCtrl+Alt+Shift+arrows", "자리 바꾸기\tCtrl+Alt+Shift+방향키", "入れ替え\tCtrl+Alt+Shift+方向キー")),
+        );
+    }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     match &picked {
         Ok(srcs) => {
@@ -376,6 +390,7 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     match (pick as usize, picked) {
         (0, _) => {}
         (p @ 1..=100, _) => open_in(src, p - 1),
+        (p @ 301..=316, _) => swap_panes(src, p - 301),
         (p, Ok(srcs)) => {
             // only to the folder the menu showed, and only the whole selection it counted
             let (mv, k) = (p > 200, (p - 1) % 100);
@@ -814,14 +829,15 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
 }
 
 #[implement(IExplorerBrowserEvents)]
-pub(crate) struct Events(pub(crate) usize);
+pub(crate) struct Events(pub(crate) Arc<AtomicUsize>);
 
 impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
+        let i = self.0.load(Ordering::SeqCst);
         unsafe {
-            rec_event(self.0, Nav::Pending, pidl);
-            save_view(self.0);
+            rec_event(i, Nav::Pending, pidl);
+            save_view(i);
         }
         Ok(())
     }
@@ -830,19 +846,19 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { on_nav(self.0, pidl) };
+        unsafe { on_nav(self.0.load(Ordering::SeqCst), pidl) };
         Ok(())
     }
     fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { rec_event(self.0, Nav::Failed, pidl) };
+        unsafe { rec_event(self.0.load(Ordering::SeqCst), Nav::Failed, pidl) };
         Ok(())
     }
 }
 
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
 #[implement(IServiceProvider, ICommDlgBrowser)]
-pub(crate) struct Host(pub(crate) usize);
+pub(crate) struct Host(pub(crate) Arc<AtomicUsize>);
 
 impl IServiceProvider_Impl for Host_Impl {
     fn QueryService(&self, service: *const GUID, riid: *const GUID, ppv: *mut *mut core::ffi::c_void) -> Result<()> {
@@ -863,7 +879,7 @@ impl ICommDlgBrowser_Impl for Host_Impl {
     }
     fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
         if change == CDBOSC_SELCHANGE {
-            SEL_REV[self.0].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
+            SEL_REV[self.0.load(Ordering::SeqCst)].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
         }
         Ok(())
     }
@@ -872,7 +888,7 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         let spec = unsafe {
             match sv.ok().ok().and_then(|v| v.GetWindow().ok()) {
                 Some(h) => filter_for_view(h).unwrap_or_default(),
-                None => filter_of(self.0),
+                None => filter_of(self.0.load(Ordering::SeqCst)),
             }
         };
         if spec.is_empty() {
@@ -915,7 +931,7 @@ pub(crate) unsafe fn drop_items(d: &Ref<IDataObject>) -> Option<IShellItemArray>
 
 #[implement(IDropTarget)]
 pub(crate) struct PaneDrop {
-    pub(crate) slot: usize,
+    pub(crate) slot: Arc<AtomicUsize>,
     pub(crate) hwnd: HWND,
     pub(crate) ok: Cell<bool>, // the data being dragged holds shell items
     pub(crate) helper: Option<IDropTargetHelper>,
@@ -947,7 +963,7 @@ impl PaneDrop {
         let Some(item) = drop_items(d).and_then(|a| a.GetItemAt(0).ok()) else { return false };
         let is_dir = item.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
         let Some(folder) = (if is_dir { Some(item) } else { item.GetParent().ok() }) else { return false };
-        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot, folder)));
+        _ = app(|a| a.drop_open.replace((self.hwnd, self.slot.load(Ordering::SeqCst), folder)));
         if PostMessageW(Some(self.hwnd), WM_DROP_OPEN, WPARAM(0), LPARAM(0)).is_ok() {
             return true;
         }

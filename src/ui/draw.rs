@@ -324,7 +324,7 @@ pub(crate) unsafe fn check_dirty() {
                 }
             }
         }
-        let d = a.s.dot && a.base.as_ref().is_some_and(|b| layout_differs(&a.s, b));
+        let d = a.s.dot && session_dirty(&a.s, a.base.as_ref());
         std::mem::replace(&mut a.dirty, d) != d
     });
     if changed {

@@ -91,6 +91,7 @@ pub(crate) unsafe fn write_session(path: &Path) {
     }
     app(|a| {
         a.s.file = path.to_string_lossy().into_owned();
+        a.s.order.clear();
         (a.base, a.dirty) = (Some(a.s.clone()), false);
     });
     refresh_save_button();

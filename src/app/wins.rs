@@ -297,8 +297,18 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     relayout();
     focus_view(app(|a| a.s.active));
     let file = app(|a| a.s.file.clone());
-    let base = std::fs::read_to_string(&file).ok().map(|t| Session::parse(&t));
-    app(|a| a.base = Some(base.unwrap_or_else(|| a.s.clone())));
+    let saved = std::fs::read_to_string(&file).ok();
+    app(|a| {
+        let base = match &saved {
+            Some(t) => {
+                let mut b = Session::parse(t);
+                b.reorder(&a.s.order);
+                b
+            }
+            None => a.s.clone(),
+        };
+        a.base = Some(base);
+    });
     refresh_save_button();
     SetTimer(Some(main), TIMER_STATUS, 300, None);
     // Taken by another app: the menu stays unchecked and hotkey stays on, so the next start tries again.

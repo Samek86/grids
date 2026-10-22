@@ -125,6 +125,9 @@ struct SettingsFile {
     side: i32,
     #[serde(default)]
     layout: LayoutJson,
+    /// Permutation of pane slots since the named session was saved. Empty means they match the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order: Vec<u8>,
     #[serde(default)]
     panes: Vec<PaneJson>,
     #[serde(default = "accent_light")]
@@ -223,6 +226,7 @@ impl SettingsFile {
             window: None,
             side: 0,
             layout: LayoutJson::default(),
+            order: Vec::new(),
             panes: Vec::new(),
             accent: accent_light(),
             accent_dark: accent_dark(),
@@ -294,6 +298,7 @@ impl SettingsFile {
             window: s.win.map(|w| WinJson { left: w[0], top: w[1], right: w[2], bottom: w[3], maximized: w[4] != 0 }),
             side: s.side,
             layout: LayoutJson { columns: s.heights.clone(), colr: s.colr.clone(), rowr: s.rowr.clone(), active: s.active },
+            order: s.order.clone(),
             panes,
             accent: format!("{:06X}", s.accent & 0xFFFFFF),
             accent_dark: format!("{:06X}", s.accent_dark & 0xFFFFFF),
@@ -371,6 +376,7 @@ impl SettingsFile {
         let rowr = &self.layout.rowr;
         let group = |c: usize| if rowr.len() == s.heights.len() { rowr.get(c) } else { rowr.first() };
         s.rowr = s.heights.iter().enumerate().map(|(c, &n)| fix(group(c).cloned().unwrap_or_default(), n)).collect();
+        s.order = if self.order.len() == MAXP && self.order.iter().all(|&n| (n as usize) < MAXP) { self.order.clone() } else { Vec::new() };
         s.active = self.layout.active;
         if s.active >= s.panes() {
             s.active = 0;
