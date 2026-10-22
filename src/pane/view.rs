@@ -508,6 +508,50 @@ pub(crate) unsafe fn dark_list(pane: HWND) {
     }
 }
 
+/// Puts a list back to the light-theme colours. Subclasses stay, and they do nothing while dark mode is off.
+pub(crate) unsafe fn light_list(pane: HWND) {
+    extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
+        let mut c = [0u16; 32];
+        let n = unsafe { GetClassNameW(h, &mut c) } as usize;
+        if String::from_utf16_lossy(&c[..n]) == "SysListView32" {
+            unsafe { (*(out.0 as *mut Vec<HWND>)).push(h) };
+        }
+        true.into()
+    }
+    let mut lists: Vec<HWND> = Vec::new();
+    _ = EnumChildWindows(Some(pane), Some(collect), LPARAM(&mut lists as *mut _ as isize));
+    let (bg, text) = (GetSysColor(COLOR_WINDOW) as isize, GetSysColor(COLOR_WINDOWTEXT) as isize);
+    for lv in lists {
+        _ = SetWindowTheme(lv, w!("Explorer"), PCWSTR::null());
+        SendMessageW(lv, LVM_SETBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
+        let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
+        if !header.0.is_null() {
+            _ = SetWindowTheme(header, w!("ItemsView"), PCWSTR::null());
+        }
+        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        if !tip.0.is_null() {
+            _ = SetWindowTheme(tip, PCWSTR::null(), PCWSTR::null());
+        }
+        _ = InvalidateRect(Some(lv), None, true);
+    }
+}
+
+/// Windows app mode. None when the value is not there, so a missing key is not treated as light.
+pub(crate) unsafe fn system_dark() -> Option<bool> {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let (mut v, mut n) = (0u32, 4u32);
+    let key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let r = RegGetValueW(HKEY_CURRENT_USER, key, w!("AppsUseLightTheme"), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as _), Some(&mut n));
+    r.is_ok().then_some(v == 0)
+}
+
+/// The dark flag to switch to while following Windows. None when following is off, the setting is unknown, or it already matches.
+pub(crate) fn theme_target(auto: bool, sys: Option<bool>, cur: bool) -> Option<bool> {
+    sys.filter(|&d| auto && d != cur)
+}
+
 // The view re-sets the sorted column through an internal interface (no window message to catch),
 // so it is cleared right before each paint instead. The column header is the list's child, so its
 // draw notifications come through here too.
@@ -782,22 +826,45 @@ pub(crate) unsafe fn apply_theme_desk() {
         tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
     set_accent(accent);
-    // Every tab's Explorer windows follow the theme. Their folders, filters and columns are already on the tab.
-    remember_tabs();
-    let filters = app(|a| a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default());
-    destroy_every_pane();
-    put_filters(&filters);
-    app(|a| {
-        let n = a.s.tabs.len().max(1);
-        a.park = (0..n).map(|_| no_panes()).collect();
-        a.park_lru.clear();
+    let panes = app(|a| {
+        let mut hs: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
+        for tab in &a.park {
+            hs.extend(tab.iter().flatten().map(|p| p.hwnd));
+        }
+        hs
     });
-    relayout();
-    sync_filter_edits();
+    for p in panes {
+        if DARK_ON.load(Ordering::Relaxed) {
+            dark_list(p);
+        } else {
+            light_list(p);
+        }
+    }
     redraw_all();
+    let popups = app(|a| {
+        let match_h = a.matcher.as_ref().map(|m| m.hwnd).unwrap_or_default();
+        [a.fav_popup, a.load, a.grid, a.keys_popup, a.peek, match_h]
+    });
+    for h in popups {
+        if !h.0.is_null() && IsWindow(Some(h)).as_bool() {
+            _ = RedrawWindow(Some(h), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+        }
+    }
 }
 
-// Applies the current theme everywhere; panes are rebuilt so their Explorer views pick it up.
+/// Follow Windows when that mode is on and the setting differs from the panes.
+pub(crate) unsafe fn theme_sync() {
+    let (auto, cur) = app(|a| (a.s.theme == 0, a.s.dark));
+    if let Some(d) = theme_target(auto, system_dark(), cur) {
+        app(|a| a.s.dark = d);
+        publish_shared();
+        prime_theme(d);
+        across_windows(|| apply_theme_desk());
+        note_save();
+    }
+}
+
+// Applies the current theme in place. Explorer views stay, so history, filter, selection, scroll and a typed address stay.
 pub(crate) unsafe fn apply_theme() {
     let dark = resolve_dark(app(|a| a.s.theme));
     app(|a| a.s.dark = dark);

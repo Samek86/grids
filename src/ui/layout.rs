@@ -485,6 +485,16 @@ mod tests {
     }
 
     #[test]
+    fn theme_follow_switches_only_when_it_differs() {
+        use crate::theme_target;
+        assert_eq!(theme_target(true, Some(true), false), Some(true));
+        assert_eq!(theme_target(true, Some(false), true), Some(false));
+        assert_eq!(theme_target(true, Some(true), true), None);
+        assert_eq!(theme_target(false, Some(true), false), None);
+        assert_eq!(theme_target(true, None, false), None);
+    }
+
+    #[test]
     fn gap_lines_mark_real_splitters() {
         let g = Geo {
             w: 1000,
