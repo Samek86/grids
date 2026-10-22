@@ -553,6 +553,7 @@ pub(crate) unsafe fn set_language(lang: Lang) {
             }
         }
         refresh_save_button();
+        rename_fields();
         app(|a| a.status_key.clear());
     });
     apply_font_all();

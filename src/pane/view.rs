@@ -5,6 +5,7 @@ use crate::ui::*;
 use crate::session::*;
 use crate::i18n::*;
 use crate::settings;
+use windows::Win32::UI::Accessibility::{IAccPropServices, CLSID_AccPropServices, PROPID_ACC_NAME};
 use windows::Win32::UI::Controls::{
     CDIS_FOCUS, LIST_VIEW_GROUP_STATE_FLAGS, LVCDI_GROUP, LVGA_HEADER_CENTER, LVGA_HEADER_RIGHT, LVGF_ALIGN, LVGF_DESCRIPTIONBOTTOM, LVGF_DESCRIPTIONTOP, LVGF_EXTENDEDIMAGE, LVGF_FOOTER, LVGF_HEADER,
     LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_TITLEIMAGE, LVGGR_HEADER, LVGROUP, LVGROUP_MASK, LVGS_COLLAPSED, LVGS_COLLAPSIBLE, LVGS_FOCUSED, LVGS_SELECTED, LVGS_SUBSETED, LVM_GETGROUPINFO,
@@ -37,9 +38,19 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
         add_tip(child(h, w!("BUTTON"), PCWSTR(HSTRING::from(name).as_ptr()), btn, plain, id, font), tip);
     }
     let edit = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_EDIT, font);
+    let filt = child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
+    _ = SetWindowSubclass(filt, Some(filter_hint_proc), 4, 0);
+    name_fields(h, i);
     // Folder suggestions as you type, like Explorer's address bar; folders only, since navigate() only browses folders
     _ = SHAutoComplete(edit, SHACF_FILESYS_DIRS | SHACF_AUTOSUGGEST_FORCE_ON | SHACF_AUTOAPPEND_FORCE_OFF);
-    child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, plain, ID_FILTER, font);
+    add_tip(
+        filt,
+        tr(
+            "Name filter (Ctrl+F) · icon or Alt+↓: file types",
+            "이름 필터 (Ctrl+F) · 아이콘 또는 Alt+↓: 파일 종류",
+            "名前フィルター (Ctrl+F) · アイコンまたは Alt+↓: ファイルの種類",
+        ),
+    );
 
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
     let site: IServiceProvider = Host(i).into();
@@ -54,6 +65,61 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
     Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None, icon: -1, ticket: 0 })
+}
+
+const EM_GETMARGINS: u32 = 0xD4;
+
+/// Screen readers otherwise only say "edit". Redone when the language changes or a pane changes slot.
+pub(crate) unsafe fn name_fields(h: HWND, i: usize) {
+    let pane = format!("{} {}", tr("Pane", "패널", "ペイン"), i + 1);
+    a11y_name(GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), Some(&format!("{pane} {}", tr("address", "주소", "アドレス"))));
+    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr("name filter", "이름 필터", "名前フィルター"))));
+}
+
+pub(crate) unsafe fn rename_fields() {
+    let panes: Vec<(HWND, usize)> = app(|a| a.panes.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (p.hwnd, i))).collect());
+    for (h, i) in panes {
+        name_fields(h, i);
+        if let Ok(f) = GetDlgItem(Some(h), ID_FILTER) {
+            _ = InvalidateRect(Some(f), None, true);
+        }
+    }
+}
+
+unsafe fn a11y_name(h: HWND, name: Option<&str>) {
+    if h.0.is_null() {
+        return;
+    }
+    let Ok(acc) = CoCreateInstance::<_, IAccPropServices>(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER) else { return };
+    _ = match name {
+        Some(n) => acc.SetHwndPropStr(h, OBJID_CLIENT.0 as u32, CHILDID_SELF, PROPID_ACC_NAME, &HSTRING::from(n)),
+        None => acc.ClearHwndProps(h, OBJID_CLIENT.0 as u32, CHILDID_SELF, &[PROPID_ACC_NAME]),
+    };
+}
+
+/// Empty, unfocused filter: "Name filter · Ctrl+F" in the field's own font. The edit itself stays.
+unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+    let hint = msg == WM_PAINT && GetWindowTextLengthW(h) == 0 && GetFocus() != h;
+    if hint {
+        _ = InvalidateRect(Some(h), None, true);
+    }
+    let r = DefSubclassProc(h, msg, wp, lp);
+    if msg == WM_SETFOCUS || msg == WM_KILLFOCUS {
+        _ = InvalidateRect(Some(h), None, true);
+    } else if hint {
+        let dc = GetDC(Some(h));
+        let mut rc = RECT::default();
+        _ = GetClientRect(h, &mut rc);
+        rc.left += (SendMessageW(h, EM_GETMARGINS, None, None).0 & 0xffff) as i32;
+        let font = SelectObject(dc, HGDIOBJ(SendMessageW(h, WM_GETFONT, None, None).0 as _));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, cref(blend(pal().sub, pal().text, 0.2)));
+        let mut hint: Vec<u16> = tr("Name filter · Ctrl+F", "이름 필터 · Ctrl+F", "名前フィルター · Ctrl+F").encode_utf16().collect();
+        DrawTextW(dc, &mut hint, &mut rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        SelectObject(dc, font);
+        _ = ReleaseDC(Some(h), dc);
+    }
+    r
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
@@ -74,6 +140,14 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
     });
     if let Some(p) = p {
         drop_icon_request(p.hwnd);
+        for id in [ID_EDIT, ID_FILTER] {
+            if let Ok(c) = GetDlgItem(Some(p.hwnd), id) {
+                a11y_name(c, None);
+                if id == ID_FILTER {
+                    _ = RemoveWindowSubclass(c, Some(filter_hint_proc), 4);
+                }
+            }
+        }
         _ = RevokeDragDrop(p.hwnd);
         _ = p.eb.Unadvise(p.cookie);
         _ = IUnknown_SetSite(&p.eb, None);
