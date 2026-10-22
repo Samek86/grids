@@ -359,6 +359,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     a.dpi = dpi;
                 });
                 apply_font();
+                fit_load();
                 let r = &*(lp.0 as *const RECT);
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
