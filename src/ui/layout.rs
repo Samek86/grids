@@ -83,6 +83,11 @@ pub(crate) struct Geo {
     pub(crate) zoom: bool, // one pane fills the grid: no splitters
 }
 
+/// A splitter release stores the clamped panel width. While the panel is hidden, the kept width stays.
+pub(crate) fn kept_side(panel: bool, stored: i32, clamped: i32) -> i32 {
+    if panel { clamped } else { stored }
+}
+
 pub(crate) fn geo(a: &App) -> Geo {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(a.main, &mut rc) };
@@ -410,6 +415,13 @@ mod tests {
         assert!(top >= 1 && bot >= 1);
         assert_eq!(top + bot, 92);
         assert!(side_min(96) == 80 && side_min(192) == 160);
+    }
+
+    #[test]
+    fn hidden_panel_keeps_its_width() {
+        // Hidden, then a column drag: the clamped 0 must not replace 600.
+        assert_eq!(kept_side(false, 600, 0), 600);
+        assert_eq!(kept_side(true, 600, 536), 536);
     }
 
     #[test]
