@@ -230,8 +230,8 @@ pub(crate) unsafe fn update_status() {
     let Some(rc) = app(|a| {
         let (head, size, tail) = a.status_base.clone();
         let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
-        // a short confirmation (path copied) leads for 3 s: the line's end gets cut when it's too long
-        a.note = a.note.take().filter(|(_, t)| t.elapsed().as_secs() < 3);
+        // a confirmation leads until its expiry: the line's end gets cut when it's too long
+        a.note = a.note.take().filter(|(_, until)| Instant::now() < *until);
         let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
         let status = format!("{note}{head}{size}{tail}");
         (a.status != status).then(|| {

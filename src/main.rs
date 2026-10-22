@@ -119,6 +119,13 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(match_proc),
+            hInstance: hinst,
+            hCursor: arrow,
+            lpszClassName: w!("GridsMatch"),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(keys_proc),
             hInstance: hinst,
             hCursor: arrow,

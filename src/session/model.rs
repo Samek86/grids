@@ -773,6 +773,11 @@ pub(crate) fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
 }
 
+/// A folder you can browse. ZIP, CAB and the like are FOLDER|STREAM, so a filter treats them as files.
+pub(crate) fn real_folder(attr: u32) -> bool {
+    attr & SFGAO_FOLDER.0 != 0 && attr & SFGAO_STREAM.0 == 0
+}
+
 /// Address crumbs of a parsing name: (shown name, folder to open). The drive or `\\server\share` is first.
 /// Shell places such as This PC have none.
 pub(crate) fn crumbs(parse: &str) -> Vec<(String, String)> {
