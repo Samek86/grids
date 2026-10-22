@@ -933,7 +933,8 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{crumb_fit, crumbs};
+    use super::{crumb_fit, crumbs, real_folder};
+    use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::THIS_PC;
 
     #[test]
@@ -960,6 +961,14 @@ mod crumb_tests {
         assert_eq!(f(&[30, 40], 15), (2, false, 0));
         assert_eq!(f(&[30, 40], 0), (2, false, 0));
         assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn archives_match_by_name() {
+        assert!(real_folder(SFGAO_FOLDER.0));
+        assert!(!real_folder(SFGAO_FOLDER.0 | SFGAO_STREAM.0));
+        assert!(!real_folder(SFGAO_STREAM.0));
+        assert!(!real_folder(0));
     }
 }
 
