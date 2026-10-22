@@ -231,6 +231,10 @@ pub(crate) unsafe fn update_status() {
     let Some(rc) = app(|a| {
         let (head, size, tail) = a.status_base.clone();
         let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
+        if let Some(saved) = SAVED.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            a.note = Some((saved, Instant::now() + std::time::Duration::from_secs(5)));
+            a.lost = 0;
+        }
         // a confirmation leads until its expiry: the line's end gets cut when it's too long
         a.note = a.note.take().filter(|(_, until)| Instant::now() < *until);
         let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();

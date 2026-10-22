@@ -525,9 +525,12 @@ fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
 }
 
 const EXPLORER: [&str; 3] = [
-    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\n",
+    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\
+Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\n",
+    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\
+Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\n",
+    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\
+Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\n",
 ];
 
 const NOTES_EN: &str = "\
