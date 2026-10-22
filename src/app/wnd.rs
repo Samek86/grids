@@ -176,6 +176,23 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
                 ID_HIDDEN => toggle_hidden(),
                 ID_PANEL => toggle_tree(),
+                ID_FOLLOW => {
+                    let follow = app(|a| {
+                        if a.s.theme == 0 {
+                            a.s.theme = if a.s.dark { 2 } else { 1 };
+                            false
+                        } else {
+                            a.s.theme = 0;
+                            true
+                        }
+                    });
+                    publish_shared();
+                    if follow {
+                        _ = PostMessageW(Some(h), WM_THEME_SYNC, WPARAM(0), LPARAM(0));
+                    }
+                    save_session();
+                    settings::redraw();
+                }
                 ID_EXT => {
                     let on = app(|a| {
                         a.s.ext ^= true;
@@ -207,6 +224,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 check(ID_HIDDEN, hidden());
                 check(ID_PANEL, panel);
                 check(ID_EXT, ext);
+                check(ID_FOLLOW, app(|a| a.s.theme == 0));
                 if let Some(i) = crate::keys::index("view.panel") {
                     let label = format!("{}\t{}", tr("Left panel", "왼쪽 패널", "左のパネル"), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_PANEL as u32, MF_BYCOMMAND | MF_STRING, ID_PANEL as usize, &HSTRING::from(label));
@@ -254,6 +272,17 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             // Restart or sign-out does not send WM_CLOSE. Saving here keeps the last folders.
             WM_ENDSESSION if wp.0 != 0 => save_session(),
+            // Windows light/dark changed. Queued so nothing is drawn inside the broadcast.
+            WM_SETTINGCHANGE => {
+                if lp.0 != 0 {
+                    let wide = PCWSTR(lp.0 as *const u16);
+                    if wide.to_string().is_ok_and(|s| s == "ImmersiveColorSet") {
+                        _ = PostMessageW(Some(h), WM_THEME_SYNC, WPARAM(0), LPARAM(0));
+                    }
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_THEME_SYNC => theme_sync(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
@@ -568,6 +597,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
     item(view, MF_STRING, ID_PANEL, tr("Left panel\tCtrl+Shift+E", "왼쪽 패널\tCtrl+Shift+E", "左のパネル\tCtrl+Shift+E"))?;
     item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
+    item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
     item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
