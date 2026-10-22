@@ -620,7 +620,8 @@ fn load_legacy(exe: &Path, cfg: &Path) -> Session {
     s
 }
 
-/// Same as `try_load_at` for callers that only see a readable file (tests, migration).
+/// Same as `try_load_at` for tests that only see a readable file.
+#[cfg(test)]
 pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
     try_load_at(exe, cfg).unwrap_or_else(|_| {
         remember(SettingsFile::default());
