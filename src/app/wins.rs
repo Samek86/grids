@@ -248,6 +248,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     }
     let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     app(|a| a.side_hwnd = side);
+    register_side_drop(side);
     prime_theme(app(|a| a.s.dark));
     apply_theme_desk();
     apply_font();

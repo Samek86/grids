@@ -187,6 +187,13 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 open_in_new_window(args);
                 return LRESULT(1);
             }
+            WM_ACTIVATE => {
+                // Back in front: refresh Explorer pins and favourite files if either group is open.
+                // Debounced in request_pins. One read fills both lists.
+                if (wp.0 & 0xffff) as u32 != WA_INACTIVE {
+                    request_pins(false);
+                }
+            }
             WM_DPICHANGED => {
                 let dpi = (wp.0 & 0xffff) as i32;
                 app(|a| {
