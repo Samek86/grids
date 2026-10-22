@@ -29,6 +29,9 @@ fn pins_open() -> bool {
 fn pins_are_open(v: &bool) -> bool {
     *v
 }
+fn is_on(v: &bool) -> bool {
+    *v
+}
 fn files_open() -> bool {
     true
 }
@@ -182,6 +185,9 @@ struct SettingsFile {
     dot: bool,
     #[serde(default = "yes")]
     dblup: bool,
+    /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    hotkey: bool,
     #[serde(default = "lang_auto")]
     lang: String,
     #[serde(default = "yes")]
@@ -244,6 +250,7 @@ impl SettingsFile {
             autosave: false,
             dot: true,
             dblup: true,
+            hotkey: true,
             lang: lang_auto(),
             single: true,
             session: String::new(),
@@ -314,6 +321,7 @@ impl SettingsFile {
             autosave: s.autosave,
             dot: s.dot,
             dblup: s.dblup,
+            hotkey: s.hotkey,
             lang: s.lang.ini().into(),
             single: s.single,
             session: s.file.clone(),
@@ -421,6 +429,7 @@ impl SettingsFile {
         s.autosave = self.autosave;
         s.dot = self.dot;
         s.dblup = self.dblup;
+        s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
         s.file = self.session.clone();
@@ -951,7 +960,7 @@ mod tests {
         let mut file = SettingsFile::from_session(&Session::default());
         file.keybindings.insert("copy".into(), serde_json::json!("Ctrl+C"));
         let _ = adopt(&pretty(&file));
-        assert_eq!(crate::keys::lookup(b'K' as u16, true, false, false), Some(i));
+        assert_eq!(crate::keys::lookup(b'K' as u16, true, false, false, false), Some(i));
         let again: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
         assert_eq!(again["keybindings"]["tab.new"], "Ctrl+K");
         assert_eq!(again["keybindings"]["copy"], "Ctrl+C");

@@ -31,6 +31,7 @@ pub(crate) const ID_NEWFILE: usize = 1115;
 pub(crate) const ID_PANEL: usize = 1116; // left panel (folder tree and favourites)
 pub(crate) const ID_EXT: usize = 1117; // show file extensions (Windows setting)
 pub(crate) const ID_FOLLOW: usize = 1118; // follow Windows light / dark
+pub(crate) const ID_HOTKEY: usize = 1119; // global hotkey, checked only while it is registered
 pub(crate) const WM_THEME_SYNC: u32 = WM_APP + 47;
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;

@@ -130,6 +130,7 @@ pub(crate) struct Session {
     pub(crate) accent_dark: u32,       // selection colour, dark theme
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
+    pub(crate) hotkey: bool,           // global hotkey brings Grids forward; the chord is in the keymap
     pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
     pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
@@ -178,6 +179,7 @@ impl Default for Session {
             accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
+            hotkey: true,
             file: String::new(),
             favs: Vec::new(),
             tree: Vec::new(),
@@ -229,6 +231,7 @@ impl PartialEq for Session {
             && self.accent_dark == o.accent_dark
             && self.dark == o.dark
             && self.dblup == o.dblup
+            && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
             && self.tree == o.tree
@@ -448,6 +451,7 @@ impl Session {
                 "autosave" => s.autosave = v.trim() == "1",
                 "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
+                "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
                 "session" => s.file = v.trim().to_string(),
@@ -517,7 +521,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\nlang={}\nsingle={}\n", self.dblup as u8, self.lang.ini(), self.single as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }

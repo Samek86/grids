@@ -301,6 +301,8 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     app(|a| a.base = Some(base.unwrap_or_else(|| a.s.clone())));
     refresh_save_button();
     SetTimer(Some(main), TIMER_STATUS, 300, None);
+    // Taken by another app: the menu stays unchecked and hotkey stays on, so the next start tries again.
+    try_register_hotkey(main);
     if !seed {
         _ = SetForegroundWindow(main);
     }

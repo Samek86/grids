@@ -140,6 +140,9 @@ pub(crate) struct App {
     pub(crate) cur: usize,
     /// A failed grids.json write is tried again after this instant. Not mid-drag.
     pub(crate) save_after: Option<Instant>,
+    pub(crate) hot_on: bool,    // the global hotkey is really registered (s.hotkey is only the wish)
+    pub(crate) hot_hwnd: HWND,  // the window that owns that registration
+    pub(crate) last_front: usize, // desk that was active most recently
 }
 
 impl Deref for App {
@@ -249,7 +252,7 @@ pub(crate) fn blank_desk() -> Desk {
 }
 
 thread_local! {
-    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, save_after: None });
+    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, save_after: None, hot_on: false, hot_hwnd: HWND::default(), last_front: 0 });
 }
 
 pub(crate) fn no_panes() -> Vec<Option<Pane>> {
@@ -441,6 +444,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.autosave = src.autosave;
     dst.dot = src.dot;
     dst.dblup = src.dblup;
+    dst.hotkey = src.hotkey;
     dst.lang = src.lang;
     dst.single = src.single;
     dst.favs = src.favs.clone();
