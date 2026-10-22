@@ -665,7 +665,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         app(|a| gone_note(a, &missing, &opened));
         update_status();
     }
-    let Some((h, eb, view, cols)) = app(|a| {
+    let Some((h, eb, view, cols, ticket)) = app(|a| {
         let fs = is_fs(&parse);
         let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
         let path = a.s.paths[i].clone();
@@ -673,9 +673,11 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         let (v, own) = (a.s.views[i], a.s.cols[i].clone());
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
+            // The previous folder's icon goes as soon as the browse starts. A new lookup replaces it.
+            (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
             // waiting columns (session, open in) first, else the pane's own; none in shell places
             let cols = p.pending.take().unwrap_or(own);
-            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()))
+            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()), p.ticket)
         })
     }) else {
         return;
@@ -685,6 +687,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         show_path_end(e, &disp);
     }
     sync_addr(h);
+    request_icon(h, ticket, pidl);
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
     }

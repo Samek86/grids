@@ -440,6 +440,22 @@ mod tests {
     }
 
     #[test]
+    fn address_icon_slot_is_fixed() {
+        use crate::{addr_icon, crumb_field};
+        for dpi in [96, 144] {
+            let s = |v: i32| v * dpi / 96;
+            let narrow = RECT { left: 0, top: 0, right: s(90) - 1, bottom: s(22) };
+            let wide = RECT { left: 10, top: 4, right: 10 + s(200), bottom: 4 + s(22) };
+            assert!(addr_icon(narrow, dpi).is_none());
+            assert_eq!(crumb_field(narrow, dpi).left, narrow.left + s(8));
+            let r = addr_icon(wide, dpi).unwrap();
+            assert_eq!((r.right - r.left, r.bottom - r.top), (s(16), s(16)));
+            assert_eq!(crumb_field(wide, dpi).left, wide.left + s(26));
+            assert_eq!(crumb_field(wide, dpi).left, crumb_field(wide, dpi).left);
+        }
+    }
+
+    #[test]
     fn tint_strip_sits_above_the_buttons() {
         for dpi in [96, 120, 144, 192] {
             for w in [120, 400] {

@@ -360,6 +360,17 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_PAINT => paint_pane(h),
+            // The icon's square only. The edit and the crumbs stay where they are.
+            WM_PANE_ICON => {
+                let (changed, dpi) = app(|a| {
+                    let p = a.panes.iter_mut().flatten().find(|p| p.hwnd == h);
+                    let new = p.and_then(|p| take_icon(p.ticket, wp.0 as u32, lp.0 as i32).filter(|&n| n != p.icon).map(|n| p.icon = n));
+                    (new.is_some(), a.dpi)
+                });
+                if let Some(r) = addr_icon(addr_rect(h, dpi), dpi).filter(|_| changed) {
+                    _ = InvalidateRect(Some(h), Some(&r), false);
+                }
+            }
             // folder dropped on the top bar: still this pane's? then open it here, as ⇄ does
             WM_DROP_OPEN => {
                 let queued = app(|a| {
