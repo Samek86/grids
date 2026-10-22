@@ -145,6 +145,7 @@ pub(crate) struct Session {
     pub(crate) tree_on: bool,          // left panel open
     pub(crate) side_split: f64,        // folder tree's share of the left panel; favourites take the rest
     pub(crate) pins_open: bool,        // Explorer pins group expanded; the rows are not saved
+    pub(crate) files_open: bool,       // Explorer favourite-files group expanded; hidden when empty; rows are not saved
     pub(crate) edge: bool,             // accent border on the active pane
     pub(crate) confirm: bool,          // ask before delete
     pub(crate) del: u8,                // 0 recycle bin, 1 permanent
@@ -191,6 +192,7 @@ impl Default for Session {
             tree_on: true,
             side_split: 0.5,
             pins_open: true,
+            files_open: true,
             edge: true,
             confirm: true,
             del: 0,
@@ -240,6 +242,7 @@ impl PartialEq for Session {
             && self.tree_on == o.tree_on
             && self.side_split == o.side_split
             && self.pins_open == o.pins_open
+            && self.files_open == o.files_open
             && self.edge == o.edge
             && self.confirm == o.confirm
             && self.del == o.del

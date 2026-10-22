@@ -1,5 +1,6 @@
 // Favourites, the bottom half of the left panel. One owner-drawn window: groups, files, and
-// folders from the same tree the Ctrl+B list uses, plus a virtual Explorer pins group on top.
+// folders from the same tree the Ctrl+B list uses, plus two virtual Explorer groups on top.
+// Pinned folders come first. Favourite files sit directly under them, and only when Explorer has any.
 
 use crate::imports::*;
 use crate::app::*;
@@ -69,8 +70,10 @@ fn rows() -> Vec<FavRow> {
     app(|a| {
         a.s.ensure_fav_tree();
         let pins = if a.s.pins_open { pin_list() } else { Vec::new() };
-        let label = tr("Explorer pins", "탐색기 고정", "エクスプローラーのピン留め");
-        compose_side(&a.s.tree, a.s.pins_open, &pins, label)
+        let files = pin_files();
+        let pins_label = tr("Explorer pins", "탐색기 고정", "エクスプローラーのピン留め");
+        let files_label = tr("Explorer favourite files", "탐색기 즐겨찾기 파일", "エクスプローラーのお気に入りファイル");
+        compose_side(&a.s.tree, a.s.pins_open, &pins, pins_label, a.s.files_open, &files, files_label)
     })
 }
 
@@ -84,11 +87,11 @@ fn clamp_side_scroll() {
 }
 
 fn drag_of(r: &FavRow) -> SideDrag {
-    SideDrag { id: r.id.clone(), pins: r.pins, group: r.group, file: r.file, path: r.path.clone(), name: r.name.clone() }
+    SideDrag { id: r.id.clone(), kind: r.kind, group: r.group, file: r.file, path: r.path.clone(), name: r.name.clone() }
 }
 
 fn tree_pos(list: &[FavRow], id: &[usize]) -> Option<usize> {
-    list.iter().position(|r| !r.pins && r.id == id)
+    list.iter().position(|r| r.in_tree() && r.id == id)
 }
 
 fn row_at(y: i32) -> Option<usize> {
@@ -207,7 +210,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             let label_font = if f.group { bold } else { font };
             text(dc, RECT { left: label_left, right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);
         }
-        if !list.iter().any(|f| !f.pins) {
+        if !list.iter().any(|f| f.in_tree()) {
             let y = list.len() as i32 * rh - scroll + s(8);
             text(dc, RECT { left: s(12), top: y, right: rc.right - s(8), bottom: y + s(22) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
             text(dc, RECT { left: s(12), top: y + s(20), right: rc.right - s(8), bottom: y + s(44) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
@@ -232,7 +235,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
 
 pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     let list = rows();
-    let label = list.iter().find(|r| !r.pins && r.id == id).map(|r| if r.name.is_empty() { short_name(&r.path) } else { r.name.clone() }).unwrap_or_default();
+    let label = list.iter().find(|r| r.in_tree() && r.id == id).map(|r| if r.name.is_empty() { short_name(&r.path) } else { r.name.clone() }).unwrap_or_default();
     let i = tree_pos(&list, id);
     let rh = row_h();
     let (host, font, dpi, y) = app(|a| {
@@ -297,7 +300,7 @@ fn new_group(parent: &[usize]) {
         add_group(&mut a.s.tree, parent, &name);
         a.s.sync_favs();
     });
-    let id = rows().iter().rev().find(|r| !r.pins && r.group && r.name == name).map(|r| r.id.clone());
+    let id = rows().iter().rev().find(|r| r.in_tree() && r.group && r.name == name).map(|r| r.id.clone());
     changed();
     if let Some(id) = id {
         unsafe { begin_side_rename(&id) };
@@ -305,10 +308,17 @@ fn new_group(parent: &[usize]) {
 }
 
 fn toggle_row(row: &FavRow) {
-    if row.pins && row.group {
-        let open = app(|a| {
-            a.s.pins_open = !a.s.pins_open;
-            a.s.pins_open
+    if row.group && !row.in_tree() {
+        let open = app(|a| match row.kind {
+            RowKind::Pins => {
+                a.s.pins_open = !a.s.pins_open;
+                a.s.pins_open
+            }
+            RowKind::Files => {
+                a.s.files_open = !a.s.files_open;
+                a.s.files_open
+            }
+            RowKind::Tree => false,
         });
         if open {
             request_pins(false);
@@ -317,7 +327,7 @@ fn toggle_row(row: &FavRow) {
         clamp_side_scroll();
         return;
     }
-    if row.pins || !row.group {
+    if !row.in_tree() || !row.group {
         return;
     }
     app(|a| {
@@ -329,17 +339,22 @@ fn toggle_row(row: &FavRow) {
 
 unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
     let row = index.and_then(|i| rows().get(i).cloned());
-    if row.as_ref().is_some_and(|r| r.pins && r.group) {
+    if row.as_ref().is_some_and(|r| r.group && !r.in_tree()) {
         return;
     }
     let Ok(menu) = CreatePopupMenu() else { return };
     let add = |id: usize, label: &str| {
         _ = AppendMenuW(menu, MF_STRING, id, &HSTRING::from(label));
     };
-    let pin_leaf = row.as_ref().is_some_and(|r| r.pins && !r.group);
+    let pin_leaf = row.as_ref().is_some_and(|r| r.kind == RowKind::Pins && !r.group);
+    let file_leaf = row.as_ref().is_some_and(|r| r.kind == RowKind::Files && !r.group);
     if pin_leaf {
         add(6, tr("Unpin from Explorer", "탐색기에서 고정 해제", "エクスプローラーからピン留めを外す"));
         add(4, tr("Open", "열기", "開く"));
+    } else if file_leaf {
+        add(6, tr("Remove from Explorer favourites", "탐색기 즐겨찾기에서 빼기", "エクスプローラーのお気に入りから削除"));
+        add(4, tr("Open", "열기", "開く"));
+        add(5, tr("Reveal", "위치 표시", "場所を表示"));
     } else {
         add(1, tr("New group", "새 그룹", "新しいグループ"));
         if row.is_some() {
@@ -363,9 +378,16 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
         }
         return;
     };
-    if row.pins {
+    if !row.in_tree() {
         match cmd {
-            4 => open_fav_target(&row.path, false),
+            4 => open_fav_target(&row.path, row.file),
+            5 if row.file => {
+                if let Some(parent) = parent_of(&row.path) {
+                    let i = active_pane();
+                    navigate(i, &parent);
+                    focus_view(i);
+                }
+            }
             6 => unpin_path(&row.path),
             _ => {}
         }
@@ -412,10 +434,11 @@ fn track_drop(y: i32) -> bool {
     let list = rows();
     let Some(i) = row_at(y) else { return set_drop(None) };
     let Some(target) = list.get(i) else { return set_drop(None) };
-    let kind = side_act(drag.pins, drag.group, drag.file, drag.path.is_empty(), target.pins);
+    let kind = side_act(drag.kind, drag.group, drag.file, drag.path.is_empty(), target.kind);
     let next = match kind {
         SideAct::None => None,
-        SideAct::Pin => list.iter().position(|r| r.pins && r.group).map(|row| (row, 1)),
+        SideAct::Pin => list.iter().position(|r| r.kind == RowKind::Pins && r.group).map(|row| (row, 1)),
+        SideAct::PinFile => list.iter().position(|r| r.kind == RowKind::Files && r.group).map(|row| (row, 1)),
         SideAct::Copy | SideAct::Move => {
             let scroll = app(|a| a.side_scroll);
             let rh = row_h();
@@ -444,11 +467,11 @@ fn refresh_pins_soon() {
     unsafe { _ = SetTimer(Some(h), TIMER_PINS, 700, None) };
 }
 
-fn pin_path(path: &str, name: &str) {
+fn pin_home(path: &str, name: &str, file: bool) {
     if path.is_empty() {
         return;
     }
-    let added = remember_pinned(path, name);
+    let added = remember_pinned(path, name, file);
     if !shell_home_verb(path, true) {
         if added {
             forget_pinned(path);
@@ -457,8 +480,14 @@ fn pin_path(path: &str, name: &str) {
         unsafe { _ = MessageBeep(MB_ICONWARNING) };
         return;
     }
-    let was_open = app(|a| a.s.pins_open);
-    app(|a| a.s.pins_open = true);
+    let was_open = app(|a| if file { a.s.files_open } else { a.s.pins_open });
+    app(|a| {
+        if file {
+            a.s.files_open = true;
+        } else {
+            a.s.pins_open = true;
+        }
+    });
     if was_open {
         unsafe {
             across_windows(|| {
@@ -500,13 +529,14 @@ fn finish_drop() {
         repaint_side();
         return;
     };
-    match side_act(drag.pins, drag.group, drag.file, drag.path.is_empty(), target.pins) {
+    match side_act(drag.kind, drag.group, drag.file, drag.path.is_empty(), target.kind) {
         SideAct::None => repaint_side(),
-        SideAct::Pin => pin_path(&drag.path, &drag.name),
+        SideAct::Pin => pin_home(&drag.path, &drag.name, false),
+        SideAct::PinFile => pin_home(&drag.path, &drag.name, true),
         SideAct::Copy => {
             let name = if drag.name.is_empty() || drag.name == short_name(&drag.path) { String::new() } else { drag.name.clone() };
             let copied = app(|a| {
-                let id = copy_leaf(&mut a.s.tree, &drag.path, &name, &target.id, zone);
+                let id = copy_leaf(&mut a.s.tree, &drag.path, &name, &target.id, zone, drag.file);
                 if id.is_some() {
                     if zone == 1 {
                         set_open(&mut a.s.tree, &target.id, true);
@@ -562,6 +592,12 @@ fn prewarm_fav_icons() {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         fav_exts(&a.s.tree, &mut seen, &mut out);
+        for p in pin_files() {
+            let ext = file_ext(&p.path);
+            if !ext.is_empty() && !per_file_icon(&ext) && seen.insert(ext.clone()) {
+                out.push(ext);
+            }
+        }
         out
     });
     prewarm_exts(&exts);
@@ -610,7 +646,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 } else if let Some((px, py, i)) = app(|a| a.side_press) {
                     if (x - px).abs() + (y - py).abs() > 4 {
-                        if let Some(row) = rows().get(i).filter(|r| !(r.pins && r.group)) {
+                        if let Some(row) = rows().get(i).filter(|r| !(r.group && !r.in_tree())) {
                             let drag = drag_of(row);
                             app(|a| a.side_drag = Some(drag));
                             if track_drop(y) {
@@ -701,7 +737,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
                 VK_DELETE => {
                     let row = app(|a| a.side_sel).and_then(|i| rows().get(i).cloned());
-                    if let Some(row) = row.filter(|r| !r.pins) {
+                    if let Some(row) = row.filter(|r| r.in_tree()) {
                         app(|a| {
                             delete_at(&mut a.s.tree, &row.id);
                             a.s.sync_favs();
@@ -711,7 +747,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 }
                 VK_F2 => {
-                    if let Some(row) = app(|a| a.side_sel).and_then(|i| rows().get(i).cloned()).filter(|r| !r.pins) {
+                    if let Some(row) = app(|a| a.side_sel).and_then(|i| rows().get(i).cloned()).filter(|r| r.in_tree()) {
                         begin_side_rename(&row.id);
                     }
                 }
@@ -744,54 +780,82 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
     }
 }
 
-/// Folders dragged from a pane onto the pins group. A file in the selection refuses the drop.
-fn pin_paths_of(d: &Ref<IDataObject>) -> Vec<String> {
+/// A pane selection that can land on one Explorer group. Mixed files and folders are refused.
+#[derive(Clone)]
+enum HomeDrop {
+    Folders(Vec<String>),
+    Files(Vec<String>),
+}
+
+fn home_drop_of(d: &Ref<IDataObject>) -> Option<HomeDrop> {
     unsafe {
-        let Some(arr) = drop_items(d) else { return Vec::new() };
+        let Some(arr) = drop_items(d) else { return None };
         let n = arr.GetCount().unwrap_or(0).min(64);
+        if n == 0 {
+            return None;
+        }
         let mut items = Vec::with_capacity(n as usize);
         for i in 0..n {
-            let Ok(item) = arr.GetItemAt(i) else { return Vec::new() };
-            let folder = item.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
+            let Ok(item) = arr.GetItemAt(i) else { return None };
+            let folder = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM).is_ok_and(shell_is_folder);
             let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).unwrap_or_default();
             items.push((path, folder));
         }
-        pin_drop_paths(&items).unwrap_or_default()
+        if let Some(paths) = pin_drop_paths(&items) {
+            Some(HomeDrop::Folders(paths))
+        } else {
+            file_drop_paths(&items).map(HomeDrop::Files)
+        }
     }
+}
+
+fn home_accepts(drop: &HomeDrop, kind: RowKind) -> bool {
+    matches!((drop, kind), (HomeDrop::Folders(_), RowKind::Pins) | (HomeDrop::Files(_), RowKind::Files))
 }
 
 #[implement(IDropTarget)]
 struct SideDrop {
     hwnd: HWND,
-    folders: RefCell<Vec<String>>,
+    pending: RefCell<Option<HomeDrop>>,
 }
 
 impl SideDrop {
-    unsafe fn over_pins(&self, pt: &POINTL) -> bool {
+    unsafe fn home_at(&self, pt: &POINTL) -> Option<RowKind> {
         bind_hwnd(self.hwnd);
         let mut p = POINT { x: pt.x, y: pt.y };
         if !ScreenToClient(self.hwnd, &mut p).as_bool() {
-            return false;
+            return None;
         }
         let list = rows();
-        row_at(p.y).and_then(|i| list.get(i)).is_some_and(|r| r.pins)
+        let kind = row_at(p.y).and_then(|i| list.get(i)).map(|r| r.kind)?;
+        matches!(kind, RowKind::Pins | RowKind::Files).then_some(kind)
     }
 
     unsafe fn hover(&self, pt: &POINTL, effect: *mut DROPEFFECT) {
         if effect.is_null() {
             return;
         }
-        let over = !self.folders.borrow().is_empty() && self.over_pins(pt);
-        *effect = if over { drop_pick(*effect) } else { DROPEFFECT_NONE };
-        let show = over && *effect != DROPEFFECT_NONE;
-        let next = if show { rows().iter().position(|r| r.pins && r.group).map(|row| (row, 1)) } else { None };
+        let pending = self.pending.borrow().clone();
+        let at = self.home_at(pt);
+        let ok = pending.as_ref().zip(at).is_some_and(|(d, k)| home_accepts(d, k));
+        *effect = if ok { drop_pick(*effect) } else { DROPEFFECT_NONE };
+        let show = ok && *effect != DROPEFFECT_NONE;
+        let next = if show {
+            let want = match pending.as_ref() {
+                Some(HomeDrop::Folders(_)) => RowKind::Pins,
+                _ => RowKind::Files,
+            };
+            rows().iter().position(|r| r.group && r.kind == want).map(|row| (row, 1))
+        } else {
+            None
+        };
         if set_drop(next) {
             _ = InvalidateRect(Some(self.hwnd), None, false);
         }
     }
 
     unsafe fn clear(&self) {
-        *self.folders.borrow_mut() = Vec::new();
+        *self.pending.borrow_mut() = None;
         if set_drop(None) {
             _ = InvalidateRect(Some(self.hwnd), None, false);
         }
@@ -802,7 +866,7 @@ impl IDropTarget_Impl for SideDrop_Impl {
     fn DragEnter(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
-            *self.folders.borrow_mut() = pin_paths_of(&d);
+            *self.pending.borrow_mut() = home_drop_of(&d);
             self.hover(pt, effect);
         }
         Ok(())
@@ -818,13 +882,16 @@ impl IDropTarget_Impl for SideDrop_Impl {
     fn Drop(&self, _: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
-            let paths = self.folders.borrow().clone();
+            let pending = self.pending.borrow().clone();
+            let at = self.home_at(pt);
             let allowed = if effect.is_null() { DROPEFFECT_NONE } else { *effect };
             self.clear();
             if !effect.is_null() {
                 *effect = DROPEFFECT_NONE;
             }
-            if paths.is_empty() || !self.over_pins(pt) {
+            let Some(pending) = pending else { return Ok(()) };
+            let Some(at) = at else { return Ok(()) };
+            if !home_accepts(&pending, at) {
                 return Ok(());
             }
             let eff = drop_pick(allowed);
@@ -834,8 +901,17 @@ impl IDropTarget_Impl for SideDrop_Impl {
             if !effect.is_null() {
                 *effect = eff;
             }
-            for path in &paths {
-                pin_path(path, "");
+            match pending {
+                HomeDrop::Folders(paths) => {
+                    for path in &paths {
+                        pin_home(path, "", false);
+                    }
+                }
+                HomeDrop::Files(paths) => {
+                    for path in &paths {
+                        pin_home(path, "", true);
+                    }
+                }
             }
         }
         Ok(())
@@ -846,7 +922,7 @@ pub(crate) unsafe fn register_side_drop(h: HWND) {
     if h.0.is_null() {
         return;
     }
-    let dt: IDropTarget = SideDrop { hwnd: h, folders: RefCell::new(Vec::new()) }.into();
+    let dt: IDropTarget = SideDrop { hwnd: h, pending: RefCell::new(None) }.into();
     _ = RegisterDragDrop(h, &dt);
 }
 
