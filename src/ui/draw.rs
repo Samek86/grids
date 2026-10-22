@@ -365,19 +365,167 @@ pub(crate) unsafe fn paint_main(h: HWND) {
     });
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) enum Crumb {
+    Here,
+    Go(String),
+    More(Vec<(String, String)>), // folded parents, nearest first
+    Sep,
+}
+
+/// Where crumbs sit in the address pill: the edit's horizontal span, a little inside the pill vertically.
+pub(crate) fn crumb_field(addr: RECT, dpi: i32) -> RECT {
+    let s = |v: i32| v * dpi / 96;
+    let left = addr.left + s(8);
+    RECT { left, top: addr.top + s(3), right: (addr.right - s(6)).max(left), bottom: addr.bottom - s(3) }
+}
+
+pub(crate) fn addr_rect(h: HWND, dpi: i32) -> RECT {
+    let mut rc = RECT::default();
+    unsafe { _ = GetClientRect(h, &mut rc) };
+    pane_geo(rc.right, rc.bottom, dpi).addr
+}
+
+/// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
+pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
+    let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
+        return Vec::new();
+    };
+    let s = |v: i32| v * dpi / 96;
+    let mut items = crumbs(&parse);
+    if items.is_empty() {
+        let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp };
+        items.push((name, String::new()));
+    }
+    let old = SelectObject(dc, font.into());
+    let width = |t: &str| {
+        let w: Vec<u16> = t.encode_utf16().collect();
+        let mut sz = SIZE::default();
+        _ = GetTextExtentPoint32W(dc, &w, &mut sz);
+        sz.cx
+    };
+    let w: Vec<i32> = items.iter().map(|(n, _)| width(n) + 2 * s(4)).collect();
+    let (sep, ell) = (width("›") + 2 * s(2), width("…") + 2 * s(4));
+    SelectObject(dc, old);
+    let (first, more, last) = crumb_fit(&w, field.right - field.left, sep, ell, s(16));
+    let mut out = Vec::new();
+    let mut x = field.left;
+    let mut put = |wd: i32, label: &str, c: Crumb| {
+        out.push((RECT { left: x, right: x + wd, ..field }, label.to_string(), c));
+        x += wd;
+    };
+    if more {
+        put(ell, "…", Crumb::More(items[..first].iter().rev().cloned().collect()));
+        put(sep, "›", Crumb::Sep);
+    }
+    for k in first..items.len() {
+        if k + 1 == items.len() {
+            put(last, &items[k].0, Crumb::Here);
+        } else {
+            put(w[k], &items[k].0, Crumb::Go(items[k].1.clone()));
+            put(sep, "›", Crumb::Sep);
+        }
+    }
+    out.retain_mut(|(r, ..)| {
+        (r.left, r.right) = (r.left.max(field.left), r.right.min(field.right));
+        r.right > r.left
+    });
+    out
+}
+
+/// None when the edit is showing or the point misses the pill. Some(None) is empty space on the pill.
+pub(crate) unsafe fn crumb_at(h: HWND, i: usize, x: i32, y: i32) -> Option<Option<(usize, RECT, Crumb)>> {
+    if GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| IsWindowVisible(e).as_bool()) {
+        return None;
+    }
+    let (dpi, font) = app(|a| (a.dpi, a.font));
+    let inr = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+    let addr = addr_rect(h, dpi);
+    if !inr(&addr) {
+        return None;
+    }
+    let dc = GetDC(Some(h));
+    let items = crumb_layout(dc, font, i, crumb_field(addr, dpi));
+    ReleaseDC(Some(h), dc);
+    Some(items.into_iter().enumerate().find(|(_, (r, ..))| inr(r)).map(|(k, (r, _, c))| (k, r, c)))
+}
+
+/// The address edit shows only while it is focused or its text is not the folder on display.
+pub(crate) unsafe fn sync_addr(h: HWND) {
+    let Ok(e) = GetDlgItem(Some(h), ID_EDIT) else { return };
+    let disp = app(|a| {
+        if a.crumb_hot.is_some_and(|(w, _)| w == h) {
+            a.crumb_hot = None;
+        }
+        a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone())
+    });
+    let show = GetFocus() == e || text_of(e) != disp.unwrap_or_default();
+    _ = ShowWindow(e, if show { SW_SHOWNA } else { SW_HIDE });
+    _ = InvalidateRect(Some(h), None, false);
+}
+
+pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
+    let target = match crumb_at(h, i, x, y) {
+        None => return,
+        Some(Some((_, _, Crumb::Go(p)))) => Some(p),
+        Some(Some((_, r, Crumb::More(list)))) => {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (k, (n, _)) in list.iter().enumerate() {
+                _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(n.replace('&', "&&")));
+            }
+            let mut p = POINT { x: r.left, y: r.bottom };
+            _ = ClientToScreen(h, &mut p);
+            let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, None, h, None).0;
+            _ = DestroyMenu(menu);
+            (pick > 0).then(|| list.get(pick as usize - 1).map(|(_, path)| path.clone())).flatten()
+        }
+        Some(_) => {
+            _ = focus_ctl(i, ID_EDIT);
+            return;
+        }
+    };
+    if target.as_deref().is_some_and(|p| !p.is_empty() && !navigate(i, p)) {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    focus_view(i);
+}
+
+pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
+    let (changed, became) = app(|a| {
+        let next = at.map(|k| (h, k));
+        let old = a.crumb_hot;
+        if old == next {
+            return (false, false);
+        }
+        a.crumb_hot = next;
+        (true, next.is_some() && old.is_none_or(|(w, _)| w != h))
+    });
+    if !changed {
+        return;
+    }
+    let dpi = app(|a| a.dpi);
+    _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
+    if became {
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
+    }
+}
+
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, accent) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
-        (active, i, a.dpi, a.icon_font, a.small_font, a.s.accent_now())
+        let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot)
     });
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
     let (head, ink) = header_colors(h);
     let focus = GetFocus();
     let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
     let (addr_on, filt_on) = (focused(ID_EDIT), focused(ID_FILTER));
+    let crumbs_on = GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| !IsWindowVisible(e).as_bool());
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let pg = pane_geo(rc.right, rc.bottom, dpi);
@@ -398,6 +546,19 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
             fill(dc, p, pal().pill);
             if on {
                 frame(dc, p, 1, if active { ink } else { accent });
+            }
+        }
+        if let Some(i) = i.filter(|_| crumbs_on) {
+            for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
+                if hot == Some(k) {
+                    fill(dc, r, blend(pal().pill, pal().text, 0.08));
+                }
+                if c == Crumb::Sep || matches!(c, Crumb::More(_)) {
+                    text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    continue;
+                }
+                let ink = if c == Crumb::Here { pal().text } else { pal().sub };
+                text(dc, RECT { left: r.left + s(4), right: r.right - s(4), ..r }, &label, font, ink, DT_LEFT);
             }
         }
         if filtered {

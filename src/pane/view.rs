@@ -143,6 +143,7 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     moves.push((ctl(ID_FAV), pg.fav));
     move_all(&moves, Some((&eb, pg.view)));
     show_path_end(ctl(ID_EDIT), &disp);
+    sync_addr(h);
 }
 
 pub(crate) unsafe fn relayout() {

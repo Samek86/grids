@@ -80,6 +80,9 @@ pub(crate) unsafe fn addr_reset(i: usize, e: HWND) {
     _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
     focus_view(i);
     show_path_end(e, &disp);
+    if let Ok(p) = GetParent(e) {
+        sync_addr(p);
+    }
 }
 
 // Enter in the address bar: a folder (relative to this pane's) is browsed to, a file opened, else a command
@@ -518,6 +521,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
         show_path_end(e, &disp);
     }
+    sync_addr(h);
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
     }
