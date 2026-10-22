@@ -31,7 +31,7 @@ pub(crate) struct Desk {
     pub(crate) side_hot: Option<usize>,
     pub(crate) side_sel: Option<usize>,
     pub(crate) side_scroll: i32,
-    pub(crate) side_drag: Option<Vec<usize>>, // node being dragged
+    pub(crate) side_drag: Option<SideDrag>, // node being dragged
     pub(crate) side_drop: Option<(usize, u8)>, // visible row, drop zone
     pub(crate) side_press: Option<(i32, i32, usize)>,
     pub(crate) side_edit: HWND,
@@ -90,6 +90,17 @@ pub(crate) struct Desk {
     pub(crate) tab_rename_skip: bool,
     /// Filter text last seen while this window was current. `FILTERS` holds the current window.
     pub(crate) live_filters: [String; MAXP],
+}
+
+/// A favourites row the user is dragging. `pins` rows are copies, not tree moves.
+#[derive(Clone)]
+pub(crate) struct SideDrag {
+    pub(crate) id: Vec<usize>,
+    pub(crate) pins: bool,
+    pub(crate) group: bool,
+    pub(crate) file: bool,
+    pub(crate) path: String,
+    pub(crate) name: String,
 }
 
 pub(crate) struct App {
@@ -364,6 +375,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.start_path = src.start_path.clone();
     dst.ext = src.ext;
     dst.tree_on = src.tree_on;
+    dst.pins_open = src.pins_open;
     dst.edge = src.edge;
     dst.confirm = src.confirm;
     dst.del = src.del;
