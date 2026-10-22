@@ -512,6 +512,7 @@ Layout button: click for an even grid, press and drag for rows per column (arrow
 Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
+Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, a new window opens in that process.";
 
@@ -521,6 +522,7 @@ const NOTES_KO: &str = "\
 저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
+패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
 이미 실행 중이면 그 프로세스에 새 창이 열립니다.";
 
@@ -530,6 +532,7 @@ const NOTES_JA: &str = "\
 保存 (Ctrl+S): 現在のセッション ファイルに上書き。緑の点 = 未保存のレイアウト変更（フォルダー移動は含まない）\n\
 読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
 スプリッターをダブルクリック: 均等に分割\n\
+ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
 すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。";
 

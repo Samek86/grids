@@ -266,20 +266,24 @@ pub(crate) unsafe fn open_in(src: usize, dst: usize) {
 }
 
 pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
-    // (pane, shown name, folder it held when the menu opened)
+    // (pane, shown name, folder it held when the menu opened, colour label)
     let items = app(|a| {
         let live = a.panes.iter().enumerate().take(a.s.panes());
         let live = live.filter(|(k, _)| *k != src);
-        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone()))).collect::<Vec<_>>()
+        live.filter_map(|(k, p)| Some((k, p.as_ref()?.disp.clone(), a.s.paths[k].clone(), a.s.tints.get(k).copied().unwrap_or(0)))).collect::<Vec<_>>()
     });
+    let label = |k: usize, t: u8, disp: &str| {
+        let tag = if t == 0 { String::new() } else { format!(" ({})", tint_name(t)) };
+        HSTRING::from(format!("{} {}{tag}    {disp}", tr("Pane", "패널", "ペイン"), k + 1))
+    };
     let arr = view_of::<IFolderView2>(src).and_then(|fv| fv.GetSelection(false).ok());
     let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
     let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:", "選択したフォルダー（なければ現在のフォルダー）を開くペイン:")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    for (k, disp, _) in &items {
-        _ = AppendMenuW(menu, MF_STRING, k + 1, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
+    for (k, disp, _, t) in &items {
+        _ = AppendMenuW(menu, MF_STRING, k + 1, &label(*k, *t, disp));
     }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     match &picked {
@@ -295,10 +299,10 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
                     continue; // always copy: the move submenu stays hidden
                 }
                 let Ok(sub) = CreatePopupMenu() else { continue };
-                for (k, disp, path) in &items {
+                for (k, disp, path, t) in &items {
                     let ok = is_fs(path) && send_mode(srcs, path, mv).is_some();
                     let flags = if ok { MF_STRING } else { MF_STRING | MF_GRAYED };
-                    _ = AppendMenuW(sub, flags, base + k, &HSTRING::from(format!("{} {}    {disp}", tr("Pane", "패널", "ペイン"), k + 1)));
+                    _ = AppendMenuW(sub, flags, base + k, &label(*k, *t, disp));
                 }
                 _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
             }
@@ -324,7 +328,7 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
         (p, Ok(srcs)) => {
             // only to the folder the menu showed, and only the whole selection it counted
             let (mv, k) = (p > 200, (p - 1) % 100);
-            let shown = items.iter().find(|(i, ..)| *i == k).map(|(.., path)| path.clone());
+            let shown = items.iter().find(|(i, ..)| *i == k).map(|(_, _, path, _)| path.clone());
             let sent = shown.filter(|s| *s == app(|a| a.s.paths[k].clone())).and_then(|dst| {
                 let rename = send_mode(&srcs, &dst, mv)?;
                 Some(start_copy(srcs, dst, rename, mv))
@@ -334,6 +338,31 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
             }
         }
         _ => {}
+    }
+}
+
+/// Right-click on a pane header: a colour label from the selection-colour presets, saved with the session.
+pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
+    let cur = app(|a| a.s.tints.get(i).copied().unwrap_or(0));
+    let Ok(menu) = CreatePopupMenu() else { return };
+    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Pane colour", "패널 색", "ペインの色")));
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    for k in 0..=6u8 {
+        let flags = if k == cur { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let name = if k == 0 { tr("None", "없음", "なし") } else { tint_name(k) };
+        _ = AppendMenuW(menu, flags, k as usize + 1, &HSTRING::from(name));
+    }
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if pick > 0 && (i as usize) < MAXP {
+        app(|a| {
+            if i < a.s.tints.len() {
+                a.s.tints[i] = pick as u8 - 1;
+            }
+        });
+        repaint_header(h);
+        check_dirty();
+        note_save();
     }
 }
 
