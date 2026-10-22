@@ -244,6 +244,35 @@ pub(crate) unsafe fn draw_star(dc: HDC, rc: RECT, rgb: u32, kind: Star, dpi: i32
     _ = DeleteObject(bmp.into());
 }
 
+/// Premultiplied top-down BGRA (`w`×`h`) drawn into `to` through a throwaway DIB.
+pub(crate) unsafe fn blit_bgra(dc: HDC, to: RECT, w: i32, h: i32, px: &[u8]) {
+    if w <= 0 || h <= 0 || px.len() < (w as usize) * (h as usize) * 4 {
+        return;
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let Ok(bmp) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else { return };
+    std::slice::from_raw_parts_mut(bits as *mut u8, (w as usize) * (h as usize) * 4).copy_from_slice(&px[..(w as usize) * (h as usize) * 4]);
+    let mem = CreateCompatibleDC(Some(dc));
+    let old = SelectObject(mem, bmp.into());
+    let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+    _ = AlphaBlend(dc, to.left, to.top, to.right - to.left, to.bottom - to.top, mem, 0, 0, w, h, blend);
+    SelectObject(mem, old);
+    _ = DeleteDC(mem);
+    _ = DeleteObject(bmp.into());
+}
+
 // Repaints the save icon and puts the session name / unsaved state into its tooltip.
 pub(crate) unsafe fn refresh_save_button() {
     let (main, tip, file, dirty) = app(|a| (a.main, a.tip, a.s.file.clone(), a.dirty));

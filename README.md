@@ -63,6 +63,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Ctrl+F | Name filter. ZIP, 7z, RAR and CAB match by name, the same as other files. Folders stay |
 | Num+ or Ctrl+Shift+A / Num− / Num* | Select, deselect, or invert files by a pattern such as `*.jpg`. The count stays on the status line for 5 seconds |
 | F6 / Shift+F6 | Next / previous focus: file list, address, filter, folder tree, favourites |
+| F3 | Quick look at the focused file. Arrow keys move to the next or previous file. Esc or F3 closes it and returns to the list. Holding F3 opens it once |
 | Enter / Esc | Apply / cancel the address or filter |
 | Ctrl+H | Show hidden files |
 | Ctrl+Shift+E | Show or hide the left panel (folder tree and favourites). The width comes back as it was |
