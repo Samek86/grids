@@ -5,6 +5,11 @@ use crate::ui::*;
 use crate::session::*;
 use crate::i18n::*;
 use crate::settings;
+use windows::Win32::UI::Controls::{
+    CDIS_FOCUS, LIST_VIEW_GROUP_STATE_FLAGS, LVCDI_GROUP, LVGA_HEADER_CENTER, LVGA_HEADER_RIGHT, LVGF_ALIGN, LVGF_DESCRIPTIONBOTTOM, LVGF_DESCRIPTIONTOP, LVGF_EXTENDEDIMAGE, LVGF_FOOTER, LVGF_HEADER,
+    LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_TITLEIMAGE, LVGGR_HEADER, LVGROUP, LVGROUP_MASK, LVGS_COLLAPSED, LVGS_COLLAPSIBLE, LVGS_FOCUSED, LVGS_SELECTED, LVGS_SUBSETED, LVM_GETGROUPINFO,
+    LVM_GETGROUPRECT, LVM_GETIMAGELIST, LVSIL_GROUPHEADER,
+};
 
 // ---------- panes ----------
 
@@ -502,6 +507,10 @@ pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARA
     if msg == WM_NOTIFY && DARK_ON.load(Ordering::Relaxed) && (*(lp.0 as *const NMHDR)).code == NM_CUSTOMDRAW {
         let cd = &mut *(lp.0 as *mut NMLVCUSTOMDRAW);
         let stage = cd.nmcd.dwDrawStage.0;
+        // A plain group title is drawn here. Anything richer stays on the list's own drawing.
+        if cd.dwItemType == LVCDI_GROUP && (stage == CDDS_PREPAINT.0 || stage == CDDS_ITEMPREPAINT.0) && draw_group_header(cd) {
+            return LRESULT(CDRF_SKIPDEFAULT as isize);
+        }
         if stage == CDDS_PREPAINT.0 {
             return LRESULT(r.0 | CDRF_NOTIFYITEMDRAW as isize);
         }
@@ -513,6 +522,96 @@ pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARA
         }
     }
     r
+}
+
+/// Dark-theme group title ("Devices and drives" on This PC): flat card, light text, a hairline.
+/// A subtitle, task, image, or a failed lookup returns false and the list draws it.
+pub(crate) unsafe fn draw_group_header(cd: &NMLVCUSTOMDRAW) -> bool {
+    let (dc, lv, id) = (cd.nmcd.hdc, cd.nmcd.hdr.hwndFrom, cd.nmcd.dwItemSpec);
+    let mut head = [0u16; 260];
+    let mut more = [[0u16; 64]; 5];
+    let [sub, task, top, bottom, foot] = more.each_mut().map(|b| PWSTR(b.as_mut_ptr()));
+    let mask = [LVGF_HEADER, LVGF_ALIGN, LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_DESCRIPTIONTOP, LVGF_DESCRIPTIONBOTTOM, LVGF_FOOTER, LVGF_TITLEIMAGE, LVGF_EXTENDEDIMAGE];
+    let states = LVGS_COLLAPSIBLE.0 | LVGS_COLLAPSED.0 | LVGS_SELECTED.0 | LVGS_FOCUSED.0 | LVGS_SUBSETED.0;
+    let mut g = LVGROUP {
+        cbSize: size_of::<LVGROUP>() as u32,
+        mask: LVGROUP_MASK(mask.iter().fold(0, |m, f| m | f.0)),
+        stateMask: LIST_VIEW_GROUP_STATE_FLAGS(states),
+        pszHeader: PWSTR(head.as_mut_ptr()),
+        cchHeader: head.len() as i32,
+        pszSubtitle: sub,
+        cchSubtitle: 64,
+        pszTask: task,
+        cchTask: 64,
+        pszDescriptionTop: top,
+        cchDescriptionTop: 64,
+        pszDescriptionBottom: bottom,
+        cchDescriptionBottom: 64,
+        pszFooter: foot,
+        cchFooter: 64,
+        ..Default::default()
+    };
+    if SendMessageW(lv, LVM_GETGROUPINFO, Some(WPARAM(id)), Some(LPARAM(&mut g as *mut _ as isize))).0 == -1 {
+        return false;
+    }
+    let st = g.state.0;
+    let n = head.iter().position(|&c| c == 0).unwrap_or(0);
+    if n == 0 || more.iter().any(|b| b[0] != 0) || st & LVGS_SUBSETED.0 != 0 {
+        return false;
+    }
+    let images = SendMessageW(lv, LVM_GETIMAGELIST, Some(WPARAM(LVSIL_GROUPHEADER as usize)), None).0 != 0;
+    if images && (g.iTitleImage >= 0 || g.iExtendedImage >= 0) {
+        return false;
+    }
+    let mut rc = RECT { top: LVGGR_HEADER as i32, ..Default::default() };
+    if SendMessageW(lv, LVM_GETGROUPRECT, Some(WPARAM(id)), Some(LPARAM(&mut rc as *mut _ as isize))).0 == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return false;
+    }
+    let s = |v: i32| v * GetDpiForWindow(lv) as i32 / 96;
+    let bg = if st & LVGS_SELECTED.0 != 0 {
+        blend(pal().card, pal().text, 0.16)
+    } else if cd.nmcd.uItemState.0 & CDIS_HOT.0 != 0 {
+        blend(pal().card, pal().text, 0.08)
+    } else {
+        pal().card
+    };
+    fill(dc, rc, bg);
+    let collapsible = st & LVGS_COLLAPSIBLE.0 != 0;
+    let bx = if collapsible { rc.bottom - rc.top } else { 0 };
+    let r = RECT { left: rc.left + s(8), right: rc.right - bx - s(8), ..rc };
+    let align = if g.uAlign.0 & LVGA_HEADER_RIGHT.0 != 0 {
+        DT_RIGHT
+    } else if g.uAlign.0 & LVGA_HEADER_CENTER.0 != 0 {
+        DT_CENTER
+    } else {
+        DT_LEFT
+    };
+    let font = HFONT(SendMessageW(lv, WM_GETFONT, None, None).0 as _);
+    text(dc, r, &String::from_utf16_lossy(&head[..n]), font, pal().text, align);
+    let cy = (rc.top + rc.bottom) / 2;
+    if align == DT_LEFT {
+        let old = SelectObject(dc, font.into());
+        let mut sz = SIZE::default();
+        _ = GetTextExtentPoint32W(dc, &head[..n], &mut sz);
+        SelectObject(dc, old);
+        let x = r.left + sz.cx + s(8);
+        if x < r.right {
+            fill(dc, RECT { left: x, top: cy, right: r.right, bottom: cy + 1 }, pal().line);
+        }
+    }
+    if collapsible {
+        let up = st & LVGS_COLLAPSED.0 == 0;
+        let (cx, t, arm) = (rc.right - bx / 2, s(1).max(1), s(4));
+        for k in 0..=arm {
+            let y = cy - arm / 2 + if up { k } else { arm - k };
+            fill(dc, RECT { left: cx - k, top: y, right: cx - k + t, bottom: y + t }, pal().sub);
+            fill(dc, RECT { left: cx + k, top: y, right: cx + k + t, bottom: y + t }, pal().sub);
+        }
+    }
+    if cd.nmcd.uItemState.0 & CDIS_FOCUS.0 != 0 || st & LVGS_FOCUSED.0 != 0 {
+        frame(dc, rc, 1, pal().sub);
+    }
+    true
 }
 
 // Undocumented but long-stable uxtheme exports (Windows 10 1903+): app-wide dark mode, which is what
