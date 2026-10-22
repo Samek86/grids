@@ -360,6 +360,30 @@ pub(crate) fn flat_favs(tree: &[FavNode]) -> Vec<String> {
     out
 }
 
+/// Folder leaves, depth-first. Files stay out of address-bar jumps. A custom name is `path\tname`.
+pub(crate) fn fav_folders(tree: &[FavNode]) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(nodes: &[FavNode], out: &mut Vec<String>) {
+        for n in nodes {
+            if n.is_group() {
+                walk(&n.children, out);
+                continue;
+            }
+            if n.file || !crate::is_fs(&n.path) {
+                continue;
+            }
+            let custom = !n.name.is_empty() && n.name != short_name(&n.path);
+            if custom {
+                out.push(format!("{}\t{}", n.path, n.name));
+            } else {
+                out.push(n.path.clone());
+            }
+        }
+    }
+    walk(tree, &mut out);
+    out
+}
+
 pub(crate) fn tree_from_flat(favs: &[String]) -> Vec<FavNode> {
     favs.iter()
         .filter_map(|f| {
@@ -712,6 +736,16 @@ mod tests {
 
     fn work() -> Vec<FavNode> {
         tree_from_flat(&["C:\\WORK\tWork".into(), "D:\\Photos".into()])
+    }
+
+    #[test]
+    fn folder_leaves_skip_files() {
+        let mut tree = work();
+        tree.push(FavNode::leaf(r"C:\notes.txt", "notes", true));
+        tree.push(FavNode::group("g"));
+        tree.last_mut().unwrap().children.push(FavNode::leaf(r"E:\Docs", "보고서", false));
+        let folders = fav_folders(&tree);
+        assert_eq!(folders, ["C:\\WORK\tWork".to_string(), r"D:\Photos".into(), "E:\\Docs\t보고서".into()]);
     }
 
     #[test]

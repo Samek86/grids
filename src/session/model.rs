@@ -871,6 +871,37 @@ pub(crate) fn recent_items(list: &[String], cur: &str) -> Vec<String> {
     list.iter().filter(|p| !p.eq_ignore_ascii_case(cur)).cloned().collect()
 }
 
+/// Address text that names no path: the recent folder (newest first), then a favourite folder,
+/// whose name equals it, else starts with it, else contains it. The folder on display is skipped.
+pub(crate) fn jump_pick<'a>(q: &str, recent: &'a [String], favs: &'a [String], cur: &str) -> Option<&'a str> {
+    let q = q.trim().to_lowercase();
+    if q.is_empty() || q.contains(['\\', '/', ':', '"']) {
+        return None;
+    }
+    let score_name = |n: &str| {
+        let n = n.to_lowercase();
+        if n == q {
+            Some(0u8)
+        } else if n.starts_with(&q) {
+            Some(1)
+        } else {
+            n.contains(&q).then_some(2)
+        }
+    };
+    let score = |p: &str| {
+        let path = fav_path(p);
+        [short_name(path), fav_label(p)].iter().filter_map(|n| score_name(n)).min()
+    };
+    let all = recent.iter().chain(favs).filter(|p| is_fs(fav_path(p)) && !fav_path(p).eq_ignore_ascii_case(cur));
+    all.filter_map(|p| Some((score(p)?, p))).min_by_key(|(s, _)| *s).map(|(_, p)| fav_path(p))
+}
+
+/// Enter in the address bar fell through (`done` is None): jump only when the text named no path.
+/// A path that resolved but would not open just beeps.
+pub(crate) fn addr_jumps(done: Option<bool>, resolved: bool) -> bool {
+    done.is_none() && !resolved
+}
+
 // A view's columns: visible ones in order with their widths, then the sort columns, each property as
 // "format GUID/property id": "GUID/pid=width,...;GUID/pid=direction,...".
 pub(crate) fn cols_text(cols: &[(PROPERTYKEY, u32)], sort: &[(PROPERTYKEY, i32)]) -> String {
@@ -956,7 +987,7 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{crumb_fit, crumbs, layout_differs, real_folder, Session};
+    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::MAXP;
     use crate::THIS_PC;
@@ -985,6 +1016,29 @@ mod crumb_tests {
         assert_eq!(f(&[30, 40], 15), (2, false, 0));
         assert_eq!(f(&[30, 40], 0), (2, false, 0));
         assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn jump_picks() {
+        let v = |s: &[&str]| s.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let recent = v(&[r"C:\Users\me\Downloads", r"C:\Work\down", r"D:\Old Downloads", r"D:\문서\보고서 2026", THIS_PC]);
+        let favs = v(&[r"E:\Down", r"\\srv\share", r"C:\", "C:\\Work\\proj\t보고서"]);
+        let pick = |q: &str, cur: &str| jump_pick(q, &recent, &favs, cur);
+        assert_eq!(pick("down", ""), Some(r"C:\Work\down"));
+        assert_eq!(pick("DOWNL", ""), Some(r"C:\Users\me\Downloads"));
+        assert_eq!(pick("loads", ""), Some(r"C:\Users\me\Downloads"));
+        assert_eq!(pick("  down  ", r"c:\work\DOWN"), Some(r"E:\Down"));
+        assert_eq!(pick("보고", ""), Some(r"D:\문서\보고서 2026"));
+        assert_eq!(pick("보고서", ""), Some(r"C:\Work\proj"));
+        assert_eq!(pick("share", ""), Some(r"\\srv\share"));
+        assert_eq!(pick("c", ""), Some(r"C:\"));
+        assert_eq!(pick("this", ""), None);
+        for q in ["", "   ", r"down\x", "a/b", "c:", "\"down\"", "nothing"] {
+            assert_eq!(pick(q, ""), None, "{q:?}");
+        }
+        assert!(addr_jumps(None, false));
+        assert!(!addr_jumps(None, true));
+        assert!(!addr_jumps(Some(true), false) && !addr_jumps(Some(false), false));
     }
 
     #[test]
