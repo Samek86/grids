@@ -230,7 +230,7 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
 
 pub(crate) unsafe fn relayout() {
     sync_panes();
-    let Some((main, moves, label, shown, show_bar, show_side, tree_h, side_h)) = app(|a| {
+    let Some((main, moves, label, shown, drive_vis, show_bar, show_side, tree_h, side_h)) = app(|a| {
         a.gap_hot = None; // the splitter may be gone; the window is repainted below
         if a.main.0.is_null() {
             return None;
@@ -254,6 +254,16 @@ pub(crate) unsafe fn relayout() {
         moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
         let gear = right - s(32) - s(4) - s(32);
         moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
+        // Drive letters after the left cluster. In a narrow window the last ones hide rather than cover the gear.
+        x += s(6);
+        let limit = gear - s(12);
+        let mut drive_vis = Vec::new();
+        for &(_, _, h) in &a.drives {
+            let w = s(32);
+            moves.push((h, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
+            drive_vis.push((h, a.s.bar && x + w <= limit));
+            x += w + s(2);
+        }
         let show_bar = a.s.bar;
         let show_side = a.s.tree_on;
         let (tree_h, side_h) = (a.tree_hwnd, a.side_hwnd);
@@ -267,7 +277,7 @@ pub(crate) unsafe fn relayout() {
                 shown.push((p.hwnd, a.zoom.is_none_or(|z| z == i)));
             }
         }
-        Some((a.main, moves, layout_label(&a.s.heights), shown, show_bar, show_side, tree_h, side_h))
+        Some((a.main, moves, layout_label(&a.s.heights), shown, drive_vis, show_bar, show_side, tree_h, side_h))
     }) else {
         return;
     };
@@ -276,6 +286,9 @@ pub(crate) unsafe fn relayout() {
         if let Ok(b) = GetDlgItem(Some(main), id) {
             _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
         }
+    }
+    for (h, on) in drive_vis {
+        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_side { SW_SHOW } else { SW_HIDE });
@@ -334,6 +347,7 @@ pub(crate) unsafe fn end_drag() {
     for b in bars {
         _ = ShowWindow(b, SW_HIDE);
     }
+    refresh_drives(); // one that came or went while the splitter was held
     relayout();
     redraw_all();
     if matches!(kind, Hit::SideSplit) {
@@ -365,6 +379,7 @@ pub(crate) unsafe fn set_active(i: usize) {
         if let Some(item) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellItem>().ok()) {
             sync_tree(&item);
         }
+        mark_drive();
     }
 }
 
@@ -449,13 +464,13 @@ pub(crate) unsafe fn start_reveal(main: HWND) {
 }
 
 pub(crate) unsafe fn set_accent(c: u32) {
-    let (bars, panes) = app(|a| {
+    let (bars, panes, drives) = app(|a| {
         if a.s.dark {
             a.s.accent_dark = c;
         } else {
             a.s.accent = c;
         }
-        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>())
+        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.drives.iter().map(|d| d.2).collect::<Vec<_>>())
     });
     let old = SetClassLongPtrW(bars[0], GCLP_HBRBACKGROUND, CreateSolidBrush(cref(c)).0 as isize);
     if old != 0 {
@@ -463,6 +478,9 @@ pub(crate) unsafe fn set_accent(c: u32) {
     }
     for p in panes {
         repaint_header(p); // all of them: inactive panes show the accent in their filter badge
+    }
+    for h in drives {
+        _ = InvalidateRect(Some(h), None, false); // the active drive's underline
     }
     drop_group_brushes();
     settings::redraw();

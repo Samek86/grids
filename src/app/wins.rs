@@ -260,6 +260,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     prime_theme(app(|a| a.s.dark));
     apply_theme_desk();
     apply_font();
+    refresh_drives(); // laid out by the relayout below; startup does not lay the window out twice
     match win {
         Some([l, t, r, b, max]) => {
             // Saved position is workspace coordinates. Fit it, and move while still hidden so a
