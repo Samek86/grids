@@ -29,6 +29,7 @@ pub(crate) const ID_LANG_JA: usize = 1113;
 pub(crate) const ID_SETTINGS: usize = 1114;
 pub(crate) const ID_NEWFILE: usize = 1115;
 pub(crate) const ID_PANEL: usize = 1116; // left panel (folder tree and favourites)
+pub(crate) const ID_EXT: usize = 1117; // show file extensions (Windows setting)
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;
 pub(crate) const HOME: &str = "https://github.com/efww/grids";
