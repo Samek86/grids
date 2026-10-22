@@ -76,7 +76,10 @@ pub(crate) struct Desk {
     pub(crate) grid_preset: Option<usize>,    // preset tile under the mouse
     pub(crate) grid_closed: Option<Instant>,
     pub(crate) zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
-    pub(crate) note: Option<(String, Instant)>, // status line confirmation and when it was set (runtime only)
+    pub(crate) note: Option<(String, Instant)>, // status line confirmation and when it expires (runtime only)
+    pub(crate) held: Option<u16>,               // key whose auto-repeat is swallowed until release
+    pub(crate) match_last: String,              // last pattern typed into the select box
+    pub(crate) matcher: Option<MatchBox>,
     pub(crate) drop_hover: HWND,                         // pane whose top bar something openable is being dragged over
     pub(crate) drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
     pub(crate) park: Vec<Vec<Option<Pane>>>,             // hidden browsers, parallel to s.tabs; empty once evicted
@@ -94,6 +97,15 @@ pub(crate) struct Desk {
     pub(crate) tab_rename_skip: bool,
     /// Filter text last seen while this window was current. `FILTERS` holds the current window.
     pub(crate) live_filters: [String; MAXP],
+}
+
+/// The small pattern box over a file list (Num+ / Num−).
+pub(crate) struct MatchBox {
+    pub(crate) hwnd: HWND,
+    pub(crate) edit: HWND,
+    pub(crate) pane: usize,
+    pub(crate) path: String,
+    pub(crate) desel: bool,
 }
 
 /// A favourites row the user is dragging. Explorer rows are copies, not tree moves.
@@ -183,6 +195,9 @@ pub(crate) fn blank_desk() -> Desk {
         grid_closed: None,
         zoom: None,
         note: None,
+        held: None,
+        match_last: String::new(),
+        matcher: None,
         drop_hover: HWND::default(),
         drop_open: None,
         park: Vec::new(),
@@ -305,7 +320,7 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if h.0.is_null() || d.main.0.is_null() {
         return false;
     }
-    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || d.bars.contains(&h) {
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
         return true;
     }
     unsafe { IsChild(d.main, h).as_bool() }

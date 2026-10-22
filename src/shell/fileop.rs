@@ -120,7 +120,7 @@ pub(crate) unsafe fn copy_paths(a: usize) {
         (_, 1) => "Copied path".into(),
         (_, n) => format!("Copied {n} paths"),
     };
-    app(|x| x.note = Some((note, Instant::now())));
+    app(|x| x.note = Some((note, Instant::now() + std::time::Duration::from_secs(3))));
     update_status();
 }
 

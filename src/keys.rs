@@ -82,6 +82,10 @@ const CMDS: &[Cmd] = &[
     cmd("view.panel", VIEW, s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), 0x45, true, true, false, false),
     cmd("view.zoom", VIEW, s("Maximise / restore the pane", "패널 크게 보기 / 복원", "ペインを最大化 / 元に戻す"), 0x4D, true, true, false, false),
     cmd("file.path", FILE, s("Copy full path", "전체 경로 복사", "フルパスをコピー"), 0x43, true, true, false, false),
+    cmd("file.sel", FILE, s("Select by pattern", "패턴으로 선택", "パターンで選択"), 0x6B, false, false, false, false),
+    cmd("file.sel2", FILE, s("Select by pattern", "패턴으로 선택", "パターンで選択"), 0x41, true, true, false, false),
+    cmd("file.desel", FILE, s("Deselect by pattern", "패턴으로 선택 해제", "パターンで選択解除"), 0x6D, false, false, false, false),
+    cmd("file.invert", FILE, s("Invert selection", "선택 반전", "選択を反転"), 0x6A, false, false, false, false),
     cmd("file.new", FILE, s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), 0x4E, true, false, true, false),
     cmd("file.dir", FILE, s("New folder", "새 폴더", "新しいフォルダー"), 0x4E, true, true, false, false),
     cmd("sess.save", SESS, s("Save session", "세션 저장", "セッションを保存"), 0x53, true, false, false, false),
@@ -382,6 +386,9 @@ fn key_name(vk: u16) -> String {
         0x30..=0x39 => char::from(vk as u8).to_string(),
         0x41..=0x5A => char::from(vk as u8).to_string(),
         0x60..=0x69 => format!("Num{}", vk - 0x60),
+        0x6A => "Num*".into(),
+        0x6B => "Num+".into(),
+        0x6D => "Num-".into(),
         0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
         0xBC => ",".into(),
         0xBF => "/".into(),
@@ -402,7 +409,9 @@ pub(crate) fn parse_chord(s: &str) -> Option<Chord> {
         (s, false)
     };
     let mut parts: Vec<&str> = head.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
-    let key = parts.pop()?;
+    // "Num+" keeps its trailing plus; every other '+' separates a modifier.
+    let plus = head.trim_end().ends_with('+') && parts.last().is_some_and(|p| p.eq_ignore_ascii_case("num"));
+    let key = if plus { format!("{}+", parts.pop()?) } else { parts.pop()?.to_string() };
     let mut ctrl = false;
     let mut shift = false;
     let mut alt = false;
@@ -414,7 +423,7 @@ pub(crate) fn parse_chord(s: &str) -> Option<Chord> {
             _ => return None,
         }
     }
-    let vk = parse_key(key)?;
+    let vk = parse_key(&key)?;
     let mut c = Chord { vk, ctrl, shift, alt, digits: false };
     if digits {
         if !(0x31..=0x39).contains(&vk) {
@@ -459,6 +468,12 @@ fn parse_key(k: &str) -> Option<u16> {
 fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
     if let Some(rest) = low.strip_prefix("vk_") {
         return u16::from_str_radix(rest, 16).ok();
+    }
+    match low {
+        "num*" => return Some(0x6A),
+        "num+" => return Some(0x6B),
+        "num-" => return Some(0x6D),
+        _ => {}
     }
     if let Some(rest) = low.strip_prefix("num") {
         let n: u16 = rest.parse().ok()?;
@@ -557,6 +572,10 @@ mod tests {
             ("nav.addr", "Ctrl+L"),
             ("nav.addr2", "Alt+D"),
             ("nav.addr3", "F4"),
+            ("file.sel", "Num+"),
+            ("file.sel2", "Ctrl+Shift+A"),
+            ("file.desel", "Num-"),
+            ("file.invert", "Num*"),
             ("file.new", "Ctrl+Alt+N"),
             ("file.dir", "Ctrl+Shift+N"),
             ("app.settings", "Ctrl+,"),

@@ -110,6 +110,17 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return false;
     }
+    if app(|a| a.matcher.as_ref().map(|b| b.edit)) == Some(m.hwnd) {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN => {
+                app(|a| a.held = Some(VK_RETURN.0));
+                run_match(shift);
+            }
+            VK_ESCAPE => close_match(true),
+            _ => return false,
+        }
+        return true;
+    }
     if m.hwnd == app(|a| a.tab_edit) && app(|a| a.tab_renaming.is_some()) {
         match VIRTUAL_KEY(vk) {
             VK_RETURN => end_rename(true),
@@ -254,6 +265,19 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "view.hidden" => toggle_hidden(),
         "view.panel" => toggle_tree(),
         "view.zoom" => toggle_zoom(),
+        "file.sel" | "file.sel2" if list => {
+            app(|a| a.held = Some(vk));
+            open_match(a, false);
+        }
+        "file.desel" if list => {
+            app(|a| a.held = Some(vk));
+            open_match(a, true);
+        }
+        "file.invert" if list => {
+            app(|a| a.held = Some(vk));
+            invert_selection(a);
+        }
+        "file.sel" | "file.sel2" | "file.desel" | "file.invert" => return shell(),
         "file.path" => {
             if !list {
                 return shell();
@@ -297,6 +321,11 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let (eat, next) = held_key(app(|a| a.held), m.wParam.0 as u16, m.lParam.0 & (1 << 30) != 0);
+            app(|a| a.held = next);
+            if eat {
+                return true;
+            }
             // Cleared before key() so a selection the tree reports while we handle Ctrl+Tab or F6
             // is not taken for a click in the tree (that would reload the pane and drop Forward).
             let tree = m.message == WM_KEYDOWN && in_tree();
@@ -306,7 +335,9 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             used
         }
         WM_KEYUP | WM_SYSKEYUP => {
-            crate::keys::clear_swallow(m.wParam.0 as u16);
+            let vk = m.wParam.0 as u16;
+            app(|a| a.held = a.held.filter(|&k| k != vk));
+            crate::keys::clear_swallow(vk);
             false
         }
         _ => false,
