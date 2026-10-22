@@ -664,6 +664,24 @@ pub(crate) fn swap_in(cur: &mut Session, base: Option<&mut Session>, i: usize, j
     }
 }
 
+/// Every slot takes what `perm[slot]` held, in the current state and the save baseline.
+/// `order` records the move the same way a single swap does.
+pub(crate) fn permute_in(cur: &mut Session, base: Option<&mut Session>, perm: &[usize; MAXP]) {
+    let p = perm.map(|k| k as u8);
+    for s in std::iter::once(&mut *cur).chain(base) {
+        let act = s.active;
+        s.reorder(&p);
+        s.active = perm.iter().position(|&k| k == act).unwrap_or(0);
+    }
+    if cur.order.is_empty() {
+        cur.order = (0..MAXP as u8).collect();
+    }
+    cur.order = p.iter().map(|&k| cur.order[k as usize]).collect();
+    if !order_moved(&cur.order) {
+        cur.order.clear();
+    }
+}
+
 /// The save dot: panes moved from where the session file has them, or a layout change.
 pub(crate) fn session_dirty(cur: &Session, base: Option<&Session>) -> bool {
     order_moved(&cur.order) || base.is_some_and(|b| layout_differs(cur, b))
