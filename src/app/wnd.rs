@@ -48,8 +48,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
         match msg {
             // While the user drags the window edge, lay the panes out once at the end (same cost reason as splitters).
             WM_SIZE => {
+                let kind = wp.0 as u32;
                 let sizing = app(|a| {
-                    let kind = wp.0 as u32;
                     if kind != SIZE_MINIMIZED {
                         a.was_max = kind == SIZE_MAXIMIZED;
                     }
@@ -58,6 +58,11 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 if !sizing {
                     relayout();
                     redraw_all(); // maximize / restore
+                }
+                // Back from minimized: WM_ACTIVATE arrived while minimized and left focus alone.
+                let f = GetFocus();
+                if kind != SIZE_MINIMIZED && !app(|a| a.focus_wait) && GetActiveWindow() == h && (f.is_invalid() || f == h) {
+                    restore_focus();
                 }
             }
             WM_ENTERSIZEMOVE => app(|a| a.sizing = true),
@@ -256,8 +261,48 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_ACTIVATE => {
                 // Back in front: refresh Explorer pins and favourite files if either group is open.
                 // Debounced in request_pins. One read fills both lists.
-                if (wp.0 & 0xffff) as u32 != WA_INACTIVE {
+                let (state, min) = ((wp.0 & 0xffff) as u32, (wp.0 >> 16) & 0xffff != 0);
+                if state != WA_INACTIVE {
                     request_pins(false);
+                }
+                // Keyboard activation restores focus at once. A click waits until that click is handled.
+                if state == WA_INACTIVE {
+                    keep_focus(h);
+                } else if state == WA_ACTIVE && !min {
+                    restore_focus();
+                    return LRESULT(0);
+                } else if state == WA_CLICKACTIVE && !min {
+                    app(|a| a.focus_wait = true);
+                    SetTimer(Some(h), TIMER_FOCUS, 10, None);
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_MOUSEACTIVATE => {
+                app(|a| a.click_nc = (lp.0 & 0xffff) as u32 != HTCLIENT);
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_SYSCOMMAND => {
+                if (wp.0 as u32) & 0xfff0 == SC_MINIMIZE {
+                    keep_focus(h);
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_TIMER if wp.0 == TIMER_FOCUS => {
+                if !GetCapture().is_invalid() || GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 {
+                    return LRESULT(0);
+                }
+                _ = KillTimer(Some(h), TIMER_FOCUS);
+                let nc = app(|a| {
+                    a.focus_wait = false;
+                    std::mem::take(&mut a.click_nc)
+                });
+                let f = GetFocus();
+                if GetActiveWindow() == h && (f.is_invalid() || f == h) {
+                    if nc {
+                        restore_focus();
+                    } else {
+                        focus_view(app(|a| a.s.active));
+                    }
                 }
             }
             WM_DPICHANGED => {

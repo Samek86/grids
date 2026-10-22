@@ -40,6 +40,9 @@ pub(crate) struct Desk {
     pub(crate) side_edit: HWND,
     pub(crate) side_edit_at: Vec<usize>,
     pub(crate) tree_input: bool, // a click/key reached the tree since its last selection change
+    pub(crate) focus_keep: HWND, // focus when this window last went to the back
+    pub(crate) click_nc: bool,   // the activating click was outside the client (title bar)
+    pub(crate) focus_wait: bool, // TIMER_FOCUS is running
     pub(crate) font: HFONT,
     pub(crate) icon_font: HFONT,
     pub(crate) bold_font: HFONT, // favourite group labels; created on first paint, freed on DPI change and close
@@ -167,6 +170,9 @@ pub(crate) fn blank_desk() -> Desk {
         side_edit: HWND::default(),
         side_edit_at: Vec::new(),
         tree_input: false,
+        focus_keep: HWND::default(),
+        click_nc: false,
+        focus_wait: false,
         font: HFONT::default(),
         icon_font: HFONT::default(),
         bold_font: HFONT::default(),

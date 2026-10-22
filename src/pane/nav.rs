@@ -152,6 +152,38 @@ pub(crate) unsafe fn focus_view(i: usize) {
     }
 }
 
+/// Remember which of this window's controls had focus as it goes to the back.
+pub(crate) unsafe fn keep_focus(main: HWND) {
+    let f = GetFocus();
+    if IsChild(main, f).as_bool() {
+        app(|a| a.focus_keep = f);
+    }
+}
+
+/// Put focus back on the address, filter, list, folder tree, or favourites it left.
+/// The edits keep their text and caret.
+pub(crate) unsafe fn restore_focus() {
+    let (main, i, k, panel, th, side) = app(|a| (a.main, a.s.active, a.focus_keep, a.s.tree_on, a.tree_hwnd, a.side_hwnd));
+    let shown = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)).is_some_and(|p| IsWindowVisible(p).as_bool());
+    let within = |root: HWND| !root.0.is_null() && (root == k || IsChild(root, k).as_bool());
+    let ok = IsWindow(Some(k)).as_bool()
+        && ((shown && (pane_ctl(i, ID_EDIT) == Some(k) || pane_ctl(i, ID_FILTER) == Some(k)))
+            || view_of::<IShellView>(i).and_then(|sv| sv.GetWindow().ok()).is_some_and(within)
+            || (panel && IsWindowVisible(th).as_bool() && within(th))
+            || (panel && IsWindowVisible(side).as_bool() && within(side)));
+    if ok {
+        if pane_ctl(i, ID_EDIT) == Some(k) {
+            _ = ShowWindow(k, SW_SHOWNA);
+        }
+        _ = SetFocus(Some(k));
+    } else {
+        focus_view(i);
+    }
+    if GetFocus().is_invalid() {
+        _ = SetFocus(Some(main));
+    }
+}
+
 pub(crate) unsafe fn focus_ctl(i: usize, id: i32) -> bool {
     if let Some(e) = pane_ctl(i, id) {
         _ = SetFocus(Some(e));

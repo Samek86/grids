@@ -46,7 +46,7 @@ The exe is not code-signed, so Windows SmartScreen may warn the first time: choo
 
 ## Keyboard shortcuts
 
-These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone. F6 still leaves those fields.
+These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone. F6 still leaves those fields. Coming back from another app restores keyboard focus to the list, the address, the filter, the folder tree, or favourites. A click restores focus only when that click did not land on a control. The address and filter keep their text and caret.
 
 | Keys | Action |
 | --- | --- |
