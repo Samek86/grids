@@ -819,6 +819,13 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             sync_tree(&item);
         }
     }
+    // set_layout asked to focus a pane that was not open yet. Once, and only if nothing else took focus.
+    if app(|a| a.focus_req == h && a.s.active == i && std::mem::take(&mut a.focus_req) == h) {
+        let f = GetFocus();
+        if f.0.is_null() || f == app(|a| a.main) {
+            focus_view(i);
+        }
+    }
     hook_ctx(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {

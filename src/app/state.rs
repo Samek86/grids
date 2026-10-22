@@ -97,6 +97,8 @@ pub(crate) struct Desk {
     pub(crate) grid_preset: Option<usize>,    // preset tile under the mouse
     pub(crate) grid_closed: Option<Instant>,
     pub(crate) zoom: Option<usize>, // pane maximized over the grid (runtime only, never saved)
+    pub(crate) home: Homes,         // cell each off-screen slot last had, so a returning cell gets its pane back
+    pub(crate) focus_req: HWND,     // pane to focus once, when the folder set_layout put in its place opens
     pub(crate) note: Option<(String, Instant)>, // status line confirmation and when it expires (runtime only)
     pub(crate) held: Option<u16>,               // key whose auto-repeat is swallowed until release
     pub(crate) match_last: String,              // last pattern typed into the select box
@@ -236,6 +238,8 @@ pub(crate) fn blank_desk() -> Desk {
         grid_preset: None,
         grid_closed: None,
         zoom: None,
+        home: [None; MAXP],
+        focus_req: HWND::default(),
         note: None,
         held: None,
         match_last: String::new(),

@@ -147,7 +147,40 @@ pub(crate) fn slot(h: &[usize], mut i: usize) -> (usize, usize) {
         }
         i -= n;
     }
-    (h.len() - 1, h[h.len() - 1] - 1)
+    (h.len().saturating_sub(1), h.last().copied().unwrap_or(1).saturating_sub(1))
+}
+
+/// The cell each off-screen slot's pane last had. Runtime only.
+pub(crate) type Homes = [Option<(usize, usize)>; MAXP];
+
+/// Layout `old` to `new`. Slot j shows the pane that was in slot `perm[j]`.
+/// A pane whose cell is in both stays there. A cell that leaves is remembered and comes back.
+/// New cells take the lowest slots that have no home.
+pub(crate) fn remap(old: &[usize], new: &[usize], home: &Homes) -> ([usize; MAXP], Homes) {
+    let has = |(c, r): (usize, usize)| new.get(c).is_some_and(|&n| r < n);
+    let (on, n) = (old.iter().sum::<usize>(), new.iter().sum::<usize>());
+    let mut home = *home;
+    let mut perm = [usize::MAX; MAXP];
+    for j in 0..MAXP {
+        let Some(c) = (if j < on { Some(slot(old, j)) } else { home[j] }) else { continue };
+        if has(c) {
+            perm[new[..c.0].iter().sum::<usize>() + c.1] = j;
+            home[j] = None;
+        } else {
+            home[j] = Some(c);
+        }
+    }
+    let free: Vec<usize> = (0..MAXP).filter(|j| !perm.contains(j) && home[*j].is_none()).collect();
+    let empty: Vec<usize> = (0..n).filter(|&k| perm[k] == usize::MAX).collect();
+    for (k, j) in empty.into_iter().zip(free) {
+        perm[k] = j;
+    }
+    let rest: Vec<usize> = (0..MAXP).filter(|j| !perm[..n].contains(j)).collect();
+    let mut out = [None; MAXP];
+    for (k, j) in (n..MAXP).zip(rest) {
+        (perm[k], out[k]) = (j, home[j]);
+    }
+    (perm, out)
 }
 
 pub(crate) fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
@@ -613,6 +646,30 @@ mod tests {
         assert_eq!(hit(&g, 244, 66 + 300 + 3), Some(Hit::Side));
         let closed = Geo { side: 0, tree_h: 0, gx: 8, ..g };
         assert_eq!(hit(&closed, 4, 400), None);
+    }
+
+    #[test]
+    fn remap_keeps_cells() {
+        let ident: [usize; MAXP] = std::array::from_fn(|k| k);
+        let run = |steps: &[Vec<usize>]| {
+            let (mut id, mut home) = (ident, [None; MAXP]);
+            for w in steps.windows(2) {
+                let (p, h) = remap(&w[0], &w[1], &home);
+                (id, home) = (p.map(|k| id[k]), h);
+            }
+            id
+        };
+        let tail = |v: &[usize]| v.iter().copied().chain(v.len()..MAXP).collect::<Vec<_>>();
+        assert_eq!(run(&[vec![2, 2], vec![3, 2]])[..], tail(&[0, 1, 4, 2, 3])[..]);
+        assert_eq!(run(&[vec![1, 1, 1, 1], vec![4]])[..], tail(&[0, 4, 5, 6, 1, 2, 3])[..]);
+        for steps in [
+            vec![vec![1, 1, 1, 1], vec![4], vec![1, 1, 1, 1]],
+            vec![vec![3, 3], vec![2, 2], vec![2, 3], vec![3, 3]],
+            vec![vec![3, 2], vec![2, 3], vec![3, 2]],
+            vec![vec![2, 2], vec![2, 2]],
+        ] {
+            assert_eq!(run(&steps), ident, "{steps:?}");
+        }
     }
 }
 
