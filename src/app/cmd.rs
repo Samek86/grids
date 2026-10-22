@@ -132,6 +132,19 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     let a = active_pane();
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
+    let shell = || {
+        let Some(sv) = view_of::<IShellView>(a) else { return false };
+        let svh = sv.GetWindow().unwrap_or_default();
+        (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
+    };
+    let list = view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
+    // F6 leaves the address and the filter. Every other chord stays out of a name being typed.
+    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
+        let id = crate::keys::id_of(i);
+        if matches!(id, "focus.next" | "focus.prev") {
+            return dispatch(id, vk, a, list, shell);
+        }
+    }
     // Address, filter, and tab rename keep every key except Enter and Esc.
     // A rebound letter must not land in the middle of a name.
     if addr || filt {
@@ -151,12 +164,6 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return true;
     }
-    let shell = || {
-        let Some(sv) = view_of::<IShellView>(a) else { return false };
-        let svh = sv.GetWindow().unwrap_or_default();
-        (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
-    };
-    let list = view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
         return dispatch(crate::keys::id_of(i), vk, a, list, shell);
     }
@@ -235,6 +242,8 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "nav.recent" => recent_menu(a),
         "nav.addr" | "nav.addr2" | "nav.addr3" => return focus_ctl(a, ID_EDIT),
         "view.filter" => return focus_ctl(a, ID_FILTER),
+        "focus.next" => cycle_focus(false),
+        "focus.prev" => cycle_focus(true),
         "view.hidden" => toggle_hidden(),
         "view.zoom" => toggle_zoom(),
         "file.path" => {
@@ -257,9 +266,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
 
 pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
     bind_hwnd(m.hwnd);
-    if m.message == WM_LBUTTONDOWN || m.message == WM_KEYDOWN {
-        app(|a| a.tree_input |= a.tree_hwnd == m.hwnd || IsChild(a.tree_hwnd, m.hwnd).as_bool());
-    }
+    let in_tree = || app(|a| !a.tree_hwnd.0.is_null() && (a.tree_hwnd == m.hwnd || IsChild(a.tree_hwnd, m.hwnd).as_bool()));
     match m.message {
         WM_MOUSEMOVE => {
             set_hover(if is_icon_button(m.hwnd) { m.hwnd } else { HWND::default() });
@@ -272,17 +279,98 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            if m.message == WM_LBUTTONDOWN && in_tree() {
+                app(|a| a.tree_input = true);
+            }
             if let Some(i) = pane_of(m.hwnd) {
                 set_active(i);
             }
             false
         }
-        WM_KEYDOWN | WM_SYSKEYDOWN => key(m),
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            // Cleared before key() so a selection the tree reports while we handle Ctrl+Tab or F6
+            // is not taken for a click in the tree (that would reload the pane and drop Forward).
+            let tree = m.message == WM_KEYDOWN && in_tree();
+            let prev = app(|a| std::mem::take(&mut a.tree_input));
+            let used = key(m);
+            app(|a| a.tree_input = tree_input_after(prev, tree, used));
+            used
+        }
         WM_KEYUP | WM_SYSKEYUP => {
             crate::keys::clear_swallow(m.wParam.0 as u16);
             false
         }
         _ => false,
+    }
+}
+
+/// F6 ring: 0 file list, 1 address, 2 filter, then the left panel's folder tree and favourites.
+/// A hidden panel drops the last two stops.
+pub(crate) fn focus_ring(pos: usize, back: bool, panel: bool) -> usize {
+    let n = if panel { 5 } else { 3 };
+    (pos.min(n - 1) + if back { n - 1 } else { 1 }) % n
+}
+
+/// A key Grids handled (Ctrl+Tab, F6, …) must not count as input in the tree.
+/// An unhandled key in the tree still does, so the arrows navigate the pane.
+pub(crate) fn tree_input_after(prev: bool, in_tree: bool, used: bool) -> bool {
+    !used && (prev || in_tree)
+}
+
+unsafe fn cycle_focus(back: bool) {
+    let a = active_pane();
+    let f = GetFocus();
+    let (panel, th, side) = app(|x| (x.s.tree_on, x.tree_hwnd, x.side_hwnd));
+    let shown = panel && !th.0.is_null() && IsWindowVisible(th).as_bool();
+    let addr = pane_ctl(a, ID_EDIT) == Some(f);
+    let filt = pane_ctl(a, ID_FILTER) == Some(f);
+    let in_tree = !th.0.is_null() && (th == f || IsChild(th, f).as_bool());
+    let in_fav = !side.0.is_null() && (side == f || IsChild(side, f).as_bool());
+    let pos = if addr { 1 } else if filt { 2 } else if in_tree { 3 } else if in_fav { 4 } else { 0 };
+    match focus_ring(pos, back, shown) {
+        1 => {
+            _ = focus_ctl(a, ID_EDIT);
+        }
+        2 => {
+            _ = focus_ctl(a, ID_FILTER);
+        }
+        3 => {
+            let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or(th);
+            _ = SetFocus(Some(tv));
+            reveal_tree_selection();
+        }
+        4 => {
+            if app(|x| x.side_sel.is_none()) {
+                app(|x| x.side_sel = Some(0));
+            }
+            _ = SetFocus(Some(side));
+            _ = InvalidateRect(Some(side), None, false);
+        }
+        _ => focus_view(a),
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::{focus_ring, tree_input_after};
+
+    #[test]
+    fn focus_rings() {
+        let walk = |back, panel| (0..5).map(|p| focus_ring(p, back, panel)).collect::<Vec<_>>();
+        assert_eq!(walk(false, true), [1, 2, 3, 4, 0]);
+        assert_eq!(walk(true, true), [4, 0, 1, 2, 3]);
+        assert_eq!(walk(false, false)[..3], [1, 2, 0]);
+        assert_eq!(walk(true, false)[..3], [2, 0, 1]);
+        // A stop that only exists while the panel is open falls back into the short ring.
+        assert_eq!(focus_ring(4, false, false), 0);
+        assert_eq!(focus_ring(3, true, false), 1);
+    }
+
+    #[test]
+    fn tree_input_kept_only_for_tree_keys() {
+        assert!(tree_input_after(false, true, false)); // arrow in the tree
+        assert!(!tree_input_after(true, true, true)); // Ctrl+Tab / F6 in the tree
+        assert!(tree_input_after(true, false, false) && !tree_input_after(false, false, false));
     }
 }
 
