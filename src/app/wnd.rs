@@ -65,7 +65,10 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     restore_focus();
                 }
             }
-            WM_ENTERSIZEMOVE => app(|a| a.sizing = true),
+            WM_ENTERSIZEMOVE => {
+                app(|a| a.sizing = true);
+                kids_cancel(); // the '›' is about to move
+            }
             WM_EXITSIZEMOVE => {
                 app(|a| a.sizing = false);
                 refresh_drives(); // one that came or went mid-resize
@@ -349,6 +352,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_DPICHANGED => {
+                kids_cancel();
                 let dpi = (wp.0 & 0xffff) as i32;
                 app(|a| {
                     a.s.side = a.s.side * dpi / a.dpi;
@@ -485,6 +489,7 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 crumb_hover(h, at);
             }
             WM_MOUSELEAVE => crumb_hover(h, None),
+            WM_KIDS => kids_show(h, wp.0),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
                 let on_kind = {

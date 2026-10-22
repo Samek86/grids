@@ -76,6 +76,7 @@ pub(crate) struct Desk {
     pub(crate) peek_name: String,
     pub(crate) keys_scroll: i32,
     pub(crate) crumb_hot: Option<(HWND, usize)>, // pane, crumb under the pointer
+    pub(crate) kids: Option<KidsAsk>,            // a '›' whose subfolder list has not come back yet
     pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) ilist: Option<windows::Win32::UI::Controls::IImageList>, // system small icons, shared, never freed
@@ -212,6 +213,7 @@ pub(crate) fn blank_desk() -> Desk {
         peek_name: String::new(),
         keys_scroll: 0,
         crumb_hot: None,
+        kids: None,
         lost: 0,
         cards: Vec::new(),
         ilist: None,

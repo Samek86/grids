@@ -330,6 +330,7 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            kids_cancel();
             if m.message == WM_LBUTTONDOWN && in_tree() {
                 app(|a| a.tree_input = true);
             }
@@ -339,6 +340,7 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            kids_cancel();
             let (eat, next) = held_key(app(|a| a.held), m.wParam.0 as u16, m.lParam.0 & (1 << 30) != 0);
             app(|a| a.held = next);
             if eat {
