@@ -252,6 +252,13 @@ mod tests {
         assert_eq!((back.lang, back.single), (Lang::Ja, false));
         assert!(back.to_ini().contains("lang=ja\n"));
         assert!(Session::parse("lang=ko").to_ini().contains("lang=ko\n"));
+        assert!(Session::parse("side=300\ndblup=1\n").hotkey); // an older file is on
+        assert!(!Session::parse("hotkey=0\n").hotkey);
+        assert!(!Session::parse(&Session { hotkey: false, ..Session::default() }.to_ini()).hotkey);
+        let mut cur = Session::default();
+        cur.take_layout(&Session::parse("hotkey=0\n"));
+        assert!(cur.hotkey); // a loaded layout does not change the app-wide hotkey
+        assert!(!layout_differs(&Session { hotkey: false, ..Session::default() }, &Session::default()));
     }
 
     #[test]

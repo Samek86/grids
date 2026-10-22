@@ -93,6 +93,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
     let (ctrl, shift, alt) = (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
+    let win = down(VK_LWIN) || down(VK_RWIN);
     // A conflict dialog is up. Let it see the key.
     if crate::keys::modal() {
         return false;
@@ -102,10 +103,11 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         return true;
     }
     if crate::keys::capturing() {
-        if down(VK_LWIN) || down(VK_RWIN) || m.lParam.0 & (1 << 30) != 0 {
+        // The Windows key is a modifier, so a chord such as Win+Alt+E can be recorded.
+        if matches!(vk, 0x5B | 0x5C) || m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
-        return finish_capture(vk, ctrl, shift, alt);
+        return finish_capture(vk, ctrl, shift, alt, win);
     }
     // Typing in Settings must not fire pane shortcuts. Esc closes the window.
     if settings::captures(m.hwnd) {
@@ -155,7 +157,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     };
     let list = view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
     // F6 leaves the address and the filter. Every other chord stays out of a name being typed.
-    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
+    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
         if id == "app.keys" && m.lParam.0 & (1 << 30) != 0 {
             return true; // holding Ctrl+/ toggles once
@@ -189,9 +191,9 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return true;
     }
-    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt) {
+    if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
-        if matches!(id, "app.keys" | "view.peek") && m.lParam.0 & (1 << 30) != 0 {
+        if matches!(id, "app.keys" | "view.peek" | "app.front") && m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
         return dispatch(id, vk, a, list, shell);
@@ -218,8 +220,8 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
 }
 
-unsafe fn finish_capture(vk: u16, ctrl: bool, shift: bool, alt: bool) -> bool {
-    match crate::keys::offer(vk, ctrl, shift, alt) {
+unsafe fn finish_capture(vk: u16, ctrl: bool, shift: bool, alt: bool, win: bool) -> bool {
+    match crate::keys::offer(vk, ctrl, shift, alt, win) {
         crate::keys::Offer::Ignore => true,
         crate::keys::Offer::Cancel | crate::keys::Offer::Same => {
             crate::keys::swallow(vk);
@@ -237,6 +239,7 @@ unsafe fn finish_capture(vk: u16, ctrl: bool, shift: bool, alt: bool) -> bool {
             }
             crate::keys::rebind(row, chord);
             crate::keys::swallow(vk);
+            apply_hotkey(true);
             save_session();
             settings::refresh();
             true
@@ -304,6 +307,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "app.settings" => settings::open(app(|x| x.main)),
         "app.help" => open_help(),
         "app.keys" => toggle_keys(),
+        "app.front" => hotkey_pressed(),
         "win.new" => new_window(),
         _ => return shell(),
     }

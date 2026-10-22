@@ -208,6 +208,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
                 ID_HIDDEN => toggle_hidden(),
                 ID_PANEL => toggle_tree(),
+                ID_HOTKEY => toggle_hotkey(),
                 ID_FOLLOW => {
                     let follow = app(|a| {
                         if a.s.theme == 0 {
@@ -251,12 +252,17 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ => {}
             },
             WM_INITMENUPOPUP => {
-                let (menu, dblup, accent, lang, panel, ext) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now(), a.s.lang, a.s.tree_on, a.s.ext));
+                let (menu, dblup, accent, lang, panel, ext, hot) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now(), a.s.lang, a.s.tree_on, a.s.ext, a.hot_on));
                 let check = |id: usize, on: bool| CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | if on { MF_CHECKED } else { MF_UNCHECKED }).0);
                 check(ID_HIDDEN, hidden());
                 check(ID_PANEL, panel);
                 check(ID_EXT, ext);
                 check(ID_FOLLOW, app(|a| a.s.theme == 0));
+                check(ID_HOTKEY, hot);
+                if let Some(i) = crate::keys::index("app.front") {
+                    let label = format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(i));
+                    _ = ModifyMenuW(menu, ID_HOTKEY as u32, MF_BYCOMMAND | MF_STRING, ID_HOTKEY as usize, &HSTRING::from(label));
+                }
                 if let Some(i) = crate::keys::index("view.panel") {
                     let label = format!("{}\t{}", tr("Left panel", "왼쪽 패널", "左のパネル"), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_PANEL as u32, MF_BYCOMMAND | MF_STRING, ID_PANEL as usize, &HSTRING::from(label));
@@ -290,6 +296,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 // Debounced in request_pins. One read fills both lists.
                 let (state, min) = ((wp.0 & 0xffff) as u32, (wp.0 >> 16) & 0xffff != 0);
                 if state != WA_INACTIVE {
+                    app(|a| a.last_front = a.cur);
                     request_pins(false);
                 }
                 // Keyboard activation restores focus at once. A click waits until that click is handled.
@@ -355,6 +362,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 return DefWindowProcW(h, msg, wp, lp);
             }
             WM_THEME_SYNC => theme_sync(),
+            WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
@@ -378,6 +386,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_DESTROY => {
+                release_hotkey_hwnd(h);
                 _ = KillTimer(Some(h), TIMER_STATUS);
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
@@ -390,6 +399,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
                 if window_count() == 0 {
                     PostQuitMessage(0);
+                } else {
+                    try_register_hotkey(app(|a| a.main));
                 }
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -600,6 +611,146 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
     }
 }
 
+// ---------- Win+Alt+E, or whatever chord the keymap now has ----------
+
+pub(crate) const HOTKEY_ID: i32 = 1;
+
+fn hotkey_busy(chord: &str) -> String {
+    match ui() {
+        1 => format!("{chord}는 다른 앱이 이미 쓰고 있음"),
+        2 => format!("{chord} は他のアプリが使用中です"),
+        _ => format!("{chord} is already used by another app"),
+    }
+}
+
+/// Registers or drops the global hotkey. A bare key is refused: it would steal typing in every app.
+pub(crate) unsafe fn set_hotkey(main: HWND, on: bool) -> bool {
+    if main.0.is_null() {
+        return false;
+    }
+    if !on {
+        _ = UnregisterHotKey(Some(main), HOTKEY_ID);
+        return false;
+    }
+    let Some(chord) = crate::keys::hot_chord() else { return false };
+    if chord.digits || (!chord.ctrl && !chord.alt && !chord.shift && !chord.win) {
+        return false;
+    }
+    let mut mods = MOD_NOREPEAT;
+    if chord.ctrl {
+        mods |= MOD_CONTROL;
+    }
+    if chord.alt {
+        mods |= MOD_ALT;
+    }
+    if chord.shift {
+        mods |= MOD_SHIFT;
+    }
+    if chord.win {
+        mods |= MOD_WIN;
+    }
+    RegisterHotKey(Some(main), HOTKEY_ID, mods, chord.vk as u32).is_ok()
+}
+
+/// Startup and a window taking over after the owner closes. A failure leaves the wish on.
+pub(crate) unsafe fn try_register_hotkey(main: HWND) {
+    if main.0.is_null() || app(|a| !a.s.hotkey || a.hot_on) {
+        return;
+    }
+    let on = set_hotkey(main, true);
+    app(|a| {
+        a.hot_on = on;
+        a.hot_hwnd = if on { main } else { HWND::default() };
+    });
+}
+
+/// After a rebind or a reset. The wish stays on when the new chord cannot be registered.
+pub(crate) unsafe fn apply_hotkey(notify: bool) {
+    let (want, old, main) = app(|a| (a.s.hotkey, a.hot_hwnd, a.main));
+    if !old.0.is_null() {
+        _ = UnregisterHotKey(Some(old), HOTKEY_ID);
+    }
+    let target = if old.0.is_null() { main } else { old };
+    let on = want && set_hotkey(target, true);
+    app(|a| {
+        a.hot_on = on;
+        a.hot_hwnd = if on { target } else { HWND::default() };
+    });
+    if notify && want && !on {
+        let chord = crate::keys::index("app.front").map(crate::keys::chord_text).unwrap_or_default();
+        app(|a| {
+            a.note = Some((hotkey_busy(&chord), Instant::now() + std::time::Duration::from_secs(3)));
+            a.status_key.clear();
+        });
+    }
+}
+
+pub(crate) unsafe fn release_hotkey_hwnd(h: HWND) {
+    if app(|a| a.hot_hwnd == h) {
+        _ = UnregisterHotKey(Some(h), HOTKEY_ID);
+        app(|a| {
+            a.hot_on = false;
+            a.hot_hwnd = HWND::default();
+        });
+    }
+}
+
+/// The check shows what is really registered, so a failed start is unchecked and one click retries.
+pub(crate) unsafe fn toggle_hotkey() {
+    let (was, target) = app(|a| (a.hot_on, if a.hot_hwnd.0.is_null() { a.main } else { a.hot_hwnd }));
+    let now = crate::keys::hotkey_flip(was, |on| set_hotkey(target, on));
+    app(|a| {
+        a.hot_on = now;
+        a.hot_hwnd = if now { target } else { HWND::default() };
+        a.s.hotkey = now;
+        if !was && !now {
+            let chord = crate::keys::index("app.front").map(crate::keys::chord_text).unwrap_or_default();
+            a.note = Some((hotkey_busy(&chord), Instant::now() + std::time::Duration::from_secs(3)));
+            a.status_key.clear();
+        }
+    });
+    publish_shared();
+    save_session();
+}
+
+/// Front, with the file list ready. Pressed again while Grids is in front: minimize.
+/// A dialog that has disabled its owner comes forward instead.
+pub(crate) unsafe fn hotkey_pressed() {
+    let mains = app(|a| a.desks.iter().map(|d| d.main).filter(|h| !h.0.is_null()).collect::<Vec<_>>());
+    let disabled = mains.into_iter().find(|h| !IsWindowEnabled(*h).as_bool());
+    if let Some(main) = disabled {
+        if IsIconic(main).as_bool() {
+            _ = ShowWindow(main, SW_RESTORE);
+        }
+        let p = GetLastActivePopup(main);
+        if !p.0.is_null() && p != main {
+            _ = SetForegroundWindow(p);
+        }
+        return;
+    }
+    let fg = GetForegroundWindow();
+    let root = GetAncestor(fg, GA_ROOTOWNER);
+    let ours = app(|a| a.desks.iter().find(|d| d.main == root || d.main == fg).map(|d| d.main));
+    if let Some(main) = ours {
+        if !IsIconic(main).as_bool() {
+            _ = ShowWindow(main, SW_MINIMIZE);
+            return;
+        }
+    }
+    let main = app(|a| a.desks.get(a.last_front).map(|d| d.main).filter(|h| !h.0.is_null()).unwrap_or(a.hot_hwnd));
+    if main.0.is_null() {
+        return;
+    }
+    if IsIconic(main).as_bool() {
+        _ = ShowWindow(main, SW_RESTORE);
+    }
+    if SetForegroundWindow(main).as_bool() && GetForegroundWindow() == main {
+        bind_hwnd(main);
+        app(|a| a.last_front = a.cur);
+        focus_view(app(|a| a.s.active));
+    }
+}
+
 // The README on GitHub, in the UI language.
 pub(crate) unsafe fn open_help() {
     let url = format!("{HOME}/blob/main/{}", tr("README.md", "README.ko.md", "README.md"));
@@ -671,6 +822,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_PANEL, tr("Left panel\tCtrl+Shift+E", "왼쪽 패널\tCtrl+Shift+E", "左のパネル\tCtrl+Shift+E"))?;
     item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
     item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
+    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
     item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
