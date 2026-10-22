@@ -114,6 +114,15 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         return text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
     }
     let s = |v: i32| v * dpi / 96;
+    if (ID_DRIVE..ID_DRIVE + 26).contains(&id) {
+        // The active pane's drive: full-strength letter over a selection-colour underline.
+        let (mark, accent) = app(|a| (a.drive_mark, a.s.accent_now()));
+        let marked = mark == Some(b'A' + (id - ID_DRIVE) as u8);
+        if marked {
+            fill(dc, RECT { left: rc.left + s(7), top: rc.bottom - s(2), right: rc.right - s(7), bottom: rc.bottom }, accent);
+        }
+        return text(dc, rc, &text_of(d.hwndItem), font, if marked { pal().text } else { fg }, DT_CENTER);
+    }
     if id == ID_TB_LAYOUT {
         // the one label in the chrome: the current grid
         let icon = RECT { left: rc.left + s(4), right: rc.left + s(22), ..rc };

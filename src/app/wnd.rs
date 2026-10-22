@@ -68,9 +68,28 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_ENTERSIZEMOVE => app(|a| a.sizing = true),
             WM_EXITSIZEMOVE => {
                 app(|a| a.sizing = false);
+                refresh_drives(); // one that came or went mid-resize
                 relayout();
                 redraw_all();
                 note_save();
+            }
+            // A drive came or went. Only queued: no disk call while the system waits on the reply,
+            // and TRUE grants a removal query.
+            WM_DEVICECHANGE => {
+                _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
+                return LRESULT(1);
+            }
+            // A network drive or subst sends no device message. Look again when Grids comes forward.
+            WM_ACTIVATEAPP => {
+                if wp.0 != 0 {
+                    _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
+                }
+            }
+            WM_DRIVES => {
+                if !app(|a| a.drag.is_some() || a.sizing) && refresh_drives() {
+                    relayout();
+                    redraw_all();
+                }
             }
             WM_PAINT => paint_main(h),
             WM_ERASEBKGND => return LRESULT(1), // paint_main covers everything
@@ -179,6 +198,14 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 ID_NEWFILE => create_text_file(),
                 id if id == ID_TB_SET as usize => settings::open(h),
                 id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
+                id if (ID_DRIVE as usize..ID_DRIVE as usize + 26).contains(&id) => {
+                    let i = app(|a| a.s.active);
+                    if navigate(i, &format!("{}:\\", (b'A' + (id - ID_DRIVE as usize) as u8) as char)) {
+                        focus_view(i);
+                    } else {
+                        _ = MessageBeep(MB_ICONWARNING); // no medium, or gone since the button was drawn
+                    }
+                }
                 ID_HIDDEN => toggle_hidden(),
                 ID_PANEL => toggle_tree(),
                 ID_FOLLOW => {
@@ -626,6 +653,7 @@ pub(crate) unsafe fn set_language(lang: Lang) {
                 tip_text(b, hint, TTM_UPDATETIPTEXTW);
             }
         }
+        refresh_drive_tips();
         refresh_save_button();
         rename_fields();
         app(|a| a.status_key.clear());

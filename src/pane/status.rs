@@ -209,6 +209,7 @@ pub(crate) fn resum_sizes() {
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
 // Other ticks only merge the folder size worker's progress into the stored text.
 pub(crate) unsafe fn update_status() {
+    mark_drive();
     let (i, path, main) = app(|a| (a.s.active, a.s.paths[a.s.active].clone(), a.main));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
