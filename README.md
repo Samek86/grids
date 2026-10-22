@@ -58,7 +58,7 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 | Alt+← / Alt+→ | Back / forward |
 | Alt+↑ | Parent folder |
 | Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
-| Ctrl+L, Alt+D, F4 | Address bar: also `..` or a subfolder name, a file to open, or a command such as `cmd`, `wt`, `powershell` (runs in this pane's folder) |
+| Ctrl+L, Alt+D, F4 | Address bar. Idle, it shows the path as crumbs (`C: › Users › Public`): click a crumb to open it, `…` lists the folded parents, and the current folder or an empty part of the bar edits the path. Also `..`, a subfolder name, a file to open, or a command such as `cmd`, `wt`, `powershell` (runs in this pane's folder) |
 | Ctrl+F | Name filter |
 | F6 / Shift+F6 | Next / previous focus: file list, address, filter, folder tree, favourites |
 | Enter / Esc | Apply / cancel the address or filter |

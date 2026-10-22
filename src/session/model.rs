@@ -773,6 +773,56 @@ pub(crate) fn is_fs(path: &str) -> bool {
     path.get(1..3) == Some(":\\") || path.starts_with(r"\\")
 }
 
+/// Address crumbs of a parsing name: (shown name, folder to open). The drive or `\\server\share` is first.
+/// Shell places such as This PC have none.
+pub(crate) fn crumbs(parse: &str) -> Vec<(String, String)> {
+    if !is_fs(parse) {
+        return Vec::new();
+    }
+    let (root, go, rest) = match parse.strip_prefix(r"\\") {
+        Some(unc) => {
+            let mut it = unc.splitn(3, '\\');
+            let root = format!(r"\\{}", it.by_ref().take(2).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\\"));
+            (root.clone(), root, it.next().unwrap_or(""))
+        }
+        None => {
+            if parse.len() < 3 {
+                return Vec::new();
+            }
+            (parse[..2].to_string(), parse[..3].to_string(), &parse[3..])
+        }
+    };
+    let mut path = root.clone();
+    let mut out = vec![(root, go)];
+    for part in rest.split('\\').filter(|p| !p.is_empty()) {
+        path = format!(r"{path}\{part}");
+        out.push((part.to_string(), path.clone()));
+    }
+    out
+}
+
+/// Crumb widths `w` into `avail` px: (first crumb shown, whether '…' is shown, width of the last).
+/// Everything when it fits. Otherwise the current folder, cut to fit, then parents nearest first, leaving room for '…'.
+pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> (usize, bool, i32) {
+    let n = w.len();
+    if n == 0 || avail < min {
+        return (n, false, 0);
+    }
+    if w.iter().sum::<i32>() + sep * (n as i32 - 1) <= avail {
+        return (0, false, w[n - 1]);
+    }
+    let last = w[n - 1].min(avail);
+    let (mut first, mut used) = (n - 1, last);
+    for k in (0..n - 1).rev() {
+        if used + w[k] + sep + if k > 0 { ell + sep } else { 0 } > avail {
+            break;
+        }
+        used += w[k] + sep;
+        first = k;
+    }
+    (first, first > 0 && used + ell + sep <= avail, last)
+}
+
 pub(crate) const RECENT: usize = 20;
 
 // A pane moving from `old` to `new` puts both at the front of the recent list. Coming back to the folder it
@@ -874,5 +924,37 @@ pub(crate) fn filter_spec(text: &str) -> String {
     let parts = text.split(';').map(str::trim).filter(|t| !t.is_empty());
     let parts = parts.map(|t| if t.contains(['*', '?']) { t.to_string() } else { format!("*{t}*") });
     parts.collect::<Vec<_>>().join(";")
+}
+
+#[cfg(test)]
+mod crumb_tests {
+    use super::{crumb_fit, crumbs};
+    use crate::THIS_PC;
+
+    #[test]
+    fn address_crumbs() {
+        let c = |p: &str| crumbs(p).into_iter().map(|(n, g)| format!("{n}={g}")).collect::<Vec<_>>();
+        assert_eq!(c("C:\\"), [r"C:=C:\"]);
+        assert_eq!(c(r"C:\Users\Public\"), [r"C:=C:\", r"Users=C:\Users", r"Public=C:\Users\Public"]);
+        assert_eq!(c(r"\\srv\share\a"), [r"\\srv\share=\\srv\share", r"a=\\srv\share\a"]);
+        assert!(crumbs(THIS_PC).is_empty());
+        assert!(crumbs("C:").is_empty());
+        let p = r"D:\x\y y\z";
+        assert!(crumbs(p).iter().all(|(_, g)| p.starts_with(g.as_str())));
+    }
+
+    #[test]
+    fn crumb_fits() {
+        let f = |w: &[i32], avail| crumb_fit(w, avail, 4, 20, 16);
+        assert_eq!(f(&[30, 40, 50], 500), (0, false, 50));
+        assert_eq!(f(&[14, 15, 15], 52), (0, false, 15));
+        assert_eq!(f(&[14, 15, 15], 51), (2, true, 15));
+        assert_eq!(f(&[10, 200], 100), (1, false, 100));
+        assert_eq!(f(&[30, 10, 50], 70), (2, false, 50));
+        assert_eq!(f(&[30, 10, 50], 78), (2, true, 50));
+        assert_eq!(f(&[30, 40], 15), (2, false, 0));
+        assert_eq!(f(&[30, 40], 0), (2, false, 0));
+        assert_eq!(f(&[], 100), (0, false, 0));
+    }
 }
 

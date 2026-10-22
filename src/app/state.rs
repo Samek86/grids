@@ -64,6 +64,7 @@ pub(crate) struct Desk {
     pub(crate) keys_popup: HWND,               // shortcut window; null while closed
     pub(crate) keys_prev: HWND,                // focus to restore when that window is closed on purpose
     pub(crate) keys_scroll: i32,
+    pub(crate) crumb_hot: Option<(HWND, usize)>, // pane, crumb under the pointer
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) hover: HWND, // owner-drawn button under the mouse
     pub(crate) tip: HWND,
@@ -169,6 +170,7 @@ pub(crate) fn blank_desk() -> Desk {
         keys_popup: HWND::default(),
         keys_prev: HWND::default(),
         keys_scroll: 0,
+        crumb_hot: None,
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),

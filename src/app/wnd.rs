@@ -314,10 +314,29 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_SIZE => layout_pane(h),
-            WM_LBUTTONDBLCLK => {
+            WM_MOUSEMOVE => {
+                let (x, y) = xy(lp);
+                let at = pane_of(h).and_then(|i| crumb_at(h, i, x, y)).and_then(|hit| hit.map(|(k, ..)| k));
+                crumb_hover(h, at);
+            }
+            WM_MOUSELEAVE => crumb_hover(h, None),
+            WM_LBUTTONDOWN => {
+                let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
                     set_active(i);
-                    toggle_zoom();
+                    crumb_click(h, i, x, y);
+                }
+            }
+            WM_LBUTTONDBLCLK => {
+                let (x, y) = xy(lp);
+                let dpi = app(|a| a.dpi);
+                let addr = addr_rect(h, dpi);
+                let on_addr = x >= addr.left && x < addr.right && y >= addr.top && y < addr.bottom;
+                if !on_addr {
+                    if let Some(i) = pane_of(h) {
+                        set_active(i);
+                        toggle_zoom();
+                    }
                 }
             }
             WM_PAINT => paint_pane(h),
@@ -352,7 +371,8 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_COMMAND => match ((wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32) {
                 // pill gets an accent outline while its edit has focus
-                (ID_EDIT | ID_FILTER, EN_SETFOCUS | EN_KILLFOCUS) => _ = InvalidateRect(Some(h), None, false),
+                (ID_EDIT, EN_SETFOCUS | EN_KILLFOCUS) => sync_addr(h),
+                (ID_FILTER, EN_SETFOCUS | EN_KILLFOCUS) => _ = InvalidateRect(Some(h), None, false),
                 (ID_BACK, _) => nav(SBSP_NAVIGATEBACK),
                 (ID_FWD, _) => nav(SBSP_NAVIGATEFORWARD),
                 (ID_UP, _) => nav(SBSP_PARENT),
