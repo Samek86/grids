@@ -18,6 +18,7 @@ pub(crate) struct Pane {
     pub(crate) disp: String,
     pub(crate) pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
     pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
+    pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
 }
 
 pub(crate) struct Desk {
@@ -65,6 +66,7 @@ pub(crate) struct Desk {
     pub(crate) keys_prev: HWND,                // focus to restore when that window is closed on purpose
     pub(crate) keys_scroll: i32,
     pub(crate) crumb_hot: Option<(HWND, usize)>, // pane, crumb under the pointer
+    pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) hover: HWND, // owner-drawn button under the mouse
     pub(crate) tip: HWND,
@@ -183,6 +185,7 @@ pub(crate) fn blank_desk() -> Desk {
         keys_prev: HWND::default(),
         keys_scroll: 0,
         crumb_hot: None,
+        lost: 0,
         cards: Vec::new(),
         hover: HWND::default(),
         tip: HWND::default(),

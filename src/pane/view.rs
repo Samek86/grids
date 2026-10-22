@@ -48,7 +48,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let dt: IDropTarget = PaneDrop { slot: i, hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, recover: None })
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {

@@ -5,18 +5,128 @@ use crate::ui::*;
 use crate::session::*;
 use crate::shell::*;
 use crate::i18n::*;
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
 // ---------- navigation ----------
 
 pub(crate) unsafe fn navigate(i: usize, path: &str) -> bool {
-    let Some(eb) = eb_of(i) else { return false };
+    go_near(i, path)
+}
+
+pub(crate) unsafe fn try_nav(i: usize, path: &str) -> Result<()> {
+    let eb = eb_of(i).ok_or_else(|| Error::from(E_FAIL))?;
     let mut pidl = std::ptr::null_mut();
-    if SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None).is_err() {
+    SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None)?;
+    let r = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
+    CoTaskMemFree(Some(pidl as _));
+    r
+}
+
+/// The shell's answer for a path that isn't there. Denied, offline, or not ready is something else.
+pub(crate) fn gone(code: HRESULT) -> bool {
+    code == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) || code == HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)
+}
+
+/// Nearest folder above `path` that still exists. Stops at anything but "not found".
+pub(crate) fn near_dir(path: &str, probe: impl Fn(&Path) -> std::io::Result<bool>) -> Option<String> {
+    for p in Path::new(path).ancestors().skip(1) {
+        match probe(p) {
+            Ok(true) => return Some(p.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Nav {
+    Pending,
+    Complete,
+    Failed,
+}
+
+/// A recovery through one pane's navigation events. Returns the missing folder once its parent has opened.
+pub(crate) fn rec_step(rec: &mut Option<(String, String)>, ev: Nav, path: &str) -> Option<String> {
+    let hit = rec.as_ref().is_some_and(|(_, t)| t.eq_ignore_ascii_case(path));
+    match ev {
+        Nav::Pending if !hit => *rec = None,
+        Nav::Failed if hit => *rec = None,
+        Nav::Complete => return rec.take().filter(|_| hit).map(|(m, _)| m),
+        _ => {}
+    }
+    None
+}
+
+/// A local folder that is confirmed missing opens its nearest existing parent.
+/// The status line says so once that parent has opened. Shares are not probed on this thread.
+pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
+    let Err(e) = try_nav(i, path) else { return true };
+    if !gone(e.code()) {
         return false;
     }
+    app(|a| {
+        a.s.recent.retain(|r| !r.eq_ignore_ascii_case(path));
+        if a.s.paths[i].eq_ignore_ascii_case(path) {
+            a.s.paths[i].clear();
+        }
+    });
+    let root = path.get(..3).unwrap_or("");
+    let local = root.len() == 3 && root.as_bytes()[1] == b':' && matches!(GetDriveTypeW(&HSTRING::from(root)), 2 | 3);
+    if !local {
+        return false;
+    }
+    let Some(up) = near_dir(path, |p| std::fs::metadata(p).map(|m| m.is_dir())) else { return false };
+    let Some(eb) = eb_of(i) else { return false };
+    let mut pidl = std::ptr::null_mut();
+    if SHParseDisplayName(&HSTRING::from(up.as_str()), None, &mut pidl, 0, None).is_err() {
+        return false;
+    }
+    let target = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+    let arm = |set: bool| {
+        app(|a| {
+            if let Some(p) = a.panes[i].as_mut() {
+                if set {
+                    p.recover = Some((path.to_string(), target.clone()));
+                } else if p.recover.as_ref().is_some_and(|(_, t)| *t == target) {
+                    p.recover = None;
+                }
+            }
+        })
+    };
+    arm(true);
     let ok = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok();
+    if !ok {
+        arm(false);
+    }
     CoTaskMemFree(Some(pidl as _));
     ok
+}
+
+pub(crate) fn gone_note(a: &mut App, missing: &str, opened: &str) {
+    let live = a.lost > 0 && a.note.as_ref().is_some_and(|(_, t)| Instant::now() < *t);
+    a.lost = if live { a.lost + 1 } else { 1 };
+    let n = a.lost;
+    let text = match (ui(), n) {
+        (_, 1) if ui() == 1 => format!("없는 폴더: {missing} · {opened} 엶"),
+        (_, 1) if ui() == 2 => format!("見つかりません: {missing} · {opened} を開きました"),
+        (_, 1) => format!("Not found: {missing} · opened {opened}"),
+        (1, n) => format!("저장된 폴더 {n}개가 없어 가장 가까운 상위 폴더를 엶"),
+        (2, n) => format!("保存されたフォルダー {n} 件が見つからず、最も近い上位フォルダーを開きました"),
+        (_, n) => format!("{n} saved folders were missing · opened the nearest parent folders"),
+    };
+    a.note = Some((text, Instant::now() + std::time::Duration::from_secs(8)));
+}
+
+pub(crate) unsafe fn rec_event(i: usize, ev: Nav, pidl: *const ITEMIDLIST) {
+    if app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.recover.is_some())) {
+        let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+        app(|a| {
+            if let Some(p) = a.panes[i].as_mut() {
+                rec_step(&mut p.recover, ev, &path);
+            }
+        });
+    }
 }
 
 pub(crate) unsafe fn browse(i: usize, flags: u32) {
@@ -502,6 +612,11 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
+    if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
+        let opened = short_name(&parse);
+        app(|a| gone_note(a, &missing, &opened));
+        update_status();
+    }
     let Some((h, eb, view, cols)) = app(|a| {
         let fs = is_fs(&parse);
         let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
@@ -565,9 +680,12 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
 pub(crate) struct Events(pub(crate) usize);
 
 impl IExplorerBrowserEvents_Impl for Events_Impl {
-    fn OnNavigationPending(&self, _: *const ITEMIDLIST) -> Result<()> {
+    fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { save_view(self.0) };
+        unsafe {
+            rec_event(self.0, Nav::Pending, pidl);
+            save_view(self.0);
+        }
         Ok(())
     }
     fn OnViewCreated(&self, _: Ref<IShellView>) -> Result<()> {
@@ -578,8 +696,9 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         unsafe { on_nav(self.0, pidl) };
         Ok(())
     }
-    fn OnNavigationFailed(&self, _: *const ITEMIDLIST) -> Result<()> {
+    fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
+        unsafe { rec_event(self.0, Nav::Failed, pidl) };
         Ok(())
     }
 }
@@ -624,10 +743,12 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         }
         unsafe {
             let sf: IShellFolder = sv.ok()?.cast::<IFolderView>()?.GetFolder()?;
-            let mut attr = SFGAO_FOLDER.0;
-            _ = sf.GetAttributesOf(&[pidl], &mut attr);
-            if attr & SFGAO_FOLDER.0 != 0 {
-                return Ok(()); // folders stay, so a filtered pane can still be navigated
+            let mut attr = SFGAO_FOLDER.0 | SFGAO_STREAM.0;
+            if sf.GetAttributesOf(&[pidl], &mut attr).is_err() {
+                return Ok(()); // unreadable: keep the item
+            }
+            if real_folder(attr) {
+                return Ok(()); // real folders stay, so a filtered pane can still be navigated
             }
             let mut sr = STRRET::default();
             let mut name = PWSTR::null();
@@ -741,6 +862,44 @@ impl IDropTarget_Impl for PaneDrop_Impl {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod missing_tests {
+    use super::{near_dir, rec_step, Nav};
+    use std::io;
+    use std::path::Path;
+
+    #[test]
+    fn nearest_existing_parent() {
+        let tree = |p: &Path| match p.to_string_lossy().replace('/', "\\").as_str() {
+            r"C:\a\b" => Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+            r"C:\a" => Ok(true),
+            r"C:\" => Ok(true),
+            _ => Err(io::Error::other("denied")),
+        };
+        assert_eq!(near_dir(r"C:\a\b\c", tree).as_deref(), Some(r"C:\a"));
+        let denied = |p: &Path| {
+            if p.ends_with("a") {
+                Err(io::Error::other("denied"))
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, "x"))
+            }
+        };
+        assert_eq!(near_dir(r"C:\a\b", denied), None);
+    }
+
+    #[test]
+    fn recovery_waits_for_the_parent() {
+        let mut rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Pending, r"D:\").is_none() && rec.is_none());
+        rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Pending, r"C:\").is_none() && rec.is_some());
+        assert_eq!(rec_step(&mut rec, Nav::Complete, r"C:\").as_deref(), Some(r"C:\gone"));
+        assert!(rec.is_none());
+        rec = Some((r"C:\gone".into(), r"C:\".into()));
+        assert!(rec_step(&mut rec, Nav::Failed, r"C:\").is_none() && rec.is_none());
     }
 }
 
