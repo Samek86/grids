@@ -48,6 +48,7 @@ pub(crate) struct Desk {
     pub(crate) panes: Vec<Option<Pane>>,
     pub(crate) drag: Option<Hit>,
     pub(crate) sizing: bool, // inside the window's own move/size loop
+    pub(crate) was_max: bool, // maximized when last not minimized (kept while minimized)
     pub(crate) status: String,
     pub(crate) status_key: String,
     pub(crate) status_base: (String, Option<(u64, bool, bool)>, String), // text before / after the selection size, (file bytes, has folders, partial)
@@ -127,6 +128,8 @@ pub(crate) struct SideDrag {
 pub(crate) struct App {
     pub(crate) desks: Vec<Desk>,
     pub(crate) cur: usize,
+    /// A failed grids.json write is tried again after this instant. Not mid-drag.
+    pub(crate) save_after: Option<Instant>,
 }
 
 impl Deref for App {
@@ -170,6 +173,7 @@ pub(crate) fn blank_desk() -> Desk {
         panes: (0..MAXP).map(|_| None).collect(),
         drag: None,
         sizing: false,
+        was_max: false,
         status: String::new(),
         status_key: String::new(),
         status_base: Default::default(),
@@ -227,7 +231,7 @@ pub(crate) fn blank_desk() -> Desk {
 }
 
 thread_local! {
-    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0 });
+    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, save_after: None });
 }
 
 pub(crate) fn no_panes() -> Vec<Option<Pane>> {

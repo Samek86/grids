@@ -28,7 +28,22 @@ fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
         // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
-        let mut s = store::load();
+        // A file that is there but unreadable must not be overwritten with defaults.
+        let mut s = loop {
+            match store::load() {
+                Ok(s) => break s,
+                Err(e) => {
+                    let text = HSTRING::from(format!(
+                        "Grids could not read its settings file (grids.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
+                         Grids 설정 파일(grids.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
+                         Grids の設定ファイル (grids.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
+                    ));
+                    if MessageBoxW(None, &text, w!("Grids"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
+                        return Ok(());
+                    }
+                }
+            }
+        };
         let boot = s.boot;
         let restore = session_arg(&args).is_none() && args.is_empty();
         if restore {
