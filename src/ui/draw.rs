@@ -417,7 +417,8 @@ pub(crate) enum Crumb {
     Here,
     Go(String),
     More(Vec<(String, String)>), // folded parents, nearest first
-    Sep,
+    /// `›`: the folder on its left, and the crumb shown after it (bold in the menu).
+    Kids(String, Option<String>),
 }
 
 /// The folder icon's square at the front of the address pill. None when the pill is too narrow.
@@ -451,6 +452,7 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     };
     let s = |v: i32| v * dpi / 96;
     let mut items = crumbs(&parse);
+    let fs = !items.is_empty();
     if items.is_empty() {
         let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp };
         items.push((name, String::new()));
@@ -465,23 +467,27 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     let w: Vec<i32> = items.iter().map(|(n, _)| width(n) + 2 * s(4)).collect();
     let (sep, ell) = (width("›") + 2 * s(2), width("…") + 2 * s(4));
     SelectObject(dc, old);
-    let (first, more, last) = crumb_fit(&w, field.right - field.left, sep, ell, s(16));
+    let (first, more, last, tail) = crumb_fit_tail(&w, field.right - field.left, sep, ell, s(16), fs);
     let mut out = Vec::new();
     let mut x = field.left;
     let mut put = |wd: i32, label: &str, c: Crumb| {
         out.push((RECT { left: x, right: x + wd, ..field }, label.to_string(), c));
         x += wd;
     };
+    let kids = |k: usize| Crumb::Kids(items[k].1.clone(), items.get(k + 1).map(|n| n.0.clone()));
     if more {
         put(ell, "…", Crumb::More(items[..first].iter().rev().cloned().collect()));
-        put(sep, "›", Crumb::Sep);
+        put(sep, "›", kids(first - 1));
     }
     for k in first..items.len() {
         if k + 1 == items.len() {
             put(last, &items[k].0, Crumb::Here);
+            if tail {
+                put(sep, "›", kids(k));
+            }
         } else {
             put(w[k], &items[k].0, Crumb::Go(items[k].1.clone()));
-            put(sep, "›", Crumb::Sep);
+            put(sep, "›", kids(k));
         }
     }
     out.retain_mut(|(r, ..)| {
@@ -537,6 +543,18 @@ pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
             _ = DestroyMenu(menu);
             (pick > 0).then(|| list.get(pick as usize - 1).map(|(_, path)| path.clone())).flatten()
         }
+        // The worker lists the folder. The menu opens on WM_KIDS. Focus moves first, so a key
+        // pressed meanwhile (which cancels the list) belongs to this pane, and the request
+        // records the pane as it is after that.
+        Some(Some((_, _, Crumb::Kids(dir, next)))) => {
+            kids_cancel();
+            focus_view(i);
+            let Some((ph, path, dpi)) = app(|a| Some((a.panes[i].as_ref()?.hwnd, a.s.paths[i].clone(), a.dpi))) else { return };
+            let id = want_kids(ph, &dir, hidden());
+            app(|a| a.kids = Some(KidsAsk { id, hwnd: ph, i, path, gen: gen(), dir, next }));
+            _ = InvalidateRect(Some(ph), Some(&addr_rect(ph, dpi)), false);
+            return;
+        }
         Some(_) => {
             _ = focus_ctl(i, ID_EDIT);
             return;
@@ -546,6 +564,185 @@ pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
         _ = MessageBeep(MB_ICONWARNING);
     }
     focus_view(i);
+}
+
+/// Posted when a subfolder list is ready. wParam is the request id. The names stay in `KIDS`.
+pub(crate) const WM_KIDS: u32 = WM_APP + 49;
+
+/// A `›` click waiting for its list. Checked again before the menu opens.
+pub(crate) struct KidsAsk {
+    pub(crate) id: usize,
+    pub(crate) hwnd: HWND,
+    pub(crate) i: usize,
+    pub(crate) path: String, // the pane's folder when the click happened
+    pub(crate) gen: usize,
+    pub(crate) dir: String, // folder being listed
+    pub(crate) next: Option<String>,
+}
+
+impl KidsAsk {
+    /// A `WM_KIDS` from an older request, or another pane, leaves this one alone.
+    pub(crate) fn owns(&self, id: usize, h: HWND) -> bool {
+        self.id == id && self.hwnd == h
+    }
+}
+
+pub(crate) type KidsList = std::result::Result<(Vec<String>, bool), ()>; // (names, cut short), Err = unreadable
+
+/// One worker, newest request only. `id` moves on every ask or cancel. A result is kept
+/// only for the current id, and handed out only to that id.
+/// One worker: a dead share's `read_dir` holds up the next `›`, which stays in the waiting mark.
+pub(crate) struct KidsJob {
+    pub(crate) id: usize,
+    pub(crate) hwnd: isize,
+    pub(crate) dir: String,
+    pub(crate) hidden: bool,
+    pub(crate) result: Option<(usize, KidsList)>,
+}
+
+impl KidsJob {
+    pub(crate) fn ask(&mut self, hwnd: isize, dir: &str, hidden: bool) -> usize {
+        (self.id, self.hwnd, self.dir, self.hidden, self.result) = (self.id + 1, hwnd, dir.to_string(), hidden, None);
+        self.id
+    }
+
+    pub(crate) fn publish(&mut self, id: usize, r: KidsList) -> bool {
+        if self.id != id {
+            return false;
+        }
+        self.result = Some((id, r));
+        true
+    }
+
+    pub(crate) fn take(&mut self, id: usize) -> Option<KidsList> {
+        self.result.take_if(|(k, _)| *k == id).map(|(_, r)| r)
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        (self.id, self.result) = (self.id + 1, None);
+        self.dir.clear();
+    }
+}
+
+pub(crate) static KIDS: Mutex<KidsJob> = Mutex::new(KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None });
+pub(crate) static KIDS_WAKE: Condvar = Condvar::new();
+pub(crate) const KIDS_MAX: usize = 500;
+
+pub(crate) fn kids_job() -> std::sync::MutexGuard<'static, KidsJob> {
+    KIDS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn want_kids(h: HWND, dir: &str, hidden: bool) -> usize {
+    let id = kids_job().ask(h.0 as isize, dir, hidden);
+    static WORKER: Once = Once::new();
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-kids".into()).spawn(kids_worker));
+    KIDS_WAKE.notify_one();
+    id
+}
+
+/// Lives until the process ends. The lock is never held across the directory read.
+pub(crate) fn kids_worker() {
+    use std::os::windows::fs::MetadataExt;
+    let mut seen = 0usize;
+    loop {
+        let (id, hwnd, dir, hidden) = {
+            let mut j = kids_job();
+            while j.id == seen || j.dir.is_empty() {
+                j = KIDS_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
+            }
+            (j.id, j.hwnd, j.dir.clone(), j.hidden)
+        };
+        seen = id;
+        let read = std::fs::read_dir(&dir).map_err(|_| ());
+        let r = read.map(|rd| {
+            let named = rd.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), e.metadata().ok()?.file_attributes())));
+            kid_names(named, hidden)
+        });
+        if kids_job().publish(id, r) {
+            unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_KIDS, WPARAM(id), LPARAM(0)) };
+        }
+    }
+}
+
+/// Subfolders from `(name, attributes)`. Hidden ones only when the shell shows them.
+/// Hidden and system together are never listed, the same as Explorer. Order is Explorer's
+/// (`2` before `10`). At most `KIDS_MAX`. Returns `(names, cut short)`.
+pub(crate) fn kid_names(all: impl Iterator<Item = (String, u32)>, show_hidden: bool) -> (Vec<String>, bool) {
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+    let (dir, hid, hs) = (FILE_ATTRIBUTE_DIRECTORY.0, FILE_ATTRIBUTE_HIDDEN.0, FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0);
+    let mut v: Vec<HSTRING> = all
+        .filter(|&(_, a)| a & dir != 0 && a & hs != hs && (show_hidden || a & hid == 0))
+        .map(|(n, _)| HSTRING::from(n))
+        .collect();
+    v.sort_by(|a, b| unsafe { StrCmpLogicalW(a, b) }.cmp(&0));
+    let cut = v.len() > KIDS_MAX;
+    (v.iter().take(KIDS_MAX).map(|n| n.to_string_lossy()).collect(), cut)
+}
+
+/// Where the `›` of `dir` sits in a fresh layout. None once that chevron has folded away.
+pub(crate) fn kids_anchor(items: &[(RECT, String, Crumb)], dir: &str) -> Option<RECT> {
+    items.iter().find(|(_, _, c)| matches!(c, Crumb::Kids(d, _) if d == dir)).map(|(r, ..)| *r)
+}
+
+/// A click, a key, a resize, or a DPI change drops a waiting `›` list.
+pub(crate) unsafe fn kids_cancel() {
+    let Some((h, dpi)) = app(|a| a.kids.take().map(|k| (k.hwnd, a.dpi))) else { return };
+    kids_job().cancel();
+    _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
+}
+
+/// `WM_KIDS`: the list is in. Shown only while it is still this request, the pane still shows
+/// the same folder, nothing is being resized, Grids is in front, and the `›` is still laid out
+/// where it is now.
+pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
+    if !app(|a| a.kids.as_ref().is_some_and(|k| k.owns(id, h))) {
+        return;
+    }
+    let Some(list) = kids_job().take(id) else { return };
+    let Some(k) = app(|a| a.kids.take()) else { return };
+    let (dpi, font, main) = app(|a| (a.dpi, a.font, a.main));
+    let addr = addr_rect(h, dpi);
+    _ = InvalidateRect(Some(h), Some(&addr), false);
+    let same = app(|a| a.panes[k.i].as_ref().is_some_and(|p| p.hwnd == h) && a.s.paths[k.i] == k.path && !a.sizing);
+    if !same || gen() != k.gen || GetForegroundWindow() != main || GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| IsWindowVisible(e).as_bool()) {
+        return;
+    }
+    let dc = GetDC(Some(h));
+    let items = crumb_layout(dc, font, k.i, crumb_field(addr, dpi));
+    ReleaseDC(Some(h), dc);
+    let Some(r) = kids_anchor(&items, &k.dir) else { return };
+    let Ok(menu) = CreatePopupMenu() else { return };
+    let gray = |t: &str| _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(t));
+    let names = match &list {
+        Ok((names, cut)) => {
+            for (n, name) in names.iter().enumerate() {
+                _ = AppendMenuW(menu, MF_STRING, n + 1, &HSTRING::from(name.replace('&', "&&")));
+                if k.next.as_ref().is_some_and(|x| x.eq_ignore_ascii_case(name)) {
+                    _ = SetMenuDefaultItem(menu, n as u32 + 1, 0); // the folder this pane is in: bold
+                }
+            }
+            if *cut {
+                gray("…");
+            } else if names.is_empty() {
+                gray(tr("No subfolders", "하위 폴더 없음", "サブフォルダーなし"));
+            }
+            names.as_slice()
+        }
+        Err(()) => {
+            gray(tr("Can't open this folder", "이 폴더를 열 수 없음", "このフォルダーを開けません"));
+            &[]
+        }
+    };
+    let mut p = POINT { x: r.left, y: r.bottom };
+    _ = ClientToScreen(h, &mut p);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, None, h, None).0;
+    _ = DestroyMenu(menu);
+    if let Some(name) = names.get((pick as usize).wrapping_sub(1)) {
+        if !navigate(k.i, &format!("{}\\{name}", k.dir.trim_end_matches('\\'))) {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+    }
+    focus_view(k.i);
 }
 
 pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
@@ -571,14 +768,15 @@ pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
         let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
         let tint = i.and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
         let folder = i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon);
-        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder)
+        let waiting = a.kids.as_ref().filter(|k| k.hwnd == h).map(|k| k.dir.clone());
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting)
     });
     let ilist = match app(|a| a.ilist.clone()) {
         None if folder >= 0 => {
@@ -636,10 +834,28 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
         }
         if let Some(i) = i.filter(|_| crumbs_on) {
             for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
-                if hot == Some(k) {
+                let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
+                if wait {
+                    fill(dc, r, blend(pal().pill, accent, 0.25));
+                } else if hot == Some(k) {
                     fill(dc, r, blend(pal().pill, pal().text, 0.08));
                 }
-                if c == Crumb::Sep || matches!(c, Crumb::More(_)) {
+                if matches!(c, Crumb::Kids(..)) {
+                    if wait {
+                        // `…` is a little wider than the `›` slot, so it reaches into the neighbours' padding.
+                        let mut w: Vec<u16> = "…".encode_utf16().collect();
+                        let mut rr = r;
+                        let old = SelectObject(dc, font.into());
+                        SetBkMode(dc, TRANSPARENT);
+                        SetTextColor(dc, cref(pal().sub));
+                        DrawTextW(dc, &mut w, &mut rr, DT_CENTER | DT_NOCLIP | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                        SelectObject(dc, old);
+                    } else {
+                        text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    }
+                    continue;
+                }
+                if matches!(c, Crumb::More(_)) {
                     text(dc, r, &label, font, pal().sub, DT_CENTER);
                     continue;
                 }
@@ -658,5 +874,50 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
             text(dc, icon, ICON_SEARCH, icon_font, pal().sub, DT_CENTER);
         }
     });
+}
+
+#[cfg(test)]
+mod kids_tests {
+    use super::*;
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+
+    #[test]
+    fn kid_name_rules() {
+        let (d, h, sy) = (FILE_ATTRIBUTE_DIRECTORY.0, FILE_ATTRIBUTE_HIDDEN.0, FILE_ATTRIBUTE_SYSTEM.0);
+        let all = || [("10", d), ("2", d), ("file.txt", FILE_ATTRIBUTE_ARCHIVE.0), ("Secret", d | h), ("Config.Msi", d | h | sy), ("a", d | sy)];
+        let names = |show| kid_names(all().into_iter().map(|(n, a)| (n.to_string(), a)), show);
+        assert_eq!(names(false), (vec!["2".to_string(), "10".into(), "a".into()], false));
+        assert_eq!(names(true), (vec!["2".to_string(), "10".into(), "a".into(), "Secret".into()], false));
+        let (v, cut) = kid_names((0..501).map(|k| (format!("f{k}"), d)), false);
+        assert_eq!((v.len(), cut, v[0].as_str(), v[499].as_str()), (500, true, "f0", "f499"));
+        assert!(!kid_names((0..500).map(|k| (format!("f{k}"), d)), false).1);
+    }
+
+    #[test]
+    fn kids_late_results_dropped() {
+        let mut j = KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None };
+        let a = j.ask(1, r"C:\Users", false);
+        assert!(j.publish(a, Ok((vec!["A".into()], false))));
+        let b = j.ask(1, r"C:\", false);
+        assert!(!j.publish(a, Ok((vec!["A".into()], false))));
+        assert!(j.take(a).is_none() && j.take(b).is_none());
+        assert!(j.publish(b, Err(())));
+        assert!(j.take(b).is_some() && j.take(b).is_none());
+        let w = HWND(1 as _);
+        let ask = KidsAsk { id: b, hwnd: w, i: 0, path: r"C:\Users\Public".into(), gen: 0, dir: r"C:\".into(), next: None };
+        assert!(!ask.owns(a, w) && ask.owns(b, w) && !ask.owns(b, HWND(2 as _)));
+        j.cancel();
+        assert!(!j.publish(b, Err(())) && j.dir.is_empty());
+    }
+
+    #[test]
+    fn kids_anchor_follows_layout() {
+        let r = |l| RECT { left: l, top: 0, right: l + 10, bottom: 20 };
+        let kids = |d: &str| Crumb::Kids(d.into(), None);
+        let wide = vec![(r(0), "C:".into(), Crumb::Go(r"C:\".into())), (r(10), "›".into(), kids(r"C:\")), (r(20), "Users".into(), Crumb::Here)];
+        assert_eq!(kids_anchor(&wide, r"C:\"), Some(r(10)));
+        let folded = vec![(r(0), "…".into(), Crumb::More(Vec::new())), (r(30), "›".into(), kids(r"C:\Users")), (r(40), "Users".into(), Crumb::Here)];
+        assert_eq!(kids_anchor(&folded, r"C:\"), None);
+    }
 }
 

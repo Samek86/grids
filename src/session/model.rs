@@ -862,6 +862,15 @@ pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> 
     (first, first > 0 && used + ell + sep <= avail, last)
 }
 
+/// `crumb_fit`, keeping a slot for a `›` after the current folder when that still leaves `min`.
+/// Shell places and a field too narrow for that chevron lay out as before.
+/// `(first, '…' shown, last width, tail '›')`.
+pub(crate) fn crumb_fit_tail(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32, fs: bool) -> (usize, bool, i32, bool) {
+    let tail = fs && sep >= 0 && min >= 0 && avail >= sep.saturating_add(min);
+    let (first, more, last) = crumb_fit(w, if tail { avail - sep } else { avail }, sep, ell, min);
+    (first, more, last, tail)
+}
+
 pub(crate) const RECENT: usize = 20;
 
 // A pane moving from `old` to `new` puts both at the front of the recent list. Coming back to the folder it
@@ -1027,6 +1036,18 @@ mod crumb_tests {
         assert_eq!(f(&[30, 40], 15), (2, false, 0));
         assert_eq!(f(&[30, 40], 0), (2, false, 0));
         assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn crumb_tail_room() {
+        let f = |avail, fs| super::crumb_fit_tail(&[30, 40], avail, 4, 20, 16, fs);
+        assert_eq!(f(16, true), (1, false, 16, false)); // too narrow for the '›': the current folder is still shown
+        assert_eq!(f(19, true), (1, false, 19, false));
+        assert_eq!(f(20, true), (1, false, 16, true));
+        assert_eq!(f(500, true), (0, false, 40, true));
+        assert!(!f(500, false).3); // a shell place never grows a tail
+        assert!(!f(16, false).3);
+        assert_eq!(f(0, true).3, false);
     }
 
     #[test]
