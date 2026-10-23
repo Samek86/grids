@@ -843,6 +843,7 @@ pub(crate) unsafe fn apply_theme_desk() {
         }
     };
     tip_theme(tip);
+    tip_theme(app(|a| a.side_hwnd)); // favourites list scrollbar
     let on = BOOL::from(dark);
     _ = DwmSetWindowAttribute(main, DWMWINDOWATTRIBUTE(20), &on as *const _ as _, 4); // immersive dark title bar
     let caption = cref(pal().bg);

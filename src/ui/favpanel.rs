@@ -58,12 +58,8 @@ pub(crate) unsafe fn sync_fav_metrics() {
     if !tv.0.is_null() && !font.is_invalid() {
         SendMessageW(tv, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
     }
-    let rh = fav_row_height(tree_item_height(), if fh > 0 { fh } else { 16 * dpi.max(1) / 96 });
-    let n = rows().len() as i32;
-    app(|a| {
-        let max = (n * rh - 40).max(0);
-        a.side_scroll = a.side_scroll.min(max);
-    });
+    _ = (fh, dpi);
+    clamp_side_scroll();
 }
 
 fn rows() -> Vec<FavRow> {
@@ -77,13 +73,45 @@ fn rows() -> Vec<FavRow> {
     })
 }
 
+fn side_view_h() -> i32 {
+    let h = app(|a| a.side_hwnd);
+    let mut rc = RECT::default();
+    if !h.0.is_null() {
+        unsafe { _ = GetClientRect(h, &mut rc) };
+    }
+    rc.bottom
+}
+
+/// Largest vertical scroll offset: total row height minus what the panel shows.
+fn max_side_scroll() -> i32 {
+    let total = rows().len() as i32 * row_h();
+    (total - side_view_h()).max(0)
+}
+
+/// Mirror the scroll state into the native vertical scrollbar (hidden while everything fits).
+pub(crate) fn sync_side_scrollbar() {
+    let h = app(|a| a.side_hwnd);
+    if h.0.is_null() {
+        return;
+    }
+    let total = rows().len() as i32 * row_h();
+    let (page, pos) = (side_view_h(), app(|a| a.side_scroll));
+    let si = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        nMin: 0,
+        nMax: (total - 1).max(0),
+        nPage: page.max(0) as u32,
+        nPos: pos,
+        nTrackPos: 0,
+    };
+    unsafe { windows::Win32::UI::Controls::SetScrollInfo(h, SB_VERT, &si, true) };
+}
+
 fn clamp_side_scroll() {
-    let rh = row_h();
-    let n = rows().len() as i32;
-    app(|a| {
-        let max = (n * rh - 40).max(0);
-        a.side_scroll = a.side_scroll.min(max);
-    });
+    let max = max_side_scroll();
+    app(|a| a.side_scroll = a.side_scroll.min(max));
+    sync_side_scrollbar();
 }
 
 fn drag_of(r: &FavRow) -> SideDrag {
@@ -703,11 +731,33 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_MOUSEWHEEL => {
                 let rh = row_h();
                 let delta = ((wp.0 >> 16) as i16 as i32) * rh / 120;
-                let n = rows().len() as i32;
-                app(|a| {
-                    let max = (n * rh - 40).max(0);
-                    a.side_scroll = (a.side_scroll - delta).clamp(0, max);
-                });
+                let max = max_side_scroll();
+                app(|a| a.side_scroll = (a.side_scroll - delta).clamp(0, max));
+                sync_side_scrollbar();
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            WM_SIZE => {
+                clamp_side_scroll();
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            WM_VSCROLL => {
+                let mut si = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..Default::default() };
+                _ = GetScrollInfo(h, SB_VERT, &mut si);
+                let rh = row_h();
+                let cur = app(|a| a.side_scroll);
+                let want = match SCROLLBAR_COMMAND((wp.0 & 0xFFFF) as i32) {
+                    SB_LINEUP => cur - rh,
+                    SB_LINEDOWN => cur + rh,
+                    SB_PAGEUP => cur - si.nPage as i32,
+                    SB_PAGEDOWN => cur + si.nPage as i32,
+                    SB_THUMBTRACK | SB_THUMBPOSITION => si.nTrackPos,
+                    SB_TOP => 0,
+                    SB_BOTTOM => i32::MAX,
+                    _ => cur,
+                };
+                let max = max_side_scroll();
+                app(|a| a.side_scroll = want.clamp(0, max));
+                sync_side_scrollbar();
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_LBUTTONDOWN => {
