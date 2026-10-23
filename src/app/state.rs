@@ -459,6 +459,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.hotkey = src.hotkey;
     dst.lang = src.lang;
     dst.single = src.single;
+    dst.one_window = src.one_window;
     dst.favs = src.favs.clone();
     dst.tree = src.tree.clone();
     dst.recent = src.recent.clone();

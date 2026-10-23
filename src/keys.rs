@@ -542,7 +542,7 @@ Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
 Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
-If Grids is already running, a new window opens in that process.";
+If Grids is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.";
 
 const NOTES_KO: &str = "\
 주소 칸: 경로의 폴더를 누르면 그리로 이동, › 를 누르면 그 안의 폴더 목록, 현재 폴더·빈 곳을 누르거나 Ctrl+L이면 경로 입력\n\
@@ -553,7 +553,7 @@ const NOTES_KO: &str = "\
 스플리터 더블클릭: 균등 분할\n\
 패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
-이미 실행 중이면 그 프로세스에 새 창이 열립니다.";
+이미 실행 중이면 그 프로세스에 새 창이 열립니다. 창 하나만 쓰기가 켜져 있으면 그 창을 앞으로 가져오고, 경로는 탭으로 엽니다.";
 
 const NOTES_JA: &str = "\
 アドレス バー: パスのフォルダーをクリックするとそこへ移動。› で中のフォルダー一覧。現在のフォルダーか空き、または Ctrl+L でパスを入力\n\
@@ -564,7 +564,7 @@ const NOTES_JA: &str = "\
 スプリッターをダブルクリック: 均等に分割\n\
 ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
-すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。";
+すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときは、そのウィンドウを前面にし、パスはタブで開きます。";
 
 pub(crate) fn help_text() -> String {
     let mut s = String::new();
