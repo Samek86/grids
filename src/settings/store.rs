@@ -32,6 +32,9 @@ fn pins_are_open(v: &bool) -> bool {
 fn is_on(v: &bool) -> bool {
     *v
 }
+fn is_off(v: &bool) -> bool {
+    !*v
+}
 fn files_open() -> bool {
     true
 }
@@ -195,6 +198,9 @@ struct SettingsFile {
     lang: String,
     #[serde(default = "yes")]
     single: bool,
+    /// One window. Missing means off, so an older grids.json still opens windows.
+    #[serde(default, skip_serializing_if = "is_off")]
+    one_window: bool,
     #[serde(default)]
     session: String,
     #[serde(default)]
@@ -257,6 +263,7 @@ impl SettingsFile {
             hotkey: true,
             lang: lang_auto(),
             single: true,
+            one_window: false,
             session: String::new(),
             favorites: Vec::new(),
             recent: Vec::new(),
@@ -329,6 +336,7 @@ impl SettingsFile {
             hotkey: s.hotkey,
             lang: s.lang.ini().into(),
             single: s.single,
+            one_window: s.one_window,
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
@@ -362,6 +370,7 @@ impl SettingsFile {
         }
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
+        self.extra.remove("one_window");
     }
 
     fn to_session(&self) -> Session {
@@ -438,6 +447,7 @@ impl SettingsFile {
         s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
+        s.one_window = self.one_window;
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -1082,6 +1092,23 @@ mod tests {
         let again = load_at(&exe, &cfg);
         assert!((again.side_split - 0.25).abs() < 1e-9);
         assert_eq!(std::fs::read_to_string(cfg.join("grids.json")).unwrap(), json);
+    }
+
+    #[test]
+    fn one_window_defaults_off_and_round_trips() {
+        assert!(!Session::default().one_window);
+        assert!(!adopt(r#"{"version":1,"single":true}"#).unwrap().one_window);
+        let mut s = Session::default();
+        s.one_window = true;
+        assert!(Session::parse(&s.to_ini()).one_window);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"one_window\": true"), "{text}");
+        assert!(adopt(&text).unwrap().one_window);
+        assert!(!text_of_off());
+    }
+
+    fn text_of_off() -> bool {
+        pretty(&SettingsFile::from_session(&Session::default())).contains("one_window")
     }
 
     #[test]

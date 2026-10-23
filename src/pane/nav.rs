@@ -827,6 +827,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         }
     }
     hook_ctx(i);
+    find_retarget(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {
             note_filter_view(hw, &filter_of(i));

@@ -48,9 +48,9 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     add_tip(
         filt,
         tr(
-            "Name filter (Ctrl+F) · icon or Alt+↓: file types",
-            "이름 필터 (Ctrl+F) · 아이콘 또는 Alt+↓: 파일 종류",
-            "名前フィルター (Ctrl+F) · アイコンまたは Alt+↓: ファイルの種類",
+            "Search this folder (Ctrl+F) · icon or Alt+↓: file types",
+            "이 폴더 검색 (Ctrl+F) · 아이콘 또는 Alt+↓: 파일 종류",
+            "このフォルダーを検索 (Ctrl+F) · アイコンまたは Alt+↓: ファイルの種類",
         ),
     );
 
@@ -76,7 +76,7 @@ const EM_GETMARGINS: u32 = 0xD4;
 pub(crate) unsafe fn name_fields(h: HWND, i: usize) {
     let pane = format!("{} {}", tr("Pane", "패널", "ペイン"), i + 1);
     a11y_name(GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), Some(&format!("{pane} {}", tr("address", "주소", "アドレス"))));
-    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr("name filter", "이름 필터", "名前フィルター"))));
+    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr("search", "검색", "検索"))));
 }
 
 pub(crate) unsafe fn rename_fields() {
@@ -117,7 +117,7 @@ unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LP
         let font = SelectObject(dc, HGDIOBJ(SendMessageW(h, WM_GETFONT, None, None).0 as _));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, cref(blend(pal().sub, pal().text, 0.2)));
-        let mut hint: Vec<u16> = tr("Name filter · Ctrl+F", "이름 필터 · Ctrl+F", "名前フィルター · Ctrl+F").encode_utf16().collect();
+        let mut hint: Vec<u16> = tr("Search · Ctrl+F", "검색 · Ctrl+F", "検索 · Ctrl+F").encode_utf16().collect();
         DrawTextW(dc, &mut hint, &mut rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         SelectObject(dc, font);
         _ = ReleaseDC(Some(h), dc);
@@ -145,6 +145,7 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
         (p, queued)
     });
     if let Some(p) = p {
+        drop_find(p.hwnd);
         drop_icon_request(p.hwnd);
         for id in [ID_EDIT, ID_FILTER] {
             if let Ok(c) = GetDlgItem(Some(p.hwnd), id) {
@@ -229,6 +230,7 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     moves.push((ctl(ID_EDIT), inside(pg.addr, inset, s(6))));
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
+    place_find(h);
     move_all(&moves, Some((&eb, pg.view)));
     show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);

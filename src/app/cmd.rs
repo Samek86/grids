@@ -193,11 +193,14 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         match VIRTUAL_KEY(vk) {
             VK_RETURN if addr => go_edit(a),
             VK_RETURN if filt => {
-                apply_filter(a);
-                focus_view(a);
+                if !open_find_sel(a) {
+                    apply_filter(a);
+                    focus_view(a);
+                }
             }
             VK_ESCAPE if addr => addr_reset(a, m.hwnd),
             VK_ESCAPE if filt => {
+                find_clear(a);
                 _ = SetWindowTextW(m.hwnd, w!(""));
                 apply_filter(a);
                 focus_view(a);
@@ -206,6 +209,26 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             VK_DOWN if filt && alt && !ctrl && !shift => {
                 if m.lParam.0 & (1 << 30) == 0 {
                     kind_menu(a);
+                }
+            }
+            VK_DOWN if filt && !alt && !ctrl && !shift => {
+                if !nudge_find(a, 1) {
+                    return false;
+                }
+            }
+            VK_UP if filt && !alt && !ctrl && !shift => {
+                if !nudge_find(a, -1) {
+                    return false;
+                }
+            }
+            VK_NEXT if filt && !alt => {
+                if !nudge_find(a, 8) {
+                    return false;
+                }
+            }
+            VK_PRIOR if filt && !alt => {
+                if !nudge_find(a, -8) {
+                    return false;
                 }
             }
             _ => return false,

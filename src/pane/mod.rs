@@ -1,3 +1,4 @@
+mod find;
 mod icon;
 mod nav;
 mod peek;
@@ -6,6 +7,7 @@ mod status;
 mod tree;
 mod view;
 
+pub(crate) use find::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;
 pub(crate) use peek::*;

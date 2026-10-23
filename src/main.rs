@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     unsafe {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
+        // one_window still hands off: the running window comes forward and opens paths as tabs.
         // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
         // A file that is there but unreadable must not be overwritten with defaults.
         let mut s = loop {
@@ -50,11 +51,13 @@ fn main() -> Result<()> {
             apply_boot(&mut s);
         }
         // Extra windows belong to "restore last state". A session file, paths, or another startup mode do not.
-        if !restore || boot != 0 {
+        // Single-window mode never opens the other saved windows.
+        if !restore || boot != 0 || !allows_another_window(s.one_window) {
             stash_windows(Vec::new());
         }
         s.dark = resolve_dark(s.theme);
-        if s.single {
+        // single=0 starts another process, unless single-window mode is on: that still hands the launch over.
+        if launch_plan(s.single, s.one_window) != LaunchPlan::NewProcess {
             if let Some(prev) = running_instance() {
                 // Empty arguments still open a window. The running process is the one that can take focus.
                 let data: Vec<u16> = args.join("\n").encode_utf16().collect();
@@ -461,12 +464,26 @@ mod tests {
         assert!(cw < 90 && cw >= 28);
         assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
         assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
-        assert!(lay.close[0].is_some() && lay.close[1].is_none() && lay.close[2].is_some());
+        // A locked tab keeps the close slot. The glyph is a lock and it does not close.
+        assert!(lay.close.iter().all(|c| c.is_some()));
+        assert!(lay.lock[1] && !lay.lock[0]);
         let c = lay.close[0].unwrap();
+        let locked = lay.close[1].unwrap();
+        assert_eq!(c.right - c.left, locked.right - locked.left);
         assert!(c.left >= lay.body[0].left && c.right <= lay.body[0].right);
         assert!(matches!(tab_hit(&lay, lay.plus.left + 2, lay.plus.top + 2), TabHit::Plus));
         assert!(matches!(tab_hit(&lay, c.left + 1, c.top + 1), TabHit::Close(0)));
+        assert!(matches!(tab_hit(&lay, locked.left + 1, locked.top + 1), TabHit::Lock(1)));
+        assert!(!middle_closes(&lay, TabHit::Lock(1)) && !middle_closes(&lay, TabHit::Tab(1)));
+        assert!(middle_closes(&lay, TabHit::Close(0)) && middle_closes(&lay, TabHit::Tab(0)));
+        assert_eq!(close_glyph(true), ICON_LOCK);
+        assert_eq!(close_glyph(false), ICON_CLOSE);
+        assert_eq!(close_ink(true, true, 1, 2), 2);
+        assert_eq!(close_ink(false, true, 1, 2), 1);
         assert!(matches!(tab_hit(&lay, lay.body[1].left + 4, lay.body[1].top + 4), TabHit::Tab(1)));
+        let hi = tab_lay(3200, 1, &[true], 192).close[0].unwrap();
+        let lo = tab_lay(1600, 1, &[true], 96).close[0].unwrap();
+        assert_eq!(hi.right - hi.left, (lo.right - lo.left) * 2);
 
         let junk = Session::parse("cols=1\ntabs=[{\"id\":\"later\"}]\n");
         assert_eq!((junk.tabs.len(), junk.heights.clone(), junk.tabs[0].name.as_str()), (1, vec![1], "1"));
