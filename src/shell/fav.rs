@@ -241,6 +241,7 @@ pub(crate) fn ctx_surface(h: HWND) -> bool {
 
 pub(crate) const CTX_SUB: usize = 4;
 pub(crate) const ID_CTX_FAV: u32 = 0x8000; // outside the id range handed to IContextMenu::QueryContextMenu
+pub(crate) const ID_CTX_PROPS: u32 = 0x8001; // folder Properties, added when the background menu has none (Windows 10)
 
 pub(crate) struct MenuBridge {
     pub(crate) cm3: Option<IContextMenu3>,
@@ -424,6 +425,25 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         _ = DestroyMenu(menu);
         return false;
     }
+    // The background menu of some views (Windows 10) comes without Properties. Add the folder's own.
+    let mut add_props = false;
+    if refs.is_empty() {
+        let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+        let has = (0..n).any(|i| {
+            if menu_sep(menu, i) {
+                return false;
+            }
+            let id = GetMenuItemID(menu, i as i32);
+            id != u32::MAX && id >= 1 && id < ID_CTX_FAV && cmd_verb(&cm, (id - 1) as usize).trim().eq_ignore_ascii_case("properties")
+        });
+        if !has && n > 0 {
+            if !menu_sep(menu, n - 1) {
+                _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            }
+            _ = AppendMenuW(menu, MF_STRING, ID_CTX_PROPS as usize, &HSTRING::from(tr("Properties", "속성", "プロパティ")));
+            add_props = true;
+        }
+    }
     if !paths.is_empty() {
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
         insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&paths));
@@ -437,6 +457,11 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     if cmd == ID_CTX_FAV as i32 {
         let remove = app(|a| paths.iter().all(|p| a.s.is_fav(p)));
         set_entries(&items, !remove);
+    } else if add_props && cmd == ID_CTX_PROPS as i32 {
+        let folder = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+        if !folder.is_empty() {
+            _ = SHObjectProperties(Some(owner), SHOP_FILEPATH, &HSTRING::from(folder.as_str()), None);
+        }
     } else if cmd > 0 {
         let mut ici = CMINVOKECOMMANDINFO {
             cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
