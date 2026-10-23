@@ -218,6 +218,9 @@ struct SettingsFile {
     /// Subfolder search uses Everything when it is running. Missing means on.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     use_everything: bool,
+    /// The one-time Everything install question was shown. Missing means not yet.
+    #[serde(default, skip_serializing_if = "is_off")]
+    ev_asked: bool,
     #[serde(default)]
     session: String,
     #[serde(default)]
@@ -284,6 +287,7 @@ impl SettingsFile {
             single: true,
             one_window: false,
             use_everything: true,
+            ev_asked: false,
             session: String::new(),
             favorites: Vec::new(),
             recent: Vec::new(),
@@ -364,6 +368,7 @@ impl SettingsFile {
             single: s.single,
             one_window: s.one_window,
             use_everything: s.use_everything,
+            ev_asked: s.ev_asked,
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
@@ -399,6 +404,7 @@ impl SettingsFile {
         self.extra.remove("panel");
         self.extra.remove("one_window");
         self.extra.remove("use_everything");
+        self.extra.remove("ev_asked");
     }
 
     fn to_session(&self) -> Session {
@@ -483,6 +489,7 @@ impl SettingsFile {
         s.single = self.single;
         s.one_window = self.one_window;
         s.use_everything = self.use_everything;
+        s.ev_asked = self.ev_asked;
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -1161,6 +1168,18 @@ mod tests {
 
     fn text_of_off() -> bool {
         pretty(&SettingsFile::from_session(&Session::default())).contains("one_window")
+    }
+
+    #[test]
+    fn everything_question_is_remembered() {
+        assert!(!Session::default().ev_asked);
+        let mut s = Session::default();
+        s.ev_asked = true;
+        assert!(Session::parse(&s.to_ini()).ev_asked);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"ev_asked\": true"), "{text}");
+        assert!(adopt(&text).unwrap().ev_asked);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("ev_asked"));
     }
 
     #[test]

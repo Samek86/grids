@@ -180,6 +180,8 @@ pub(crate) struct Session {
     pub(crate) one_window: bool,       // one top-level window; a second launch and new-window actions open a tab
     /// Subfolder search asks Everything when it is running. Missing from the file means on.
     pub(crate) use_everything: bool,
+    /// The one-time "install Everything?" question was already shown. Never asked again.
+    pub(crate) ev_asked: bool,
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
     pub(crate) tints: Vec<u8>,         // per pane: colour label, 0 = none, 1..=6 = selection colour preset
     /// Slot i shows what slot `order[i]` held when the session was last saved. Empty means as saved.
@@ -238,6 +240,7 @@ impl Default for Session {
             single: true,
             one_window: false,
             use_everything: true,
+            ev_asked: false,
             cols: vec![String::new(); MAXP],
             tints: vec![0; MAXP],
             order: Vec::new(),
@@ -295,6 +298,7 @@ impl PartialEq for Session {
             && self.single == o.single
             && self.one_window == o.one_window
             && self.use_everything == o.use_everything
+            && self.ev_asked == o.ev_asked
             && self.cols == o.cols
             && self.tints == o.tints
             && self.theme == o.theme
@@ -532,6 +536,7 @@ impl Session {
                 "single" => s.single = v.trim() != "0",
                 "onewindow" => s.one_window = v.trim() == "1",
                 "everything" => s.use_everything = v.trim() != "0",
+                "evasked" => s.ev_asked = v.trim() == "1",
                 "session" => s.file = v.trim().to_string(),
                 "tabs" => {
                     if let Some((tabs, active)) = tabs_from_json(v) {
@@ -624,7 +629,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\npanetabs={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\n", self.dblup as u8, self.pane_tabs_on as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8);
+        o += &format!("dblup={}\npanetabs={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\n", self.dblup as u8, self.pane_tabs_on as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
