@@ -1,7 +1,10 @@
+mod docparse;
 mod find;
 mod icon;
 mod nav;
 mod peek;
+mod preview;
+mod ptabs;
 mod select;
 mod status;
 mod tree;
@@ -11,6 +14,7 @@ pub(crate) use find::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;
 pub(crate) use peek::*;
+pub(crate) use ptabs::*;
 pub(crate) use select::*;
 pub(crate) use status::*;
 pub(crate) use tree::*;

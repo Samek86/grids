@@ -42,6 +42,7 @@ const TG_FAVMENU: u8 = 10;
 const TG_AUTOSAVE: u8 = 11;
 const TG_DOT: u8 = 12;
 const TG_ONE: u8 = 13;
+const TG_PANE_TABS: u8 = 14;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -135,6 +136,7 @@ const GEN: &[Spec] = &[
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_ONE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
+    Spec { title: s("Tabs in panes", "패널 안의 탭", "ペイン内のタブ"), desc: s("A strip under each pane header for that pane's folders. Separate from the window tabs. Hiding the strips keeps the folders. Saved as pane_tabs.", "패널 머리줄 아래에 그 패널의 폴더 탭이 생깁니다. 창 위쪽 탭과는 다릅니다. 줄을 숨겨도 폴더는 남아요. pane_tabs로 저장됩니다.", "各ペインの見出しの下に、そのペインのフォルダーのタブ列を出します。ウィンドウ上部のタブとは別です。列を隠してもフォルダーは残ります。pane_tabs に保存します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_PANE_TABS) },
 ];
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Theme },
@@ -605,6 +607,7 @@ fn toggle_on(id: u8) -> bool {
         TG_SINGLE => app(|a| a.s.single),
         TG_ONE => app(|a| a.s.one_window),
         TG_DBLUP => app(|a| a.s.dblup),
+        TG_PANE_TABS => app(|a| a.s.pane_tabs_on),
         TG_HIDDEN => unsafe { super::hidden() },
         TG_BAR => app(|a| a.s.bar),
         TG_STATUS => app(|a| a.s.stat),

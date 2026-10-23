@@ -802,6 +802,35 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     }
 }
 
+// F7: the view's own "New folder", so the shell names it, selects it and starts rename.
+pub(crate) unsafe fn explorer_new_folder(i: usize) {
+    let Some(sv) = view_of::<IShellView>(i) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    let Ok(cm) = sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    let Ok(menu) = CreatePopupMenu() else { return };
+    let verb = b"NewFolder\0";
+    if cm.QueryContextMenu(menu, 0, 1, 0x7fff, CMF_NORMAL).is_ok() {
+        let ci = CMINVOKECOMMANDINFO {
+            cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+            hwnd: sv.GetWindow().unwrap_or_default(),
+            lpVerb: PCSTR(verb.as_ptr()),
+            nShow: SW_SHOWNORMAL.0 as i32,
+            ..Default::default()
+        };
+        if cm.InvokeCommand(&ci).is_err() {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+    } else {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    _ = DestroyMenu(menu);
+}
+
 // Ctrl+Shift+N: a new folder in the active pane, then the shell's own rename (F2) once it shows up.
 pub(crate) unsafe fn new_folder(i: usize) {
     let dir = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());

@@ -35,6 +35,9 @@ fn is_on(v: &bool) -> bool {
 fn is_off(v: &bool) -> bool {
     !*v
 }
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
 fn files_open() -> bool {
     true
 }
@@ -107,6 +110,11 @@ struct PaneJson {
     columns: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     filter: String,
+    /// Pane tabs: folders this pane switches between. The current one is also `path`. Empty means one folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    folder: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -191,6 +199,9 @@ struct SettingsFile {
     dot: bool,
     #[serde(default = "yes")]
     dblup: bool,
+    /// Pane-tab strips. Missing means off. Separate from `tabs`, which are window tabs.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pane_tabs: bool,
     /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     hotkey: bool,
@@ -260,6 +271,7 @@ impl SettingsFile {
             autosave: false,
             dot: true,
             dblup: true,
+            pane_tabs: false,
             hotkey: true,
             lang: lang_auto(),
             single: true,
@@ -282,7 +294,9 @@ impl SettingsFile {
         let mut panes = Vec::new();
         for i in 0..MAXP {
             let filter = filters.get(i).cloned().unwrap_or_default();
-            if s.paths[i].is_empty() && s.views[i] == (0, 0) && s.cols[i].is_empty() && filter.is_empty() {
+            let folders = s.pane_tab_list(i);
+            let folders = if folders.len() > 1 { folders } else { Vec::new() };
+            if s.paths[i].is_empty() && s.views[i] == (0, 0) && s.cols[i].is_empty() && filter.is_empty() && folders.is_empty() {
                 continue;
             }
             panes.push(PaneJson {
@@ -291,6 +305,8 @@ impl SettingsFile {
                 view: if s.views[i].0 == 0 { Vec::new() } else { vec![s.views[i].0, s.views[i].1] },
                 columns: s.cols[i].clone(),
                 filter,
+                folders: folders.clone(),
+                folder: if folders.len() > 1 { s.pane_cur[i].min(folders.len() - 1) } else { 0 },
             });
         }
         let tree = if s.tree.is_empty() { crate::tree_from_flat(&s.favs) } else { s.tree.clone() };
@@ -333,6 +349,7 @@ impl SettingsFile {
             autosave: s.autosave,
             dot: s.dot,
             dblup: s.dblup,
+            pane_tabs: s.pane_tabs_on,
             hotkey: s.hotkey,
             lang: s.lang.ini().into(),
             single: s.single,
@@ -404,6 +421,10 @@ impl SettingsFile {
                 s.views[p.index] = (*m, 0);
             }
             s.cols[p.index] = p.columns.clone();
+            if p.folders.len() > 1 {
+                s.pane_cur[p.index] = p.folder.min(p.folders.len() - 1);
+                s.pane_folders[p.index] = p.folders.clone();
+            }
         }
         let mut filters = vec![String::new(); MAXP];
         for p in &self.panes {
@@ -444,6 +465,7 @@ impl SettingsFile {
         s.autosave = self.autosave;
         s.dot = self.dot;
         s.dblup = self.dblup;
+        s.pane_tabs_on = self.pane_tabs;
         s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;

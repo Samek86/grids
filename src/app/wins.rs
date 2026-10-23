@@ -225,6 +225,8 @@ pub(crate) fn fresh_window_session() -> Session {
         n.paths = vec![String::new(); MAXP];
         n.views = vec![(0, 0); MAXP];
         n.cols = vec![String::new(); MAXP];
+        n.pane_folders = vec![Vec::new(); MAXP];
+        n.pane_cur = vec![0; MAXP];
         let d = 32 * a.dpi.max(96) / 96;
         if let Some(w) = n.win.as_mut() {
             w[0] += d;
@@ -296,6 +298,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         a.zoom = None;
         a.closed.clear();
     });
+    sync_pane_tabs(app(|a| a.s.pane_tabs_on));
     if seed {
         let seeded = app(|a| crate::store::sync_text(&a.s));
         LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
