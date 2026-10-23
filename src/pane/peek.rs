@@ -123,6 +123,9 @@ pub(crate) fn peek_geo(rc: RECT, dpi: i32) -> [RECT; 3] {
 pub(crate) struct PeekView {
     pub(crate) y: i32, // scrolled down, px
     pub(crate) x: i32, // scrolled right (tables, code), px
+    pub(crate) max_y: i32, // how far it can scroll down, from the last paint; 0 = it all fits
+    pub(crate) edge_at: Option<Instant>, // the wheel reached the top or bottom then
+    pub(crate) wheel: i32, // wheel delta toward the next file step (120 a notch)
     pub(crate) layout: Option<(usize, i32, Vec<Line>, i32)>, // (gen, width, lines, total height)
     pub(crate) fonts: Option<(i32, [HFONT; 4])>,              // (dpi, [mono, bold, h1, h2])
     pub(crate) hosted: Option<usize>, // generation a preview handler is showing
@@ -168,7 +171,7 @@ pub(crate) unsafe fn load_peek(plain: bool) {
     let (h, i, dpi) = app(|a| (a.peek, a.peek_pane, a.dpi));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     unload_handler();
-    view(|v| (v.y, v.x, v.layout) = (0, 0, None));
+    view(|v| (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0));
     let it = fv.GetItem::<IShellItem>(fv.GetFocusedItem().unwrap_or(-1)).ok();
     let shown = |kind| it.as_ref().and_then(|it| it.GetDisplayName(kind).ok()).map(|p| pwstr(p));
     app(|a| a.peek_name = shown(SIGDN_NORMALDISPLAY).unwrap_or_default());
@@ -467,7 +470,72 @@ unsafe fn layout(dc: HDC, gen: usize, width: i32, text: &str, kind: TextKind, fo
 // ---------- painting ----------
 
 fn clamp_scroll(total: i32, page: i32) {
-    view(|v| v.y = v.y.min((total - page).max(0)).max(0));
+    view(|v| {
+        v.max_y = (total - page).max(0);
+        v.y = v.y.min(v.max_y).max(0);
+    });
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Wheel {
+    Scroll,
+    Step,
+    Hold, // at the end, but only just: a fling to the bottom doesn't also jump to the next file
+}
+
+/// A wheel turn scrolls while there is room that way. Past the end it moves to the previous or next file,
+/// at once when nothing scrolls, otherwise once the view has rested at that end for a moment.
+pub(crate) fn wheel_action(y: i32, max_y: i32, down: bool, rested: bool) -> Wheel {
+    let room = if down { y < max_y } else { y > 0 };
+    match () {
+        _ if room => Wheel::Scroll,
+        _ if max_y == 0 || rested => Wheel::Step,
+        _ => Wheel::Hold,
+    }
+}
+
+unsafe fn wheel_peek(h: HWND, raw: i32) {
+    let down = raw < 0;
+    let px = -raw * app(|a| a.fh) * 3 / 120;
+    let act = view(|v| {
+        let rested = v.edge_at.is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(350));
+        let act = wheel_action(v.y, v.max_y, down, rested);
+        match act {
+            Wheel::Scroll => {
+                v.y = (v.y + px).clamp(0, v.max_y);
+                let end = if down { v.y >= v.max_y } else { v.y <= 0 };
+                (v.edge_at, v.wheel) = (end.then(Instant::now), 0);
+            }
+            Wheel::Hold => {
+                v.edge_at.get_or_insert_with(Instant::now);
+            }
+            Wheel::Step => {}
+        }
+        act
+    });
+    match act {
+        Wheel::Scroll => _ = InvalidateRect(Some(h), None, false),
+        Wheel::Step => step_by_wheel(raw),
+        Wheel::Hold => {}
+    }
+}
+
+/// One file per notch. A touchpad's small deltas add up to one.
+unsafe fn step_by_wheel(raw: i32) {
+    let go = view(|v| {
+        if (v.wheel < 0) != (raw < 0) {
+            v.wheel = 0;
+        }
+        v.wheel += raw;
+        let go = v.wheel.abs() >= 120;
+        if go {
+            v.wheel = 0;
+        }
+        go
+    });
+    if go {
+        step_peek(raw > 0);
+    }
 }
 
 // DrawTextW without text()'s single-line, end-ellipsis defaults.
@@ -712,8 +780,9 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_PEEK_HOSTED => handler_ready(h, wp.0, lp.0 != 0),
             WM_LBUTTONUP => close_peek(h),
             WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_SHIFT.0 != 0 => scroll_peek(h, 0, -notch(wp.0)),
-            WM_MOUSEWHEEL => scroll_peek(h, -notch(wp.0), 0),
-            WM_MOUSEHWHEEL => scroll_peek(h, 0, notch(wp.0)),
+            WM_MOUSEWHEEL => wheel_peek(h, (wp.0 >> 16) as i16 as i32),
+            // Tilting the wheel: previous or next file, like the arrows.
+            WM_MOUSEHWHEEL => step_by_wheel(-((wp.0 >> 16) as i16 as i32)),
             WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
                 // a held F3 only opens it; its repeats must not close it again
                 VK_ESCAPE | VK_SPACE | VK_F3 if lp.0 & (1 << 30) == 0 => close_peek(h),
@@ -730,7 +799,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_DESTROY => {
                 unload_handler();
                 want_peek(None);
-                view(|v| (v.layout, v.y, v.x) = (None, 0, 0));
+                view(|v| (v.layout, v.y, v.x, v.max_y, v.edge_at, v.wheel) = (None, 0, 0, 0, None, 0));
                 app(|a| a.peek = HWND::default());
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -780,6 +849,19 @@ mod tests {
         let mut pre = vec![100, 100, 100, 128, 0, 0, 0, 0];
         fix_alpha(&mut pre);
         assert_eq!(pre, vec![100, 100, 100, 128, 0, 0, 0, 0]); // already premultiplied: left alone
+    }
+
+    #[test]
+    fn peek_wheel() {
+        use Wheel::*;
+        assert_eq!(wheel_action(0, 0, true, false), Step); // a picture: straight to the next file
+        assert_eq!(wheel_action(0, 0, false, false), Step);
+        assert_eq!(wheel_action(0, 500, true, false), Scroll); // long text: scroll first
+        assert_eq!(wheel_action(0, 500, false, false), Hold); // at the top, just arrived
+        assert_eq!(wheel_action(0, 500, false, true), Step); // rested there: previous file
+        assert_eq!(wheel_action(500, 500, true, false), Hold);
+        assert_eq!(wheel_action(500, 500, true, true), Step);
+        assert_eq!(wheel_action(500, 500, false, true), Scroll); // back up is still scrolling
     }
 
     #[test]
