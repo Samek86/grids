@@ -237,8 +237,16 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
-        if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather") && m.lParam.0 & (1 << 30) != 0 {
+        if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather" | "file.mkdir") && m.lParam.0 & (1 << 30) != 0 {
             return true;
+        }
+        // Pane-tab chords stay out of the address bar (already returned) and out of every other focus.
+        // They also stay quiet while the strips are hidden, so a shared key cannot fight the window tabs.
+        if matches!(id, "pane.tab.new" | "pane.tab.close" | "pane.tab.next" | "pane.tab.prev") {
+            let in_pane = list || pane_of(m.hwnd).is_some();
+            if !app(|x| x.s.pane_tabs_on) || !in_pane {
+                return shell();
+            }
         }
         return dispatch(id, vk, a, list, shell);
     }
@@ -351,6 +359,21 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         }
         "file.new" => new_file(a),
         "file.dir" => new_folder(a),
+        "file.mkdir" if list => explorer_new_folder(a),
+        "file.mkdir" => return shell(),
+        "pane.tab.new" => {
+            new_pane_tab(a);
+            focus_view(a);
+        }
+        "pane.tab.close" => {
+            let k = app(|x| {
+                let n = x.s.pane_tab_list(a).len();
+                if n > 1 { x.s.pane_cur[a].min(n - 1) } else { 0 }
+            });
+            close_pane_tab(a, k);
+        }
+        "pane.tab.next" => step_pane_tab(a, 1),
+        "pane.tab.prev" => step_pane_tab(a, -1),
         "sess.save" => save_current(),
         "fav.list" => open_favs(),
         "app.settings" => settings::open(app(|x| x.main)),

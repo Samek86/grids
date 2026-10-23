@@ -49,6 +49,7 @@ const fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static st
 }
 
 const TAB: [&str; 3] = s("Tab", "탭", "タブ");
+const PANTAB: [&str; 3] = s("Pane tab", "패널 탭", "ペイン タブ");
 const PANE: [&str; 3] = s("Pane", "패널", "ペイン");
 const MOVE: [&str; 3] = s("Move", "이동", "移動");
 const VIEW: [&str; 3] = s("View", "보기", "表示");
@@ -67,6 +68,12 @@ const CMDS: &[Cmd] = &[
     cmd("pane.next", PANE, s("Next pane", "다음 패널", "次のペイン"), 0x22, true, false, false, false, false),
     cmd("pane.prev", PANE, s("Previous pane", "이전 패널", "前のペイン"), 0x21, true, false, false, false, false),
     cmd("pane.goto", PANE, s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), 0x31, true, false, false, false, true),
+    // Distinct from window tabs (Ctrl+T / Ctrl+W) and from moving between panes (Ctrl+PageUp / PageDown).
+    // They run only while pane tabs are on and the focus is in a pane.
+    cmd("pane.tab.new", PANTAB, s("New pane tab", "새 패널 탭", "新しいペイン タブ"), 0x54, true, false, true, false, false),
+    cmd("pane.tab.close", PANTAB, s("Close pane tab", "패널 탭 닫기", "ペイン タブを閉じる"), 0x57, true, false, true, false, false),
+    cmd("pane.tab.next", PANTAB, s("Next pane tab", "다음 패널 탭", "次のペイン タブ"), 0x22, true, false, true, false, false),
+    cmd("pane.tab.prev", PANTAB, s("Previous pane tab", "이전 패널 탭", "前のペイン タブ"), 0x21, true, false, true, false, false),
     cmd("pane.left", MOVE, s("Pane to the left", "왼쪽 패널", "左のペイン"), 0x25, false, true, true, false, false),
     cmd("pane.right", MOVE, s("Pane to the right", "오른쪽 패널", "右のペイン"), 0x27, false, true, true, false, false),
     cmd("pane.up", MOVE, s("Pane above", "위 패널", "上のペイン"), 0x26, false, true, true, false, false),
@@ -97,6 +104,7 @@ const CMDS: &[Cmd] = &[
     cmd("file.invert", FILE, s("Invert selection", "선택 반전", "選択を反転"), 0x6A, false, false, false, false, false),
     cmd("file.new", FILE, s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), 0x4E, true, false, true, false, false),
     cmd("file.dir", FILE, s("New folder", "새 폴더", "新しいフォルダー"), 0x4E, true, true, false, false, false),
+    cmd("file.mkdir", FILE, s("New folder in this pane", "이 패널에 새 폴더", "このペインに新しいフォルダー"), 0x76, false, false, false, false, false),
     cmd("sess.save", SESS, s("Save session", "세션 저장", "セッションを保存"), 0x53, true, false, false, false, false),
     cmd("fav.list", FAV, s("Favourites", "즐겨찾기", "お気に入り"), 0x42, true, false, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false, false),
@@ -541,6 +549,7 @@ Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout ch
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
 Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
+Pane tabs (View → Tabs in panes): folders inside one pane, separate from the window tabs. Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the strips are on and the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.";
 
@@ -552,6 +561,7 @@ const NOTES_KO: &str = "\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
 패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
+패널 탭 (보기 → 패널 안의 탭): 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 기본은 Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 탭 줄이 켜져 있고 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
 이미 실행 중이면 그 프로세스에 새 창이 열립니다. 창 하나만 쓰기가 켜져 있으면 그 창을 앞으로 가져오고, 경로는 탭으로 엽니다.";
 
@@ -563,6 +573,7 @@ const NOTES_JA: &str = "\
 読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
 スプリッターをダブルクリック: 均等に分割\n\
 ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
+ペイン タブ (表示 → ペイン内のタブ): 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。既定は Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、タブ列がオンかつフォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
 すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときは、そのウィンドウを前面にし、パスはタブで開きます。";
 
@@ -616,6 +627,11 @@ mod tests {
             ("file.invert", "Num*"),
             ("file.new", "Ctrl+Alt+N"),
             ("file.dir", "Ctrl+Shift+N"),
+            ("file.mkdir", "F7"),
+            ("pane.tab.new", "Ctrl+Alt+T"),
+            ("pane.tab.close", "Ctrl+Alt+W"),
+            ("pane.tab.next", "Ctrl+Alt+PageDown"),
+            ("pane.tab.prev", "Ctrl+Alt+PageUp"),
             ("app.settings", "Ctrl+,"),
             ("app.help", "F1"),
             ("app.keys", "Ctrl+/"),

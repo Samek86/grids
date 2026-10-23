@@ -784,6 +784,10 @@ fn flip(id: u8) {
         TG_SINGLE => app(|a| a.s.single ^= true),
         TG_ONE => app(|a| a.s.one_window ^= true),
         TG_DBLUP => app(|a| a.s.dblup ^= true),
+        TG_PANE_TABS => {
+            unsafe { crate::toggle_pane_tabs() };
+            return;
+        }
         TG_HIDDEN => {
             unsafe { crate::toggle_hidden() };
             return;

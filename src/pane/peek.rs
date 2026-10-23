@@ -8,6 +8,7 @@ use crate::i18n::*;
 use super::*;
 
 pub(crate) const WM_PEEK_DONE: u32 = WM_APP + 45; // wParam = generation; the pixels stay in PEEK
+pub(crate) const WM_PEEK_LOST: u32 = WM_APP + 51; // the preview went inactive: close it unless it is active again
 
 #[derive(Clone)]
 pub(crate) struct PeekReq {
@@ -200,6 +201,12 @@ pub(crate) unsafe fn step_peek(prev: bool) {
     if (0..n).contains(&next) && fv.SelectItem(next, flags).is_ok() {
         load_peek();
     }
+    // Selecting puts the focus in the list. The preview stays open and takes the keys back.
+    let h = app(|a| a.peek);
+    if !h.0.is_null() && GetActiveWindow() != h {
+        _ = SetActiveWindow(h);
+        _ = SetFocus(Some(h));
+    }
 }
 
 pub(crate) unsafe fn close_peek(h: HWND) {
@@ -248,7 +255,9 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 k @ (VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN) => step_peek(k == VK_LEFT || k == VK_UP),
                 _ => {}
             },
-            WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)),
+            // Another app, or a click behind, closes it. Stepping takes the activation away only for a moment.
+            WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_PEEK_LOST, WPARAM(0), LPARAM(0)),
+            WM_PEEK_LOST if GetActiveWindow() != h => _ = DestroyWindow(h),
             WM_DESTROY => {
                 want_peek(None);
                 app(|a| a.peek = HWND::default());
