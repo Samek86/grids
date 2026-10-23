@@ -27,6 +27,7 @@ const S_ADV_OPEN: i32 = 23;
 const S_ADV_EX: i32 = 24;
 const S_ADV_IM: i32 = 25;
 const S_ADV_RESET: i32 = 26;
+const S_EV: i32 = 27;
 const S_FAV0: i32 = 400;
 
 const TG_SINGLE: u8 = 1;
@@ -43,6 +44,7 @@ const TG_AUTOSAVE: u8 = 11;
 const TG_DOT: u8 = 12;
 const TG_ONE: u8 = 13;
 const TG_PANE_TABS: u8 = 14;
+const TG_EV: u8 = 15;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -118,6 +120,8 @@ enum Ctl {
     About,
     Adv,
     AdvReset,
+    EvStatus,
+    EvAct,
     Toggle(u8),
 }
 
@@ -137,7 +141,12 @@ const GEN: &[Spec] = &[
     Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_ONE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
     Spec { title: s("Tabs in panes", "패널 안의 탭", "ペイン内のタブ"), desc: s("A strip under each pane header for that pane's folders. Separate from the window tabs. Hiding the strips keeps the folders. Saved as pane_tabs.", "패널 머리줄 아래에 그 패널의 폴더 탭이 생깁니다. 창 위쪽 탭과는 다릅니다. 줄을 숨겨도 폴더는 남아요. pane_tabs로 저장됩니다.", "各ペインの見出しの下に、そのペインのフォルダーのタブ列を出します。ウィンドウ上部のタブとは別です。列を隠してもフォルダーは残ります。pane_tabs に保存します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_PANE_TABS) },
+    Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), badge: false, live: true, ctl: Ctl::EvStatus },
+    Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), badge: false, live: true, ctl: Ctl::Toggle(TG_EV) },
+    Spec { title: s("Get Everything", "Everything 준비", "Everything の準備"), desc: s("Start it when it is installed. Install uses winget when that is available, otherwise the voidtools download page opens.", "설치되어 있으면 시작해요. 설치는 winget이 있으면 winget을 쓰고, 없으면 voidtools 다운로드 페이지를 열어요.", "インストール済みなら起動します。インストールは winget があれば winget、なければ voidtools のダウンロードページを開きます。"), badge: false, live: true, ctl: Ctl::EvAct },
 ];
+
+const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Theme },
     Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own (accent / accent_dark).", "라이트와 다크에 따로 정할 수 있어요(지금 있는 accent / accent_dark).", "ライトとダークで別々に選べます（accent / accent_dark）。"), badge: false, live: true, ctl: Ctl::Accent },
@@ -379,7 +388,7 @@ fn right_box(card: RECT, w: i32, h: i32, pad: i32) -> RECT {
 fn card_h(spec: &Spec, dpi: i32) -> i32 {
     // 12px vertical padding, 14px label, optional 12px description.
     // The settings-file card adds a line for the live path.
-    if spec.ctl == Ctl::Adv {
+    if spec.ctl == Ctl::Adv || spec.ctl == Ctl::EvStatus || spec.ctl == Ctl::EvAct {
         sc(dpi, 84)
     } else if spec.desc[0].is_empty() {
         sc(dpi, 48)
@@ -470,9 +479,17 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     let page = sn.page;
     let rq = row_q(&sn.query, page);
     let gap = sc(dpi, 4);
+    let mut ev_head = false;
     for spec in page_cards(page) {
         if !rq.is_empty() && !card_hit(spec, rq) {
             continue;
+        }
+        if is_ev_card(spec) {
+            if !ev_head {
+                g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, EV_HEAD));
+                y += sc(dpi, 28);
+                ev_head = true;
+            }
         }
         let h = card_h(spec, dpi);
         let rect = RECT { left, top: y, right, bottom: y + h };
@@ -494,6 +511,8 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
     let mut adv = [RECT::default(); 4];
     let ctl = match spec.ctl {
         Ctl::Toggle(_) => right_box(rect, sc(dpi, 40), sc(dpi, 20), pad),
+        Ctl::EvStatus => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.bottom },
+        Ctl::EvAct => right_box(rect, sc(dpi, 200), sc(dpi, 32), pad),
         Ctl::CopyEng => right_box(rect, sc(dpi, 140), sc(dpi, 22), pad),
         Ctl::Lang | Ctl::Start | Ctl::Theme | Ctl::Font | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop => {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
@@ -602,6 +621,10 @@ fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     y + sc(dpi, 40)
 }
 
+fn is_ev_card(spec: &Spec) -> bool {
+    matches!(spec.ctl, Ctl::EvStatus | Ctl::EvAct | Ctl::Toggle(TG_EV))
+}
+
 fn toggle_on(id: u8) -> bool {
     match id {
         TG_SINGLE => app(|a| a.s.single),
@@ -617,6 +640,7 @@ fn toggle_on(id: u8) -> bool {
         TG_CONFIRM => app(|a| a.s.confirm),
         TG_AUTOSAVE => app(|a| a.s.autosave),
         TG_DOT => app(|a| a.s.dot),
+        TG_EV => app(|a| a.s.use_everything),
         // The favourites item is always on the shell menu, directly above Properties.
         TG_FAVMENU => true,
         _ => false,
