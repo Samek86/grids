@@ -2,11 +2,10 @@ use crate::imports::*;
 use super::*;
 use crate::app::*;
 use crate::shell::*;
-use crate::ui::{blend, cref, pal};
 
 // ---------- shell tree (sidebar) ----------
 
-#[implement(INameSpaceTreeControlEvents, INameSpaceTreeControlCustomDraw)]
+#[implement(INameSpaceTreeControlEvents)]
 pub(crate) struct TreeEvents;
 
 impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
@@ -118,26 +117,3 @@ pub(crate) unsafe fn create_tree(main: HWND) -> Result<(INameSpaceTreeControl, H
 }
 
 
-// The selected folder is tinted with the accent colour, like the selected favourites row.
-impl INameSpaceTreeControlCustomDraw_Impl for TreeEvents_Impl {
-    fn PrePaint(&self, _: HDC, _: *const RECT) -> Result<LRESULT> {
-        Ok(LRESULT(0))
-    }
-    fn PostPaint(&self, _: HDC, _: *const RECT) -> Result<()> {
-        Ok(())
-    }
-    fn ItemPrePaint(&self, _: HDC, _: *const RECT, item: *const NSTCCUSTOMDRAW, text: *mut COLORREF, text_bk: *mut COLORREF, _: *mut LRESULT) -> Result<()> {
-        unsafe {
-            let Some(it) = item.as_ref() else { return Ok(()) };
-            if it.uItemState & CDIS_SELECTED.0 != 0 || it.nstcis & NSTCIS_SELECTED.0 as u32 != 0 {
-                let accent = app(|a| a.s.accent_now());
-                *text_bk = cref(blend(accent, crate::ui::side_ground(), 0.16));
-                *text = cref(pal().text);
-            }
-        }
-        Ok(())
-    }
-    fn ItemPostPaint(&self, _: HDC, _: *const RECT, _: *const NSTCCUSTOMDRAW) -> Result<()> {
-        Ok(())
-    }
-}
