@@ -386,10 +386,10 @@ pub(crate) unsafe fn name(pidl: *const ITEMIDLIST, kind: SIGDN) -> String {
 
 // Ground, the sidebar plate and the status line. Pane plates are child windows (paint_pane).
 pub(crate) unsafe fn paint_main(h: HWND) {
-    let (g, status, font, dpi, hot) = app(|a| {
+    let (g, status, font, dpi, hot, accent) = app(|a| {
         let g = geo(a);
         let hot = a.gap_hot.filter(|_| a.drag.is_none()).and_then(|d| gap_line(&g, d, 2 * a.dpi / 96));
-        (g, a.status.clone(), a.font, a.dpi, hot.map(|r| (r, a.s.accent_now())))
+        (g, a.status.clone(), a.font, a.dpi, hot.map(|r| (r, a.s.accent_now())), a.s.accent_now())
     });
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().bg);
@@ -399,6 +399,10 @@ pub(crate) unsafe fn paint_main(h: HWND) {
             if g.tree_h > 0 && g.gap > 0 {
                 let gap = RECT { left: side.left, top: side.top + g.tree_h, right: side.right, bottom: side.top + g.tree_h + g.gap };
                 fill(dc, gap, pal().bg);
+                // The tree/favourites divider always shows its accent line, not only under the pointer.
+                let t = (2 * dpi / 96).max(1);
+                let y = gap.top + g.gap / 2;
+                fill(dc, RECT { left: side.left, top: y - t / 2, right: side.right, bottom: y - t / 2 + t }, accent);
             }
             frame(dc, side, 1, pal().line);
         }
