@@ -869,8 +869,8 @@ pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 7] {
 
 // Switches the UI language now: menus, fonts, toolbar tooltips, panes, and an open settings window.
 pub(crate) unsafe fn set_language(lang: Lang) {
+    app(|a| a.s.choose_lang(lang));
     UI.store(lang.resolve(), Ordering::Relaxed);
-    app(|a| a.s.lang = lang);
     publish_shared();
     across_windows(|| {
         let (main, old) = app(|a| (a.main, a.view_menu));
