@@ -225,9 +225,7 @@ pub(crate) fn fresh_window_session() -> Session {
         n.file.clear();
         n.tabs.clear();
         n.tab = 0;
-        n.heights = vec![2, 2];
-        n.colr = even(2);
-        n.rowr = vec![even(2); 2];
+        n.set_heights(n.layout_heights());
         n.active = 0;
         n.paths = vec![String::new(); MAXP];
         n.views = vec![(0, 0); MAXP];

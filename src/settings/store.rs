@@ -38,6 +38,9 @@ fn is_off(v: &bool) -> bool {
 fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
 fn files_open() -> bool {
     true
 }
@@ -63,7 +66,8 @@ fn view_details() -> i32 {
     4
 }
 fn left_right() -> Vec<usize> {
-    vec![1, 1]
+    // A missing saved grid, including a first start: layout_new defaults to 0, two panes side by side.
+    crate::layout_heights_for(0)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -192,6 +196,9 @@ struct SettingsFile {
     new_name: String,
     #[serde(default)]
     drop: u8,
+    /// New tab / new window. Omitted when 0, which is two panes side by side.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    layout_new: u8,
     #[serde(default)]
     boot: u8,
     #[serde(default)]
@@ -276,6 +283,7 @@ impl SettingsFile {
             del: 0,
             new_name: String::new(),
             drop: 0,
+            layout_new: 0,
             boot: 0,
             boot_file: String::new(),
             autosave: false,
@@ -357,6 +365,7 @@ impl SettingsFile {
             del: s.del,
             new_name: s.new_name.clone(),
             drop: s.dropm.min(2),
+            layout_new: s.layout_new.min(3),
             boot: s.boot.min(2),
             boot_file: s.boot_file.clone(),
             autosave: s.autosave,
@@ -405,6 +414,7 @@ impl SettingsFile {
         self.extra.remove("one_window");
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
+        self.extra.remove("layout_new");
     }
 
     fn to_session(&self) -> Session {
@@ -414,7 +424,7 @@ impl SettingsFile {
         }
         s.side = self.side;
         let heights: Vec<usize> = self.layout.columns.iter().take(4).copied().map(|n| n.clamp(1, 4)).collect();
-        s.heights = if heights.is_empty() { vec![1, 1] } else { heights };
+        s.heights = if heights.is_empty() { left_right() } else { heights };
         s.colr = fix(self.layout.colr.clone(), s.heights.len());
         let rowr = &self.layout.rowr;
         let group = |c: usize| if rowr.len() == s.heights.len() { rowr.get(c) } else { rowr.first() };
@@ -478,6 +488,7 @@ impl SettingsFile {
         s.del = if self.del == 1 { 1 } else { 0 };
         s.new_name = self.new_name.clone();
         s.dropm = self.drop.min(2);
+        s.layout_new = self.layout_new.min(3);
         s.boot = self.boot.min(2);
         s.boot_file = self.boot_file.clone();
         s.autosave = self.autosave;
@@ -810,6 +821,7 @@ mod tests {
         s.del = 1;
         s.new_name = "note.txt".into();
         s.dropm = 2;
+        s.layout_new = 2;
         s.boot = 1;
         s.boot_file = "C:\\s.grids".into();
         s.autosave = true;
@@ -845,6 +857,7 @@ mod tests {
         assert_eq!(saved["favorites_tree"][0]["name"], "Work");
         assert_eq!(saved["future"]["keep"], true);
         assert_eq!(saved["lang"], "ko");
+        assert_eq!(saved["layout_new"], 2);
         assert_eq!(saved["favorites"][0]["name"], "Work");
         assert_eq!(saved["favorites"][1]["path"], "D:\\Photos");
         assert!(saved["panes"].as_array().unwrap().iter().any(|p| p["path"] == "C:\\a=b\\폴더" && p["columns"] == "{guid}/10=220;{guid}/12=-1"));
@@ -852,6 +865,46 @@ mod tests {
         let ini = import_text(&parsed.to_ini()).unwrap();
         assert_eq!(ini, parsed);
         assert!(import_text("{").is_err());
+    }
+
+    #[test]
+    fn layout_new_defaults_to_zero_and_round_trips() {
+        let fresh = adopt("{}").unwrap();
+        assert_eq!(fresh.layout_new, 0);
+        assert_eq!(fresh.heights, vec![1, 1]);
+        assert_eq!(Session::default().layout_new, 0);
+        assert_eq!(Session::default().heights, left_right());
+        let omitted = sync_text(&Session::default());
+        assert!(serde_json::from_str::<Value>(&omitted).unwrap().get("layout_new").is_none(), "{omitted}");
+
+        let zero = adopt(r#"{"version":1,"layout_new":0}"#).unwrap();
+        assert_eq!(zero.layout_new, 0);
+        assert!(serde_json::from_str::<Value>(&sync_text(&zero)).unwrap().get("layout_new").is_none());
+
+        let mut s = Session::default();
+        s.layout_new = 1;
+        s.active = 9;
+        s.set_heights(s.layout_heights());
+        assert_eq!(s.heights, vec![2]);
+        assert!(s.active < s.panes());
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"layout_new\": 1"), "{text}");
+        let back = adopt(&text).unwrap();
+        assert_eq!((back.layout_new, back.layout_heights()), (1, vec![2]));
+        assert_eq!(Session::parse(&s.to_ini()).layout_new, 1);
+
+        let high = adopt(r#"{"layout_new":9}"#).unwrap();
+        assert_eq!((high.layout_new, high.layout_heights()), (3, vec![1]));
+        let saved_high: Value = serde_json::from_str(&sync_text(&high)).unwrap();
+        assert_eq!(saved_high["layout_new"], 3);
+
+        let _ = adopt(r#"{"version":1,"future":{"keep":true}}"#);
+        SETTINGS_KEEP.with(|k| {
+            k.borrow_mut().extra.insert("layout_new".into(), serde_json::json!(2));
+        });
+        let kept: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
+        assert!(kept.get("layout_new").is_none(), "{kept}");
+        assert_eq!(kept["future"]["keep"], true);
     }
 
     #[test]
