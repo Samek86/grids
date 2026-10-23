@@ -12,6 +12,7 @@ pub(crate) const ICON_FILTER: &str = "\u{E71C}";
 pub(crate) const ICON_LOCK: &str = "\u{E72E}";
 pub(crate) const ICON_CLOSE: &str = "\u{E711}";
 pub(crate) const ICON_PLUS: &str = "\u{E710}";
+pub(crate) const ICON_CHEVRON_DOWN: &str = "\u{E70D}";
 /// Tab stripe colours, 0xRRGGBB. Chosen so a thin bar and a light tint read on both themes.
 pub(crate) const TAB_COLORS: [(u32, &str, &str, &str); 8] = [
     (0xE15A4A, "Red", "빨강", "赤"),
@@ -119,9 +120,11 @@ pub(crate) struct IconLay {
 }
 
 /// pad, gap, plus, max tab, min tab, overflow chevron. Shared with the drive-button reserve.
+/// The chevron width matches the +, so both buttons are the same square.
 fn tab_px(dpi: i32) -> (i32, i32, i32, i32, i32, i32) {
     let s = |v: i32| v * dpi / 96;
-    (s(6), s(2), s(28), s(90), s(44), s(22))
+    let plus = s(28);
+    (s(6), s(2), plus, s(90), s(44), plus)
 }
 
 /// Width `tab_lay` needs for one minimum tab, the +, and the ▾. Drive buttons stop before this.
@@ -233,7 +236,7 @@ pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32, scroll: u
             count: n,
         };
     }
-    // ▾ at the right of the tab area; + stays pinned just to its left.
+    // Chevron at the right. The + stays pinned just to its left, still plus_w wide.
     let over_right = (width - pad).max(over_w.min(width));
     let over_left = (over_right - over_w).max(0);
     let over = RECT { left: over_left, top: y, right: over_right, bottom: y + h };
@@ -970,13 +973,14 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
                 text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT);
             }
         }
-        let plus_bg = if hot_plus { blend(pal().card, pal().bg, 0.45) } else { pal().bg };
-        fill(dc, lay.plus, plus_bg);
-        text(dc, lay.plus, ICON_PLUS, icon, pal().text, DT_CENTER);
+        // Same hover and the same icon ink for the + and the chevron.
+        let hot_bg = blend(pal().card, pal().bg, 0.45);
+        let ink = pal().text;
+        fill(dc, lay.plus, if hot_plus { hot_bg } else { pal().bg });
+        text(dc, lay.plus, ICON_PLUS, icon, ink, DT_CENTER);
         if let Some(r) = lay.overflow {
-            let bg = if hot_over { blend(pal().card, pal().bg, 0.45) } else { pal().bg };
-            fill(dc, r, bg);
-            text(dc, r, "▾", font, pal().text, DT_CENTER);
+            fill(dc, r, if hot_over { hot_bg } else { pal().bg });
+            text(dc, r, ICON_CHEVRON_DOWN, icon, ink, DT_CENTER);
         }
     });
 }
@@ -1212,8 +1216,8 @@ mod tests {
                 assert_eq!(lay.drives[i - 1].right + 4, lay.drives[i].left);
             }
         }
-        // One minimum tab, +, and ▾ (110px) stay clear of the buttons. Tabs paint only in tab_w.
-        let reserve = 110;
+        // One minimum tab, +, and ▾ (116px) stay clear of the buttons. Tabs paint only in tab_w.
+        let reserve = 116;
         assert!(lay.tab_w >= reserve && lay.drives[0].left >= reserve);
         let tabs = tab_lay(lay.tab_w, 30, &[false; 30], 96, 0);
         assert!(edge(&tabs) <= lay.drives[0].left);
@@ -1258,6 +1262,34 @@ mod tests {
         assert_eq!(hidden.tab_w - shown.tab_w, shown.icons[0].1.left - shown.drives[0].left);
         assert_eq!(tab_area_width(1000, 96, true, drive_slots(false, n)), hidden.tab_w);
         assert_eq!(tab_area_width(1000, 96, true, drive_slots(true, n)), shown.tab_w);
+    }
+
+    #[test]
+    fn tab_lay_plus_width_matches_when_overflowing() {
+        let fit = tab_lay(800, 3, &[false; 3], 96, 0);
+        assert!(fit.overflow.is_none());
+        assert_eq!(fit.plus.right - fit.plus.left, 28);
+        assert_eq!(fit.plus.bottom - fit.plus.top, 26);
+
+        let over = tab_lay(240, 12, &[false; 12], 96, 0);
+        let o = over.overflow.expect("overflow");
+        assert_eq!(over.plus.right - over.plus.left, fit.plus.right - fit.plus.left);
+        assert_eq!(over.plus.bottom - over.plus.top, fit.plus.bottom - fit.plus.top);
+        assert_eq!(over.plus.top, fit.plus.top);
+        // Same square as the +. Wide enough for the icon, and it does not cover the +.
+        assert_eq!(o.right - o.left, over.plus.right - over.plus.left);
+        assert_eq!(o.bottom - o.top, over.plus.bottom - over.plus.top);
+        assert!(over.plus.right <= o.left && o.right <= 240);
+        assert!(o.right - o.left >= 20);
+
+        let hi_fit = tab_lay(1600, 3, &[false; 3], 192, 0);
+        let hi = tab_lay(480, 12, &[false; 12], 192, 0);
+        let ho = hi.overflow.expect("overflow");
+        assert_eq!(hi.plus.right - hi.plus.left, hi_fit.plus.right - hi_fit.plus.left);
+        assert_eq!(hi.plus.right - hi.plus.left, 56);
+        assert_eq!(ho.right - ho.left, 56);
+        assert_eq!(ho.bottom - ho.top, hi.plus.bottom - hi.plus.top);
+        assert!(hi.plus.right <= ho.left);
     }
 }
 
