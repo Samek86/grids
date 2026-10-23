@@ -24,6 +24,10 @@ pub(crate) struct Tab {
     pub(crate) filters: Vec<String>,
     /// Per pane: 0 none, 1..=6 a selection-colour preset of the current theme. Separate from the tab stripe.
     pub(crate) tints: Vec<u8>,
+    /// Per pane: folders this pane switches between. Empty means just `paths[i]`. Not the window tabs above.
+    pub(crate) pane_folders: Vec<Vec<String>>,
+    /// Per pane: which pane-tab is current. The current entry in `pane_folders` is stale; `paths[i]` is the truth.
+    pub(crate) pane_cur: Vec<usize>,
 }
 
 pub(crate) fn pad_filters(mut f: Vec<String>) -> Vec<String> {
@@ -34,6 +38,7 @@ pub(crate) fn pad_filters(mut f: Vec<String>) -> Vec<String> {
 
 impl Tab {
     pub(crate) fn from_live(s: &Session, name: String, locked: bool, filters: Vec<String>) -> Self {
+        let pack = pack_pane_tabs(s);
         Tab {
             name,
             locked,
@@ -47,8 +52,37 @@ impl Tab {
             cols: s.cols.clone(),
             filters: pad_filters(filters),
             tints: s.tints.clone(),
+            pane_folders: pack.0,
+            pane_cur: pack.1,
         }
     }
+}
+
+fn pad_pane_folders(mut f: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    f.resize(MAXP, Vec::new());
+    f.truncate(MAXP);
+    f
+}
+
+fn pad_pane_cur(mut c: Vec<usize>) -> Vec<usize> {
+    c.resize(MAXP, 0);
+    c.truncate(MAXP);
+    c
+}
+
+/// Resolved pane-tab lists, dropped back to empty when a pane has only its current folder.
+pub(crate) fn pack_pane_tabs(s: &Session) -> (Vec<Vec<String>>, Vec<usize>) {
+    let mut folders = vec![Vec::new(); MAXP];
+    let mut cur = vec![0usize; MAXP];
+    for i in 0..MAXP {
+        let list = s.pane_tab_list(i);
+        if list.len() > 1 {
+            let k = s.pane_cur.get(i).copied().unwrap_or(0).min(list.len() - 1);
+            folders[i] = list;
+            cur[i] = k;
+        }
+    }
+    (folders, cur)
 }
 
 /// The next default name: 1, then 2, skipping numbers already used.
@@ -130,6 +164,12 @@ pub(crate) struct Session {
     pub(crate) accent_dark: u32,       // selection colour, dark theme
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
+    /// Strips of pane tabs under each pane header. Off by default. The folders stay while the strips are hidden.
+    /// These are not the window tabs (`tabs` / `tab`): a pane tab is one folder inside one pane.
+    pub(crate) pane_tabs_on: bool,
+    /// Per pane, for the window tab on screen: its pane tabs' folders. The current entry is stale; `paths[i]` is the truth.
+    pub(crate) pane_folders: Vec<Vec<String>>,
+    pub(crate) pane_cur: Vec<usize>,
     pub(crate) hotkey: bool,           // global hotkey brings Grids forward; the chord is in the keymap
     pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
@@ -182,6 +222,9 @@ impl Default for Session {
             accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
+            pane_tabs_on: false,
+            pane_folders: vec![Vec::new(); MAXP],
+            pane_cur: vec![0; MAXP],
             hotkey: true,
             file: String::new(),
             favs: Vec::new(),
@@ -236,6 +279,7 @@ impl PartialEq for Session {
             && self.accent_dark == o.accent_dark
             && self.dark == o.dark
             && self.dblup == o.dblup
+            && self.pane_tabs_on == o.pane_tabs_on
             && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
@@ -371,6 +415,8 @@ impl Session {
         self.views = t.views;
         self.cols = t.cols;
         self.tints = t.tints;
+        self.pane_folders = pad_pane_folders(t.pane_folders);
+        self.pane_cur = pad_pane_cur(t.pane_cur);
     }
 
     pub(crate) fn accent_now(&self) -> u32 {
@@ -397,6 +443,7 @@ impl Session {
         let mut s = Session::default();
         s.tabs.clear();
         let mut rowr: Vec<Vec<f64>> = Vec::new();
+        let mut pane_b: Vec<Option<(usize, Vec<String>)>> = vec![None; MAXP];
         let (mut saw_theme, mut saw_dark) = (false, false);
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
@@ -463,6 +510,7 @@ impl Session {
                 "autosave" => s.autosave = v.trim() == "1",
                 "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
+                "panetabs" => s.pane_tabs_on = v.trim() == "1",
                 "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
@@ -483,6 +531,14 @@ impl Session {
                         s.views[i] = (*m, *z);
                     } else if let Some(i) = slot('c') {
                         s.cols[i] = v.trim().to_string();
+                    } else if let Some(i) = slot('b') {
+                        // b3=1|C:\a|D:\b : current pane tab, then every folder ('|' is not used in a path)
+                        let mut it = v.split('|');
+                        let cur = it.next().and_then(|c| c.trim().parse::<usize>().ok()).unwrap_or(0);
+                        let list: Vec<String> = it.filter(|p| !p.is_empty()).map(str::to_string).collect();
+                        if list.len() > 1 {
+                            pane_b[i] = Some((cur.min(list.len() - 1), list));
+                        }
                     } else if let Some(i) = slot('t') {
                         s.tints[i] = v.trim().parse().ok().filter(|&k| k <= 6).unwrap_or(0);
                     }
@@ -504,6 +560,20 @@ impl Session {
             s.anchor();
         } else {
             s.publish();
+        }
+        // b-lines fill a pane whose window-tab record has no pane tabs (an older file, or a hand edit).
+        let mut folded = false;
+        for (i, slot) in pane_b.into_iter().enumerate() {
+            let Some((cur, list)) = slot else { continue };
+            if s.pane_folders[i].len() > 1 {
+                continue;
+            }
+            s.pane_cur[i] = cur;
+            s.pane_folders[i] = list;
+            folded = true;
+        }
+        if folded {
+            s.anchor();
         }
         s.tree = super::tree_from_flat(&s.favs);
         s
@@ -537,7 +607,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8);
+        o += &format!("dblup={}\npanetabs={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\n", self.dblup as u8, self.pane_tabs_on as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
@@ -559,6 +629,11 @@ impl Session {
             }
             if self.tints[i] != 0 {
                 o += &format!("t{i}={}\n", self.tints[i]);
+            }
+            let folders = self.pane_tab_list(i);
+            if folders.len() > 1 {
+                let cur = self.pane_cur[i].min(folders.len() - 1);
+                o += &format!("b{i}={cur}|{}\n", folders.join("|"));
             }
         }
         let tabs = self.view_tabs();
@@ -598,6 +673,8 @@ impl Session {
         (self.heights, self.colr, self.rowr) = (o.heights.clone(), o.colr.clone(), o.rowr.clone());
         (self.active, self.paths, self.views, self.cols) = (o.active, o.paths.clone(), o.views.clone(), o.cols.clone());
         self.tints = o.tints.clone();
+        self.pane_folders = pad_pane_folders(o.pane_folders.clone());
+        self.pane_cur = pad_pane_cur(o.pane_cur.clone());
         self.tabs = o.view_tabs();
         self.tab = o.tab.min(self.tabs.len().saturating_sub(1));
         self.order.clear();
@@ -609,10 +686,13 @@ impl Session {
         if i >= MAXP || j >= MAXP || i == j {
             return;
         }
+        self.ensure_pane_tabs();
         self.paths.swap(i, j);
         self.views.swap(i, j);
         self.cols.swap(i, j);
         self.tints.swap(i, j);
+        self.pane_folders.swap(i, j);
+        self.pane_cur.swap(i, j);
         if self.tab < self.tabs.len() && i < self.tabs[self.tab].filters.len() && j < self.tabs[self.tab].filters.len() {
             self.tabs[self.tab].filters.swap(i, j);
         }
@@ -635,6 +715,8 @@ impl Session {
             self.views[i] = old.views[k];
             self.cols[i] = old.cols[k].clone();
             self.tints[i] = old.tints[k];
+            self.pane_folders[i] = old.pane_folders.get(k).cloned().unwrap_or_default();
+            self.pane_cur[i] = old.pane_cur.get(k).copied().unwrap_or(0);
         }
         if self.tab < self.tabs.len() {
             let old_f = old.tabs[self.tab].filters.clone();
@@ -645,6 +727,83 @@ impl Session {
                 }
             }
         }
+    }
+
+    pub(crate) fn ensure_pane_tabs(&mut self) {
+        self.pane_folders = pad_pane_folders(std::mem::take(&mut self.pane_folders));
+        self.pane_cur = pad_pane_cur(std::mem::take(&mut self.pane_cur));
+    }
+
+    /// Pane i's pane tabs as they are now. The current one is the folder on display. One entry when it has none.
+    pub(crate) fn pane_tab_list(&self, i: usize) -> Vec<String> {
+        if i >= MAXP {
+            return Vec::new();
+        }
+        let mut t = self.pane_folders.get(i).cloned().unwrap_or_default();
+        let cur = self.pane_cur.get(i).copied().unwrap_or(0);
+        let path = self.paths.get(i).cloned().unwrap_or_default();
+        match cur {
+            k if t.len() > 1 && k < t.len() => t[k] = path,
+            _ => t = vec![path],
+        }
+        t
+    }
+
+    /// A copy of the current pane tab, placed just after it and made current. Same folder, so nothing browses.
+    pub(crate) fn add_pane_tab(&mut self, i: usize) {
+        if i >= MAXP {
+            return;
+        }
+        self.ensure_pane_tabs();
+        let mut t = self.pane_tab_list(i);
+        let k = self.pane_cur[i].min(t.len() - 1) + 1;
+        t.insert(k, self.paths[i].clone());
+        (self.pane_folders[i], self.pane_cur[i]) = (t, k);
+    }
+
+    /// Pane tab k becomes current. The folder to browse to, or None when it already is (or there is no such tab).
+    pub(crate) fn pick_pane_tab(&mut self, i: usize, k: usize) -> Option<String> {
+        if i >= MAXP {
+            return None;
+        }
+        self.ensure_pane_tabs();
+        let t = self.pane_tab_list(i);
+        let cur = if t.len() > 1 { self.pane_cur[i].min(t.len() - 1) } else { 0 };
+        if k >= t.len() || k == cur {
+            return None;
+        }
+        let to = t[k].clone();
+        (self.pane_folders[i], self.pane_cur[i]) = (t, k);
+        Some(to)
+    }
+
+    /// Closes pane tab k. The last one stays. Closing the current one moves to its right neighbour, else its left.
+    pub(crate) fn close_pane_tab(&mut self, i: usize, k: usize) -> Option<String> {
+        if i >= MAXP {
+            return None;
+        }
+        self.ensure_pane_tabs();
+        let mut t = self.pane_tab_list(i);
+        if t.len() < 2 || k >= t.len() {
+            return None;
+        }
+        let cur = self.pane_cur[i].min(t.len() - 1);
+        t.remove(k);
+        let (next, go) = match k.cmp(&cur) {
+            std::cmp::Ordering::Less => (cur - 1, None),
+            std::cmp::Ordering::Greater => (cur, None),
+            std::cmp::Ordering::Equal => {
+                let n = k.min(t.len() - 1);
+                (n, Some(t[n].clone()))
+            }
+        };
+        if t.len() > 1 {
+            (self.pane_folders[i], self.pane_cur[i]) = (t, next);
+        } else {
+            self.pane_folders[i].clear();
+            self.pane_cur[i] = 0;
+        }
+        go
     }
 }
 
@@ -714,7 +873,9 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
     for i in 0..MAXP {
         let filter = t.filters.get(i).cloned().unwrap_or_default();
         let tint = t.tints.get(i).copied().unwrap_or(0);
-        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() && tint == 0 {
+        let folders = t.pane_folders.get(i).cloned().unwrap_or_default();
+        let folder = t.pane_cur.get(i).copied().unwrap_or(0);
+        if t.paths[i].is_empty() && t.views[i] == (0, 0) && t.cols[i].is_empty() && filter.is_empty() && tint == 0 && folders.len() < 2 {
             continue;
         }
         let mut p = serde_json::Map::new();
@@ -733,6 +894,10 @@ pub(crate) fn pane_json(t: &Tab) -> Vec<Value> {
         }
         if tint != 0 {
             p.insert("tint".into(), Value::from(tint));
+        }
+        if folders.len() > 1 {
+            p.insert("folders".into(), Value::Array(folders.into_iter().map(Value::String).collect()));
+            p.insert("folder".into(), Value::from(folder));
         }
         panes.push(Value::Object(p));
     }
@@ -798,6 +963,8 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
     let mut cols = vec![String::new(); MAXP];
     let mut filters = vec![String::new(); MAXP];
     let mut tints = vec![0u8; MAXP];
+    let mut pane_folders = vec![Vec::new(); MAXP];
+    let mut pane_cur = vec![0usize; MAXP];
     if let Some(panes) = obj.get("panes").and_then(|p| p.as_array()) {
         for p in panes {
             let Some(o) = p.as_object() else { continue };
@@ -824,10 +991,18 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
             if let Some(t) = o.get("tint").and_then(|x| x.as_u64()) {
                 tints[i] = if t <= 6 { t as u8 } else { 0 };
             }
+            if let Some(fs) = o.get("folders").and_then(|x| x.as_array()) {
+                let list: Vec<String> = fs.iter().filter_map(|x| x.as_str()).filter(|p| !p.is_empty()).map(str::to_string).collect();
+                if list.len() > 1 {
+                    let cur = o.get("folder").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
+                    pane_cur[i] = cur.min(list.len() - 1);
+                    pane_folders[i] = list;
+                }
+            }
         }
     }
     let name = if name.is_empty() { "1".into() } else { name };
-    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints })
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints, pane_folders, pane_cur })
 }
 
 pub(crate) fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
@@ -1196,6 +1371,64 @@ mod crumb_tests {
         base.anchor();
         assert!(layout_differs(&s, &base));
         assert!(!s.snapshot().contains("win="));
+    }
+
+    #[test]
+    fn pane_tabs_follow_the_pane_and_round_trip() {
+        let mut s = Session::default();
+        s.paths[0] = r"C:\a".into();
+        assert_eq!(s.pane_tab_list(0), vec![r"C:\a"]);
+        assert_eq!(s.close_pane_tab(0, 0), None); // the last pane tab stays
+        s.add_pane_tab(0);
+        assert_eq!((s.pane_tab_list(0).len(), s.pane_cur[0]), (2, 1));
+        s.paths[0] = r"C:\b".into(); // the new pane tab browsed on
+        assert_eq!(s.pane_tab_list(0), vec![r"C:\a".to_string(), r"C:\b".into()]);
+        assert_eq!(s.pick_pane_tab(0, 0).as_deref(), Some(r"C:\a"));
+        assert_eq!(s.pick_pane_tab(0, 0), None); // already current
+        s.paths[0] = r"C:\a".into();
+        s.add_pane_tab(0); // a, a, b: a copy right after the current one
+        assert_eq!((s.pane_tab_list(0), s.pane_cur[0]), (vec![r"C:\a".to_string(), r"C:\a".into(), r"C:\b".into()], 1));
+        assert_eq!(s.close_pane_tab(0, 2), None); // another pane tab: no browsing
+        assert_eq!(s.pane_cur[0], 1);
+        assert_eq!(s.close_pane_tab(0, 1).as_deref(), Some(r"C:\a"));
+        assert!(s.pane_folders[0].is_empty() && s.pane_cur[0] == 0);
+
+        s.pane_folders[0] = vec!["x".into(), "y".into(), "z".into()];
+        s.pane_cur[0] = 1;
+        s.paths[0] = "y".into();
+        assert_eq!(s.close_pane_tab(0, 1).as_deref(), Some("z"));
+        assert_eq!(s.pane_cur[0], 1);
+        s.paths[0] = "z".into();
+        assert_eq!(s.close_pane_tab(0, 1).as_deref(), Some("x"));
+        assert!(s.pane_folders[0].is_empty());
+        s.pane_folders[0] = vec!["x".into(), "y".into(), "z".into()];
+        (s.pane_cur[0], s.paths[0]) = (2, "z".into());
+        assert_eq!((s.close_pane_tab(0, 0), s.pane_cur[0]), (None, 1));
+
+        let mut saved = Session::default();
+        saved.pane_tabs_on = true;
+        saved.paths[2] = r"D:\now".into();
+        saved.pane_folders[2] = vec![r"C:\a".into(), "old".into(), "::{x}".into()];
+        saved.pane_cur[2] = 1;
+        let t = saved.to_ini();
+        assert!(t.contains("panetabs=1\n") && t.contains("b2=1|C:\\a|D:\\now|::{x}\n"), "{t}");
+        let back = Session::parse(&t);
+        assert!(back.pane_tabs_on);
+        assert_eq!((back.pane_tab_list(2), back.pane_cur[2]), (vec![r"C:\a".to_string(), r"D:\now".into(), "::{x}".into()], 1));
+        assert!(Session::parse("p0=C:\\a\nb0=0|C:\\a\nb1=9|x|y\n").pane_folders[0].is_empty());
+        assert_eq!(Session::parse("b1=9|x|y\n").pane_cur[1], 1);
+        assert!(!Session::parse("side=300\n").pane_tabs_on);
+        let mut moved = back.clone();
+        moved.swap_slots(2, 0);
+        assert_eq!((moved.pane_folders[0].len(), moved.pane_cur[0], moved.pane_folders[2].len()), (3, 1, 0));
+        let mut lay = Session::default();
+        lay.take_layout(&back);
+        assert_eq!(lay.pane_folders[2].len(), 3);
+        // the window-tab JSON keeps the folders too, and a second window tab does not share them
+        saved.anchor();
+        let (tabs, at) = super::tabs_from_json(&super::tabs_json(&saved.view_tabs(), saved.tab)).unwrap();
+        assert_eq!(tabs[at].pane_folders[2].len(), 3);
+        assert_eq!(tabs[at].pane_cur[2], 1);
     }
 
     #[test]

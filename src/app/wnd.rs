@@ -243,6 +243,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     app(|a| a.s.dblup ^= true);
                     settings::redraw();
                 }
+                ID_PANE_TABS => toggle_pane_tabs(),
                 ID_SETTINGS => settings::open(h),
                 ID_LANG_AUTO => set_language(Lang::Auto),
                 ID_LANG_EN => set_language(Lang::En),
@@ -256,7 +257,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ => {}
             },
             WM_INITMENUPOPUP => {
-                let (menu, dblup, accent, lang, panel, ext, hot) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now(), a.s.lang, a.s.tree_on, a.s.ext, a.hot_on));
+                let (menu, dblup, pane_tabs, accent, lang, panel, ext, hot) = app(|a| (a.view_menu, a.s.dblup, a.s.pane_tabs_on, a.s.accent_now(), a.s.lang, a.s.tree_on, a.s.ext, a.hot_on));
                 let check = |id: usize, on: bool| CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | if on { MF_CHECKED } else { MF_UNCHECKED }).0);
                 check(ID_HIDDEN, hidden());
                 check(ID_PANEL, panel);
@@ -280,6 +281,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     _ = ModifyMenuW(menu, ID_GATHER as u32, MF_BYCOMMAND | MF_STRING, ID_GATHER as usize, &HSTRING::from(label));
                 }
                 check(ID_DBLUP, dblup);
+                check(ID_PANE_TABS, pane_tabs);
                 check(ID_LANG_AUTO, lang == Lang::Auto);
                 check(ID_LANG_EN, lang == Lang::En);
                 check(ID_LANG_KO, lang == Lang::Ko);
@@ -493,6 +495,11 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_KIDS => kids_show(h, wp.0),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
+                if let Some(i) = pane_of(h) {
+                    if pane_tab_mouse(h, i, x, y, false) {
+                        return LRESULT(0);
+                    }
+                }
                 let on_kind = {
                     let dpi = app(|a| a.dpi);
                     let mut rc = RECT::default();
@@ -509,8 +516,33 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 }
             }
+            WM_MBUTTONUP => {
+                let (x, y) = xy(lp);
+                if let Some(i) = pane_of(h) {
+                    if pane_tab_mouse(h, i, x, y, true) {
+                        return LRESULT(0);
+                    }
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
             WM_LBUTTONDBLCLK => {
                 let (x, y) = xy(lp);
+                if let Some(i) = pane_of(h) {
+                    if on_pane_strip(h, x, y) {
+                        let mut rc = RECT::default();
+                        _ = GetClientRect(h, &mut rc);
+                        let dpi = app(|a| a.dpi);
+                        let n = app(|a| a.s.pane_tab_list(i).len());
+                        // Empty strip: a new pane tab. On a tab this is just the second click.
+                        if matches!(pane_tab_hit(&pane_geo(rc.right, rc.bottom, dpi), n, x, y, dpi), Some(PaneTabHit::Strip)) {
+                            new_pane_tab(i);
+                            focus_view(i);
+                        } else {
+                            pane_tab_mouse(h, i, x, y, false);
+                        }
+                        return LRESULT(0);
+                    }
+                }
                 let dpi = app(|a| a.dpi);
                 let addr = addr_rect(h, dpi);
                 let on_addr = x >= addr.left && x < addr.right && y >= addr.top && y < addr.bottom;
@@ -638,8 +670,11 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = ScreenToClient(h, &mut p);
                 let mut rc = RECT::default();
                 _ = GetClientRect(h, &mut rc);
+                let pg = pane_geo(rc.right, rc.bottom, app(|a| a.dpi));
+                // The pane-tab strip is not the header: a right-click there does not open the colour menu.
+                let header_bottom = if pg.tabs.bottom > pg.tabs.top { pg.tabs.top } else { pg.view.top };
                 match pane_of(h) {
-                    Some(i) if lp.0 != -1 && p.y < pane_geo(rc.right, rc.bottom, app(|a| a.dpi)).view.top => tint_menu(h, i, screen),
+                    Some(i) if lp.0 != -1 && p.y < header_bottom => tint_menu(h, i, screen),
                     _ => return DefWindowProcW(h, msg, wp, lp),
                 }
             }
@@ -884,6 +919,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
     item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
+    item(view, MF_STRING, ID_PANE_TABS, tr("Tabs in panes", "패널 안의 탭", "ペイン内のタブ"))?;
     let colors = CreatePopupMenu()?;
     for (k, (name, _)) in LIGHT.accents.iter().enumerate() {
         item(colors, MF_STRING, ID_ACCENT + k, tr(ACCENT_EN[k], name, ACCENT_JA[k]))?;

@@ -189,19 +189,33 @@ pub(crate) fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
     RECT { left: x0, top: y0, right: x1, bottom: y1 }
 }
 
-// Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; the Explorer view below.
+// Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; an optional pane-tab
+// strip under that bar; the Explorer view below. Window tabs are a different strip, on the main window.
 pub(crate) struct PaneGeo {
     pub(crate) num: RECT,      // pane number (Ctrl+N); zero width when the pane is too narrow
     pub(crate) btn: [RECT; 4], // back, forward, up, open-in
     pub(crate) addr: RECT,
     pub(crate) filt: RECT,
     pub(crate) fav: RECT,
+    pub(crate) tabs: RECT, // pane-tab strip between the bar and the list; empty while pane tabs are off
     pub(crate) view: RECT,
+}
+
+/// Copy of `Session::pane_tabs_on` so `pane_geo` can run without borrowing the session.
+pub(crate) static PANE_TABS: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn sync_pane_tabs(on: bool) {
+    PANE_TABS.store(on, Ordering::Relaxed);
+}
+
+pub(crate) fn pane_strip_h(dpi: i32) -> i32 {
+    if PANE_TABS.load(Ordering::Relaxed) { 26 * dpi / 96 } else { 0 }
 }
 
 pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
     let s = |v: i32| v * dpi / 96;
     let (bar, bh, b, pad) = (s(30), s(22), s(24), s(4));
+    let strip = pane_strip_h(dpi);
     let y = (bar - bh) / 2;
     let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
     let fav = r(w - pad - b, b);
@@ -219,9 +233,32 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
         addr: r(addr_x, open.left - s(4) - addr_x),
         filt,
         fav,
+        tabs: RECT { left: s(2), top: bar, right: w - s(2), bottom: bar + strip },
         // 2px in, so the active ring stays visible around the list
-        view: RECT { left: s(2), top: bar, right: w - s(2), bottom: h - s(2) },
+        view: RECT { left: s(2), top: bar + strip, right: w - s(2), bottom: h - s(2) },
     }
+}
+
+/// Pane tabs share the strip evenly up to a comfortable width, then a '+' after the last. (tabs, '+')
+pub(crate) fn pane_tab_rects(strip: RECT, n: usize, dpi: i32) -> (Vec<RECT>, RECT) {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, plus) = (s(4), s(24));
+    let room = (strip.right - strip.left - 2 * pad - plus).max(0);
+    let w = (room / n.max(1) as i32).min(s(170));
+    let tab = |k: i32| RECT { left: strip.left + pad + k * w, top: strip.top + s(3), right: strip.left + pad + (k + 1) * w, bottom: strip.bottom };
+    let tabs: Vec<RECT> = (0..n as i32).map(tab).collect();
+    let x = tabs.last().map_or(strip.left + pad, |r| r.right);
+    (tabs, RECT { left: x, top: strip.top + s(3), right: x + plus, bottom: strip.bottom })
+}
+
+/// The × on a pane tab, at its right end. Only on tabs wide enough to keep some name.
+pub(crate) fn pane_tab_close_rect(tab: RECT, dpi: i32) -> Option<RECT> {
+    let s = |v: i32| v * dpi / 96;
+    (tab.right - tab.left >= s(64)).then(|| RECT { left: tab.right - s(22), right: tab.right - s(4), ..tab })
+}
+
+pub(crate) fn inside(r: RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
 /// The search icon or filter chip at the left of the filter pill. The edit starts at 24 DIP, so this stays clickable.
@@ -670,6 +707,29 @@ mod tests {
         ] {
             assert_eq!(run(&steps), ident, "{steps:?}");
         }
+    }
+
+    #[test]
+    fn pane_tab_strip_shares_the_row() {
+        let strip = RECT { left: 2, top: 30, right: 402, bottom: 56 };
+        let (tabs, plus) = pane_tab_rects(strip, 2, 96);
+        assert_eq!((tabs[0].left, tabs[0].right - tabs[0].left, tabs[1].right, plus.left, plus.right), (6, 170, 346, 346, 370));
+        let (tabs, plus) = pane_tab_rects(strip, 10, 96); // squeezed evenly, '+' still inside
+        assert!(tabs.iter().all(|r| r.right - r.left == 36) && plus.right <= strip.right);
+        assert!(pane_tab_close_rect(tabs[0], 96).is_none());
+        assert!(pane_tab_close_rect(RECT { left: 0, top: 0, right: 64, bottom: 20 }, 96).is_some());
+        let pg = PaneGeo {
+            num: RECT::default(),
+            btn: [RECT::default(); 4],
+            addr: RECT::default(),
+            filt: RECT::default(),
+            fav: RECT::default(),
+            tabs: strip,
+            view: RECT::default(),
+        };
+        assert!(matches!(crate::pane_tab_hit(&pg, 2, 6, 40, 96), Some(crate::PaneTabHit::Tab(0))));
+        assert!(matches!(crate::pane_tab_hit(&pg, 2, 350, 40, 96), Some(crate::PaneTabHit::Plus)));
+        assert!(crate::pane_tab_hit(&pg, 2, 1, 40, 96).is_none());
     }
 }
 

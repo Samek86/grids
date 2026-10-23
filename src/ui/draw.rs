@@ -863,6 +863,16 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 text(dc, RECT { left: r.left + s(4), right: r.right - s(4), ..r }, &label, font, ink, DT_LEFT);
             }
         }
+        if pg.tabs.bottom > pg.tabs.top {
+            if let Some(i) = i {
+                let (list, cur) = app(|a| {
+                    let list = a.s.pane_tab_list(i);
+                    let cur = if list.len() > 1 { a.s.pane_cur.get(i).copied().unwrap_or(0).min(list.len() - 1) } else { 0 };
+                    (list, cur)
+                });
+                paint_pane_tabs(dc, &pg, &list, cur, dpi, font, accent);
+            }
+        }
         if filtered {
             // filter applied: accent chip left of the edit (which starts at filt.left + s(24))
             let chip =
