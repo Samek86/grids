@@ -176,7 +176,19 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         let svh = sv.GetWindow().unwrap_or_default();
         (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
     };
-    let list = view_of::<IFolderView2>(a).is_some_and(|fv| view_list(&fv) == m.hwnd);
+    // The file list is a SysListView32 on some systems and a DirectUIHWND on others (Windows 10 has no list
+    // window to find), so the focus counts as "in the list" when it is that kind of window inside the view.
+    let list = view_of::<IFolderView2>(a).is_some_and(|fv| {
+        if view_list(&fv) == m.hwnd {
+            return true;
+        }
+        let svh = fv.cast::<IShellView>().and_then(|v| v.GetWindow()).unwrap_or_default();
+        let mut c = [0u16; 32];
+        let n = GetClassNameW(m.hwnd, &mut c) as usize;
+        matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32")
+            && !svh.0.is_null()
+            && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())
+    });
     // F6 leaves the address and the filter. Every other chord stays out of a name being typed.
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
