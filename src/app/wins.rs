@@ -720,11 +720,11 @@ mod tests {
         assert!(!allows_another_window(true));
         assert_eq!(hotkey_when_front(false), HotkeyWhenFront::Minimize);
         assert_eq!(hotkey_when_front(true), HotkeyWhenFront::NewTab);
-        assert!(!Session::default().one_window);
-        let mut on = Session::default();
-        on.one_window = true;
-        assert!(Session::parse(&on.to_ini()).one_window);
-        assert!(!Session::parse("single=0\n").one_window);
+        assert!(Session::default().one_window);
+        let mut off = Session::default();
+        off.one_window = false;
+        assert!(!Session::parse(&off.to_ini()).one_window);
+        assert!(Session::parse("single=0\n").one_window);
     }
 
     #[test]
