@@ -57,6 +57,8 @@ pub(crate) const TIMER_WINS: usize = 8; // after the first window is shown, open
 pub(crate) const TIMER_ICON: usize = 9; // favourites: pre-warm shell icon indexes after the first paint
 pub(crate) const TIMER_PINS: usize = 10; // favourites: re-read Explorer home items after a pin or unpin
 pub(crate) const TIMER_FOCUS: usize = 11; // a click brought the window back: restore focus only if nothing took it
+pub(crate) const TIMER_FIND: usize = 12; // hide the search list after the filter loses focus
+pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;
