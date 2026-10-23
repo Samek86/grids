@@ -589,6 +589,7 @@ pub(crate) unsafe fn reset_prefs() {
     app(|a| {
         a.s.theme = fresh.theme;
         a.s.font = fresh.font;
+        a.s.font_face.clear();
         a.s.bar = fresh.bar;
         a.s.stat = fresh.stat;
         a.s.view_new = fresh.view_new;
@@ -628,9 +629,17 @@ pub(crate) unsafe fn import_settings(text: &str) -> bool {
     s.win = win;
     s.dark = resolve_dark(s.theme);
     let lang = s.lang;
+    // set_language drops a chosen face. An imported file keeps the face it named.
+    let face = s.font_face.clone();
     install_grids(s);
     if lang != lang_now {
         set_language(lang);
+        if !face.is_empty() {
+            app(|a| a.s.font_face = face);
+            publish_shared();
+            apply_font_all();
+            save_session();
+        }
     } else {
         apply_theme();
         apply_font();
