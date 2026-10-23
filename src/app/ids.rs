@@ -33,6 +33,7 @@ pub(crate) const ID_EXT: usize = 1117; // show file extensions (Windows setting)
 pub(crate) const ID_FOLLOW: usize = 1118; // follow Windows light / dark
 pub(crate) const ID_HOTKEY: usize = 1119; // global hotkey, checked only while it is registered
 pub(crate) const ID_GATHER: usize = 1120; // folders from open Explorer windows and tabs
+pub(crate) const ID_PANE_TABS: usize = 1121; // strips of pane tabs under each pane header
 pub(crate) const WM_THEME_SYNC: u32 = WM_APP + 47;
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;

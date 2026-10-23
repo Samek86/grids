@@ -388,6 +388,8 @@ pub(crate) unsafe fn new_tab() {
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
             cols: vec![String::new(); MAXP],
+            pane_folders: vec![Vec::new(); MAXP],
+            pane_cur: vec![0; MAXP],
             ..a.s.clone()
         };
         let name = next_tab_name(&a.s.tabs);
@@ -653,6 +655,7 @@ pub(crate) unsafe fn install_grids(s: Session) {
         a.park_lru.clear();
         a.zoom = None;
     });
+    sync_pane_tabs(app(|a| a.s.pane_tabs_on));
 }
 
 pub(crate) fn current_tab_lay() -> TabLay {

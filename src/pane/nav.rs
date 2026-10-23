@@ -789,6 +789,9 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     }
     sync_addr(h);
     request_icon(h, ticket, pidl);
+    if PANE_TABS.load(Ordering::Relaxed) {
+        repaint_pane_tabs(i); // the current pane tab's name is this folder's
+    }
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
     }
