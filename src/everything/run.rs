@@ -26,6 +26,14 @@ pub(crate) fn running() -> bool {
     ipc_hwnd().is_some()
 }
 
+/// major.minor.revision.build. None when Everything does not answer with a version.
+pub(crate) fn version(hwnd: HWND) -> Option<super::locate::Version> {
+    unsafe {
+        let part = |id: usize| SendMessageW(hwnd, WM_USER, Some(WPARAM(id)), Some(LPARAM(0))).0 as u32;
+        super::locate::Version::from_parts(part(0), part(1), part(2), part(3))
+    }
+}
+
 pub(crate) fn ipc_hwnd() -> Option<HWND> {
     for class in super::locate::window_classes() {
         let wide: Vec<u16> = class.encode_utf16().chain(std::iter::once(0)).collect();
