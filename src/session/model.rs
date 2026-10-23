@@ -190,7 +190,9 @@ pub(crate) struct Session {
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     /// Chosen UI face. Empty uses the language default (Segoe UI / Malgun Gothic / Yu Gothic UI).
     pub(crate) font_face: String,
-    pub(crate) bar: bool,              // toolbar
+    pub(crate) bar: bool,              // tab-row icons and drive buttons
+    /// Drive-letter buttons on the tab row. Off hides them and gives that width to the tabs. Missing means on.
+    pub(crate) drive_buttons: bool,
     pub(crate) stat: bool,             // status line
     pub(crate) view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
     pub(crate) start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
@@ -249,6 +251,7 @@ impl Default for Session {
             font: 0,
             font_face: String::new(),
             bar: true,
+            drive_buttons: true,
             stat: true,
             view_new: 4,
             start_new: 0,
@@ -309,6 +312,7 @@ impl PartialEq for Session {
             && self.font == o.font
             && self.font_face == o.font_face
             && self.bar == o.bar
+            && self.drive_buttons == o.drive_buttons
             && self.stat == o.stat
             && self.view_new == o.view_new
             && self.start_new == o.start_new
@@ -531,6 +535,7 @@ impl Session {
                 }
                 "font" => s.font = v.trim().parse::<u8>().unwrap_or(0).min(2),
                 "bar" => s.bar = v.trim() != "0",
+                "drivebuttons" => s.drive_buttons = v.trim() != "0",
                 "stat" => s.stat = v.trim() != "0",
                 "viewnew" => s.view_new = match v.trim() {
                     "3" | "list" => 3,
@@ -636,7 +641,7 @@ impl Session {
             o += &format!("order={}\n", join(&self.order));
         }
         let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
-        o += &format!("theme={theme}\nfont={}\nbar={}\nstat={}\n", self.font, self.bar as u8, self.stat as u8);
+        o += &format!("theme={theme}\nfont={}\nbar={}\ndrivebuttons={}\nstat={}\n", self.font, self.bar as u8, self.drive_buttons as u8, self.stat as u8);
         o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
         if !self.start_path.is_empty() {
             o += &format!("startp={}\n", self.start_path);
