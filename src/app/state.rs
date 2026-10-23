@@ -84,7 +84,7 @@ pub(crate) struct Desk {
     pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) ilist: Option<windows::Win32::UI::Controls::IImageList>, // system small icons, shared, never freed
-    pub(crate) drives: Vec<(u8, u32, HWND)>, // toolbar buttons, A→Z: letter, drive type, button
+    pub(crate) drives: Vec<(u8, u32, HWND)>, // tab-row buttons, A→Z: letter, drive type, button
     pub(crate) drive_mask: u32,              // GetLogicalDrives() they were built for
     pub(crate) drive_mark: Option<u8>,       // the active pane's drive, underlined
     pub(crate) hover: HWND, // owner-drawn button under the mouse

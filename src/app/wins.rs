@@ -665,10 +665,10 @@ pub(crate) unsafe fn move_tab_to_window(i: usize, dest_tabs: HWND, at: usize) {
 pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
     let n = window_count();
     for i in 0..n {
-        let (hwnd, dpi, locked, scroll, bar) = app(|a| {
+        let (hwnd, dpi, locked, scroll, bar, drives) = app(|a| {
             let d = &a.desks[i];
             let locked: Vec<bool> = d.s.tabs.iter().map(|t| t.locked).collect();
-            (d.tabs_hwnd, d.dpi, locked, d.tab_scroll, d.s.bar)
+            (d.tabs_hwnd, d.dpi, locked, d.tab_scroll, d.s.bar, d.drives.len())
         });
         if hwnd.0.is_null() {
             continue;
@@ -684,7 +684,7 @@ pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
         _ = GetClientRect(hwnd, &mut client);
         let mut pt = screen;
         _ = ScreenToClient(hwnd, &mut pt);
-        let lay = tab_lay(tab_area_width(client.right.max(1), dpi, bar), locked.len().max(1), &locked, dpi, scroll);
+        let lay = tab_lay(tab_area_width(client.right.max(1), dpi, bar, drives), locked.len().max(1), &locked, dpi, scroll);
         let at = lay.insert_at(pt.x);
         return Some((hwnd, at));
     }

@@ -81,13 +81,13 @@ pub(crate) enum Hit {
     Row(usize, usize), // (column, boundary after row k in it)
 }
 
-// Main window: toolbar on top, status line at the bottom, plates (sidebar + grid) in between.
-// The gaps between plates are the splitters.
+// Main window: tab strip on top, status line at the bottom, plates (sidebar + grid) in between.
+// The gaps between plates are the splitters. Drive buttons and the icon group sit on the strip.
 #[derive(Clone)]
 pub(crate) struct Geo {
     pub(crate) w: i32,
     pub(crate) h: i32,   // client height
-    pub(crate) top: i32, // toolbar bottom = plates top
+    pub(crate) top: i32, // tab strip bottom = plates top
     pub(crate) bot: i32, // plates bottom = status line top
     pub(crate) pad: i32,
     pub(crate) gap: i32,
@@ -111,7 +111,7 @@ pub(crate) fn geo(a: &App) -> Geo {
     let (pad, gap) = (s(8), s(8));
     let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - gap - pad - s(240)).max(s(120))) } else { 0 };
     let gx = if a.s.tree_on { side + gap } else { pad };
-    let top = (if a.s.bar { s(34) } else { 0 }) + s(32); // toolbar, then the tab strip
+    let top = s(32); // tab strip. `bar` hides the icon group, not this row.
     let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     let plate = (bot - top).max(0);
     let tree_h = if side > 0 { split_heights(plate, a.s.side_split, gap, side_min(a.dpi)).0 } else { 0 };

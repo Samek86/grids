@@ -107,23 +107,59 @@ pub(crate) fn middle_closes(lay: &TabLay, hit: TabHit) -> bool {
     }
 }
 
-/// Layout, save, load and the gear, right-aligned on the tab row.
-/// The width is the tab area to the left of that group (a gap sits between them).
-pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32) -> (i32, [(i32, RECT); 4]) {
+/// Right-hand group on the tab row. Drive letters are a prefix of this, left of Layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct IconLay {
+    /// Width the tabs may use. A gap sits between this and the group.
+    pub(crate) tab_w: i32,
+    pub(crate) icons: [(i32, RECT); 4],
+    /// Drive buttons that fit, left to right. A prefix of the A→Z list; the rest are hidden.
+    pub(crate) drives: [RECT; 26],
+    pub(crate) drive_n: usize,
+}
+
+/// pad, gap, plus, max tab, min tab, overflow chevron. Shared with the drive-button reserve.
+fn tab_px(dpi: i32) -> (i32, i32, i32, i32, i32, i32) {
+    let s = |v: i32| v * dpi / 96;
+    (s(6), s(2), s(28), s(90), s(44), s(22))
+}
+
+/// Width `tab_lay` needs for one minimum tab, the +, and the ▾. Drive buttons stop before this.
+fn tab_reserve(dpi: i32) -> i32 {
+    let (pad, gap, plus_w, _, min_w, over_w) = tab_px(dpi);
+    pad + min_w + gap + plus_w + gap + over_w + pad
+}
+
+/// Layout, save, load, the gear, and `drives` letter buttons, right-aligned on the tab row.
+/// Letters sit to the left of Layout. The last ones drop when the row cannot also keep `tab_reserve`.
+pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize) -> IconLay {
     let s = |v: i32| v * dpi / 96;
     let (pad, gap, bh) = (s(8), s(4), s(24));
     let specs = [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET];
     let widths = [s(70), s(32), s(32), s(32)];
-    let group = widths.iter().sum::<i32>() + gap * (specs.len() as i32 - 1);
-    let mut x = (row_w - pad - group).max(0);
+    let icons_w = widths.iter().sum::<i32>() + gap * (specs.len() as i32 - 1);
+    let icons_left = (row_w - pad - icons_w).max(0);
+    let dw = s(32);
+    let stride = (dw + gap).max(1);
+    // The first button must start far enough right that `tab_w` still holds one minimum tab.
+    let min_left = tab_reserve(dpi) + gap;
+    let room = icons_left - min_left;
+    let fit = if room < stride { 0 } else { (room / stride) as usize };
+    let drive_n = drives.min(26).min(fit);
+    let mut drive_rects = [RECT::default(); 26];
+    let mut x = icons_left - drive_n as i32 * stride;
     let tab_w = (x - gap).max(1);
-    let mut slots = [(0, RECT::default()); 4];
+    for i in 0..drive_n {
+        drive_rects[i] = RECT { left: x, top, right: x + dw, bottom: top + bh };
+        x += stride;
+    }
+    let mut icons = [(0, RECT::default()); 4];
     for i in 0..specs.len() {
         let w = widths[i];
-        slots[i] = (specs[i], RECT { left: x, top, right: x + w, bottom: top + bh });
+        icons[i] = (specs[i], RECT { left: x, top, right: x + w, bottom: top + bh });
         x += w + gap;
     }
-    (tab_w, slots)
+    IconLay { tab_w, icons, drives: drive_rects, drive_n }
 }
 
 /// `scroll` moved so `index` is inside a window of `shown` tabs. Pure.
@@ -142,16 +178,17 @@ pub(crate) fn scroll_to_show(scroll: usize, index: usize, shown: usize, n: usize
     }
 }
 
-/// Width the tabs may use. The icon group keeps the rest while the bar is on.
-pub(crate) fn tab_area_width(client_w: i32, dpi: i32, bar: bool) -> i32 {
-    if bar { icon_slots(client_w.max(1), 0, dpi).0 } else { client_w.max(1) }
+/// Width the tabs may use. The icon group and the drive buttons that fit keep the rest while the bar is on.
+/// Hidden, the strip uses the full width: the buttons are not on screen.
+pub(crate) fn tab_area_width(client_w: i32, dpi: i32, bar: bool, drives: usize) -> i32 {
+    if bar { icon_slots(client_w.max(1), 0, dpi, drives).tab_w } else { client_w.max(1) }
 }
 
 pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32, scroll: usize) -> TabLay {
     let s = |v: i32| v * dpi / 96;
     let n = n.max(1);
     let width = width.max(1);
-    let (pad, gap, plus_w, max_w, min_w, over_w) = (s(6), s(2), s(28), s(90), s(44), s(22));
+    let (pad, gap, plus_w, max_w, min_w, over_w) = tab_px(dpi);
     let y = s(4);
     let h = s(26);
     let used = |w: i32| n as i32 * w + gap * (n as i32 - 1) + plus_w + pad * 2;
@@ -780,7 +817,7 @@ pub(crate) fn show_tab(index: usize) {
         }
         let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
         let n = locked.len().max(1);
-        let w = tab_area_width(rc.right, a.dpi, a.s.bar);
+        let w = tab_area_width(rc.right, a.dpi, a.s.bar, a.drives.len());
         let lay = tab_lay(w, n, &locked, a.dpi, a.tab_scroll);
         let index = index.min(n - 1);
         a.tab_scroll = if lay.overflow.is_none() { 0 } else { scroll_to_show(lay.first, index, lay.count.max(1), n) };
@@ -854,7 +891,7 @@ pub(crate) fn current_tab_lay() -> TabLay {
         let mut rc = RECT::default();
         unsafe { _ = GetClientRect(a.tabs_hwnd, &mut rc) };
         let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
-        let w = tab_area_width(rc.right.max(1), a.dpi, a.s.bar);
+        let w = tab_area_width(rc.right.max(1), a.dpi, a.s.bar, a.drives.len());
         let lay = tab_lay(w, locked.len().max(1), &locked, a.dpi, a.tab_scroll);
         a.tab_scroll = lay.first;
         lay
@@ -1126,6 +1163,76 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edge(lay: &TabLay) -> i32 {
+        lay.overflow.map(|r| r.right).unwrap_or(lay.plus.right)
+    }
+
+    #[test]
+    fn icon_slots_stay_right_aligned_without_drives() {
+        let lay = icon_slots(1000, 6, 96, 0);
+        assert_eq!(lay.drive_n, 0);
+        assert_eq!(lay.tab_w, 810);
+        assert_eq!(lay.icons.map(|s| s.0), [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET]);
+        assert_eq!(lay.icons[0].1, RECT { left: 814, top: 6, right: 884, bottom: 30 });
+        assert_eq!(lay.icons[1].1.left, 888);
+        assert_eq!(lay.icons[3].1.right, 992);
+        assert!(lay.icons.windows(2).all(|w| w[0].1.right + 4 == w[1].1.left));
+        assert_eq!(tab_area_width(1000, 96, true, 0), lay.tab_w);
+        assert_eq!(tab_area_width(1000, 96, false, 8), 1000);
+    }
+
+    #[test]
+    fn icon_slots_with_n_drives() {
+        // Letters sit in the group, immediately left of Layout, and do not move the icons.
+        let bare = icon_slots(1000, 4, 96, 0);
+        let n = 5;
+        let lay = icon_slots(1000, 4, 96, n);
+        assert_eq!(lay.drive_n, n);
+        assert_eq!(lay.icons, bare.icons);
+        assert_eq!(lay.drives[n - 1].right + 4, lay.icons[0].1.left);
+        assert_eq!(lay.tab_w, lay.drives[0].left - 4);
+        for i in 0..n {
+            assert_eq!(lay.drives[i].right - lay.drives[i].left, 32);
+            assert_eq!((lay.drives[i].top, lay.drives[i].bottom), (4, 28));
+            if i > 0 {
+                assert_eq!(lay.drives[i - 1].right + 4, lay.drives[i].left);
+            }
+        }
+        // One minimum tab, +, and ▾ (110px) stay clear of the buttons. Tabs paint only in tab_w.
+        let reserve = 110;
+        assert!(lay.tab_w >= reserve && lay.drives[0].left >= reserve);
+        let tabs = tab_lay(lay.tab_w, 30, &[false; 30], 96, 0);
+        assert!(edge(&tabs) <= lay.drives[0].left);
+
+        // A narrow row hides the last letters first. The ones that remain are the prefix.
+        let tight = icon_slots(420, 4, 96, 8);
+        assert!(tight.drive_n > 0 && tight.drive_n < 8);
+        assert_eq!(tight.icons[0].1.left, icon_slots(420, 4, 96, 0).icons[0].1.left);
+        assert!(tight.tab_w >= reserve && tight.drives[0].left >= reserve);
+        assert_eq!(icon_slots(420, 4, 96, tight.drive_n + 1).drive_n, tight.drive_n);
+        let shown = tab_lay(tight.tab_w, 12, &[false; 12], 96, 0);
+        assert!(edge(&shown) <= tight.drives[0].left);
+
+        // Too narrow for even one letter: the icons stay, every drive is hidden.
+        let tiny = icon_slots(220, 0, 96, 4);
+        assert_eq!(tiny.drive_n, 0);
+        assert!(tiny.tab_w >= 1 && tiny.icons[0].1.left < reserve);
+
+        // The same row at double DPI is the 96dpi layout scaled by two.
+        let hi = icon_slots(2000, 8, 192, n);
+        assert_eq!(hi.drive_n, n);
+        assert_eq!(hi.tab_w, lay.tab_w * 2);
+        assert_eq!(hi.drives[0].right - hi.drives[0].left, 64);
+        assert_eq!(hi.drives[n - 1].right + 8, hi.icons[0].1.left);
+        assert_eq!(tab_area_width(2000, 192, true, n), hi.tab_w);
+        assert_eq!(tab_area_width(2000, 192, false, n), 2000);
     }
 }
 

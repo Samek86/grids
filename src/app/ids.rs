@@ -10,8 +10,8 @@ pub(crate) const ID_EDIT: i32 = 104;
 pub(crate) const ID_OPEN_IN: i32 = 105;
 pub(crate) const ID_FILTER: i32 = 106;
 pub(crate) const ID_FAV: i32 = 107; // ☆+ / ★: add or remove the pane's folder from favourites
-// Chrome buttons (children of the main window). Drive letters stay on the top row.
-// Layout, save, load and the gear sit at the right of the tab strip.
+// Chrome buttons (children of the main window), on the right of the tab strip.
+// Drive letters sit in that group, to the left of Layout.
 pub(crate) const ID_TB_LAYOUT: i32 = 201;
 pub(crate) const ID_TB_SAVE: i32 = 202;
 pub(crate) const ID_TB_LOAD: i32 = 204;
