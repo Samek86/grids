@@ -205,7 +205,8 @@ pub(crate) struct Session {
     pub(crate) del: u8,                // 0 recycle bin, 1 permanent
     pub(crate) new_name: String,       // empty = the name for the display language
     pub(crate) dropm: u8,              // 0 Windows rules, 1 always copy, 2 always ask (the ⇄ menu)
-    pub(crate) boot: u8,               // 0 restore last layout, 1 open boot_file, 2 default 2×2
+    pub(crate) layout_new: u8,         // 0 side by side, 1 top/bottom, 2 is 2×2, 3 one pane (missing = 0)
+    pub(crate) boot: u8,               // 0 restore last layout, 1 open boot_file, 2 the default layout
     pub(crate) boot_file: String,
     pub(crate) autosave: bool,         // write the named session on exit
     pub(crate) dot: bool,              // green unsaved mark on the save button
@@ -218,10 +219,9 @@ impl Default for Session {
         let mut s = Session {
             win: None,
             side: 0,
-            // A first-ever start: two panes, left and right.
-            heights: vec![1, 1],
-            colr: even(2),
-            rowr: vec![even(1); 2],
+            heights: Vec::new(),
+            colr: Vec::new(),
+            rowr: Vec::new(),
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
@@ -263,6 +263,7 @@ impl Default for Session {
             del: 0,
             new_name: String::new(),
             dropm: 0,
+            layout_new: 0,
             boot: 0,
             boot_file: String::new(),
             autosave: false,
@@ -270,6 +271,8 @@ impl Default for Session {
             tabs: Vec::new(),
             tab: 0,
         };
+        // A first-ever start: layout_new 0 is two panes, left and right.
+        s.set_heights(s.layout_heights());
         s.anchor();
         s
     }
@@ -320,6 +323,7 @@ impl PartialEq for Session {
             && self.del == o.del
             && self.new_name == o.new_name
             && self.dropm == o.dropm
+            && self.layout_new == o.layout_new
             && self.boot == o.boot
             && self.boot_file == o.boot_file
             && self.autosave == o.autosave
@@ -348,6 +352,17 @@ pub(crate) fn fav_label(f: &str) -> String {
 
 pub(crate) fn even(n: usize) -> Vec<f64> {
     vec![1.0 / n as f64; n]
+}
+
+/// Panes per column for a new tab or a new window.
+/// 0 side by side, 1 top and bottom, 2 is 2×2, 3 one pane. Above 3 is one pane.
+pub(crate) fn layout_heights_for(layout_new: u8) -> Vec<usize> {
+    match layout_new.min(3) {
+        1 => vec![2],
+        2 => vec![2, 2],
+        3 => vec![1],
+        _ => vec![1, 1],
+    }
 }
 
 pub(crate) fn nums<T: std::str::FromStr>(v: &str) -> Vec<T> {
@@ -444,7 +459,12 @@ impl Session {
         self.heights.iter().sum()
     }
 
-    /// New layout with even splits.
+    /// Panes per column for a new tab or a new window.
+    pub(crate) fn layout_heights(&self) -> Vec<usize> {
+        layout_heights_for(self.layout_new)
+    }
+
+    /// New layout with even splits. The active pane stays inside the new grid.
     pub(crate) fn set_heights(&mut self, h: Vec<usize>) {
         self.colr = even(h.len());
         self.rowr = h.iter().map(|&n| even(n)).collect();
@@ -526,6 +546,7 @@ impl Session {
                 "del" => s.del = if v.trim() == "1" { 1 } else { 0 },
                 "newname" => s.new_name = v.trim().to_string(),
                 "drop" => s.dropm = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "layout" => s.layout_new = v.trim().parse::<u8>().unwrap_or(0).min(3),
                 "boot" => s.boot = v.trim().parse::<u8>().unwrap_or(0).min(2),
                 "bootf" => s.boot_file = v.trim().to_string(),
                 "autosave" => s.autosave = v.trim() == "1",
@@ -625,7 +646,7 @@ impl Session {
         if !self.new_name.is_empty() {
             o += &format!("newname={}\n", self.new_name);
         }
-        o += &format!("drop={}\nboot={}\n", self.dropm, self.boot);
+        o += &format!("drop={}\nlayout={}\nboot={}\n", self.dropm, self.layout_new, self.boot);
         if !self.boot_file.is_empty() {
             o += &format!("bootf={}\n", self.boot_file);
         }
@@ -1374,6 +1395,50 @@ mod crumb_tests {
         assert!(addr_jumps(None, false));
         assert!(!addr_jumps(None, true));
         assert!(!addr_jumps(Some(true), false) && !addr_jumps(Some(false), false));
+    }
+
+    #[test]
+    fn layout_new_round_trips_and_each_value_has_even_heights() {
+        let fresh = Session::default();
+        assert_eq!(fresh.layout_new, 0);
+        assert_eq!(fresh.heights, vec![1, 1]);
+        assert_eq!(fresh.colr, super::even(2));
+        assert_eq!(fresh.rowr, vec![super::even(1), super::even(1)]);
+        assert_eq!(fresh.active, 0);
+        assert_eq!(Session::parse("").layout_new, 0);
+        assert_eq!(Session::parse("drop=1\n").layout_new, 0);
+        assert_eq!(Session::parse("layout=\n").layout_new, 0);
+        assert_eq!(Session::parse("layout=nope\n").layout_new, 0);
+        let want = [(0u8, vec![1usize, 1]), (1, vec![2]), (2, vec![2, 2]), (3, vec![1])];
+        for (n, h) in want {
+            assert_eq!(super::layout_heights_for(n), h);
+            let mut s = Session::default();
+            s.layout_new = n;
+            s.active = 9;
+            s.paths[0] = r"C:\old".into();
+            s.set_heights(s.layout_heights());
+            assert_eq!(s.layout_heights(), h);
+            assert_eq!(s.heights, h);
+            assert!(s.active < s.panes(), "active {} panes {}", s.active, s.panes());
+            assert_eq!(s.colr, super::even(h.len()));
+            for (rows, &count) in s.rowr.iter().zip(&h) {
+                assert_eq!(rows, &super::even(count));
+            }
+            let back = Session::parse(&s.to_ini());
+            assert_eq!((back.layout_new, back.layout_heights()), (n, h.clone()));
+            s.boot = 2;
+            crate::apply_boot(&mut s);
+            assert_eq!(s.heights, h);
+            assert_eq!(s.active, 0);
+            assert!(s.active < s.panes());
+            assert!(s.paths.iter().all(|p| p.is_empty()));
+            assert_eq!(s.colr, super::even(h.len()));
+            assert_eq!(s.layout_new, n);
+        }
+        let high = Session::parse("layout=9\n");
+        assert_eq!(high.layout_new, 3);
+        assert_eq!(high.layout_heights(), vec![1]);
+        assert_eq!(super::layout_heights_for(4), vec![1]);
     }
 
     #[test]

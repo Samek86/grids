@@ -173,7 +173,7 @@ unsafe fn build_children(h: HWND) {
     combo(S_LANG, true);
     combo(S_FACE, true);
     combo(S_THEME, true);
-    for id in [S_START, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP] {
+    for id in [S_START, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT] {
         combo(id, true);
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
@@ -190,7 +190,7 @@ unsafe fn build_children(h: HWND) {
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -227,7 +227,7 @@ unsafe fn fill_strings(h: HWND) {
     let theme = app(|a| a.s.theme) as usize;
     fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
     let boot = app(|a| a.s.boot) as usize;
-    fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout (2×2)", "기본 배치(2×2)", "既定のレイアウト (2×2)")).into()], boot.min(2));
+    fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout", "기본 레이아웃", "既定のレイアウト")).into()], boot.min(2));
     let font = app(|a| a.s.font) as usize;
     fill_combo(h, S_FONT, &[tx(s("Default", "기본", "既定")).into(), tx(s("Large", "크게", "大きく")).into(), tx(s("Larger", "더 크게", "さらに大きく")).into()], font.min(2));
     let view_i = match app(|a| a.s.view_new) { 3 => 1, 1 => 2, _ => 0 };
@@ -242,6 +242,8 @@ unsafe fn fill_strings(h: HWND) {
     fill_combo(h, S_NEW, &[tx(s("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt")).into(), new_label], new_i);
     let dropm = app(|a| a.s.dropm) as usize;
     fill_combo(h, S_DROP, &[tx(s("Windows rules (same drive = move)", "Windows 규칙(같은 드라이브=이동)", "Windows の規則（同じドライブ=移動）")).into(), tx(s("Always copy", "항상 복사", "常にコピー")).into(), tx(s("Always ask", "항상 묻기", "常に確認")).into()], dropm.min(2));
+    let layout_new = app(|a| a.s.layout_new) as usize;
+    fill_combo(h, S_LAYOUT, &[tx(s("Two panes, side by side", "좌우 2개", "左右に2つ")).into(), tx(s("Two panes, top and bottom", "위아래 2개", "上下に2つ")).into(), tx(s("2×2 (four panes)", "2×2 (4개)", "2×2（4つ）")).into(), tx(s("One pane", "1개", "1つ")).into()], layout_new.min(3));
     let labels = [
         (S_CLOSE, tx(CLOSE_L)),
         (S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す"))),
@@ -369,7 +371,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
     let n = app(|a| a.s.favs.len()) as i32;
@@ -1149,6 +1151,10 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
         }
         S_DROP => {
             app(|a| a.s.dropm = sel.min(2) as u8);
+            unsafe { crate::save_session() };
+        }
+        S_LAYOUT => {
+            app(|a| a.s.layout_new = sel.min(3) as u8);
             unsafe { crate::save_session() };
         }
         S_START => {
