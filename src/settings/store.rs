@@ -212,6 +212,9 @@ struct SettingsFile {
     /// One window. Missing means off, so an older grids.json still opens windows.
     #[serde(default, skip_serializing_if = "is_off")]
     one_window: bool,
+    /// Subfolder search uses Everything when it is running. Missing means on.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    use_everything: bool,
     #[serde(default)]
     session: String,
     #[serde(default)]
@@ -276,6 +279,7 @@ impl SettingsFile {
             lang: lang_auto(),
             single: true,
             one_window: false,
+            use_everything: true,
             session: String::new(),
             favorites: Vec::new(),
             recent: Vec::new(),
@@ -354,6 +358,7 @@ impl SettingsFile {
             lang: s.lang.ini().into(),
             single: s.single,
             one_window: s.one_window,
+            use_everything: s.use_everything,
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
@@ -388,6 +393,7 @@ impl SettingsFile {
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
         self.extra.remove("one_window");
+        self.extra.remove("use_everything");
     }
 
     fn to_session(&self) -> Session {
@@ -470,6 +476,7 @@ impl SettingsFile {
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
         s.one_window = self.one_window;
+        s.use_everything = self.use_everything;
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -1131,6 +1138,20 @@ mod tests {
 
     fn text_of_off() -> bool {
         pretty(&SettingsFile::from_session(&Session::default())).contains("one_window")
+    }
+
+    #[test]
+    fn use_everything_defaults_on_and_round_trips() {
+        assert!(Session::default().use_everything);
+        assert!(adopt(r#"{"version":1}"#).unwrap().use_everything);
+        let mut s = Session::default();
+        s.use_everything = false;
+        assert!(!Session::parse(&s.to_ini()).use_everything);
+        assert!(Session::parse("everything=1").use_everything);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"use_everything\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().use_everything);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("use_everything"));
     }
 
     #[test]

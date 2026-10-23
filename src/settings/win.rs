@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{SetWindowTheme, DRAWITEMSTRUCT, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{IsWindowEnabled, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -180,10 +180,11 @@ unsafe fn build_children(h: HWND) {
     btn(S_ADV_EX, tx(s("Export", "내보내기", "エクスポート")), true);
     btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), true);
     btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), true);
+    btn(S_EV, ev_button_label(), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -244,6 +245,7 @@ unsafe fn fill_strings(h: HWND) {
         (S_ADV_EX, tx(s("Export", "내보내기", "エクスポート"))),
         (S_ADV_IM, tx(s("Import", "가져오기", "インポート"))),
         (S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…"))),
+        (S_EV, ev_button_label()),
     ];
     for (id, label) in labels {
         let _ = SetWindowTextW(ctl(h, id), &HSTRING::from(label));
@@ -305,7 +307,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
     let n = app(|a| a.s.favs.len()) as i32;
@@ -339,6 +341,12 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 }
                 if c.spec.ctl == Ctl::AdvReset {
                     move_to(ctl(h, S_ADV_RESET), c.adv[0], intersects(c.adv[0], content));
+                }
+                if c.spec.ctl == Ctl::EvAct {
+                    let b = ctl(h, S_EV);
+                    let _ = SetWindowTextW(b, &HSTRING::from(ev_button_label()));
+                    let _ = EnableWindow(b, !crate::everything::busy());
+                    move_to(b, c.ctl, crate::everything::action().is_some() && intersects(c.ctl, content));
                 }
             }
             Item::KeyBar { edit, reset } => {
@@ -576,7 +584,23 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
             crate::text(dc, br, tx(NEW), sn.small, on_chrome(accent), DT_CENTER);
         }
     }
-    if c.spec.ctl == Ctl::Adv {
+    if c.spec.ctl == Ctl::EvStatus {
+        let line = sc(dpi, 18);
+        let desc_r = RECT { top: title_line.bottom, bottom: title_line.bottom + line, ..text_r };
+        crate::text(dc, desc_r, &ev_status_line(), sn.small, crate::pal().text, DT_LEFT);
+    } else if c.spec.ctl == Ctl::EvAct {
+        let line = sc(dpi, 18);
+        let desc_r = RECT { top: title_line.bottom, bottom: (title_line.bottom + line).min(text_r.bottom), ..text_r };
+        let act = ev_activity_line();
+        let text = if !act.is_empty() {
+            act
+        } else if matches!(crate::everything::shown(), crate::everything::Shown::Ready(crate::everything::Presence::Running { .. })) {
+            tx(s("Everything is already running.", "Everything이 이미 실행 중입니다.", "Everything はすでに実行中です。")).to_string()
+        } else {
+            tx(c.spec.desc).to_string()
+        };
+        crate::text(dc, desc_r, &text, sn.small, crate::pal().sub, DT_LEFT);
+    } else if c.spec.ctl == Ctl::Adv {
         let line = sc(dpi, 18);
         let desc_r = RECT { top: title_line.bottom, bottom: title_line.bottom + line, ..text_r };
         crate::text(dc, desc_r, tx(c.spec.desc), sn.small, crate::pal().sub, DT_LEFT);
@@ -779,6 +803,44 @@ fn dc_of(d: &DRAWITEMSTRUCT) -> HDC {
     d.hDC
 }
 
+fn ev_button_label() -> &'static str {
+    match crate::everything::action() {
+        Some(crate::everything::EvAction::Start) => tx(s("Start Everything", "Everything 시작", "Everything を起動")),
+        _ => tx(s("Install Everything", "Everything 설치", "Everything をインストール")),
+    }
+}
+
+fn ev_status_line() -> String {
+    use crate::everything::{Presence, Shown};
+    match crate::everything::shown() {
+        Shown::Unknown => tx(s("Checking…", "확인 중…", "確認しています…")).to_string(),
+        Shown::Ready(Presence::NotInstalled) => tx(s("Not installed", "설치되어 있지 않음", "インストールされていません")).to_string(),
+        Shown::Ready(Presence::InstalledStopped) => tx(s("Installed but not running", "설치되어 있지만 실행 중이 아님", "インストール済みですが実行されていません")).to_string(),
+        Shown::Ready(Presence::Running { version }) => {
+            let base = tx(s("Installed and running", "설치되어 실행 중", "インストール済みで実行中"));
+            match version {
+                Some(v) => format!("{base} · {}", v.label()),
+                None => base.to_string(),
+            }
+        }
+    }
+}
+
+fn ev_activity_line() -> String {
+    use crate::everything::Activity;
+    match crate::everything::activity() {
+        Activity::Idle | Activity::Checking => String::new(),
+        Activity::Starting => tx(s("Starting Everything…", "Everything을 시작하는 중…", "Everything を起動しています…")).to_string(),
+        Activity::Installing => tx(s("Installing Everything…", "Everything을 설치하는 중…", "Everything をインストールしています…")).to_string(),
+        Activity::Winget(line) => line,
+        Activity::Started => tx(s("Everything is running.", "Everything이 실행 중입니다.", "Everything は実行中です。")).to_string(),
+        Activity::Installed => tx(s("Everything was installed.", "Everything을 설치했습니다.", "Everything をインストールしました。")).to_string(),
+        Activity::StartFailed => tx(s("Everything did not start.", "Everything을 시작하지 못했습니다.", "Everything を起動できませんでした。")).to_string(),
+        Activity::InstallFailed(code) => format!("{} ({code})", tx(s("Install failed", "설치 실패", "インストールに失敗しました"))),
+        Activity::OpenedPage => tx(s("Opened the download page.", "다운로드 페이지를 열었습니다.", "ダウンロードページを開きました。")).to_string(),
+    }
+}
+
 fn flip(id: u8) {
     match id {
         TG_SINGLE => app(|a| a.s.single ^= true),
@@ -813,6 +875,14 @@ fn flip(id: u8) {
         TG_EDGE => app(|a| a.s.edge ^= true),
         TG_CONFIRM => app(|a| a.s.confirm ^= true),
         TG_AUTOSAVE => app(|a| a.s.autosave ^= true),
+        TG_EV => {
+            app(|a| a.s.use_everything ^= true);
+            unsafe {
+                crate::save_session();
+                redraw();
+            }
+            return;
+        }
         TG_DOT => {
             app(|a| a.s.dot ^= true);
             unsafe {
@@ -915,6 +985,16 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         S_ADV_EX => export_settings(h),
         S_ADV_IM => import_settings(h),
         S_ADV_RESET => reset_ini(h),
+        S_EV => {
+            if crate::everything::busy() {
+                return;
+            }
+            match crate::everything::action() {
+                Some(crate::everything::EvAction::Start) => crate::everything::start_async(),
+                Some(crate::everything::EvAction::Install) => crate::everything::install_async(),
+                None => {}
+            }
+        }
         id if (S_FAV0..S_FAV0 + 128).contains(&id) => delete_fav((id - S_FAV0) as usize),
         id if (S_FAV0 + 128..S_FAV0 + 256).contains(&id) => rename_fav(h, (id - S_FAV0 - 128) as usize),
         _ => {}
@@ -1212,6 +1292,8 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 });
                 rebuild_fonts();
                 build_children(h);
+                crate::everything::bind_settings(h.0 as isize);
+                crate::everything::probe_async();
                 refresh();
                 return LRESULT(0);
             }
@@ -1357,10 +1439,15 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 ST.with(|s| s.borrow_mut().hot = None);
                 let _ = InvalidateRect(Some(h), None, false);
             }
+            crate::WM_EV => {
+                layout(h);
+                let _ = InvalidateRect(Some(h), None, false);
+            }
             WM_CLOSE => {
                 let _ = DestroyWindow(h);
             }
             WM_DESTROY => {
+                crate::everything::bind_settings(0);
                 crate::keys::cancel();
                 let old = ST.with(|s| {
                     let mut st = s.borrow_mut();
