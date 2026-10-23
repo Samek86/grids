@@ -1,15 +1,20 @@
+use std::time::Duration;
+
 use crate::imports::*;
 use crate::app::*;
 use crate::ui::*;
-use crate::session::*;
 use crate::i18n::*;
 use super::focus_view;
 use super::preview::*;
+use windows::Win32::UI::Controls::ILD_NORMAL;
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
 
 pub(crate) const WM_PEEK_DONE: u32 = WM_APP + 45; // wParam = generation; the pixels stay in PEEK
 pub(crate) const WM_PEEK_LOST: u32 = WM_APP + 51; // the preview went inactive: close it unless it is active again
 pub(crate) const WM_PEEK_HOSTED: u32 = WM_APP + 52; // wParam = generation, lParam = 1 shown / 0 failed
+
+const ICON_PREV: &str = "";
+const ICON_NEXT: &str = "";
 
 // ---------- F3 quick preview ----------
 
@@ -33,7 +38,13 @@ pub(crate) struct Pix {
 pub(crate) struct PeekJob {
     pub(crate) gen: usize,
     pub(crate) req: Option<PeekReq>,
-    pub(crate) done: Option<(Body, Option<u64>)>, // what to show, and the file's size
+    pub(crate) done: Option<Peeked>,
+}
+
+pub(crate) struct Peeked {
+    pub(crate) body: Body,
+    pub(crate) icon: i32,          // system image list index for the header, -1 = none
+    pub(crate) meta: Vec<String>,  // header facts: type, dimensions / pages / lines, size, date
 }
 
 impl PeekJob {
@@ -41,12 +52,23 @@ impl PeekJob {
         (self.gen, self.req, self.done) = (self.gen + 1, req, None);
     }
 
-    pub(crate) fn publish(&mut self, gen: usize, r: (Body, Option<u64>)) -> bool {
+    pub(crate) fn publish(&mut self, gen: usize, r: Peeked) -> bool {
         if self.gen != gen {
             return false;
         }
         self.done = Some(r);
         true
+    }
+
+    // One more PDF page for the item still on screen.
+    pub(crate) fn add_page(&mut self, gen: usize, p: Pix) -> bool {
+        match &mut self.done {
+            Some(Peeked { body: Body::Pages { pages, .. }, .. }) if self.gen == gen => {
+                pages.push(p);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -79,17 +101,31 @@ pub(crate) fn peek_worker() {
             (j.gen, j.req.clone().unwrap())
         };
         seen = gen;
-        let body = unsafe {
+        unsafe {
             let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
             let body = content(&req);
+            let (icon, meta) = meta(&req.path, &body);
+            let more = match &body {
+                Body::Pages { pages, total } if (pages.len() as u32) < *total => Some(*total),
+                _ => None,
+            };
+            let tell = || _ = PostMessageW(Some(HWND(req.hwnd as _)), WM_PEEK_DONE, WPARAM(gen), LPARAM(0));
+            if peek_job().publish(gen, Peeked { body, icon, meta }) {
+                tell();
+                // the first page is up; the rest follow while this is still the item shown
+                if let (Some(total), Ok(doc)) = (more, pdf_open(&req.path)) {
+                    for i in 1..total {
+                        let Some(p) = (peek_job().gen == gen).then(|| pdf_page(&doc, i, req.w, req.h)).flatten() else { break };
+                        if !peek_job().add_page(gen, p) {
+                            break;
+                        }
+                        tell();
+                    }
+                }
+            }
             if com {
                 CoUninitialize();
             }
-            body
-        };
-        let size = std::fs::metadata(&req.path).ok().filter(|m| m.is_file()).map(|m| m.len());
-        if peek_job().publish(gen, (body, size)) {
-            unsafe { _ = PostMessageW(Some(HWND(req.hwnd as _)), WM_PEEK_DONE, WPARAM(gen), LPARAM(0)) };
         }
     }
 }
@@ -109,13 +145,52 @@ pub(crate) fn fix_alpha(bgra: &mut [u8]) {
     }
 }
 
-// Picture area, name line, size line.
-pub(crate) fn peek_geo(rc: RECT, dpi: i32) -> [RECT; 3] {
+// The popup is laid out like the main window: the frame colour around, content on a plate.
+pub(crate) struct PeekGeo {
+    pub(crate) icon: RECT,  // file icon in the header
+    pub(crate) title: RECT, // name, then the facts
+    pub(crate) close: RECT,
+    pub(crate) stage: RECT, // pictures and pages sit here; everything else on a plate filling it
+    pub(crate) inner: RECT, // the plate's content box
+    pub(crate) prev: RECT,  // ‹ and › in the side margins
+    pub(crate) next: RECT,
+}
+
+pub(crate) fn peek_geo(rc: RECT, dpi: i32) -> PeekGeo {
     let s = |v: i32| v * dpi / 96;
-    let (l, r) = (rc.left + s(16), rc.right - s(16));
-    let size = RECT { left: l, right: r, top: rc.bottom - s(12) - s(18), bottom: rc.bottom - s(12) };
-    let name = RECT { left: l, right: r, top: size.top - s(22), bottom: size.top };
-    [RECT { left: l, right: r, top: rc.top + s(16), bottom: name.top - s(8) }, name, size]
+    let (head, side, b, ic, pad) = (s(48), s(56), s(32), s(16), s(20));
+    let close = RECT { left: rc.right - s(12) - b, top: (head - b) / 2, right: rc.right - s(12), bottom: (head + b) / 2 };
+    let icon = RECT { left: side, top: (head - ic) / 2, right: side + ic, bottom: (head + ic) / 2 };
+    let title = RECT { left: icon.right + s(10), top: 0, right: close.left - s(12), bottom: head };
+    let stage = RECT { left: side, top: head, right: rc.right - side, bottom: rc.bottom - s(24) };
+    let inner = RECT { left: stage.left + pad, top: stage.top + pad, right: stage.right - pad, bottom: stage.bottom - pad };
+    let mid = (stage.top + stage.bottom) / 2;
+    let arrow = |x: i32| RECT { left: x, top: mid - b / 2, right: x + b, bottom: mid + b / 2 };
+    PeekGeo { icon, title, close, stage, inner, prev: arrow((side - b) / 2), next: arrow(rc.right - side + (side - b) / 2) }
+}
+
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub(crate) enum Hot {
+    #[default]
+    None,
+    Prev,
+    Next,
+    Close,
+}
+
+pub(crate) fn peek_hit(g: &PeekGeo, x: i32, y: i32) -> Hot {
+    match () {
+        _ if inside(g.close, x, y) => Hot::Close,
+        _ if inside(g.prev, x, y) => Hot::Prev,
+        _ if inside(g.next, x, y) => Hot::Next,
+        _ => Hot::None,
+    }
+}
+
+unsafe fn geo_of(h: HWND) -> PeekGeo {
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    peek_geo(rc, app(|a| a.dpi))
 }
 
 // UI-thread state of the open preview: scroll position, laid-out text, the hosted handler.
@@ -124,12 +199,14 @@ pub(crate) struct PeekView {
     pub(crate) y: i32, // scrolled down, px
     pub(crate) x: i32, // scrolled right (tables, code), px
     pub(crate) max_y: i32, // how far it can scroll down, from the last paint; 0 = it all fits
-    pub(crate) edge_at: Option<Instant>, // the wheel reached the top or bottom then
+    pub(crate) edge_at: Option<Instant>, // the wheel reached the top / bottom then
     pub(crate) wheel: i32, // wheel delta toward the next file step (120 a notch)
     pub(crate) layout: Option<(usize, i32, Vec<Line>, i32)>, // (gen, width, lines, total height)
     pub(crate) fonts: Option<(i32, [HFONT; 4])>,              // (dpi, [mono, bold, h1, h2])
     pub(crate) hosted: Option<usize>, // generation a preview handler is showing
     pub(crate) host_win: Option<HWND>, // the picture area's child window the handler draws in
+    pub(crate) hover: bool,            // the mouse is over the popup: ‹ › show
+    pub(crate) hot: Hot,
 }
 
 thread_local! {
@@ -153,7 +230,7 @@ pub(crate) unsafe fn open_peek(i: usize) {
     let s = |v: i32| v * dpi / 96;
     let mut rc = RECT::default();
     _ = GetClientRect(main, &mut rc);
-    let (w, h) = ((rc.right * 8 / 10).min(s(1000)), (rc.bottom * 8 / 10).min(s(780)));
+    let (w, h) = ((rc.right * 86 / 100).min(s(1120)), (rc.bottom * 88 / 100).min(s(860)));
     let mut pt = POINT { x: (rc.right - w) / 2, y: (rc.bottom - h) / 2 };
     _ = ClientToScreen(main, &mut pt);
     let style = WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN;
@@ -177,13 +254,13 @@ pub(crate) unsafe fn load_peek(plain: bool) {
     app(|a| a.peek_name = shown(SIGDN_NORMALDISPLAY).unwrap_or_default());
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
-    let [pic, ..] = peek_geo(rc, dpi);
+    let st = peek_geo(rc, dpi).stage;
     match shown(SIGDN_FILESYSPATH).or_else(|| shown(SIGDN_DESKTOPABSOLUTEPARSING)) {
-        Some(path) => want_peek(Some(PeekReq { path, w: pic.right - pic.left, h: pic.bottom - pic.top, hwnd: h.0 as isize, plain })),
+        Some(path) => want_peek(Some(PeekReq { path, w: st.right - st.left, h: st.bottom - st.top, hwnd: h.0 as isize, plain })),
         None => {
             let mut j = peek_job();
             j.want(None);
-            j.done = Some((Body::Card { icon: None, rows: Vec::new() }, None));
+            j.done = Some(Peeked { body: Body::Card { icon: None, rows: Vec::new() }, icon: -1, meta: Vec::new() });
         }
     }
     _ = InvalidateRect(Some(h), None, false);
@@ -300,26 +377,42 @@ unsafe fn start_handler(h: HWND, gen: usize) {
     let (clsid, path) = {
         let j = peek_job();
         match (&j.done, &j.req) {
-            (Some((Body::Handler(g), _)), Some(r)) if j.gen == gen => (*g, r.path.clone()),
+            (Some(Peeked { body: Body::Handler(g), .. }), Some(r)) if j.gen == gen => (*g, r.path.clone()),
             _ => return,
         }
     };
     if HOST_GEN.swap(gen, Ordering::SeqCst) == gen {
         return;
     }
-    let mut rc = RECT::default();
-    _ = GetClientRect(h, &mut rc);
-    let [pic, ..] = peek_geo(rc, app(|a| a.dpi));
-    // handlers size themselves to their parent: give them only the picture area, not the name lines
-    let (w, ht) = (pic.right - pic.left, pic.bottom - pic.top);
+    // handlers size themselves to their parent: give them the plate inside its 1px edge, nothing else
+    let st = geo_of(h).stage;
+    let (w, ht) = (st.right - st.left - 2, st.bottom - st.top - 2);
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
-    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), style, pic.left, pic.top, w, ht, Some(h), None, None, None) else {
+    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPeekHost"), w!(""), style, st.left + 1, st.top + 1, w, ht, Some(h), None, None, None) else {
         return load_peek(true);
     };
     view(|v| v.host_win = Some(win));
     let (hwnd, popup, area) = (win.0 as isize, h.0 as isize, RECT { left: 0, top: 0, right: w, bottom: ht });
     if std::thread::Builder::new().spawn(move || host_thread(gen, clsid, path, hwnd, popup, area)).is_err() {
         load_peek(true);
+    }
+}
+
+// The handler's parent: the plate's colour (and "Opening…") until the handler draws over it.
+pub(crate) extern "system" fn peek_host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_ERASEBKGND => return LRESULT(1),
+            WM_PAINT => {
+                let font = app(|a| a.font);
+                buffered(h, |dc, rc| {
+                    fill(dc, rc, pal().card);
+                    text(dc, rc, tr("Opening…   Esc: cancel", "여는 중…   Esc: 취소", "開いています…   Esc: キャンセル"), font, pal().sub, DT_CENTER);
+                });
+            }
+            _ => return DefWindowProcW(h, msg, wp, lp),
+        }
+        LRESULT(0)
     }
 }
 
@@ -483,8 +576,8 @@ pub(crate) enum Wheel {
     Hold, // at the end, but only just: a fling to the bottom doesn't also jump to the next file
 }
 
-/// A wheel turn scrolls while there is room that way. Past the end it moves to the previous or next file,
-/// at once when nothing scrolls, otherwise once the view has rested at that end for a moment.
+// A wheel turn scrolls while there is room that way; past the end it moves to the previous / next file,
+// at once when nothing scrolls, else once the view has rested at that end for a moment.
 pub(crate) fn wheel_action(y: i32, max_y: i32, down: bool, rested: bool) -> Wheel {
     let room = if down { y < max_y } else { y > 0 };
     match () {
@@ -498,7 +591,7 @@ unsafe fn wheel_peek(h: HWND, raw: i32) {
     let down = raw < 0;
     let px = -raw * app(|a| a.fh) * 3 / 120;
     let act = view(|v| {
-        let rested = v.edge_at.is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(350));
+        let rested = v.edge_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(350));
         let act = wheel_action(v.y, v.max_y, down, rested);
         match act {
             Wheel::Scroll => {
@@ -520,7 +613,7 @@ unsafe fn wheel_peek(h: HWND, raw: i32) {
     }
 }
 
-/// One file per notch. A touchpad's small deltas add up to one.
+// One file per notch; a touchpad's small deltas add up to one.
 unsafe fn step_by_wheel(raw: i32) {
     let go = view(|v| {
         if (v.wheel < 0) != (raw < 0) {
@@ -659,13 +752,14 @@ unsafe fn paint_table(dc: HDC, area: RECT, rows: &[Vec<String>], cut: bool, font
     });
 }
 
-unsafe fn paint_list(dc: HDC, area: RECT, head: &str, rows: &[(String, String)], font: HFONT, dpi: i32) {
+unsafe fn paint_list(dc: HDC, area: RECT, rows: &[(String, String)], font: HFONT, dpi: i32) {
     let s = |v: i32| v * dpi / 96;
-    let f = fonts(dpi, font);
-    let rh = app(|a| a.fh) + s(6);
-    let top0 = area.top + rh + s(6);
-    text(dc, RECT { bottom: area.top + rh, ..area }, head, f[1], pal().text, DT_LEFT);
-    fill(dc, RECT { left: area.left, top: top0 - s(4), right: area.right, bottom: top0 - s(3) }, pal().line);
+    let rh = app(|a| a.fh) + s(8);
+    let top0 = area.top;
+    if rows.is_empty() {
+        text(dc, area, tr("Empty", "비어 있음", "空です"), font, pal().sub, DT_CENTER);
+        return;
+    }
     let page = area.bottom - top0;
     clamp_scroll(rh * rows.len() as i32, page);
     let sy = view(|v| v.y);
@@ -674,6 +768,9 @@ unsafe fn paint_list(dc: HDC, area: RECT, head: &str, rows: &[(String, String)],
         for (k, (name, size)) in rows.iter().enumerate().skip((sy / rh) as usize).take((page / rh + 2) as usize) {
             let top = top0 + k as i32 * rh - sy;
             let r = RECT { left: area.left, top, right: area.right, bottom: top + rh };
+            if k % 2 == 1 {
+                fill(dc, RECT { left: r.left - s(8), right: r.right + s(8), ..r }, blend(pal().card, pal().bg, 0.45));
+            }
             text(dc, RECT { right: r.right - sw - s(8), ..r }, name, font, pal().text, DT_LEFT);
             text(dc, RECT { left: r.right - sw, ..r }, size, font, pal().sub, DT_RIGHT);
         }
@@ -712,43 +809,114 @@ unsafe fn paint_card(dc: HDC, area: RECT, icon: Option<&Pix>, rows: &[(String, S
     }
 }
 
+// PDF pages one under another, each its own sheet of paper on the stage.
+unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFONT, dpi: i32) {
+    let s = |v: i32| v * dpi / 96;
+    let gap = s(16);
+    let more = (pages.len() as u32) < total;
+    let height: i32 = pages.iter().map(|p| p.h + gap).sum::<i32>() - gap + if more { s(48) } else { 0 };
+    clamp_scroll(height, area.bottom - area.top);
+    let sy = view(|v| v.y);
+    clip(dc, area, || {
+        let mut y = area.top - sy;
+        for p in pages {
+            let (w, h) = (p.w.min(area.right - area.left), p.h * p.w.min(area.right - area.left) / p.w.max(1));
+            let x = (area.left + area.right - w) / 2;
+            if y + h > area.top && y < area.bottom {
+                let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+                blit_bgra(dc, r, p.w, p.h, &p.bgra);
+                frame(dc, RECT { left: r.left - 1, top: r.top - 1, right: r.right + 1, bottom: r.bottom + 1 }, 1, pal().line);
+            }
+            y += h + gap;
+        }
+        if more {
+            let r = RECT { left: area.left, top: y, right: area.right, bottom: y + s(32) };
+            let t = format!("{} {} / {}", tr("Rendering pages…", "페이지 그리는 중…", "ページを描いています…"), pages.len(), total);
+            text(dc, r, &t, font, pal().sub, DT_CENTER);
+        }
+    });
+}
+
 pub(crate) unsafe fn paint_peek(h: HWND) {
-    let (dpi, font, small, name) = app(|a| (a.dpi, a.font, a.small_font, a.peek_name.clone()));
-    let hosted = view(|v| v.hosted);
+    let (dpi, font, icon_font, name, ilist) = app(|a| (a.dpi, a.font, a.icon_font, a.peek_name.clone(), a.ilist.clone()));
+    let (hosted, hover, hot) = view(|v| (v.hosted, v.hover, v.hot));
     buffered(h, |dc, rc| {
-        fill(dc, rc, pal().card);
+        let s = |v: i32| v * dpi / 96;
+        let g = peek_geo(rc, dpi);
+        let f = fonts(dpi, font);
+        fill(dc, rc, pal().bg);
         frame(dc, rc, 1, pal().line);
-        let [pic, name_rc, size_rc] = peek_geo(rc, dpi);
         let j = peek_job();
         let gen = j.gen;
-        match &j.done {
-            Some((body, size)) => {
-                match body {
-                    Body::Pic(p) => {
-                        // shrunk to fit if the shell handed back something bigger, never enlarged
-                        let (pw, ph) = (pic.right - pic.left, pic.bottom - pic.top);
-                        let k = (pw as f32 / p.w as f32).min(ph as f32 / p.h as f32).min(1.0);
-                        let (dw, dh) = ((p.w as f32 * k) as i32, (p.h as f32 * k) as i32);
-                        let (x, y) = ((pic.left + pic.right - dw) / 2, (pic.top + pic.bottom - dh) / 2);
-                        blit_bgra(dc, RECT { left: x, top: y, right: x + dw, bottom: y + dh }, p.w, p.h, &p.bgra);
-                    }
-                    Body::Text { text: t, kind, cut } => paint_text(dc, pic, gen, t, *kind, *cut, font, dpi),
-                    Body::Table { rows, cut } => paint_table(dc, pic, rows, *cut, font, dpi),
-                    Body::List { head, rows } => paint_list(dc, pic, head, rows, font, dpi),
-                    Body::Card { icon, rows } => paint_card(dc, pic, icon.as_ref(), rows, font, dpi),
-                    Body::Handler(_) if hosted != Some(gen) => {
-                        text(dc, pic, tr("Opening…   Esc: cancel", "여는 중…   Esc: 취소", "開いています…   Esc: キャンセル"), font, pal().sub, DT_CENTER)
-                    }
-                    Body::Handler(_) => {}
-                }
-                if let Some(b) = size {
-                    text(dc, size_rc, &human(*b), small, pal().sub, DT_CENTER);
+        // header: icon, name in bold, the facts after it in the secondary colour
+        if let (Some(p), Some(il)) = (&j.done, &ilist) {
+            if let Some(icon) = (p.icon >= 0).then(|| il.GetIcon(p.icon, ILD_NORMAL.0).ok()).flatten() {
+                let r = g.icon;
+                _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
+                _ = DestroyIcon(icon);
+            }
+        }
+        let room = g.title.right - g.title.left;
+        let name_w = text_w(dc, &name, f[1]).min(room * 6 / 10);
+        text(dc, RECT { right: g.title.left + name_w, ..g.title }, &name, f[1], pal().text, DT_LEFT);
+        if let Some(p) = &j.done {
+            let facts = RECT { left: g.title.left + name_w + s(16), ..g.title };
+            text(dc, facts, &p.meta.join("   ·   "), font, pal().sub, DT_LEFT);
+        }
+        if hot == Hot::Close {
+            fill(dc, g.close, blend(pal().bg, pal().text, 0.08));
+        }
+        text(dc, g.close, ICON_CLOSE, icon_font, if hot == Hot::Close { pal().text } else { pal().sub }, DT_CENTER);
+        // content: pictures and pages on the stage; everything else on a plate, as panes are
+        let plate = || {
+            fill(dc, g.stage, pal().card);
+            frame(dc, g.stage, 1, pal().line);
+        };
+        match j.done.as_ref().map(|p| &p.body) {
+            Some(Body::Pic(p)) => {
+                // shrunk to fit if the shell handed back something bigger, never enlarged
+                let st = g.stage;
+                let k = ((st.right - st.left) as f32 / p.w as f32).min((st.bottom - st.top) as f32 / p.h as f32).min(1.0);
+                let (dw, dh) = ((p.w as f32 * k) as i32, (p.h as f32 * k) as i32);
+                let (x, y) = ((st.left + st.right - dw) / 2, (st.top + st.bottom - dh) / 2);
+                blit_bgra(dc, RECT { left: x, top: y, right: x + dw, bottom: y + dh }, p.w, p.h, &p.bgra);
+                frame(dc, RECT { left: x - 1, top: y - 1, right: x + dw + 1, bottom: y + dh + 1 }, 1, pal().line);
+            }
+            Some(Body::Pages { pages, total }) => paint_pages(dc, g.stage, pages, *total, font, dpi),
+            Some(Body::Text { text: t, kind, cut }) => {
+                plate();
+                paint_text(dc, g.inner, gen, t, *kind, *cut, font, dpi);
+            }
+            Some(Body::Table { rows, cut }) => {
+                plate();
+                paint_table(dc, g.inner, rows, *cut, font, dpi);
+            }
+            Some(Body::List { rows, .. }) => {
+                plate();
+                paint_list(dc, g.inner, rows, font, dpi);
+            }
+            Some(Body::Card { icon, rows }) => {
+                plate();
+                paint_card(dc, g.inner, icon.as_ref(), rows, font, dpi);
+            }
+            Some(Body::Handler(_)) => {
+                plate();
+                if hosted != Some(gen) {
+                    text(dc, g.stage, tr("Opening…   Esc: cancel", "여는 중…   Esc: 취소", "開いています…   Esc: キャンセル"), font, pal().sub, DT_CENTER);
                 }
             }
-            None => text(dc, pic, tr("Loading…", "불러오는 중…", "読み込み中…"), font, pal().sub, DT_CENTER),
+            None => text(dc, g.stage, tr("Loading…", "불러오는 중…", "読み込み中…"), font, pal().sub, DT_CENTER),
         }
         drop(j);
-        text(dc, name_rc, &name, font, pal().text, DT_CENTER);
+        // ‹ › while the mouse is over the popup, square like the app's buttons
+        if hover {
+            for (r, glyph, which) in [(g.prev, ICON_PREV, Hot::Prev), (g.next, ICON_NEXT, Hot::Next)] {
+                let on = hot == which;
+                fill(dc, r, if on { pal().card } else { pal().bg });
+                frame(dc, r, 1, if on { pal().sub } else { pal().line });
+                text(dc, r, glyph, icon_font, if on { pal().text } else { pal().sub }, DT_CENTER);
+            }
+        }
     });
 }
 
@@ -764,10 +932,8 @@ unsafe fn scroll_peek(h: HWND, dy: i32, dx: i32) {
 pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let page = || {
-            let mut rc = RECT::default();
-            _ = GetClientRect(h, &mut rc);
-            let [pic, ..] = peek_geo(rc, app(|a| a.dpi));
-            (pic.bottom - pic.top) * 9 / 10
+            let st = geo_of(h).stage;
+            (st.bottom - st.top) * 9 / 10
         };
         let notch = |w: usize| ((w >> 16) as i16 as i32) * app(|a| a.fh) * 3 / 120;
         match msg {
@@ -778,10 +944,35 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_PEEK_HOSTED => handler_ready(h, wp.0, lp.0 != 0),
-            WM_LBUTTONUP => close_peek(h),
+            WM_MOUSEMOVE => {
+                let hot = peek_hit(&geo_of(h), (lp.0 & 0xffff) as i16 as i32, (lp.0 >> 16 & 0xffff) as i16 as i32);
+                let (first, changed) = view(|v| {
+                    let r = (!v.hover, !v.hover || v.hot != hot);
+                    (v.hover, v.hot) = (true, hot);
+                    r
+                });
+                if first {
+                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                    _ = TrackMouseEvent(&mut t);
+                }
+                if changed {
+                    _ = InvalidateRect(Some(h), None, false);
+                }
+            }
+            WM_MOUSELEAVE => {
+                view(|v| (v.hover, v.hot) = (false, Hot::None));
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            // only × and ‹ › act on a click; the content itself never closes the preview
+            WM_LBUTTONUP => match view(|v| v.hot) {
+                Hot::Close => close_peek(h),
+                Hot::Prev => step_peek(true),
+                Hot::Next => step_peek(false),
+                Hot::None => {}
+            },
             WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_SHIFT.0 != 0 => scroll_peek(h, 0, -notch(wp.0)),
             WM_MOUSEWHEEL => wheel_peek(h, (wp.0 >> 16) as i16 as i32),
-            // Tilting the wheel: previous or next file, like the arrows.
+            // tilting the wheel: previous / next file, like the arrows
             WM_MOUSEHWHEEL => step_by_wheel(-((wp.0 >> 16) as i16 as i32)),
             WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
                 // a held F3 only opens it; its repeats must not close it again
@@ -799,7 +990,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_DESTROY => {
                 unload_handler();
                 want_peek(None);
-                view(|v| (v.layout, v.y, v.x, v.max_y, v.edge_at, v.wheel) = (None, 0, 0, 0, None, 0));
+                view(|v| (v.layout, v.y, v.x) = (None, 0, 0));
                 app(|a| a.peek = HWND::default());
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -815,13 +1006,14 @@ mod tests {
     #[test]
     fn peek_newest_only() {
         let req = |p: &str| Some(PeekReq { path: p.into(), w: 10, h: 10, hwnd: 0, plain: false });
-        let pix = || (Body::Pic(Pix { w: 1, h: 1, bgra: vec![0; 4] }), Some(3));
+        let pix = || Peeked { body: Body::Pic(Pix { w: 1, h: 1, bgra: vec![0; 4] }), icon: -1, meta: Vec::new() };
+        let card = || Peeked { body: Body::Card { icon: None, rows: Vec::new() }, icon: -1, meta: Vec::new() };
         let mut j = PeekJob { gen: 0, req: None, done: None };
         j.want(req("a"));
         let a = j.gen;
         j.want(req("b"));
         assert!(!j.publish(a, pix()) && j.done.is_none());
-        assert!(j.publish(j.gen, (Body::Card { icon: None, rows: Vec::new() }, None)) && matches!(j.done, Some((Body::Card { .. }, None))));
+        assert!(j.publish(j.gen, card()) && matches!(j.done, Some(Peeked { body: Body::Card { .. }, .. })));
         let b = j.gen;
         j.want(None);
         assert!(j.gen != b && j.req.is_none() && j.done.is_none());
@@ -842,26 +1034,13 @@ mod tests {
     fn icon_alpha() {
         let mut photo = vec![10, 20, 30, 0, 40, 50, 60, 0];
         fix_alpha(&mut photo);
-        assert_eq!(photo, vec![10, 20, 30, 255, 40, 50, 60, 255]); // no alpha at all: opaque
+        assert_eq!(photo, vec![10, 20, 30, 255, 40, 50, 60, 255]);
         let mut icon = vec![255, 255, 255, 128, 200, 100, 0, 255, 0, 0, 0, 0];
         fix_alpha(&mut icon);
-        assert_eq!(icon, vec![128, 128, 128, 128, 200, 100, 0, 255, 0, 0, 0, 0]); // straight: premultiplied
+        assert_eq!(icon, vec![128, 128, 128, 128, 200, 100, 0, 255, 0, 0, 0, 0]);
         let mut pre = vec![100, 100, 100, 128, 0, 0, 0, 0];
         fix_alpha(&mut pre);
-        assert_eq!(pre, vec![100, 100, 100, 128, 0, 0, 0, 0]); // already premultiplied: left alone
-    }
-
-    #[test]
-    fn peek_wheel() {
-        use Wheel::*;
-        assert_eq!(wheel_action(0, 0, true, false), Step); // a picture: straight to the next file
-        assert_eq!(wheel_action(0, 0, false, false), Step);
-        assert_eq!(wheel_action(0, 500, true, false), Scroll); // long text: scroll first
-        assert_eq!(wheel_action(0, 500, false, false), Hold); // at the top, just arrived
-        assert_eq!(wheel_action(0, 500, false, true), Step); // rested there: previous file
-        assert_eq!(wheel_action(500, 500, true, false), Hold);
-        assert_eq!(wheel_action(500, 500, true, true), Step);
-        assert_eq!(wheel_action(500, 500, false, true), Scroll); // back up is still scrolling
+        assert_eq!(pre, vec![100, 100, 100, 128, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -871,5 +1050,33 @@ mod tests {
         use Style::*;
         assert_eq!(styles, vec![H1, Plain, Plain, Bullet, Bullet, Quote, Mono, Quote]);
         assert_eq!((l[2].0.as_str(), l[3].0.as_str(), l[4].0.as_str(), l[6].0.as_str()), ("some bold x", "• a", "    • b", "code **"));
+    }
+
+    #[test]
+    fn peek_wheel() {
+        use Wheel::*;
+        assert_eq!(wheel_action(0, 0, true, false), Step);
+        assert_eq!(wheel_action(0, 0, false, false), Step);
+        assert_eq!(wheel_action(0, 500, true, false), Scroll);
+        assert_eq!(wheel_action(0, 500, false, false), Hold);
+        assert_eq!(wheel_action(0, 500, false, true), Step);
+        assert_eq!(wheel_action(500, 500, true, false), Hold);
+        assert_eq!(wheel_action(500, 500, true, true), Step);
+        assert_eq!(wheel_action(500, 500, false, true), Scroll);
+    }
+
+    #[test]
+    fn peek_layout() {
+        let rc = RECT { left: 0, top: 0, right: 1120, bottom: 810 };
+        let g = peek_geo(rc, 96);
+        assert_eq!((g.stage.left, g.stage.top, g.stage.right, g.stage.bottom), (56, 48, 1064, 786));
+        assert_eq!((g.inner.left, g.inner.top), (76, 68));
+        assert!(g.close.right <= rc.right && g.close.bottom <= 48 && g.title.right < g.close.left);
+        assert!(g.prev.right <= g.stage.left && g.next.left >= g.stage.right);
+        assert_eq!((g.prev.top + g.prev.bottom) / 2, (g.stage.top + g.stage.bottom) / 2);
+        assert_eq!(peek_hit(&g, g.next.left + 4, g.next.top + 4), Hot::Next);
+        assert_eq!(peek_hit(&g, g.prev.left + 4, g.prev.top + 4), Hot::Prev);
+        assert_eq!(peek_hit(&g, g.close.left + 4, g.close.top + 4), Hot::Close);
+        assert_eq!(peek_hit(&g, 500, 400), Hot::None);
     }
 }
