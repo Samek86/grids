@@ -1,4 +1,4 @@
-// Drive buttons on the top toolbar. The letter and the drive type only: a volume name can
+// Drive buttons on the tab row, to the left of Layout. The letter and the drive type only: a volume name can
 // wait on a sleeping disk or a dead share. Device notices are posted and applied once a
 // drag or resize has finished, so the system is not kept waiting on a disk call.
 

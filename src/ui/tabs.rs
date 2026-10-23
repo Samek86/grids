@@ -35,10 +35,7 @@ pub(crate) fn glyph(id: i32) -> &'static str {
         ID_TB_LAYOUT => "\u{E8A9}",
         ID_TB_SAVE => "\u{E74E}",
         ID_TB_LOAD => "\u{E838}",
-        ID_TB_FAV => "\u{E734}",
         ID_TB_SET => "\u{E713}",
-        ID_TB_THEME if DARK_ON.load(Ordering::Relaxed) => "\u{E706}", // sun: back to light
-        ID_TB_THEME => "\u{E708}",                                     // moon: go dark
         _ => "\u{E890}",
     }
 }
@@ -54,6 +51,8 @@ pub(crate) enum TabHit {
     /// The close slot of a locked tab. It does not close.
     Lock(usize),
     Plus,
+    /// The ▾ that lists every tab when they no longer fit.
+    Overflow,
     Empty,
 }
 
@@ -62,6 +61,33 @@ pub(crate) struct TabLay {
     pub(crate) close: Vec<Option<RECT>>,
     pub(crate) lock: Vec<bool>,
     pub(crate) plus: RECT,
+    /// Set when the tabs do not fit at `min_w`. Sits at the right of the tab area, left of the icon group.
+    pub(crate) overflow: Option<RECT>,
+    /// First tab that has a rect. Clamped so the window never runs past the last tab.
+    pub(crate) first: usize,
+    pub(crate) count: usize,
+}
+
+impl TabLay {
+    /// Tab under a drag, among the ones on screen. Past the last visible tab, that tab.
+    pub(crate) fn drag_target(&self, x: i32) -> usize {
+        self.body
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.right > r.left && x < (r.left + r.right) / 2)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| self.body.iter().enumerate().rev().find(|(_, r)| r.right > r.left).map(|(i, _)| i).unwrap_or(0))
+    }
+
+    /// Where a tab dragged in from another window is inserted.
+    pub(crate) fn insert_at(&self, x: i32) -> usize {
+        self.body
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.right > r.left && x < (r.left + r.right) / 2)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| self.body.iter().enumerate().rev().find(|(_, r)| r.right > r.left).map(|(i, _)| i + 1).unwrap_or(self.body.len()))
+    }
 }
 
 /// X uses the accent while the pointer is on it. A lock stays the quiet colour, hot or not.
@@ -81,37 +107,153 @@ pub(crate) fn middle_closes(lay: &TabLay, hit: TabHit) -> bool {
     }
 }
 
-pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32) -> TabLay {
+/// Right-hand group on the tab row. Drive letters are a prefix of this, left of Layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct IconLay {
+    /// Width the tabs may use. A gap sits between this and the group.
+    pub(crate) tab_w: i32,
+    pub(crate) icons: [(i32, RECT); 4],
+    /// Drive buttons that fit, left to right. A prefix of the A→Z list; the rest are hidden.
+    pub(crate) drives: [RECT; 26],
+    pub(crate) drive_n: usize,
+}
+
+/// pad, gap, plus, max tab, min tab, overflow chevron. Shared with the drive-button reserve.
+fn tab_px(dpi: i32) -> (i32, i32, i32, i32, i32, i32) {
+    let s = |v: i32| v * dpi / 96;
+    (s(6), s(2), s(28), s(90), s(44), s(22))
+}
+
+/// Width `tab_lay` needs for one minimum tab, the +, and the ▾. Drive buttons stop before this.
+fn tab_reserve(dpi: i32) -> i32 {
+    let (pad, gap, plus_w, _, min_w, over_w) = tab_px(dpi);
+    pad + min_w + gap + plus_w + gap + over_w + pad
+}
+
+/// How many drive buttons the tab row reserves. Off reserves none, so the tabs take that width.
+pub(crate) fn drive_slots(show: bool, n: usize) -> usize {
+    if show { n } else { 0 }
+}
+
+/// Layout, save, load, the gear, and `drives` letter buttons, right-aligned on the tab row.
+/// Letters sit to the left of Layout. The last ones drop when the row cannot also keep `tab_reserve`.
+/// `drives == 0` (see `drive_slots`) hides every letter and gives that width to the tabs.
+pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize) -> IconLay {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, gap, bh) = (s(8), s(4), s(24));
+    let specs = [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET];
+    let widths = [s(70), s(32), s(32), s(32)];
+    let icons_w = widths.iter().sum::<i32>() + gap * (specs.len() as i32 - 1);
+    let icons_left = (row_w - pad - icons_w).max(0);
+    let dw = s(32);
+    let stride = (dw + gap).max(1);
+    // The first button must start far enough right that `tab_w` still holds one minimum tab.
+    let min_left = tab_reserve(dpi) + gap;
+    let room = icons_left - min_left;
+    let fit = if room < stride { 0 } else { (room / stride) as usize };
+    let drive_n = drives.min(26).min(fit);
+    let mut drive_rects = [RECT::default(); 26];
+    let mut x = icons_left - drive_n as i32 * stride;
+    let tab_w = (x - gap).max(1);
+    for i in 0..drive_n {
+        drive_rects[i] = RECT { left: x, top, right: x + dw, bottom: top + bh };
+        x += stride;
+    }
+    let mut icons = [(0, RECT::default()); 4];
+    for i in 0..specs.len() {
+        let w = widths[i];
+        icons[i] = (specs[i], RECT { left: x, top, right: x + w, bottom: top + bh });
+        x += w + gap;
+    }
+    IconLay { tab_w, icons, drives: drive_rects, drive_n }
+}
+
+/// `scroll` moved so `index` is inside a window of `shown` tabs. Pure.
+pub(crate) fn scroll_to_show(scroll: usize, index: usize, shown: usize, n: usize) -> usize {
+    let n = n.max(1);
+    let shown = shown.clamp(1, n);
+    let index = index.min(n - 1);
+    let max_first = n - shown;
+    let scroll = scroll.min(max_first);
+    if index < scroll {
+        index
+    } else if index >= scroll + shown {
+        index + 1 - shown
+    } else {
+        scroll
+    }
+}
+
+/// Width the tabs may use. The icon group and the drive buttons that fit keep the rest while the bar is on.
+/// Hidden drive buttons (`drives == 0`) reserve nothing, so the tabs take that width.
+/// A hidden bar uses the full width: those buttons are not on screen.
+pub(crate) fn tab_area_width(client_w: i32, dpi: i32, bar: bool, drives: usize) -> i32 {
+    if bar { icon_slots(client_w.max(1), 0, dpi, drives).tab_w } else { client_w.max(1) }
+}
+
+pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32, scroll: usize) -> TabLay {
     let s = |v: i32| v * dpi / 96;
     let n = n.max(1);
-    let (pad, gap, plus_w, max_w, min_w) = (s(6), s(2), s(28), s(90), s(28));
-    let mut w = max_w;
-    let used = |w: i32| n as i32 * w + gap * (n as i32 - 1) + plus_w + pad * 2;
-    if used(w) > width {
-        w = ((width - pad * 2 - plus_w - gap * (n as i32 - 1)) / n as i32).max(min_w);
-    }
+    let width = width.max(1);
+    let (pad, gap, plus_w, max_w, min_w, over_w) = tab_px(dpi);
     let y = s(4);
     let h = s(26);
-    let mut x = pad;
-    let mut body = Vec::new();
-    let mut close = Vec::new();
-    let mut lock = Vec::new();
-    for i in 0..n {
-        let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+    let used = |w: i32| n as i32 * w + gap * (n as i32 - 1) + plus_w + pad * 2;
+    let slot = |r: RECT| {
         let cw = s(16);
-        // Locked or not, the slot is the same rectangle the X uses.
-        let c = Some(RECT {
+        RECT {
             left: r.right - s(4) - cw,
             top: r.top + (h - cw) / 2,
             right: r.right - s(4),
             bottom: r.top + (h - cw) / 2 + cw,
-        });
-        body.push(r);
-        close.push(c);
-        lock.push(locked.get(i).copied().unwrap_or(false));
-        x += w + gap;
+        }
+    };
+    let mut body = vec![RECT::default(); n];
+    let mut close = vec![None; n];
+    let lock: Vec<bool> = (0..n).map(|i| locked.get(i).copied().unwrap_or(false)).collect();
+    if used(min_w) <= width {
+        let mut w = max_w;
+        if used(w) > width {
+            w = ((width - pad * 2 - plus_w - gap * (n as i32 - 1)) / n as i32).max(min_w);
+        }
+        let mut x = pad;
+        for i in 0..n {
+            let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+            close[i] = Some(slot(r));
+            body[i] = r;
+            x += w + gap;
+        }
+        return TabLay {
+            body,
+            close,
+            lock,
+            plus: RECT { left: x, top: y, right: x + plus_w, bottom: y + h },
+            overflow: None,
+            first: 0,
+            count: n,
+        };
     }
-    TabLay { body, close, lock, plus: RECT { left: x, top: y, right: x + plus_w, bottom: y + h } }
+    // ▾ at the right of the tab area; + stays pinned just to its left.
+    let over_right = (width - pad).max(over_w.min(width));
+    let over_left = (over_right - over_w).max(0);
+    let over = RECT { left: over_left, top: y, right: over_right, bottom: y + h };
+    let plus_right = (over.left - gap).max(plus_w.min(width));
+    let plus_left = (plus_right - plus_w).max(0);
+    let plus = RECT { left: plus_left, top: y, right: plus_right, bottom: y + h };
+    let avail = (plus.left - gap - pad).max(0);
+    let stride = (min_w + gap).max(1);
+    let mut count = ((avail + gap) / stride).max(1) as usize;
+    count = count.min(n);
+    let max_first = n - count;
+    let first = scroll.min(max_first);
+    let mut x = pad;
+    for i in first..first + count {
+        let r = RECT { left: x, top: y, right: x + min_w, bottom: y + h };
+        close[i] = Some(slot(r));
+        body[i] = r;
+        x += min_w + gap;
+    }
+    TabLay { body, close, lock, plus, overflow: Some(over), first, count }
 }
 
 pub(crate) fn in_rect(r: RECT, x: i32, y: i32) -> bool {
@@ -122,7 +264,13 @@ pub(crate) fn tab_hit(lay: &TabLay, x: i32, y: i32) -> TabHit {
     if in_rect(lay.plus, x, y) {
         return TabHit::Plus;
     }
+    if lay.overflow.is_some_and(|r| in_rect(r, x, y)) {
+        return TabHit::Overflow;
+    }
     for (i, r) in lay.body.iter().enumerate() {
+        if r.right <= r.left {
+            continue;
+        }
         if in_rect(*r, x, y) {
             if lay.close[i].is_some_and(|c| in_rect(c, x, y)) {
                 return if lay.lock.get(i).copied().unwrap_or(false) { TabHit::Lock(i) } else { TabHit::Close(i) };
@@ -329,7 +477,12 @@ pub(crate) fn tabs_invalidate() {
 
 pub(crate) unsafe fn switch_tab(j: usize) {
     let (cur, n) = app(|a| (a.s.tab, a.s.tabs.len()));
-    if j >= n || j == cur {
+    if j >= n {
+        return;
+    }
+    if j == cur {
+        show_active_tab();
+        tabs_invalidate();
         return;
     }
     end_rename(true);
@@ -353,6 +506,7 @@ pub(crate) unsafe fn switch_tab(j: usize) {
     });
     put_filters(&filters);
     attach_live();
+    show_active_tab();
     relayout();
     sync_filter_edits();
     redraw_all();
@@ -399,6 +553,7 @@ pub(crate) unsafe fn new_tab() {
     });
     put_filters(&vec![String::new(); MAXP]);
     attach_live();
+    show_active_tab();
     relayout();
     redraw_all();
     focus_view(active_pane());
@@ -465,6 +620,7 @@ pub(crate) unsafe fn close_tab(i: usize) {
         (parked, filters, switched)
     });
     destroy_set(doomed);
+    show_active_tab();
     if switched {
         put_filters(&filters);
         attach_live();
@@ -550,18 +706,16 @@ pub(crate) unsafe fn end_rename(save: bool) {
 }
 
 pub(crate) unsafe fn begin_rename(i: usize) {
-    let (edit, font, dpi, name, lay_w) = app(|a| {
-        let mut rc = RECT::default();
-        _ = GetClientRect(a.tabs_hwnd, &mut rc);
-        let name = a.s.tabs.get(i).map(|t| t.name.clone()).unwrap_or_default();
-        (a.tab_edit, a.font, a.dpi, name, rc.right)
-    });
-    if edit.0.is_null() || app(|a| i >= a.s.tabs.len()) {
+    if app(|a| a.tab_edit.0.is_null() || i >= a.s.tabs.len()) {
         return;
     }
-    let locked: Vec<bool> = app(|a| a.s.tabs.iter().map(|t| t.locked).collect());
-    let lay = tab_lay(lay_w, locked.len(), &locked, dpi);
-    let Some(r) = lay.body.get(i).copied() else { return };
+    show_tab(i);
+    let (edit, font, dpi, name) = app(|a| {
+        let name = a.s.tabs.get(i).map(|t| t.name.clone()).unwrap_or_default();
+        (a.tab_edit, a.font, a.dpi, name)
+    });
+    let lay = current_tab_lay();
+    let Some(r) = lay.body.get(i).copied().filter(|r| r.right > r.left) else { return };
     let s = |v: i32| v * dpi / 96;
     app(|a| a.tab_renaming = Some(i));
     _ = SetWindowTextW(edit, &HSTRING::from(name.as_str()));
@@ -654,6 +808,89 @@ pub(crate) unsafe fn install_grids(s: Session) {
         a.zoom = None;
     });
     sync_pane_tabs(app(|a| a.s.pane_tabs_on));
+    show_active_tab();
+}
+
+/// Scroll so `index` is on screen. Uses the main window's width, so it is valid before the strip is moved.
+pub(crate) fn show_tab(index: usize) {
+    app(|a| {
+        if a.main.0.is_null() {
+            return;
+        }
+        let mut rc = RECT::default();
+        unsafe { _ = GetClientRect(a.main, &mut rc) };
+        if rc.right <= 0 {
+            return;
+        }
+        let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
+        let n = locked.len().max(1);
+        let w = tab_area_width(rc.right, a.dpi, a.s.bar, drive_slots(a.s.drive_buttons, a.drives.len()));
+        let lay = tab_lay(w, n, &locked, a.dpi, a.tab_scroll);
+        let index = index.min(n - 1);
+        a.tab_scroll = if lay.overflow.is_none() { 0 } else { scroll_to_show(lay.first, index, lay.count.max(1), n) };
+    });
+}
+
+pub(crate) fn show_active_tab() {
+    let i = app(|a| a.s.tab);
+    show_tab(i);
+}
+
+/// One wheel notch moves one tab. Positive delta (wheel up) reveals earlier tabs.
+pub(crate) fn tab_wheel(delta: i32) {
+    if delta == 0 {
+        return;
+    }
+    let mut steps = delta / 120;
+    if steps == 0 {
+        steps = delta.signum();
+    }
+    app(|a| {
+        if steps > 0 {
+            a.tab_scroll = a.tab_scroll.saturating_sub(steps as usize);
+        } else {
+            a.tab_scroll = a.tab_scroll.saturating_add((-steps) as usize);
+        }
+    });
+    let _ = current_tab_lay();
+    tabs_invalidate();
+}
+
+/// Every window tab, by name. The current one is checked and a locked one is marked.
+pub(crate) unsafe fn open_tab_list() {
+    let (hwnd, names, locked, cur) = app(|a| {
+        (
+            a.tabs_hwnd,
+            a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            a.s.tabs.iter().map(|t| t.locked).collect::<Vec<_>>(),
+            a.s.tab,
+        )
+    });
+    if hwnd.0.is_null() || names.is_empty() {
+        return;
+    }
+    let Ok(menu) = CreatePopupMenu() else { return };
+    for (i, name) in names.iter().enumerate() {
+        let shown = name.replace('&', "&&");
+        let label = if locked.get(i).copied().unwrap_or(false) {
+            format!("{shown} — {}", tr("locked", "잠김", "ロック"))
+        } else {
+            shown
+        };
+        _ = AppendMenuW(menu, MF_STRING, i + 1, &HSTRING::from(label));
+        if i == cur {
+            _ = CheckMenuItem(menu, (i + 1) as u32, (MF_BYCOMMAND | MF_CHECKED).0);
+        }
+    }
+    let lay = current_tab_lay();
+    let (x, y) = lay.overflow.map(|r| (r.left, r.bottom)).unwrap_or((0, 0));
+    let mut pt = POINT { x, y };
+    _ = ClientToScreen(hwnd, &mut pt);
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, hwnd, None).0 as usize;
+    _ = DestroyMenu(menu);
+    if (1..=names.len()).contains(&pick) {
+        switch_tab(pick - 1);
+    }
 }
 
 pub(crate) fn current_tab_lay() -> TabLay {
@@ -661,12 +898,15 @@ pub(crate) fn current_tab_lay() -> TabLay {
         let mut rc = RECT::default();
         unsafe { _ = GetClientRect(a.tabs_hwnd, &mut rc) };
         let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
-        tab_lay(rc.right.max(1), locked.len().max(1), &locked, a.dpi)
+        let w = tab_area_width(rc.right.max(1), a.dpi, a.s.bar, drive_slots(a.s.drive_buttons, a.drives.len()));
+        let lay = tab_lay(w, locked.len().max(1), &locked, a.dpi, a.tab_scroll);
+        a.tab_scroll = lay.first;
+        lay
     })
 }
 
 pub(crate) unsafe fn paint_tabs(h: HWND) {
-    let (active, names, colors, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
+    let (active, names, colors, hot, hot_close, hot_plus, hot_over, dpi, font, icon, accent) = app(|a| {
         (
             a.s.tab,
             a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
@@ -674,6 +914,7 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
             a.tab_hot,
             a.tab_hot_close,
             a.tab_hot_plus,
+            a.tab_hot_over,
             a.dpi,
             a.font,
             a.icon_font,
@@ -686,6 +927,9 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
         fill(dc, rc, pal().bg);
         fill(dc, RECT { top: rc.bottom - 1, ..rc }, pal().line);
         for (i, r) in lay.body.iter().enumerate() {
+            if r.right <= r.left {
+                continue;
+            }
             let on = i == active;
             let over = hot == Some(i);
             let col = colors.get(i).copied().flatten();
@@ -720,11 +964,20 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
             } else {
                 label.right -= s(8);
             }
-            text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT);
+            // At the minimum width a locked tab keeps the lock and drops the name.
+            let room = label.right - label.left;
+            if room >= s(8) && !(lock && room < s(18)) {
+                text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT);
+            }
         }
         let plus_bg = if hot_plus { blend(pal().card, pal().bg, 0.45) } else { pal().bg };
         fill(dc, lay.plus, plus_bg);
         text(dc, lay.plus, ICON_PLUS, icon, pal().text, DT_CENTER);
+        if let Some(r) = lay.overflow {
+            let bg = if hot_over { blend(pal().card, pal().bg, 0.45) } else { pal().bg };
+            fill(dc, r, bg);
+            text(dc, r, "▾", font, pal().text, DT_CENTER);
+        }
     });
 }
 
@@ -777,11 +1030,12 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_MOUSEMOVE => {
                 let (x, y) = xy(lp);
                 let hit = tab_mouse(x, y);
-                let (hot, close, plus) = match hit {
-                    TabHit::Tab(i) | TabHit::Lock(i) => (Some(i), false, false),
-                    TabHit::Close(i) => (Some(i), true, false),
-                    TabHit::Plus => (None, false, true),
-                    TabHit::Empty => (None, false, false),
+                let (hot, close, plus, over) = match hit {
+                    TabHit::Tab(i) | TabHit::Lock(i) => (Some(i), false, false, false),
+                    TabHit::Close(i) => (Some(i), true, false, false),
+                    TabHit::Plus => (None, false, true, false),
+                    TabHit::Overflow => (None, false, false, true),
+                    TabHit::Empty => (None, false, false, false),
                 };
                 lock_tooltip(matches!(hit, TabHit::Lock(_)));
                 let (from, paint) = app(|a| {
@@ -791,24 +1045,28 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         }
                     }
                     let from = a.tab_drag;
-                    let same = a.tab_hot == hot && a.tab_hot_close == close && a.tab_hot_plus == plus;
+                    let same = a.tab_hot == hot && a.tab_hot_close == close && a.tab_hot_plus == plus && a.tab_hot_over == over;
                     if !same {
                         a.tab_hot = hot;
                         a.tab_hot_close = close;
                         a.tab_hot_plus = plus;
+                        a.tab_hot_over = over;
                     }
                     (from, !same)
                 });
                 if let Some(from) = from {
                     let mut rc = RECT::default();
                     _ = GetClientRect(h, &mut rc);
-                    // Reorder only while the pointer stays in this strip. Outside, mouse-up moves the tab.
+                    // Reorder only while the pointer stays in this strip, and only across tabs that are on screen.
                     if y >= 0 && y < rc.bottom {
                         let lay = current_tab_lay();
-                        let to = lay.body.iter().position(|r| x < (r.left + r.right) / 2).unwrap_or(lay.body.len().saturating_sub(1));
-                        if to != from && to < app(|a| a.s.tabs.len()) {
-                            reorder_tab(from, to);
-                            app(|a| a.tab_drag = Some(to));
+                        let edge = lay.overflow.map(|r| r.left).unwrap_or(lay.plus.right);
+                        if x < edge {
+                            let to = lay.drag_target(x);
+                            if to != from && to < app(|a| a.s.tabs.len()) {
+                                reorder_tab(from, to);
+                                app(|a| a.tab_drag = Some(to));
+                            }
                         }
                     }
                 }
@@ -824,6 +1082,7 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     a.tab_hot = None;
                     a.tab_hot_close = false;
                     a.tab_hot_plus = false;
+                    a.tab_hot_over = false;
                 });
                 tabs_invalidate();
             }
@@ -841,9 +1100,11 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         }
                     }
                     TabHit::Plus => new_tab(),
+                    TabHit::Overflow => open_tab_list(),
                     TabHit::Empty => {}
                 }
             }
+            WM_MOUSEWHEEL => tab_wheel((wp.0 >> 16) as i16 as i32),
             WM_LBUTTONUP => {
                 let (x, y) = xy(lp);
                 let press = app(|a| a.tab_press.take());
@@ -909,6 +1170,94 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edge(lay: &TabLay) -> i32 {
+        lay.overflow.map(|r| r.right).unwrap_or(lay.plus.right)
+    }
+
+    #[test]
+    fn icon_slots_stay_right_aligned_without_drives() {
+        let lay = icon_slots(1000, 6, 96, 0);
+        assert_eq!(lay.drive_n, 0);
+        assert_eq!(lay.tab_w, 810);
+        assert_eq!(lay.icons.map(|s| s.0), [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET]);
+        assert_eq!(lay.icons[0].1, RECT { left: 814, top: 6, right: 884, bottom: 30 });
+        assert_eq!(lay.icons[1].1.left, 888);
+        assert_eq!(lay.icons[3].1.right, 992);
+        assert!(lay.icons.windows(2).all(|w| w[0].1.right + 4 == w[1].1.left));
+        assert_eq!(tab_area_width(1000, 96, true, 0), lay.tab_w);
+        assert_eq!(tab_area_width(1000, 96, false, 8), 1000);
+    }
+
+    #[test]
+    fn icon_slots_with_n_drives() {
+        // Letters sit in the group, immediately left of Layout, and do not move the icons.
+        let bare = icon_slots(1000, 4, 96, 0);
+        let n = 5;
+        let lay = icon_slots(1000, 4, 96, n);
+        assert_eq!(lay.drive_n, n);
+        assert_eq!(lay.icons, bare.icons);
+        assert_eq!(lay.drives[n - 1].right + 4, lay.icons[0].1.left);
+        assert_eq!(lay.tab_w, lay.drives[0].left - 4);
+        for i in 0..n {
+            assert_eq!(lay.drives[i].right - lay.drives[i].left, 32);
+            assert_eq!((lay.drives[i].top, lay.drives[i].bottom), (4, 28));
+            if i > 0 {
+                assert_eq!(lay.drives[i - 1].right + 4, lay.drives[i].left);
+            }
+        }
+        // One minimum tab, +, and ▾ (110px) stay clear of the buttons. Tabs paint only in tab_w.
+        let reserve = 110;
+        assert!(lay.tab_w >= reserve && lay.drives[0].left >= reserve);
+        let tabs = tab_lay(lay.tab_w, 30, &[false; 30], 96, 0);
+        assert!(edge(&tabs) <= lay.drives[0].left);
+
+        // A narrow row hides the last letters first. The ones that remain are the prefix.
+        let tight = icon_slots(420, 4, 96, 8);
+        assert!(tight.drive_n > 0 && tight.drive_n < 8);
+        assert_eq!(tight.icons[0].1.left, icon_slots(420, 4, 96, 0).icons[0].1.left);
+        assert!(tight.tab_w >= reserve && tight.drives[0].left >= reserve);
+        assert_eq!(icon_slots(420, 4, 96, tight.drive_n + 1).drive_n, tight.drive_n);
+        let shown = tab_lay(tight.tab_w, 12, &[false; 12], 96, 0);
+        assert!(edge(&shown) <= tight.drives[0].left);
+
+        // Too narrow for even one letter: the icons stay, every drive is hidden.
+        let tiny = icon_slots(220, 0, 96, 4);
+        assert_eq!(tiny.drive_n, 0);
+        assert!(tiny.tab_w >= 1 && tiny.icons[0].1.left < reserve);
+
+        // The same row at double DPI is the 96dpi layout scaled by two.
+        let hi = icon_slots(2000, 8, 192, n);
+        assert_eq!(hi.drive_n, n);
+        assert_eq!(hi.tab_w, lay.tab_w * 2);
+        assert_eq!(hi.drives[0].right - hi.drives[0].left, 64);
+        assert_eq!(hi.drives[n - 1].right + 8, hi.icons[0].1.left);
+        assert_eq!(tab_area_width(2000, 192, true, n), hi.tab_w);
+        assert_eq!(tab_area_width(2000, 192, false, n), 2000);
+    }
+
+    #[test]
+    fn icon_slots_with_drives_hidden() {
+        let n = 5;
+        let shown = icon_slots(1000, 4, 96, drive_slots(true, n));
+        let hidden = icon_slots(1000, 4, 96, drive_slots(false, n));
+        let bare = icon_slots(1000, 4, 96, 0);
+        assert_eq!(drive_slots(false, n), 0);
+        assert_eq!(drive_slots(true, n), n);
+        assert_eq!(hidden, bare);
+        assert_eq!(hidden.drive_n, 0);
+        assert!(hidden.tab_w > shown.tab_w);
+        assert_eq!(hidden.icons, shown.icons);
+        // The width the letters occupied is now part of the tab strip. The icons stay put.
+        assert_eq!(hidden.tab_w - shown.tab_w, shown.icons[0].1.left - shown.drives[0].left);
+        assert_eq!(tab_area_width(1000, 96, true, drive_slots(false, n)), hidden.tab_w);
+        assert_eq!(tab_area_width(1000, 96, true, drive_slots(true, n)), shown.tab_w);
     }
 }
 

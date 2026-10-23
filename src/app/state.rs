@@ -84,7 +84,7 @@ pub(crate) struct Desk {
     pub(crate) lost: u32,                        // missing-folder notes merged while one is showing
     pub(crate) cards: Vec<(PathBuf, Session, String)>,
     pub(crate) ilist: Option<windows::Win32::UI::Controls::IImageList>, // system small icons, shared, never freed
-    pub(crate) drives: Vec<(u8, u32, HWND)>, // toolbar buttons, A→Z: letter, drive type, button
+    pub(crate) drives: Vec<(u8, u32, HWND)>, // tab-row buttons, A→Z: letter, drive type, button
     pub(crate) drive_mask: u32,              // GetLogicalDrives() they were built for
     pub(crate) drive_mark: Option<u8>,       // the active pane's drive, underlined
     pub(crate) hover: HWND, // owner-drawn button under the mouse
@@ -115,6 +115,8 @@ pub(crate) struct Desk {
     pub(crate) tab_hot_close: bool,
     pub(crate) tab_lock_tip: bool, // tracking tooltip for a locked tab's lock glyph is installed
     pub(crate) tab_hot_plus: bool,
+    pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
+    pub(crate) tab_scroll: usize,  // first visible window tab while the strip overflows
     pub(crate) tab_drag: Option<usize>,
     pub(crate) tab_press: Option<(usize, i32, i32, bool)>, // tab, x, y, press landed on its close box
     pub(crate) tab_renaming: Option<usize>,
@@ -257,6 +259,8 @@ pub(crate) fn blank_desk() -> Desk {
         tab_hot_close: false,
         tab_lock_tip: false,
         tab_hot_plus: false,
+        tab_hot_over: false,
+        tab_scroll: 0,
         tab_drag: None,
         tab_press: None,
         tab_renaming: None,
@@ -441,6 +445,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.font = src.font;
     dst.font_face = src.font_face.clone();
     dst.bar = src.bar;
+    dst.drive_buttons = src.drive_buttons;
     dst.stat = src.stat;
     dst.view_new = src.view_new;
     dst.start_new = src.start_new;
