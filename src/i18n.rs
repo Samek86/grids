@@ -63,11 +63,37 @@ pub(crate) fn tr(en: &'static str, ko: &'static str, ja: &'static str) -> &'stat
     }
 }
 
-pub(crate) fn ui_face() -> &'static str {
-    match ui() {
+/// Face used when no `font_face` is chosen. Japanese is Yu Gothic UI.
+pub(crate) fn default_face(lang: u8) -> &'static str {
+    match lang {
         1 => "Malgun Gothic",
         2 => "Yu Gothic UI",
         _ => "Segoe UI",
+    }
+}
+
+pub(crate) fn ui_face() -> &'static str {
+    default_face(ui())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_face_follows_the_language() {
+        assert_eq!(default_face(0), "Segoe UI");
+        assert_eq!(default_face(1), "Malgun Gothic");
+        assert_eq!(default_face(2), "Yu Gothic UI");
+        assert_eq!(default_face(9), "Segoe UI");
+        let prev = UI.load(Ordering::Relaxed);
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(ui_face(), "Yu Gothic UI");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(ui_face(), "Malgun Gothic");
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(ui_face(), "Segoe UI");
+        UI.store(prev, Ordering::Relaxed);
     }
 }
 
