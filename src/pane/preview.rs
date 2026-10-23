@@ -11,6 +11,9 @@ use windows::Win32::System::Time::FileTimeToSystemTime;
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PSFormatForDisplayAlloc, SHGetPropertyStoreFromParsingName, GPS_DEFAULT, PDFF_DEFAULT};
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
+use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
+use windows::Storage::StorageFile;
+use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
 
 // ---------- what F3 shows for a file: picked and made on the preview worker ----------
 
@@ -23,6 +26,7 @@ pub(crate) enum TextKind {
 
 pub(crate) enum Body {
     Pic(Pix),
+    Pages { pages: Vec<Pix>, total: u32 }, // PDF pages as pictures, the rest added while they render
     Text { text: String, kind: TextKind, cut: bool },
     Table { rows: Vec<Vec<String>>, cut: bool },
     List { head: String, rows: Vec<(String, String)> }, // folder or archive contents: name, size
@@ -44,7 +48,7 @@ const AUDIO: &[&str] = &["mp3", "wav", "flac", "m4a", "aac", "wma", "ogg", "opus
 // shown by the Windows preview handler when there is one (Office, Outlook, the browser engine, fonts, a PDF reader)
 const HANDLED: &[&str] = &[
     "doc", "docx", "docm", "dot", "dotx", "rtf", "odt", "xls", "xlsx", "xlsm", "xlsb", "ods", "ppt", "pptx", "pptm", "pps", "ppsx",
-    "odp", "vsd", "vsdx", "msg", "html", "htm", "mht", "mhtml", "xps", "oxps", "pdf", "ttf", "otf", "ttc", "fon",
+    "odp", "vsd", "vsdx", "msg", "html", "htm", "mht", "mhtml", "xps", "oxps", "ttf", "otf", "ttc", "fon",
 ];
 const CODE: &[&str] = &[
     "json", "jsonc", "json5", "ndjson", "geojson", "xml", "xaml", "xsd", "xsl", "xslt", "svg", "plist", "yaml", "yml", "toml", "ini", "cfg", "conf",
@@ -129,7 +133,7 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
     if AUDIO.contains(&e) {
         return card(path, &[]);
     }
-    let heavy = HANDLED.contains(&e) || OFFICE_ZIP.contains(&e) || matches!(e, "eml" | "hwp" | "hwpx" | "hwpt" | "psd" | "psb");
+    let heavy = HANDLED.contains(&e) || OFFICE_ZIP.contains(&e) || matches!(e, "pdf" | "eml" | "hwp" | "hwpx" | "hwpt" | "psd" | "psb");
     if heavy && meta.as_ref().is_some_and(|m| m.len() > HEAVY_MAX) {
         let note = (tr("Preview", "미리보기", "プレビュー").to_string(), tr("Skipped: larger than 10 MB", "10 MB보다 커서 생략", "10 MB を超えるので省略").to_string());
         return card(path, &[note]);
@@ -140,6 +144,7 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
         }
     }
     let found = match e {
+        "pdf" => pdf_first(path, req).or_else(|| (!req.plain).then(|| handler_for(e).map(Body::Handler)).flatten()),
         "csv" | "tsv" => read_head(path, TEXT_MAX).filter(|(b, _)| looks_text(b)).map(|(b, cut)| {
             let text = decode_text(&b);
             let sep = if e == "tsv" { '\t' } else { csv_sep(&text) };
@@ -262,11 +267,104 @@ unsafe fn psd_thumb(path: &str, req: &PeekReq) -> Option<Pix> {
     None
 }
 
+// ---------- PDF: Windows' own renderer, pages as pictures ----------
+
+pub(crate) const PDF_MAX: u32 = 50;
+
+pub(crate) fn pdf_open(path: &str) -> Result<PdfDocument> {
+    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
+    PdfDocument::LoadFromFileAsync(&file)?.join()
+}
+
+/// Page i fitted whole into w x h (px), white paper as the reader would show it.
+pub(crate) unsafe fn pdf_page(doc: &PdfDocument, i: u32, w: i32, h: i32) -> Option<Pix> {
+    let page = doc.GetPage(i).ok()?;
+    let size = page.Size().ok()?;
+    let fit = (w as f32).min(h as f32 * size.Width / size.Height.max(1.0));
+    let opts = PdfPageRenderOptions::new().ok()?;
+    opts.SetDestinationWidth((fit as u32).max(16)).ok()?;
+    let st = InMemoryRandomAccessStream::new().ok()?;
+    page.RenderWithOptionsToStreamAsync(&st, &opts).ok()?.join().ok()?;
+    let n = st.Size().ok()? as u32;
+    let rd = DataReader::CreateDataReader(&st.GetInputStreamAt(0).ok()?).ok()?;
+    rd.LoadAsync(n).ok()?.join().ok()?;
+    let mut buf = vec![0u8; n as usize];
+    rd.ReadBytes(&mut buf).ok()?;
+    decode_pic(&buf, w, i32::MAX / 4)
+}
+
+// The first page now; peek_worker renders the others after it is on screen (pdf_rest).
+unsafe fn pdf_first(path: &str, req: &PeekReq) -> Option<Body> {
+    let doc = pdf_open(path).ok()?;
+    let total = doc.PageCount().ok()?.min(PDF_MAX);
+    let first = pdf_page(&doc, 0, req.w, req.h)?;
+    Some(Body::Pages { pages: vec![first], total })
+}
+
+// ---------- the header line: icon, type and what matters for this kind of file ----------
+
+unsafe fn prop(ps: &IPropertyStore, k: &PROPERTYKEY) -> Option<String> {
+    let v = ps.GetValue(k).ok()?;
+    let s = pwstr(PSFormatForDisplayAlloc(k, &v, PDFF_DEFAULT).ok()?);
+    (!s.trim().is_empty()).then_some(s)
+}
+
+/// (system image list icon, "JPEG 이미지 · 3840 x 2400 · 1.5 MB · 2026-10-23 10:27")
+pub(crate) unsafe fn meta(path: &str, body: &Body) -> (i32, Vec<String>) {
+    let mut fi = SHFILEINFOW::default();
+    let flags = SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_TYPENAME;
+    SHGetFileInfoW(&HSTRING::from(path), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut fi), size_of::<SHFILEINFOW>() as u32, flags);
+    let mut out = Vec::new();
+    let t = String::from_utf16_lossy(&fi.szTypeName[..fi.szTypeName.iter().position(|&c| c == 0).unwrap_or(0)]);
+    if !t.is_empty() {
+        out.push(t);
+    }
+    let lang = ui();
+    let e = ext_of(path);
+    let ps = SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(&HSTRING::from(path), None, GPS_DEFAULT).ok();
+    match body {
+        Body::Pic(_) if VIDEOS.contains(&e.as_str()) => {
+            if let Some(ps) = &ps {
+                let (w, h) = (prop(ps, &PKEY_Video_FrameWidth), prop(ps, &PKEY_Video_FrameHeight));
+                if let (Some(w), Some(h)) = (w, h) {
+                    out.push(format!("{w} × {h}"));
+                }
+                out.extend(prop(ps, &PKEY_Media_Duration));
+            }
+        }
+        Body::Pic(_) => out.extend(ps.as_ref().and_then(|ps| prop(ps, &PKEY_Image_Dimensions)).map(|d| d.replace(" x ", " × "))),
+        Body::Pages { total, .. } => out.push(match lang {
+            1 => format!("{total}쪽"),
+            2 => format!("{total} ページ"),
+            _ => format!("{total} pages"),
+        }),
+        Body::Text { text, .. } => out.push(match lang {
+            1 => format!("{}줄", text.lines().count()),
+            2 => format!("{} 行", text.lines().count()),
+            _ => format!("{} lines", text.lines().count()),
+        }),
+        Body::Table { rows, .. } => out.push(match lang {
+            1 => format!("{}행", rows.len()),
+            2 => format!("{} 行", rows.len()),
+            _ => format!("{} rows", rows.len()),
+        }),
+        Body::List { head, .. } => out.push(head.clone()),
+        _ => {}
+    }
+    if let Ok(m) = std::fs::metadata(path) {
+        if m.is_file() {
+            out.push(human(m.len()));
+        }
+        out.extend(when(m.modified()));
+    }
+    (fi.iIcon, out)
+}
+
 // ---------- lists ----------
 
 fn folder_list(path: &str) -> Body {
     let Ok(rd) = std::fs::read_dir(path) else {
-        return Body::List { head: tr("Can't open this folder", "이 폴더를 열 수 없습니다", "このフォルダーを開けません").into(), rows: Vec::new() };
+        return Body::List { head: tr("can't open", "열 수 없음", "開けません").into(), rows: Vec::new() };
     };
     let mut dirs = Vec::new();
     let mut files = Vec::new();
@@ -282,9 +380,9 @@ fn folder_list(path: &str) -> Body {
     files.sort_by_key(|(n, _)| n.to_lowercase());
     let total: u64 = files.iter().map(|(_, s)| s).sum();
     let head = match ui() {
-        1 => format!("폴더 {}개, 파일 {}개 · {}", dirs.len(), files.len(), human(total)),
-        2 => format!("フォルダー {} 個、ファイル {} 個 · {}", dirs.len(), files.len(), human(total)),
-        _ => format!("{} folders, {} files · {}", dirs.len(), files.len(), human(total)),
+        1 => format!("폴더 {}개, 파일 {}개, {}", dirs.len(), files.len(), human(total)),
+        2 => format!("フォルダー {} 個、ファイル {} 個、{}", dirs.len(), files.len(), human(total)),
+        _ => format!("{} folders, {} files, {}", dirs.len(), files.len(), human(total)),
     };
     let folder = tr("folder", "폴더", "フォルダー");
     let rows = dirs.into_iter().map(|d| (d, folder.to_string())).chain(files.into_iter().map(|(n, s)| (n, human(s)))).take(2000).collect();
@@ -297,9 +395,9 @@ fn zip_list(path: &str) -> Option<Body> {
     let files: Vec<&ZipEntry> = es.iter().filter(|e| !e.is_dir()).collect();
     let total: u64 = files.iter().map(|e| e.size).sum();
     let head = match ui() {
-        1 => format!("압축 파일 {}개 · 풀면 {}", files.len(), human(total)),
-        2 => format!("{} 個のファイル · 展開後 {}", files.len(), human(total)),
-        _ => format!("{} files · {} unpacked", files.len(), human(total)),
+        1 => format!("파일 {}개, 풀면 {}", files.len(), human(total)),
+        2 => format!("ファイル {} 個、展開後 {}", files.len(), human(total)),
+        _ => format!("{} files, {} unpacked", files.len(), human(total)),
     };
     Some(Body::List { head, rows: files.iter().take(5000).map(|e| (e.name.clone(), human(e.size))).collect() })
 }
@@ -411,10 +509,17 @@ fn when(t: std::io::Result<std::time::SystemTime>) -> Option<String> {
     Some(format!("{:04}-{:02}-{:02} {:02}:{:02}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute))
 }
 
-unsafe fn type_name(path: &str) -> String {
-    let mut fi = SHFILEINFOW::default();
-    SHGetFileInfoW(&HSTRING::from(path), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut fi), size_of::<SHFILEINFOW>() as u32, SHGFI_TYPENAME);
-    String::from_utf16_lossy(&fi.szTypeName[..fi.szTypeName.iter().position(|&c| c == 0).unwrap_or(0)])
+/// 30360942 -> "30,360,942"
+pub(crate) fn group_digits(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (k, c) in s.chars().enumerate() {
+        if k > 0 && (s.len() - k) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 // Media and document properties Windows knows, in the shell's own wording ("3:25", "320kbps").
@@ -446,20 +551,13 @@ unsafe fn props(path: &str) -> Vec<(String, String)> {
 pub(crate) unsafe fn card(path: &str, extra: &[(String, String)]) -> Body {
     // a real thumbnail (album art, a document's first page) may be larger; an icon comes at the size it is drawn
     let dpi = GetDpiForSystem() as i32;
-    let (thumb, icon_px) = (160 * dpi / 96, 96 * dpi / 96);
-    let icon = shell_pic(path, thumb, thumb, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|| shell_pic(path, icon_px, icon_px, SIIGBF_ICONONLY));
-    let mut rows: Vec<(String, String)> = Vec::new();
-    let t = type_name(path);
-    if !t.is_empty() {
-        rows.push((tr("Type", "종류", "種類").into(), t));
-    }
-    rows.extend(extra.iter().cloned());
+    let (thumb, icon) = (160 * dpi / 96, 96 * dpi / 96);
+    let icon = shell_pic(path, thumb, thumb, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|| shell_pic(path, icon, icon, SIIGBF_ICONONLY));
+    // the header line already gives type, size and date: the card has the rest
+    let mut rows: Vec<(String, String)> = extra.to_vec();
     rows.extend(props(path));
     if let Ok(m) = std::fs::metadata(path) {
-        rows.push((tr("Size", "크기", "サイズ").into(), format!("{} ({} B)", human(m.len()), m.len())));
-        if let Some(t) = when(m.modified()) {
-            rows.push((tr("Modified", "수정한 날짜", "更新日時").into(), t));
-        }
+        rows.push((tr("Size", "크기", "サイズ").into(), format!("{} B", group_digits(m.len()))));
         if let Some(t) = when(m.created()) {
             rows.push((tr("Created", "만든 날짜", "作成日時").into(), t));
         }
@@ -553,5 +651,11 @@ mod tests {
         assert_eq!(ext_of(r"C:\a\b.TXT"), "txt");
         assert_eq!(ext_of(r"C:\a\Makefile"), "makefile");
         assert_eq!(ext_of(r"C:\a\.gitignore"), ".gitignore");
+    }
+
+    #[test]
+    fn grouped_digits() {
+        assert_eq!(group_digits(30360942), "30,360,942");
+        assert_eq!(group_digits(999), "999");
     }
 }
