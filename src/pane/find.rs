@@ -719,6 +719,37 @@ unsafe fn scroll_find(pane: HWND, dy: i32) {
     }
 }
 
+/// Design pixels (96 dpi) of the search-list header.
+/// The subfolder checkbox and its label occupy `[0, SUB_LABEL_RIGHT)`.
+/// The scope pill is `[SCOPE_LEFT, SCOPE_RIGHT)`.
+const SUB_LABEL_RIGHT: i32 = 146;
+const SCOPE_LEFT: i32 = 150;
+const SCOPE_RIGHT: i32 = 292;
+
+fn header_px(v: i32, dpi: i32) -> i32 {
+    v * dpi / 96
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeaderHit {
+    Sub,
+    Scope,
+    None,
+}
+
+/// Click target in the search-list header. The checkbox square and the Subfolders label
+/// are `Sub`. The scope pill is `Scope` only while the search includes subfolders.
+/// The gap before the pill and the status text are `None`.
+pub(crate) fn header_hit(x: i32, dpi: i32, recursive: bool) -> HeaderHit {
+    if x >= 0 && x < header_px(SUB_LABEL_RIGHT, dpi) {
+        HeaderHit::Sub
+    } else if recursive && x >= header_px(SCOPE_LEFT, dpi) && x < header_px(SCOPE_RIGHT, dpi) {
+        HeaderHit::Scope
+    } else {
+        HeaderHit::None
+    }
+}
+
 unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
     let i = match pane_of(pane) {
         Some(i) => i,
@@ -727,12 +758,13 @@ unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
     let dpi = app(|a| a.dpi);
     let rh = row_h(dpi);
     if y < rh {
-        let s = |v: i32| v * dpi / 96;
+        // CS_DBLCLKS: a quick second press is WM_LBUTTONDBLCLK, not another WM_LBUTTONDOWN.
+        // Toggle once for that message, the same as a single click. `dbl` stays for result rows.
         let recursive = find_map().get(&(pane.0 as isize)).is_some_and(|u| u.recursive);
-        if recursive && x >= s(150) && x < s(292) {
-            toggle_find_scope(i);
-        } else {
-            toggle_find_sub(i);
+        match header_hit(x, dpi, recursive) {
+            HeaderHit::Sub => toggle_find_sub(i),
+            HeaderHit::Scope => toggle_find_scope(i),
+            HeaderHit::None => {}
         }
         return false;
     }
@@ -777,16 +809,16 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         fill(dc, rc, pal().card);
         let head = RECT { left: 0, top: 0, right: rc.right, bottom: rh };
         fill(dc, head, pal().bg);
-        let mark = RECT { left: s(8), top: s(4), right: s(20), bottom: rh - s(4) };
+        let mark = RECT { left: s(8), top: (rh - s(14)) / 2, right: s(8) + s(14), bottom: (rh - s(14)) / 2 + s(14) };
         fill(dc, mark, if recursive { accent } else { pal().card });
         frame(dc, mark, 1, if recursive { accent } else { pal().line });
         if recursive {
             text(dc, mark, "\u{E73E}", icon_font, on_color(accent), DT_CENTER);
         }
-        let label_right = if recursive { s(146) } else { rc.right / 2 };
+        let label_right = if recursive { header_px(SUB_LABEL_RIGHT, dpi) } else { rc.right / 2 };
         text(dc, RECT { left: s(26), right: label_right, ..head }, tr("Subfolders", "하위 폴더", "サブフォルダー"), font, pal().text, DT_LEFT);
         if recursive {
-            let pill = RECT { left: s(150), top: s(3), right: s(292), bottom: rh - s(3) };
+            let pill = RECT { left: header_px(SCOPE_LEFT, dpi), top: s(3), right: header_px(SCOPE_RIGHT, dpi), bottom: rh - s(3) };
             fill(dc, pill, pal().card);
             frame(dc, pill, 1, if all { accent } else { pal().line });
             let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
@@ -867,6 +899,43 @@ mod tests {
         assert_eq!(hit_label(r"C:\Work", &hit), "b.txt  ·  sub");
         let here = FindHit { name: "b.txt".into(), path: r"C:\Work\b.txt".into(), dir: false };
         assert_eq!(hit_label(r"C:\Work\", &here), "b.txt");
+    }
+
+    #[test]
+    fn header_hit_is_the_checkbox_label_or_the_scope_pill() {
+        // 96 dpi: label ends at 146, pill is [150, 292).
+        assert_eq!(header_hit(0, 96, true), HeaderHit::Sub);
+        assert_eq!(header_hit(8, 96, true), HeaderHit::Sub);
+        assert_eq!(header_hit(19, 96, true), HeaderHit::Sub);
+        assert_eq!(header_hit(26, 96, true), HeaderHit::Sub);
+        assert_eq!(header_hit(145, 96, true), HeaderHit::Sub);
+        assert_eq!(header_hit(146, 96, true), HeaderHit::None);
+        assert_eq!(header_hit(149, 96, true), HeaderHit::None);
+        assert_eq!(header_hit(150, 96, true), HeaderHit::Scope);
+        assert_eq!(header_hit(291, 96, true), HeaderHit::Scope);
+        assert_eq!(header_hit(292, 96, true), HeaderHit::None);
+        assert_eq!(header_hit(400, 96, true), HeaderHit::None);
+        assert_eq!(header_hit(-1, 96, true), HeaderHit::None);
+        // The pill is drawn only while the search includes subfolders.
+        assert_eq!(header_hit(0, 96, false), HeaderHit::Sub);
+        assert_eq!(header_hit(145, 96, false), HeaderHit::Sub);
+        assert_eq!(header_hit(150, 96, false), HeaderHit::None);
+        assert_eq!(header_hit(291, 96, false), HeaderHit::None);
+        // 192 dpi is exactly double; 120 dpi truncates the same way the paint scale does.
+        assert_eq!(header_hit(291, 192, true), HeaderHit::Sub);
+        assert_eq!(header_hit(292, 192, true), HeaderHit::None);
+        assert_eq!(header_hit(299, 192, true), HeaderHit::None);
+        assert_eq!(header_hit(300, 192, true), HeaderHit::Scope);
+        assert_eq!(header_hit(583, 192, true), HeaderHit::Scope);
+        assert_eq!(header_hit(584, 192, true), HeaderHit::None);
+        assert_eq!(header_hit(300, 192, false), HeaderHit::None);
+        assert_eq!(header_hit(181, 120, true), HeaderHit::Sub);
+        assert_eq!(header_hit(182, 120, true), HeaderHit::None);
+        assert_eq!(header_hit(186, 120, true), HeaderHit::None);
+        assert_eq!(header_hit(187, 120, true), HeaderHit::Scope);
+        assert_eq!(header_hit(364, 120, true), HeaderHit::Scope);
+        assert_eq!(header_hit(365, 120, true), HeaderHit::None);
+        assert_eq!(header_hit(187, 120, false), HeaderHit::None);
     }
 
     #[test]
