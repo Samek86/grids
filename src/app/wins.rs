@@ -212,6 +212,13 @@ pub(crate) unsafe fn snapshot_windows() -> Vec<Value> {
     out
 }
 
+/// The session for paths handed to the running window as tabs: one pane, grown only when more paths come.
+pub(crate) fn fresh_tab_session() -> Session {
+    let mut s = fresh_window_session();
+    s.set_heights(vec![1]);
+    s
+}
+
 pub(crate) fn fresh_window_session() -> Session {
     app(|a| {
         let mut n = a.s.clone();
@@ -416,7 +423,7 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
         return;
     }
     let session_file = session_arg(&args).is_some();
-    let mut built = fresh_window_session();
+    let mut built = fresh_tab_session();
     if let Some(f) = session_arg(&args) {
         let Ok(t) = std::fs::read_to_string(f) else {
             _ = MessageBeep(MB_ICONWARNING);

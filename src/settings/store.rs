@@ -62,8 +62,8 @@ fn lang_auto() -> String {
 fn view_details() -> i32 {
     4
 }
-fn two_by_two() -> Vec<usize> {
-    vec![2, 2]
+fn left_right() -> Vec<usize> {
+    vec![1, 1]
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -82,7 +82,7 @@ struct WinJson {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct LayoutJson {
-    #[serde(default = "two_by_two")]
+    #[serde(default = "left_right")]
     columns: Vec<usize>,
     #[serde(default)]
     colr: Vec<f64>,
@@ -94,7 +94,7 @@ struct LayoutJson {
 
 impl Default for LayoutJson {
     fn default() -> Self {
-        serde_json::from_str("{}").unwrap_or(LayoutJson { columns: two_by_two(), colr: Vec::new(), rowr: Vec::new(), active: 0 })
+        serde_json::from_str("{}").unwrap_or(LayoutJson { columns: left_right(), colr: Vec::new(), rowr: Vec::new(), active: 0 })
     }
 }
 
@@ -414,7 +414,7 @@ impl SettingsFile {
         }
         s.side = self.side;
         let heights: Vec<usize> = self.layout.columns.iter().take(4).copied().map(|n| n.clamp(1, 4)).collect();
-        s.heights = if heights.is_empty() { vec![2, 2] } else { heights };
+        s.heights = if heights.is_empty() { vec![1, 1] } else { heights };
         s.colr = fix(self.layout.colr.clone(), s.heights.len());
         let rowr = &self.layout.rowr;
         let group = |c: usize| if rowr.len() == s.heights.len() { rowr.get(c) } else { rowr.first() };
