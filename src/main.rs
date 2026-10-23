@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     unsafe {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
+        // one_window still hands off: the running window comes forward and opens paths as tabs.
         // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
         // A file that is there but unreadable must not be overwritten with defaults.
         let mut s = loop {
@@ -50,11 +51,13 @@ fn main() -> Result<()> {
             apply_boot(&mut s);
         }
         // Extra windows belong to "restore last state". A session file, paths, or another startup mode do not.
-        if !restore || boot != 0 {
+        // Single-window mode never opens the other saved windows.
+        if !restore || boot != 0 || !allows_another_window(s.one_window) {
             stash_windows(Vec::new());
         }
         s.dark = resolve_dark(s.theme);
-        if s.single {
+        // single=0 starts another process, unless single-window mode is on: that still hands the launch over.
+        if launch_plan(s.single, s.one_window) != LaunchPlan::NewProcess {
             if let Some(prev) = running_instance() {
                 // Empty arguments still open a window. The running process is the one that can take focus.
                 let data: Vec<u16> = args.join("\n").encode_utf16().collect();

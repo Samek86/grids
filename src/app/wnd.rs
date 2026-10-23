@@ -748,7 +748,12 @@ pub(crate) unsafe fn hotkey_pressed() {
     let ours = app(|a| a.desks.iter().find(|d| d.main == root || d.main == fg).map(|d| d.main));
     if let Some(main) = ours {
         if !IsIconic(main).as_bool() {
-            _ = ShowWindow(main, SW_MINIMIZE);
+            if hotkey_when_front(app(|a| a.s.one_window)) == HotkeyWhenFront::NewTab {
+                bind_hwnd(main);
+                new_tab();
+            } else {
+                _ = ShowWindow(main, SW_MINIMIZE);
+            }
             return;
         }
     }
