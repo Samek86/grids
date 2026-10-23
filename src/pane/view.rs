@@ -259,7 +259,7 @@ pub(crate) unsafe fn relayout() {
         let btn_top = strip_top + (strip_h - s(24)) / 2;
         // Drive letters, then Layout, save, load and the gear, at the right of the tab row.
         // The last letters hide first so a minimum tab stays clear of the group.
-        let icons = icon_slots(g.w, btn_top, a.dpi, a.drives.len());
+        let icons = icon_slots(g.w, btn_top, a.dpi, drive_slots(a.s.drive_buttons, a.drives.len()));
         for (id, r) in icons.icons {
             moves.push((tb(id), r));
         }
