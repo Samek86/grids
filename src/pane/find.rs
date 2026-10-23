@@ -398,8 +398,9 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         u.scroll = 0;
         u.show = true;
         let up = u.recursive && enabled && everything::running();
-        u.engine = if up { FindEngine::Everything } else { FindEngine::Walk };
-        (u.gen, u.recursive, u.everywhere, up)
+        let use_ev = find_engine(u.recursive, enabled, up) == FindEngine::Everything;
+        u.engine = if use_ev { FindEngine::Everything } else { FindEngine::Walk };
+        (u.gen, u.recursive, u.everywhere, use_ev)
     };
     // Any other pane's walk is stale once this one starts.
     {
