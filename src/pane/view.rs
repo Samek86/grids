@@ -255,22 +255,24 @@ pub(crate) unsafe fn relayout() {
         let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
         let show_bar = a.s.bar;
         let strip_h = s(32);
-        let strip_top = if show_bar { s(34) } else { 0 };
+        let strip_top = 0;
         let btn_top = strip_top + (strip_h - s(24)) / 2;
-        // Layout, save, load and the gear share the tab row, at its right edge.
-        let (_, slots) = icon_slots(g.w, btn_top, a.dpi);
-        for (id, r) in slots {
+        // Drive letters, then Layout, save, load and the gear, at the right of the tab row.
+        // The last letters hide first so a minimum tab stays clear of the group.
+        let icons = icon_slots(g.w, btn_top, a.dpi, a.drives.len());
+        for (id, r) in icons.icons {
             moves.push((tb(id), r));
         }
-        // Drive letters fill the top row from the left pad. The last ones hide rather than run off the window.
-        let mut x = g.pad;
-        let limit = g.w - g.pad;
         let mut drive_vis = Vec::new();
-        for &(_, _, h) in &a.drives {
-            let w = s(32);
-            moves.push((h, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
-            drive_vis.push((h, show_bar && x + w <= limit));
-            x += w + s(2);
+        for (i, &(_, _, h)) in a.drives.iter().enumerate() {
+            let r = if i < icons.drive_n {
+                icons.drives[i]
+            } else {
+                let x = icons.icons[0].1.left;
+                RECT { left: x, top: btn_top, right: x, bottom: btn_top }
+            };
+            moves.push((h, r));
+            drive_vis.push((h, show_bar && i < icons.drive_n));
         }
         let show_side = a.s.tree_on;
         let (tree_h, side_h) = (a.tree_hwnd, a.side_hwnd);
@@ -299,6 +301,10 @@ pub(crate) unsafe fn relayout() {
     }
     for (h, on) in drive_vis {
         _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
+        // The strip is full width underneath them, so a visible letter stays above it and takes the click.
+        if on {
+            _ = SetWindowPos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_side { SW_SHOW } else { SW_HIDE });

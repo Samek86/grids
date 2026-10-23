@@ -190,7 +190,7 @@ pub(crate) struct Session {
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     /// Chosen UI face. Empty uses the language default (Segoe UI / Malgun Gothic / Yu Gothic UI).
     pub(crate) font_face: String,
-    pub(crate) bar: bool,              // toolbar
+    pub(crate) bar: bool,              // tab-row icons and drive buttons
     pub(crate) stat: bool,             // status line
     pub(crate) view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
     pub(crate) start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
