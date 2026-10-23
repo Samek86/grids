@@ -12,6 +12,7 @@ mod pane;
 mod session;
 mod shell;
 mod settings;
+mod everything;
 
 use imports::*;
 
