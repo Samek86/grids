@@ -186,6 +186,8 @@ pub(crate) struct Session {
     pub(crate) order: Vec<u8>,
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
     pub(crate) font: u8,               // 0 default, 1 large, 2 larger
+    /// Chosen UI face. Empty uses the language default (Segoe UI / Malgun Gothic / Yu Gothic UI).
+    pub(crate) font_face: String,
     pub(crate) bar: bool,              // toolbar
     pub(crate) stat: bool,             // status line
     pub(crate) view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
@@ -241,6 +243,7 @@ impl Default for Session {
             order: Vec::new(),
             theme: 0,
             font: 0,
+            font_face: String::new(),
             bar: true,
             stat: true,
             view_new: 4,
@@ -296,6 +299,7 @@ impl PartialEq for Session {
             && self.tints == o.tints
             && self.theme == o.theme
             && self.font == o.font
+            && self.font_face == o.font_face
             && self.bar == o.bar
             && self.stat == o.stat
             && self.view_new == o.view_new
@@ -441,6 +445,14 @@ impl Session {
         self.rowr = h.iter().map(|&n| even(n)).collect();
         self.heights = h;
         self.active = self.active.min(self.panes() - 1);
+    }
+
+    /// Another language drops a chosen face so that language's default is used.
+    pub(crate) fn choose_lang(&mut self, lang: Lang) {
+        if self.lang != lang {
+            self.font_face.clear();
+        }
+        self.lang = lang;
     }
 
     pub(crate) fn parse(text: &str) -> Session {
@@ -1482,6 +1494,30 @@ mod swap_tests {
         saved.reorder(&cur.order);
         assert_eq!(saved.paths[0], cur.paths[0]);
         assert_eq!(saved.paths[1], cur.paths[1]);
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    #[test]
+    fn language_change_clears_font_face() {
+        let mut s = Session::default();
+        s.lang = Lang::En;
+        s.font_face = "Consolas".into();
+        s.choose_lang(Lang::En);
+        assert_eq!(s.font_face, "Consolas");
+        assert_eq!(s.lang, Lang::En);
+        s.choose_lang(Lang::Ja);
+        assert!(s.font_face.is_empty());
+        assert_eq!(s.lang, Lang::Ja);
+        assert_eq!(crate::default_face(2), "Yu Gothic UI");
+        s.font_face = "Malgun Gothic".into();
+        s.choose_lang(Lang::Ko);
+        assert!(s.font_face.is_empty());
+        assert_eq!(crate::default_face(1), "Malgun Gothic");
+        assert_eq!(crate::default_face(0), "Segoe UI");
     }
 }
 

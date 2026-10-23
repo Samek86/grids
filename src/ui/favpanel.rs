@@ -58,12 +58,8 @@ pub(crate) unsafe fn sync_fav_metrics() {
     if !tv.0.is_null() && !font.is_invalid() {
         SendMessageW(tv, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
     }
-    let rh = fav_row_height(tree_item_height(), if fh > 0 { fh } else { 16 * dpi.max(1) / 96 });
-    let n = rows().len() as i32;
-    app(|a| {
-        let max = (n * rh - 40).max(0);
-        a.side_scroll = a.side_scroll.min(max);
-    });
+    _ = (fh, dpi);
+    clamp_side_scroll();
 }
 
 fn rows() -> Vec<FavRow> {
@@ -77,13 +73,45 @@ fn rows() -> Vec<FavRow> {
     })
 }
 
+fn side_view_h() -> i32 {
+    let h = app(|a| a.side_hwnd);
+    let mut rc = RECT::default();
+    if !h.0.is_null() {
+        unsafe { _ = GetClientRect(h, &mut rc) };
+    }
+    rc.bottom
+}
+
+/// Largest vertical scroll offset: total row height minus what the panel shows.
+fn max_side_scroll() -> i32 {
+    let total = rows().len() as i32 * row_h();
+    (total - side_view_h()).max(0)
+}
+
+/// Mirror the scroll state into the native vertical scrollbar (hidden while everything fits).
+pub(crate) fn sync_side_scrollbar() {
+    let h = app(|a| a.side_hwnd);
+    if h.0.is_null() {
+        return;
+    }
+    let total = rows().len() as i32 * row_h();
+    let (page, pos) = (side_view_h(), app(|a| a.side_scroll));
+    let si = SCROLLINFO {
+        cbSize: size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        nMin: 0,
+        nMax: (total - 1).max(0),
+        nPage: page.max(0) as u32,
+        nPos: pos,
+        nTrackPos: 0,
+    };
+    unsafe { windows::Win32::UI::Controls::SetScrollInfo(h, SB_VERT, &si, true) };
+}
+
 fn clamp_side_scroll() {
-    let rh = row_h();
-    let n = rows().len() as i32;
-    app(|a| {
-        let max = (n * rh - 40).max(0);
-        a.side_scroll = a.side_scroll.min(max);
-    });
+    let max = max_side_scroll();
+    app(|a| a.side_scroll = a.side_scroll.min(max));
+    sync_side_scrollbar();
 }
 
 fn drag_of(r: &FavRow) -> SideDrag {
@@ -155,7 +183,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let rh = row_h();
-        fill(dc, rc, pal().card);
+        fill(dc, rc, side_ground());
         if list.is_empty() {
             text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
             text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
@@ -164,7 +192,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
         let any_group = list.iter().any(|f| f.group);
         let bold = if any_group { bold_ui_font() } else { font };
         let wash = if any_group {
-            group_wash_brush(group_tint(accent, pal().card, DARK_ON.load(Ordering::Relaxed)))
+            group_wash_brush(group_tint(accent, side_ground(), DARK_ON.load(Ordering::Relaxed)))
         } else {
             HBRUSH::default()
         };
@@ -180,12 +208,12 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
             // Selection and hover replace the wash. The selected fill is mostly accent, so it wins.
             if sel == Some(i) {
-                fill(dc, r, blend(accent, pal().card, 0.16));
+                fill(dc, r, blend(accent, side_ground(), 0.16));
             } else if hot == Some(i) {
-                fill(dc, r, blend(pal().bg, pal().card, 0.35));
+                fill(dc, r, blend(pal().bg, pal().card, if DARK_ON.load(Ordering::Relaxed) { 0.5 } else { 0.7 }));
             }
             if into {
-                fill(dc, r, blend(accent, pal().card, 0.28));
+                fill(dc, r, blend(accent, side_ground(), 0.28));
             }
             let indent = s(14) * f.depth.min(8) as i32;
             let mut x = s(4) + indent;
@@ -703,11 +731,33 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_MOUSEWHEEL => {
                 let rh = row_h();
                 let delta = ((wp.0 >> 16) as i16 as i32) * rh / 120;
-                let n = rows().len() as i32;
-                app(|a| {
-                    let max = (n * rh - 40).max(0);
-                    a.side_scroll = (a.side_scroll - delta).clamp(0, max);
-                });
+                let max = max_side_scroll();
+                app(|a| a.side_scroll = (a.side_scroll - delta).clamp(0, max));
+                sync_side_scrollbar();
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            WM_SIZE => {
+                clamp_side_scroll();
+                _ = InvalidateRect(Some(h), None, false);
+            }
+            WM_VSCROLL => {
+                let mut si = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..Default::default() };
+                _ = GetScrollInfo(h, SB_VERT, &mut si);
+                let rh = row_h();
+                let cur = app(|a| a.side_scroll);
+                let want = match SCROLLBAR_COMMAND((wp.0 & 0xFFFF) as i32) {
+                    SB_LINEUP => cur - rh,
+                    SB_LINEDOWN => cur + rh,
+                    SB_PAGEUP => cur - si.nPage as i32,
+                    SB_PAGEDOWN => cur + si.nPage as i32,
+                    SB_THUMBTRACK | SB_THUMBPOSITION => si.nTrackPos,
+                    SB_TOP => 0,
+                    SB_BOTTOM => i32::MAX,
+                    _ => cur,
+                };
+                let max = max_side_scroll();
+                app(|a| a.side_scroll = want.clamp(0, max));
+                sync_side_scrollbar();
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_LBUTTONDOWN => {

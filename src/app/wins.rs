@@ -320,7 +320,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     if let Ok((t, th)) = create_tree(main) {
         app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
     }
-    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
+    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     app(|a| a.side_hwnd = side);
     register_side_drop(side);
     prime_theme(app(|a| a.s.dark));

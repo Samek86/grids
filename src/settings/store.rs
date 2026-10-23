@@ -151,6 +151,9 @@ struct SettingsFile {
     theme: String,
     #[serde(default)]
     font: u8,
+    /// UI face. Missing or empty uses the language default. Not a size (that is `font`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    font_face: String,
     #[serde(default = "yes")]
     bar: bool,
     #[serde(default = "yes")]
@@ -253,6 +256,7 @@ impl SettingsFile {
             dark: false,
             theme: theme_auto(),
             font: 0,
+            font_face: String::new(),
             bar: true,
             stat: true,
             view_new: 4,
@@ -332,6 +336,7 @@ impl SettingsFile {
             dark: s.dark,
             theme: ["auto", "light", "dark"][s.theme.min(2) as usize].into(),
             font: s.font.min(2),
+            font_face: s.font_face.trim().to_string(),
             bar: s.bar,
             stat: s.stat,
             view_new: s.view_new,
@@ -447,6 +452,7 @@ impl SettingsFile {
             _ => 0,
         };
         s.font = self.font.min(2);
+        s.font_face = self.font_face.trim().to_string();
         s.bar = self.bar;
         s.stat = self.stat;
         s.view_new = match self.view_new {
@@ -508,6 +514,21 @@ impl SettingsFile {
             first
         }
     }
+}
+
+/// Drop `font_face` when that family is not installed. The pure decision is `resolve_face`.
+fn forget_missing_face(s: &mut Session) {
+    if s.font_face.is_empty() {
+        return;
+    }
+    let ok = unsafe { crate::face_installed(&s.font_face) };
+    let only = [s.font_face.as_str()];
+    let resolved = crate::resolve_face(&s.font_face, s.lang.resolve(), if ok { &only[..] } else { &[] });
+    if ok && resolved == s.font_face {
+        return;
+    }
+    s.font_face.clear();
+    SETTINGS_KEEP.with(|k| k.borrow_mut().font_face.clear());
 }
 
 fn parse_color(v: &str) -> Option<u32> {
@@ -636,9 +657,11 @@ pub(crate) fn try_load_at(exe: &Path, cfg: &Path) -> Result<Session, String> {
     match read_settings_file(&json_path)? {
         Some(raw) => {
             let text = strip_bom(&raw);
-            let Some(s) = adopt(text) else {
+            let Some(mut s) = adopt(text) else {
                 return Err("grids.json is not valid settings".into());
             };
+            // A name that is not installed falls back to the language default. Empty skips the lookup.
+            forget_missing_face(&mut s);
             // The activity-bar choice is retired. Drop it once so the next launch does not see it.
             let had_panel = serde_json::from_str::<Value>(text).ok().is_some_and(|v| v.get("panel").is_some());
             if had_panel {
@@ -1174,5 +1197,50 @@ mod tests {
         let imported = import_text("\u{FEFF}{\"version\":1,\"favorites_tree\":[{\"name\":\"Places\",\"path\":\"D:\\\\Photos\"}]}").unwrap();
         assert_eq!(imported.tree[0].name, "Places");
         assert!(imported.is_fav(r"D:\Photos"));
+    }
+
+    #[test]
+    fn font_face_round_trips_present_absent_and_unknown_keys() {
+        let _ = adopt("{}");
+        assert!(Session::default().font_face.is_empty());
+        let bare = adopt(r#"{"version":1,"lang":"ja","future":{"keep":true}}"#).unwrap();
+        assert!(bare.font_face.is_empty());
+        assert_eq!(bare.lang, Lang::Ja);
+        let saved_bare: Value = serde_json::from_str(&sync_text(&bare)).unwrap();
+        assert!(saved_bare.get("font_face").is_none());
+        assert_eq!(saved_bare["future"]["keep"], true);
+        assert_eq!(saved_bare["lang"], "ja");
+
+        let mut s = bare.clone();
+        s.font_face = "Yu Gothic UI".into();
+        let saved: Value = serde_json::from_str(&sync_text(&s)).unwrap();
+        assert_eq!(saved["font_face"], "Yu Gothic UI");
+        assert_eq!(saved["future"]["keep"], true);
+        let back = adopt(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back.font_face, "Yu Gothic UI");
+        assert_eq!(back.lang, Lang::Ja);
+
+        let mut named = Session::default();
+        named.font_face = "Consolas".into();
+        named.lang = Lang::En;
+        assert!(!named.to_ini().contains("font_face"));
+        assert!(Session::parse(&format!("font_face=Consolas\n{}", named.to_ini())).font_face.is_empty());
+    }
+
+    #[test]
+    fn load_drops_a_font_face_that_is_not_installed() {
+        let root = scratch("missing-face");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("grids.json"), "{\"version\":1,\"lang\":\"ja\",\"font_face\":\"Not A Real Font Zzz\",\"future\":1}\n").unwrap();
+        let s = load_at(&exe, &cfg);
+        assert!(s.font_face.is_empty(), "missing face should fall back");
+        assert_eq!(s.lang, Lang::Ja);
+        let kept: Value = serde_json::from_str(&current_text()).unwrap();
+        assert!(kept.get("font_face").is_none());
+        assert_eq!(kept["future"], 1);
+        assert_eq!(kept["lang"], "ja");
     }
 }

@@ -395,7 +395,7 @@ pub(crate) unsafe fn paint_main(h: HWND) {
         fill(dc, rc, pal().bg);
         if g.side > 0 {
             let side = side_rect(&g);
-            fill(dc, side, pal().card);
+            fill(dc, side, side_ground());
             if g.tree_h > 0 && g.gap > 0 {
                 let gap = RECT { left: side.left, top: side.top + g.tree_h, right: side.right, bottom: side.top + g.tree_h + g.gap };
                 fill(dc, gap, pal().bg);

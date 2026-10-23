@@ -843,6 +843,7 @@ pub(crate) unsafe fn apply_theme_desk() {
         }
     };
     tip_theme(tip);
+    tip_theme(app(|a| a.side_hwnd)); // favourites list scrollbar
     let on = BOOL::from(dark);
     _ = DwmSetWindowAttribute(main, DWMWINDOWATTRIBUTE(20), &on as *const _ as _, 4); // immersive dark title bar
     let caption = cref(pal().bg);
@@ -850,7 +851,7 @@ pub(crate) unsafe fn apply_theme_desk() {
     if let Ok(tv) = FindWindowExW(Some(tree), None, w!("SysTreeView32"), PCWSTR::null()) {
         _ = SetWindowTheme(tv, if dark { w!("DarkMode_Explorer") } else { w!("Explorer") }, PCWSTR::null());
         let colour = |c: u32| LPARAM(if dark { cref(c).0 as isize } else { -1 }); // -1: system default
-        SendMessageW(tv, TVM_SETBKCOLOR, None, Some(colour(pal().card)));
+        SendMessageW(tv, TVM_SETBKCOLOR, None, Some(LPARAM(cref(crate::ui::side_ground()).0 as isize)));
         SendMessageW(tv, TVM_SETTEXTCOLOR, None, Some(colour(pal().text)));
         tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
     }
