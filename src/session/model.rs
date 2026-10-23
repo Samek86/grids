@@ -218,9 +218,10 @@ impl Default for Session {
         let mut s = Session {
             win: None,
             side: 0,
-            heights: vec![2, 2],
+            // A first-ever start: two panes, left and right.
+            heights: vec![1, 1],
             colr: even(2),
-            rowr: vec![even(2); 2],
+            rowr: vec![even(1); 2],
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
@@ -1378,6 +1379,7 @@ mod crumb_tests {
     #[test]
     fn pane_tint_round_trip() {
         let mut s = Session::default();
+        s.set_heights(vec![2, 2]);
         s.tints[3] = 4;
         s.anchor();
         let text = s.to_ini();
