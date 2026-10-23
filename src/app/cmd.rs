@@ -412,6 +412,19 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             }
             false
         }
+        WM_MOUSEWHEEL => {
+            let tabs = app(|a| a.tabs_hwnd);
+            if tabs.0.is_null() {
+                return false;
+            }
+            let pt = POINT { x: (m.lParam.0 & 0xffff) as i16 as i32, y: ((m.lParam.0 >> 16) & 0xffff) as i16 as i32 };
+            let under = WindowFromPoint(pt);
+            if under == tabs || IsChild(tabs, under).as_bool() {
+                tab_wheel((m.wParam.0 >> 16) as i16 as i32);
+                return true;
+            }
+            false
+        }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             kids_cancel();
             if m.message == WM_LBUTTONDOWN && in_tree() {

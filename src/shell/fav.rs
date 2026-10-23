@@ -6,7 +6,7 @@ use crate::session::*;
 use crate::i18n::*;
 use crate::settings;
 
-// ---------- favourites: ☆+ in each pane header, the ★ list in the toolbar ----------
+// ---------- favourites: ☆+ in each pane header; Ctrl+B opens the same list ----------
 
 pub(crate) unsafe fn repaint_fav_buttons() {
     for h in app(|a| a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>()) {
@@ -653,6 +653,25 @@ fn fav_rows() -> Vec<FavRow> {
     })
 }
 
+/// Where the favourites list opens: under the gear, or at the top of the active pane when the bar is hidden.
+unsafe fn fav_popup_anchor(main: HWND) -> RECT {
+    let mut rc = RECT::default();
+    if let Ok(b) = GetDlgItem(Some(main), ID_TB_SET) {
+        if IsWindowVisible(b).as_bool() {
+            _ = GetWindowRect(b, &mut rc);
+            if rc.bottom > rc.top {
+                return rc;
+            }
+        }
+    }
+    let pane = app(|a| a.panes.get(a.s.active).and_then(|p| p.as_ref()).map(|p| p.hwnd)).unwrap_or_default();
+    if !pane.0.is_null() {
+        _ = GetWindowRect(pane, &mut rc);
+        rc.bottom = rc.top;
+    }
+    rc
+}
+
 pub(crate) unsafe fn open_favs() {
     let (main, dpi, open, closed, n) = app(|a| {
         a.s.ensure_fav_tree();
@@ -663,10 +682,7 @@ pub(crate) unsafe fn open_favs() {
         return;
     }
     let g = fav_geo(n, dpi);
-    let mut rc = RECT::default();
-    if let Ok(b) = GetDlgItem(Some(main), ID_TB_FAV) {
-        _ = GetWindowRect(b, &mut rc);
-    }
+    let rc = fav_popup_anchor(main);
     let prev = GetFocus();
     app(|a| (a.fav_hot, a.fav_prev) = (None, prev));
     let style = WS_POPUP | WS_VISIBLE;
@@ -774,8 +790,8 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     VK_ESCAPE => {
                         let (main, prev, active) = app(|a| (a.main, a.fav_prev, a.s.active));
                         _ = DestroyWindow(h);
-                        let fav_btn = GetDlgItem(Some(main), ID_TB_FAV).unwrap_or_default();
-                        if !prev.0.is_null() && IsWindow(Some(prev)).as_bool() && prev != fav_btn {
+                        let gear = GetDlgItem(Some(main), ID_TB_SET).unwrap_or_default();
+                        if !prev.0.is_null() && IsWindow(Some(prev)).as_bool() && prev != gear {
                             _ = SetFocus(Some(prev));
                         } else {
                             focus_view(active);
