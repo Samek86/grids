@@ -464,12 +464,26 @@ mod tests {
         assert!(cw < 90 && cw >= 28);
         assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
         assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
-        assert!(lay.close[0].is_some() && lay.close[1].is_none() && lay.close[2].is_some());
+        // A locked tab keeps the close slot. The glyph is a lock and it does not close.
+        assert!(lay.close.iter().all(|c| c.is_some()));
+        assert!(lay.lock[1] && !lay.lock[0]);
         let c = lay.close[0].unwrap();
+        let locked = lay.close[1].unwrap();
+        assert_eq!(c.right - c.left, locked.right - locked.left);
         assert!(c.left >= lay.body[0].left && c.right <= lay.body[0].right);
         assert!(matches!(tab_hit(&lay, lay.plus.left + 2, lay.plus.top + 2), TabHit::Plus));
         assert!(matches!(tab_hit(&lay, c.left + 1, c.top + 1), TabHit::Close(0)));
+        assert!(matches!(tab_hit(&lay, locked.left + 1, locked.top + 1), TabHit::Lock(1)));
+        assert!(!middle_closes(&lay, TabHit::Lock(1)) && !middle_closes(&lay, TabHit::Tab(1)));
+        assert!(middle_closes(&lay, TabHit::Close(0)) && middle_closes(&lay, TabHit::Tab(0)));
+        assert_eq!(close_glyph(true), ICON_LOCK);
+        assert_eq!(close_glyph(false), ICON_CLOSE);
+        assert_eq!(close_ink(true, true, 1, 2), 2);
+        assert_eq!(close_ink(false, true, 1, 2), 1);
         assert!(matches!(tab_hit(&lay, lay.body[1].left + 4, lay.body[1].top + 4), TabHit::Tab(1)));
+        let hi = tab_lay(3200, 1, &[true], 192).close[0].unwrap();
+        let lo = tab_lay(1600, 1, &[true], 96).close[0].unwrap();
+        assert_eq!(hi.right - hi.left, (lo.right - lo.left) * 2);
 
         let junk = Session::parse("cols=1\ntabs=[{\"id\":\"later\"}]\n");
         assert_eq!((junk.tabs.len(), junk.heights.clone(), junk.tabs[0].name.as_str()), (1, vec![1], "1"));
