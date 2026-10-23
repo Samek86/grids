@@ -174,6 +174,12 @@ pub(crate) fn install_async() {
     });
 }
 
+/// True when Everything is neither running nor found on this PC. Reads the registry and the disk once,
+/// so it is only called when the user starts a subfolder search.
+pub(crate) fn not_installed() -> bool {
+    matches!(detect().0, Shown::Ready(Presence::NotInstalled))
+}
+
 fn detect() -> (Shown, Option<String>) {
     let hwnd = run::ipc_hwnd();
     let running = hwnd.is_some();
