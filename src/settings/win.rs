@@ -782,6 +782,7 @@ fn dc_of(d: &DRAWITEMSTRUCT) -> HDC {
 fn flip(id: u8) {
     match id {
         TG_SINGLE => app(|a| a.s.single ^= true),
+        TG_ONE => app(|a| a.s.one_window ^= true),
         TG_DBLUP => app(|a| a.s.dblup ^= true),
         TG_HIDDEN => {
             unsafe { crate::toggle_hidden() };

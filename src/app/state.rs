@@ -113,6 +113,7 @@ pub(crate) struct Desk {
     pub(crate) tab_edit: HWND,
     pub(crate) tab_hot: Option<usize>,
     pub(crate) tab_hot_close: bool,
+    pub(crate) tab_lock_tip: bool, // tracking tooltip for a locked tab's lock glyph is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_drag: Option<usize>,
     pub(crate) tab_press: Option<(usize, i32, i32, bool)>, // tab, x, y, press landed on its close box
@@ -254,6 +255,7 @@ pub(crate) fn blank_desk() -> Desk {
         tab_edit: HWND::default(),
         tab_hot: None,
         tab_hot_close: false,
+        tab_lock_tip: false,
         tab_hot_plus: false,
         tab_drag: None,
         tab_press: None,
@@ -459,6 +461,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.hotkey = src.hotkey;
     dst.lang = src.lang;
     dst.single = src.single;
+    dst.one_window = src.one_window;
     dst.favs = src.favs.clone();
     dst.tree = src.tree.clone();
     dst.recent = src.recent.clone();

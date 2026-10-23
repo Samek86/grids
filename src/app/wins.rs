@@ -15,6 +15,69 @@ thread_local! {
     static PENDING: RefCell<Vec<Value>> = RefCell::new(Vec::new());
 }
 
+/// What a second `grids.exe` does. Single-window mode hands off even when single-instance is off,
+/// so a second process cannot open a second window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LaunchPlan {
+    NewProcess,
+    NewWindow,
+    FocusTabs,
+}
+
+pub(crate) fn launch_plan(single_instance: bool, one_window: bool) -> LaunchPlan {
+    if one_window {
+        LaunchPlan::FocusTabs
+    } else if single_instance {
+        LaunchPlan::NewWindow
+    } else {
+        LaunchPlan::NewProcess
+    }
+}
+
+/// What the running process does with a second launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Inbound {
+    NewWindow,
+    Focus,
+    Tabs,
+}
+
+pub(crate) fn inbound(one_window: bool, has_paths: bool) -> Inbound {
+    if !one_window {
+        Inbound::NewWindow
+    } else if has_paths {
+        Inbound::Tabs
+    } else {
+        Inbound::Focus
+    }
+}
+
+/// A command that would open a top-level window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Spawn {
+    Window,
+    Tab,
+}
+
+pub(crate) fn spawn_kind(one_window: bool) -> Spawn {
+    if one_window { Spawn::Tab } else { Spawn::Window }
+}
+
+pub(crate) fn allows_another_window(one_window: bool) -> bool {
+    spawn_kind(one_window) == Spawn::Window
+}
+
+/// Win+Alt+E while this window is already in front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HotkeyWhenFront {
+    Minimize,
+    NewTab,
+}
+
+pub(crate) fn hotkey_when_front(one_window: bool) -> HotkeyWhenFront {
+    if one_window { HotkeyWhenFront::NewTab } else { HotkeyWhenFront::Minimize }
+}
+
 pub(crate) fn set_snaps(v: Vec<Value>) {
     SNAPS.with(|s| *s.borrow_mut() = v);
 }
@@ -320,14 +383,90 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
 }
 
 pub(crate) unsafe fn new_window() {
+    if !allows_another_window(app(|a| a.s.one_window)) {
+        new_tab();
+        return;
+    }
     let s = fresh_window_session();
     if open_window(s).is_ok() {
         note_save();
     }
 }
 
-/// A second launch, with or without paths. Empty args are a blank window.
+/// Bring `h` forward, restoring it when it is minimized.
+pub(crate) unsafe fn reveal_window(h: HWND) {
+    if h.0.is_null() {
+        return;
+    }
+    if IsIconic(h).as_bool() {
+        _ = ShowWindow(h, SW_RESTORE);
+    }
+    _ = SetWindowPos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    bind_hwnd(h);
+    _ = SetForegroundWindow(h);
+    focus_view(app(|a| a.s.active));
+}
+
+/// Paths that would have filled a new window become tabs in this one. A session file keeps its tabs.
+pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
+    if args.is_empty() || app(|a| a.main.0.is_null()) {
+        return;
+    }
+    let session_file = session_arg(&args).is_some();
+    let mut built = fresh_window_session();
+    if let Some(f) = session_arg(&args) {
+        let Ok(t) = std::fs::read_to_string(f) else {
+            _ = MessageBeep(MB_ICONWARNING);
+            return;
+        };
+        built.take_layout(&Session::parse(&t));
+    } else {
+        apply_args(&mut built, args);
+    }
+    let mut tabs = built.view_tabs();
+    if tabs.is_empty() {
+        return;
+    }
+    if !session_file {
+        if let Some(t) = tabs.first_mut() {
+            if let Some(p) = t.paths.iter().find(|p| !p.is_empty()) {
+                let n = short_name(p);
+                if !n.is_empty() {
+                    t.name = n;
+                }
+            }
+        }
+    }
+    let pick = built.tab.min(tabs.len() - 1);
+    let base = app(|a| a.s.tabs.len());
+    for tab in tabs {
+        app(|a| {
+            fit_park(a);
+            a.s.tabs.push(tab);
+            a.park.push(no_panes());
+        });
+    }
+    switch_tab(base + pick);
+    note_save();
+}
+
+/// A second launch, with or without paths. Empty args are a blank window,
+/// unless single-window mode is on: then the existing window comes forward.
 pub(crate) unsafe fn open_in_new_window(args: Vec<String>) -> HWND {
+    match inbound(app(|a| a.s.one_window), !args.is_empty()) {
+        Inbound::Focus => {
+            let h = app(|a| a.main);
+            reveal_window(h);
+            return h;
+        }
+        Inbound::Tabs => {
+            let h = app(|a| a.main);
+            reveal_window(h);
+            open_args_as_tabs(args);
+            return app(|a| a.main);
+        }
+        Inbound::NewWindow => {}
+    }
     let mut s = fresh_window_session();
     if let Some(f) = session_arg(&args) {
         if let Ok(t) = std::fs::read_to_string(f) {
@@ -349,6 +488,10 @@ pub(crate) unsafe fn open_in_new_window(args: Vec<String>) -> HWND {
 
 /// Saved windows other than the one already on screen. Called from a short timer so the first paint is not waiting on them.
 pub(crate) unsafe fn open_stashed() {
+    if !allows_another_window(app(|a| a.s.one_window)) {
+        take_stashed();
+        return;
+    }
     let pending = take_stashed();
     if pending.is_empty() {
         return;
@@ -466,6 +609,11 @@ unsafe fn undo_take(source: HWND, only: bool, i: usize, tab: Tab) {
 }
 
 pub(crate) unsafe fn move_tab_to_new(i: usize) {
+    if !allows_another_window(app(|a| a.s.one_window)) {
+        // The new window's content opens as another tab here. The original stays.
+        duplicate_tab(i);
+        return;
+    }
     let source = app(|a| a.main);
     let only = app(|a| a.s.tabs.len() <= 1);
     let Some(tab) = take_tab(i) else { return };
@@ -552,6 +700,29 @@ pub(crate) unsafe fn finish_tab_drag(strip: HWND, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_window_decides_launch_spawn_and_hotkey() {
+        assert_eq!(launch_plan(false, false), LaunchPlan::NewProcess);
+        assert_eq!(launch_plan(true, false), LaunchPlan::NewWindow);
+        assert_eq!(launch_plan(false, true), LaunchPlan::FocusTabs);
+        assert_eq!(launch_plan(true, true), LaunchPlan::FocusTabs);
+        assert_eq!(inbound(false, false), Inbound::NewWindow);
+        assert_eq!(inbound(false, true), Inbound::NewWindow);
+        assert_eq!(inbound(true, false), Inbound::Focus);
+        assert_eq!(inbound(true, true), Inbound::Tabs);
+        assert_eq!(spawn_kind(false), Spawn::Window);
+        assert_eq!(spawn_kind(true), Spawn::Tab);
+        assert!(allows_another_window(false));
+        assert!(!allows_another_window(true));
+        assert_eq!(hotkey_when_front(false), HotkeyWhenFront::Minimize);
+        assert_eq!(hotkey_when_front(true), HotkeyWhenFront::NewTab);
+        assert!(!Session::default().one_window);
+        let mut on = Session::default();
+        on.one_window = true;
+        assert!(Session::parse(&on.to_ini()).one_window);
+        assert!(!Session::parse("single=0\n").one_window);
+    }
 
     #[test]
     fn window_values_round_trip_each_grids_paths() {

@@ -571,7 +571,17 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_COMMAND => match ((wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32) {
                 // pill gets an accent outline while its edit has focus
                 (ID_EDIT, EN_SETFOCUS | EN_KILLFOCUS) => sync_addr(h),
-                (ID_FILTER, EN_SETFOCUS | EN_KILLFOCUS) => _ = InvalidateRect(Some(h), None, false),
+                (ID_FILTER, EN_SETFOCUS) => {
+                    _ = InvalidateRect(Some(h), None, false);
+                    _ = KillTimer(Some(h), TIMER_FIND);
+                    if let Some(i) = pane_of(h) {
+                        find_retarget(i);
+                    }
+                }
+                (ID_FILTER, EN_KILLFOCUS) => {
+                    _ = InvalidateRect(Some(h), None, false);
+                    SetTimer(Some(h), TIMER_FIND, 120, None);
+                }
                 (ID_BACK, _) => nav(SBSP_NAVIGATEBACK),
                 (ID_FWD, _) => nav(SBSP_NAVIGATEFORWARD),
                 (ID_UP, _) => nav(SBSP_PARENT),
@@ -586,15 +596,34 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 }
                 // typing in the filter box applies after a short pause
-                (ID_FILTER, EN_CHANGE) => _ = SetTimer(Some(h), TIMER_FILTER, 250, None),
+                (ID_FILTER, EN_CHANGE) => {
+                    if let Some(i) = pane_of(h) {
+                        find_cancel(i);
+                    }
+                    _ = SetTimer(Some(h), TIMER_FILTER, 250, None);
+                }
                 _ => {}
             },
             WM_TIMER if wp.0 == TIMER_FILTER => {
                 _ = KillTimer(Some(h), TIMER_FILTER);
                 if let Some(i) = pane_of(h) {
                     apply_filter(i);
+                    refresh_find(i);
                 }
             }
+            WM_TIMER if wp.0 == TIMER_FIND => {
+                _ = KillTimer(Some(h), TIMER_FIND);
+                let focus = GetFocus();
+                let list = GetDlgItem(Some(h), ID_FILTER).ok();
+                let on_filter = list.is_some_and(|e| e == focus);
+                let on_list = focus_is_find(h, focus);
+                if !on_filter && !on_list {
+                    if let Some(i) = pane_of(h) {
+                        hide_find(i);
+                    }
+                }
+            }
+            WM_FIND => on_find_msg(h),
             // right-click on ← / →: recent folders; anywhere else as before
             WM_CONTEXTMENU if [ID_BACK, ID_FWD].iter().any(|&id| GetDlgItem(Some(h), id).is_ok_and(|b| b.0 as usize == wp.0)) => {
                 if let Some(i) = pane_of(h) {
@@ -748,7 +777,12 @@ pub(crate) unsafe fn hotkey_pressed() {
     let ours = app(|a| a.desks.iter().find(|d| d.main == root || d.main == fg).map(|d| d.main));
     if let Some(main) = ours {
         if !IsIconic(main).as_bool() {
-            _ = ShowWindow(main, SW_MINIMIZE);
+            if hotkey_when_front(app(|a| a.s.one_window)) == HotkeyWhenFront::NewTab {
+                bind_hwnd(main);
+                new_tab();
+            } else {
+                _ = ShowWindow(main, SW_MINIMIZE);
+            }
             return;
         }
     }
