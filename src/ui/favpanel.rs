@@ -155,7 +155,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let rh = row_h();
-        fill(dc, rc, pal().card);
+        fill(dc, rc, side_ground());
         if list.is_empty() {
             text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
             text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
@@ -164,7 +164,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
         let any_group = list.iter().any(|f| f.group);
         let bold = if any_group { bold_ui_font() } else { font };
         let wash = if any_group {
-            group_wash_brush(group_tint(accent, pal().card, DARK_ON.load(Ordering::Relaxed)))
+            group_wash_brush(group_tint(accent, side_ground(), DARK_ON.load(Ordering::Relaxed)))
         } else {
             HBRUSH::default()
         };
@@ -180,12 +180,12 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
             // Selection and hover replace the wash. The selected fill is mostly accent, so it wins.
             if sel == Some(i) {
-                fill(dc, r, blend(accent, pal().card, 0.16));
+                fill(dc, r, blend(accent, side_ground(), 0.16));
             } else if hot == Some(i) {
-                fill(dc, r, blend(pal().bg, pal().card, 0.35));
+                fill(dc, r, if DARK_ON.load(Ordering::Relaxed) { blend(pal().bg, pal().card, 0.35) } else { blend(pal().bg, pal().card, 0.7) });
             }
             if into {
-                fill(dc, r, blend(accent, pal().card, 0.28));
+                fill(dc, r, blend(accent, side_ground(), 0.28));
             }
             let indent = s(14) * f.depth.min(8) as i32;
             let mut x = s(4) + indent;
