@@ -94,10 +94,18 @@ pub(crate) fn peek_worker() {
     }
 }
 
-// Photos come back with every alpha byte 0: make them opaque. Anything with real alpha is left alone.
+// Photos come back with every alpha byte 0: make them opaque. Icons come back with straight alpha (a colour
+// brighter than its alpha says so), which AlphaBlend would draw as a dirty fringe: premultiply those.
 pub(crate) fn fix_alpha(bgra: &mut [u8]) {
     if bgra.chunks_exact(4).all(|p| p[3] == 0) {
         bgra.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+    } else if bgra.chunks_exact(4).any(|p| p[0].max(p[1]).max(p[2]) > p[3]) {
+        for p in bgra.chunks_exact_mut(4) {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = ((*c as u32 * a + 127) / 255) as u8;
+            }
+        }
     }
 }
 
@@ -607,15 +615,20 @@ unsafe fn paint_list(dc: HDC, area: RECT, head: &str, rows: &[(String, String)],
 // Big icon (or thumbnail) on the left, the facts beside it.
 unsafe fn paint_card(dc: HDC, area: RECT, icon: Option<&Pix>, rows: &[(String, String)], font: HFONT, dpi: i32) {
     let s = |v: i32| v * dpi / 96;
-    let side = ((area.bottom - area.top) / 2).clamp(s(48), s(256)).min((area.right - area.left) / 3);
+    // drawn at its own size (only shrunk if it doesn't fit): scaling an icon blurs and fringes it
+    let side = icon.map_or(s(96), |p| p.w.max(p.h)).min((area.right - area.left) / 3).min(area.bottom - area.top);
+    // icon and facts as one block, centred
+    let lw = rows.iter().map(|(l, _)| text_w(dc, l, font)).max().unwrap_or(0) + s(16);
+    let vw = rows.iter().map(|(_, v)| text_w(dc, v, font)).max().unwrap_or(0);
+    let block = side + s(32) + lw + vw;
+    let x0 = area.left + ((area.right - area.left - block) / 2).max(s(8));
     if let Some(p) = icon {
         let k = (side as f32 / p.w.max(p.h) as f32).min(1.0);
         let (dw, dh) = ((p.w as f32 * k) as i32, (p.h as f32 * k) as i32);
-        let (x, y) = (area.left + s(8) + (side - dw) / 2, area.top + (area.bottom - area.top - dh) / 2);
+        let (x, y) = (x0 + (side - dw) / 2, area.top + (area.bottom - area.top - dh) / 2);
         blit_bgra(dc, RECT { left: x, top: y, right: x + dw, bottom: y + dh }, p.w, p.h, &p.bgra);
     }
-    let left = area.left + side + s(32);
-    let lw = rows.iter().map(|(l, _)| text_w(dc, l, font)).max().unwrap_or(0) + s(16);
+    let left = x0 + side + s(32);
     let rh = app(|a| a.fh) + s(8);
     let mut y = area.top + ((area.bottom - area.top) - rh * rows.len() as i32).max(0) / 2;
     for (label, value) in rows {
@@ -754,6 +767,19 @@ mod tests {
         let mut icon = [0u8, 0, 0, 0, 40, 50, 60, 128];
         fix_alpha(&mut icon);
         assert_eq!(icon, [0u8, 0, 0, 0, 40, 50, 60, 128]);
+    }
+
+    #[test]
+    fn icon_alpha() {
+        let mut photo = vec![10, 20, 30, 0, 40, 50, 60, 0];
+        fix_alpha(&mut photo);
+        assert_eq!(photo, vec![10, 20, 30, 255, 40, 50, 60, 255]); // no alpha at all: opaque
+        let mut icon = vec![255, 255, 255, 128, 200, 100, 0, 255, 0, 0, 0, 0];
+        fix_alpha(&mut icon);
+        assert_eq!(icon, vec![128, 128, 128, 128, 200, 100, 0, 255, 0, 0, 0, 0]); // straight: premultiplied
+        let mut pre = vec![100, 100, 100, 128, 0, 0, 0, 0];
+        fix_alpha(&mut pre);
+        assert_eq!(pre, vec![100, 100, 100, 128, 0, 0, 0, 0]); // already premultiplied: left alone
     }
 
     #[test]
