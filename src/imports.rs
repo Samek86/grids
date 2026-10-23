@@ -20,7 +20,7 @@ pub(crate) use windows::Win32::System::Ole::*;
 pub(crate) use windows::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT, MODIFIERKEYS_FLAGS, SFGAO_FLAGS, SFGAO_FOLDER, SFGAO_STREAM};
 pub(crate) use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 pub(crate) use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4};
-pub(crate) use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible, ROLE_SYSTEM_LIST};
+pub(crate) use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible, ROLE_SYSTEM_LIST, ROLE_SYSTEM_LISTITEM};
 pub(crate) use windows::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 pub(crate) use windows::Win32::UI::Controls::{
     SetWindowTheme, BeginBufferedPaint, BufferedPaintInit, EndBufferedPaint, BPBF_TOPDOWNDIB, DRAWITEMSTRUCT, ODS_SELECTED, TOOLTIPS_CLASSW,
