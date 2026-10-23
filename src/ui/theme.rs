@@ -52,13 +52,9 @@ pub(crate) fn blend(a: u32, b: u32, t: f32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
-/// What the left panel (folder tree and favourites) sits on: the app background in light, the list colour in dark.
+/// What the left panel (folder tree and favourites) sits on: the app background in both themes.
 pub(crate) fn side_ground() -> u32 {
-    if DARK_ON.load(std::sync::atomic::Ordering::Relaxed) {
-        pal().card
-    } else {
-        pal().bg
-    }
+    pal().bg
 }
 
 /// Favourite group row wash: accent mixed into the panel. Light keeps about 18% accent.
