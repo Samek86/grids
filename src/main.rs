@@ -232,12 +232,13 @@ mod tests {
         assert_eq!(round.theme, 0);
         assert_eq!((round.font, round.bar, round.stat, round.view_new, round.start_new), (0, true, true, 4, 0));
         assert_eq!((round.ext, round.tree_on, round.edge, round.confirm, round.del), (true, true, true, true, 0));
-        assert_eq!((round.dropm, round.boot, round.autosave, round.dot), (0, 0, false, true));
+        assert_eq!((round.dropm, round.layout_new, round.boot, round.autosave, round.dot), (0, 0, 0, false, true));
         assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
         // An older file has dark= and no theme=. That stays an explicit choice, and new keys keep defaults.
         let old = Session::parse("dark=1\ndblup=1\n");
         assert_eq!(old.theme, 2);
         assert!(old.dark && old.bar && old.dot);
+        assert_eq!(old.layout_new, 0);
         let t = Session::parse("theme=auto\ndark=1\nfont=2\nbar=0\nstat=0\nviewnew=1\nstart=2\nstartp=C:\\Work\next=0\ntree=0\nedge=0\nconfirm=0\ndel=1\nnewname=note.txt\ndrop=1\nboot=1\nbootf=C:\\s.grids\nautosave=1\ndot=0\nfav=C:\\WORK\tWork\n");
         assert_eq!(t.theme, 0);
         assert!(t.dark);
@@ -249,6 +250,7 @@ mod tests {
         assert_eq!(t.del, 1);
         assert_eq!(t.new_name, "note.txt");
         assert_eq!(t.dropm, 1);
+        assert_eq!(t.layout_new, 0);
         assert_eq!(t.boot, 1);
         assert_eq!(t.boot_file, "C:\\s.grids");
         assert!(t.autosave);
@@ -569,6 +571,12 @@ mod tests {
         assert_eq!(wiped.tabs.len(), 3);
         apply_boot(&mut wiped);
         assert_eq!((wiped.boot, wiped.tabs.len(), wiped.tabs[0].name.as_str()), (2, 1, "1"));
+        assert_eq!((wiped.heights.clone(), wiped.active), (vec![1, 1], 0));
+        s.layout_new = 3;
+        let mut one = store::import_text(&store::sync_text(&s)).unwrap();
+        apply_boot(&mut one);
+        assert_eq!((one.layout_new, one.heights.clone(), one.active), (3, vec![1], 0));
+        assert!(one.active < one.panes());
     }
 
     #[test]
