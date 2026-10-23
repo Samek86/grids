@@ -10,6 +10,7 @@ use windows::Win32::System::Com::StructuredStorage::{IStorage, StgOpenStorageEx,
 use windows::Win32::System::Time::FileTimeToSystemTime;
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PSFormatForDisplayAlloc, SHGetPropertyStoreFromParsingName, GPS_DEFAULT, PDFF_DEFAULT};
 use windows::Win32::Graphics::Imaging::*;
+use windows::Win32::UI::HiDpi::GetDpiForSystem;
 
 // ---------- what F3 shows for a file: picked and made on the preview worker ----------
 
@@ -126,12 +127,12 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
         }
     }
     if AUDIO.contains(&e) {
-        return card(path, req, &[]);
+        return card(path, &[]);
     }
     let heavy = HANDLED.contains(&e) || OFFICE_ZIP.contains(&e) || matches!(e, "eml" | "hwp" | "hwpx" | "hwpt" | "psd" | "psb");
     if heavy && meta.as_ref().is_some_and(|m| m.len() > HEAVY_MAX) {
         let note = (tr("Preview", "미리보기", "プレビュー").to_string(), tr("Skipped: larger than 10 MB", "10 MB보다 커서 생략", "10 MB を超えるので省略").to_string());
-        return card(path, req, &[note]);
+        return card(path, &[note]);
     }
     if !req.plain && HANDLED.contains(&e) {
         if let Some(g) = handler_for(e) {
@@ -149,13 +150,13 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
         e if CODE.contains(&e) => text_body(path, TextKind::Code),
         "html" | "htm" | "xhtml" => read_head(path, TEXT_MAX).map(|(b, cut)| Body::Text { text: html_text(&decode_text(&b)), kind: TextKind::Plain, cut }),
         "eml" => read_head(path, 4 << 20).map(|(b, cut)| Body::Text { text: eml_text(&b, ui()), kind: TextKind::Plain, cut }),
-        "url" | "website" => url_card(path, req),
-        "lnk" => Some(lnk_card(path, req)),
+        "url" | "website" => url_card(path),
+        "lnk" => Some(lnk_card(path)),
         "hwp" => hwp_preview(path, req),
         "hwpx" | "hwpt" => hwpx_preview(path, req),
         e if OFFICE_ZIP.contains(&e) => office_text(path, e),
         e if ZIPS.contains(&e) => zip_list(path),
-        e if PROGRAMS.contains(&e) => Some(card(path, req, &version_rows(path))),
+        e if PROGRAMS.contains(&e) => Some(card(path, &version_rows(path))),
         "psd" | "psb" => psd_thumb(path, req).map(Body::Pic),
         _ => None,
     };
@@ -171,7 +172,7 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
             return b;
         }
     }
-    card(path, req, &[])
+    card(path, &[])
 }
 
 // ---------- pictures ----------
@@ -442,9 +443,11 @@ unsafe fn props(path: &str) -> Vec<(String, String)> {
     out
 }
 
-pub(crate) unsafe fn card(path: &str, req: &PeekReq, extra: &[(String, String)]) -> Body {
-    let side = (req.h / 2).clamp(48, 256);
-    let icon = shell_pic(path, side, side, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|| shell_pic(path, side, side, SIIGBF_ICONONLY));
+pub(crate) unsafe fn card(path: &str, extra: &[(String, String)]) -> Body {
+    // a real thumbnail (album art, a document's first page) may be larger; an icon comes at the size it is drawn
+    let dpi = GetDpiForSystem() as i32;
+    let (thumb, icon_px) = (160 * dpi / 96, 96 * dpi / 96);
+    let icon = shell_pic(path, thumb, thumb, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|| shell_pic(path, icon_px, icon_px, SIIGBF_ICONONLY));
     let mut rows: Vec<(String, String)> = Vec::new();
     let t = type_name(path);
     if !t.is_empty() {
@@ -467,14 +470,14 @@ pub(crate) unsafe fn card(path: &str, req: &PeekReq, extra: &[(String, String)])
     Body::Card { icon, rows }
 }
 
-fn url_card(path: &str, req: &PeekReq) -> Option<Body> {
+fn url_card(path: &str) -> Option<Body> {
     let (b, _) = read_head(path, 64 * 1024)?;
     let text = decode_text(&b);
     let url = text.lines().find_map(|l| l.trim().strip_prefix("URL=").map(str::to_string))?;
-    Some(unsafe { card(path, req, &[("URL".into(), url)]) })
+    Some(unsafe { card(path, &[("URL".into(), url)]) })
 }
 
-unsafe fn lnk_card(path: &str, req: &PeekReq) -> Body {
+unsafe fn lnk_card(path: &str) -> Body {
     let mut rows = Vec::new();
     let link: Result<IShellLinkW> = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER);
     if let Ok(link) = link {
@@ -498,7 +501,7 @@ unsafe fn lnk_card(path: &str, req: &PeekReq) -> Body {
             }
         }
     }
-    card(path, req, &rows)
+    card(path, &rows)
 }
 
 /// FileDescription, ProductName, CompanyName, FileVersion of a program, in its first language.
