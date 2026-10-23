@@ -182,7 +182,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             if sel == Some(i) {
                 fill(dc, r, blend(accent, side_ground(), 0.16));
             } else if hot == Some(i) {
-                fill(dc, r, if DARK_ON.load(Ordering::Relaxed) { blend(pal().bg, pal().card, 0.35) } else { blend(pal().bg, pal().card, 0.7) });
+                fill(dc, r, blend(pal().bg, pal().card, if DARK_ON.load(Ordering::Relaxed) { 0.5 } else { 0.7 }));
             }
             if into {
                 fill(dc, r, blend(accent, side_ground(), 0.28));
