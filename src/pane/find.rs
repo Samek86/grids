@@ -1,22 +1,21 @@
 // Quick search for the pane's filter box. The box still filters the open folder.
-// A result list streams matches from one background walker, or from Everything when a
-// subfolder search can reach it. A new query or Esc drops the previous walk.
+// A result list streams from one background walker. A subfolder search asks Everything
+// when that setting is on and Everything is running; otherwise it walks. A new query or Esc drops the previous one.
 
 use std::collections::HashMap;
 use std::sync::{Condvar, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use crate::app::*;
+use crate::everything::{self, forces_everywhere, search_text, without_scope_prefix, MAX_RESULTS};
 use crate::i18n::*;
 use crate::imports::*;
 use crate::session::*;
 use crate::ui::*;
-use crate::CopyData;
 
 use super::{apply_filter, focus_view, hidden, navigate};
 
 pub(crate) const FIND_CAP: usize = 300;
-const REPLY_ID: usize = 0x4752_4945;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FindHit {
@@ -31,8 +30,8 @@ pub(crate) enum FindEngine {
     Everything,
 }
 
-pub(crate) fn find_engine(recursive: bool, everything_up: bool) -> FindEngine {
-    if recursive && everything_up { FindEngine::Everything } else { FindEngine::Walk }
+pub(crate) fn find_engine(recursive: bool, enabled: bool, everything_up: bool) -> FindEngine {
+    if recursive && enabled && everything_up { FindEngine::Everything } else { FindEngine::Walk }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,21 +98,6 @@ fn wild(n: &[char], p: &[char]) -> bool {
         j += 1;
     }
     j == p.len()
-}
-
-/// Everything search limited to `folder` and its subfolders. Name only, case left to Everything.
-pub(crate) fn everything_query(folder: &str, query: &str, show_hidden: bool) -> String {
-    let folder = folder.trim_end_matches(['\\', '/']).replace('"', "");
-    let hidden = if show_hidden { "" } else { " !attrib:H" };
-    format!("\"{}\\\" {}{hidden}", folder, everything_terms(query))
-}
-
-pub(crate) fn everything_terms(query: &str) -> String {
-    query_parts(query).into_iter().map(|t| {
-        let pat = if t.contains(['*', '?']) { t } else { format!("*{t}*") };
-        let pat = pat.replace('"', "");
-        if pat.contains([' ', '|']) { format!("nopath:\"{pat}\"") } else { format!("nopath:{pat}") }
-    }).collect::<Vec<_>>().join("|")
 }
 
 pub(crate) fn hit_label(root: &str, hit: &FindHit) -> String {
@@ -233,53 +217,6 @@ fn is_hidden(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_attributes() & (HIDDEN | SYSTEM) != 0)
 }
 
-pub(crate) fn parse_everything(bytes: &[u8], cap: usize) -> Option<(Vec<FindHit>, bool)> {
-    if bytes.len() < 16 || cap == 0 {
-        return None;
-    }
-    let u32_at = |o: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?))
-    };
-    let tot = u32_at(0)? as usize;
-    let num = u32_at(4)? as usize;
-    let n = num.min(cap);
-    let mut hits = Vec::with_capacity(n);
-    for i in 0..n {
-        let base = 16 + i * 12;
-        let flags = u32_at(base)?;
-        let name = utf16_z(bytes, u32_at(base + 4)? as usize)?;
-        let path = utf16_z(bytes, u32_at(base + 8)? as usize).unwrap_or_default();
-        if name.is_empty() {
-            continue;
-        }
-        let dir = flags & 1 != 0;
-        let full = if path.is_empty() { name.clone() } else if path.ends_with('\\') { format!("{path}{name}") } else { format!("{path}\\{name}") };
-        hits.push(FindHit { name, path: full, dir });
-    }
-    let more = tot > hits.len();
-    Some((hits, more))
-}
-
-fn utf16_z(bytes: &[u8], off: usize) -> Option<String> {
-    if off > bytes.len() || off % 2 != 0 {
-        return None;
-    }
-    let mut u = Vec::new();
-    let mut i = off;
-    while i + 1 < bytes.len() {
-        let w = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
-        if w == 0 {
-            break;
-        }
-        u.push(w);
-        i += 2;
-        if u.len() > 4096 {
-            break;
-        }
-    }
-    Some(String::from_utf16_lossy(&u))
-}
-
 struct FindUi {
     gen: usize,
     query: String,
@@ -288,6 +225,8 @@ struct FindUi {
     hits: Vec<FindHit>,
     more: bool,
     running: bool,
+    everywhere: bool,
+    engine: FindEngine,
     sel: usize,
     scroll: i32,
     list: isize,
@@ -305,6 +244,8 @@ struct Job {
     query: String,
     recursive: bool,
     hidden: bool,
+    everything: bool,
+    everywhere: bool,
 }
 
 struct Batch {
@@ -313,6 +254,7 @@ struct Batch {
     hits: Vec<FindHit>,
     more: bool,
     done: bool,
+    engine: FindEngine,
 }
 
 fn find_map() -> std::sync::MutexGuard<'static, HashMap<isize, FindUi>> {
@@ -424,6 +366,8 @@ pub(crate) unsafe fn refresh_find(i: usize) {
             hits: Vec::new(),
             more: false,
             running: false,
+            everywhere: false,
+            engine: FindEngine::Walk,
             sel: 0,
             scroll: 0,
             list: 0,
@@ -440,7 +384,8 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         show_list(hwnd);
         return;
     }
-    let (gen, recursive) = {
+    let enabled = app(|a| a.s.use_everything);
+    let (gen, recursive, everywhere, use_ev) = {
         let mut map = find_map();
         let u = map.get_mut(&(hwnd.0 as isize)).unwrap();
         u.gen = u.gen.wrapping_add(1);
@@ -452,7 +397,10 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         u.sel = 0;
         u.scroll = 0;
         u.show = true;
-        (u.gen, u.recursive)
+        let up = u.recursive && enabled && everything::running();
+        let use_ev = find_engine(u.recursive, enabled, up) == FindEngine::Everything;
+        u.engine = if use_ev { FindEngine::Everything } else { FindEngine::Walk };
+        (u.gen, u.recursive, u.everywhere, use_ev)
     };
     // Any other pane's walk is stale once this one starts.
     {
@@ -465,7 +413,7 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         }
     }
     show_list(hwnd);
-    let job = Job { hwnd: hwnd.0 as isize, gen, root, query, recursive, hidden: show_hidden };
+    let job = Job { hwnd: hwnd.0 as isize, gen, root, query, recursive, hidden: show_hidden, everything: use_ev, everywhere };
     {
         let mut slot = JOB.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(job);
@@ -473,6 +421,31 @@ pub(crate) unsafe fn refresh_find(i: usize) {
     static WORKER: Once = Once::new();
     WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-find".into()).spawn(find_worker));
     WAKE.notify_one();
+}
+
+pub(crate) unsafe fn toggle_find_scope(i: usize) {
+    let Some(hwnd) = pane_hwnd(i) else { return };
+    if let Some(e) = pane_ctl(i, ID_FILTER) {
+        let text = text_of(e);
+        if let Some(rest) = without_scope_prefix(&text) {
+            {
+                let mut map = find_map();
+                if let Some(u) = map.get_mut(&(hwnd.0 as isize)) {
+                    u.everywhere = false;
+                }
+            }
+            _ = SetWindowTextW(e, &HSTRING::from(rest));
+            return;
+        }
+    }
+    {
+        let mut map = find_map();
+        if let Some(u) = map.get_mut(&(hwnd.0 as isize)) {
+            u.everywhere = !u.everywhere;
+            u.query.clear();
+        }
+    }
+    refresh_find(i);
 }
 
 pub(crate) unsafe fn toggle_find_sub(i: usize) {
@@ -565,11 +538,13 @@ pub(crate) unsafe fn on_find_msg(pane: HWND) {
             if b.gen != u.gen {
                 continue;
             }
-            if !b.hits.is_empty() && u.hits.len() < FIND_CAP {
-                let room = FIND_CAP - u.hits.len();
+            u.engine = b.engine;
+            let cap = if u.engine == FindEngine::Everything { MAX_RESULTS as usize } else { FIND_CAP };
+            if !b.hits.is_empty() && u.hits.len() < cap {
+                let room = cap - u.hits.len();
                 u.hits.extend(b.hits.into_iter().take(room));
             }
-            u.more = b.more || u.hits.len() >= FIND_CAP;
+            u.more = b.more || u.hits.len() >= cap;
             if b.done {
                 u.running = false;
             }
@@ -655,11 +630,11 @@ fn same_dir(a: &str, b: &str) -> bool {
     a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'))
 }
 
-fn publish(hwnd: isize, gen: usize, hits: Vec<FindHit>, more: bool, done: bool) {
+fn publish(hwnd: isize, gen: usize, hits: Vec<FindHit>, more: bool, done: bool, engine: FindEngine) {
     if live_gen(hwnd) != gen {
         return;
     }
-    INBOX.lock().unwrap_or_else(|e| e.into_inner()).push(Batch { hwnd, gen, hits, more, done });
+    INBOX.lock().unwrap_or_else(|e| e.into_inner()).push(Batch { hwnd, gen, hits, more, done, engine });
     unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_FIND, WPARAM(0), LPARAM(0)) };
 }
 
@@ -676,108 +651,30 @@ fn find_worker() {
         if stop() {
             continue;
         }
-        let mut delivered = false;
-        if find_engine(job.recursive, everything_up()) == FindEngine::Everything {
-            if let Some((hits, more)) = everything_search(&job) {
+        if job.everything {
+            if let Some(plan) = search_text(&job.root, &job.query, job.everywhere, job.hidden) {
                 if !stop() {
-                    publish(job.hwnd, job.gen, hits, more, true);
-                    delivered = true;
+                    if let Some(list) = everything::search(&plan.text, MAX_RESULTS) {
+                        if !stop() {
+                            let hits = list.hits.into_iter().map(|h| FindHit { name: h.name, path: h.path, dir: h.dir }).collect();
+                            publish(job.hwnd, job.gen, hits, list.more, true, FindEngine::Everything);
+                            continue;
+                        }
+                    }
                 }
             }
-        }
-        if delivered {
-            continue;
         }
         let root = PathBuf::from(&job.root);
         let walked = walk_search(&root, &job.query, job.recursive, job.hidden, FIND_CAP, &stop, |delta, more| {
             if !stop() {
-                publish(job.hwnd, job.gen, delta.to_vec(), more, false);
+                publish(job.hwnd, job.gen, delta.to_vec(), more, false, FindEngine::Walk);
             }
         });
         // A cancel sets stopped without filling the cap. A full cap sets more and is still delivered.
         if !stop() && (!walked.stopped || walked.more) {
-            publish(job.hwnd, job.gen, Vec::new(), walked.more, true);
+            publish(job.hwnd, job.gen, Vec::new(), walked.more, true, FindEngine::Walk);
         }
     }
-}
-
-fn everything_up() -> bool {
-    unsafe { FindWindowW(w!("EVERYTHING_TASKBAR_NOTIFICATION"), PCWSTR::null()).is_ok() }
-}
-
-fn everything_search(job: &Job) -> Option<(Vec<FindHit>, bool)> {
-    let ipc = unsafe { FindWindowW(w!("EVERYTHING_TASKBAR_NOTIFICATION"), PCWSTR::null()).ok()? };
-    let reply = ipc_window()?;
-    let text = everything_query(&job.root, &job.query, job.hidden);
-    let buf = query_bytes(reply.0 as isize, REPLY_ID as u64, FIND_CAP as u32, &text);
-    REPLY.with(|r| *r.borrow_mut() = None);
-    let cd = CopyData { dw: 2, cb: buf.len() as u32, lp: buf.as_ptr() as _ };
-    let sent = unsafe {
-        SendMessageTimeoutW(ipc, WM_COPYDATA, WPARAM(reply.0 as usize), LPARAM(&cd as *const CopyData as isize), SMTO_ABORTIFHUNG, 2500, None)
-    };
-    if sent.0 == 0 {
-        return None;
-    }
-    let bytes = REPLY.with(|r| r.borrow_mut().take())?;
-    parse_everything(&bytes, FIND_CAP)
-}
-
-fn query_bytes(reply: isize, msg: u64, max: u32, text: &str) -> Vec<u8> {
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut buf = Vec::with_capacity(28 + wide.len() * 2);
-    buf.extend_from_slice(&(reply as u64).to_le_bytes());
-    buf.extend_from_slice(&msg.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes());
-    buf.extend_from_slice(&max.to_le_bytes());
-    for u in &wide {
-        buf.extend_from_slice(&u.to_le_bytes());
-    }
-    buf
-}
-
-thread_local! {
-    static REPLY: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
-}
-
-fn ipc_window() -> Option<HWND> {
-    static CLASS: Once = Once::new();
-    CLASS.call_once(|| unsafe {
-        let hinst = GetModuleHandleW(None).unwrap_or_default();
-        _ = RegisterClassW(&WNDCLASSW {
-            lpfnWndProc: Some(ipc_proc),
-            hInstance: hinst.into(),
-            lpszClassName: w!("GridsFindIpc"),
-            ..Default::default()
-        });
-    });
-    IPC_HWND.with(|slot| {
-        let cur = hwnd_of(slot.get());
-        if !cur.0.is_null() && unsafe { IsWindow(Some(cur)).as_bool() } {
-            return Some(cur);
-        }
-        let created = unsafe {
-            CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsFindIpc"), w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None).ok()
-        }?;
-        slot.set(created.0 as isize);
-        Some(created)
-    })
-}
-
-thread_local! {
-    static IPC_HWND: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
-}
-
-unsafe extern "system" fn ipc_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg == WM_COPYDATA {
-        let cd = &*(lp.0 as *const CopyData);
-        if cd.dw == REPLY_ID && !cd.lp.is_null() && cd.cb > 0 {
-            let bytes = std::slice::from_raw_parts(cd.lp as *const u8, cd.cb as usize).to_vec();
-            REPLY.with(|r| *r.borrow_mut() = Some(bytes));
-            return LRESULT(1);
-        }
-    }
-    DefWindowProcW(h, msg, wp, lp)
 }
 
 pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -791,8 +688,8 @@ pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp
             scroll_find(pane, -delta * row_h(app(|a| a.dpi)) * 3);
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
-            let (_, y) = crate::xy(lp);
-            let activated = click_find(pane, y, msg == WM_LBUTTONDBLCLK);
+            let (x, y) = crate::xy(lp);
+            let activated = click_find(pane, x, y, msg == WM_LBUTTONDBLCLK);
             if !activated {
                 if let Ok(e) = GetDlgItem(Some(pane), ID_FILTER) {
                     _ = SetFocus(Some(e));
@@ -819,7 +716,7 @@ unsafe fn scroll_find(pane: HWND, dy: i32) {
     }
 }
 
-unsafe fn click_find(pane: HWND, y: i32, dbl: bool) -> bool {
+unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
     let i = match pane_of(pane) {
         Some(i) => i,
         None => return false,
@@ -827,7 +724,13 @@ unsafe fn click_find(pane: HWND, y: i32, dbl: bool) -> bool {
     let dpi = app(|a| a.dpi);
     let rh = row_h(dpi);
     if y < rh {
-        toggle_find_sub(i);
+        let s = |v: i32| v * dpi / 96;
+        let recursive = find_map().get(&(pane.0 as isize)).is_some_and(|u| u.recursive);
+        if recursive && x >= s(150) && x < s(292) {
+            toggle_find_scope(i);
+        } else {
+            toggle_find_sub(i);
+        }
         return false;
     }
     let hit = {
@@ -858,13 +761,13 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
     let (font, icon_font, accent) = app(|a| (a.font, a.icon_font, a.s.accent_now()));
     let snap = {
         let map = find_map();
-        map.get(&(pane.0 as isize)).map(|u| (u.query.clone(), u.root.clone(), u.recursive, u.hits.clone(), u.more, u.running, u.sel, u.scroll))
+        map.get(&(pane.0 as isize)).map(|u| (u.query.clone(), u.root.clone(), u.recursive, u.everywhere, u.engine, u.hits.clone(), u.more, u.running, u.sel, u.scroll))
     };
-    let Some((query, root, recursive, hits, more, running, sel, scroll)) = snap else {
+    let Some((query, root, recursive, everywhere, engine, hits, more, running, sel, scroll)) = snap else {
         buffered(h, |dc, rc| fill(dc, rc, pal().card));
         return;
     };
-    let _ = query;
+    let all = everywhere || forces_everywhere(&query);
     buffered(h, |dc, rc| {
         let rh = row_h(dpi);
         let s = |v: i32| v * dpi / 96;
@@ -877,9 +780,18 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         if recursive {
             text(dc, mark, "\u{E73E}", icon_font, on_color(accent), DT_CENTER);
         }
-        text(dc, RECT { left: s(26), right: rc.right / 2, ..head }, tr("Subfolders", "하위 폴더", "サブフォルダー"), font, pal().text, DT_LEFT);
-        let status = find_status(running, hits.len(), more);
-        text(dc, RECT { left: rc.right / 2, right: rc.right - s(8), ..head }, &status, font, pal().sub, DT_RIGHT);
+        let label_right = if recursive { s(146) } else { rc.right / 2 };
+        text(dc, RECT { left: s(26), right: label_right, ..head }, tr("Subfolders", "하위 폴더", "サブフォルダー"), font, pal().text, DT_LEFT);
+        if recursive {
+            let pill = RECT { left: s(150), top: s(3), right: s(292), bottom: rh - s(3) };
+            fill(dc, pill, pal().card);
+            frame(dc, pill, 1, if all { accent } else { pal().line });
+            let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
+            text(dc, pill, scope, font, if all { accent } else { pal().text }, DT_CENTER);
+        }
+        let status = find_status(running, hits.len(), more, engine, all && engine == FindEngine::Everything);
+        let status_left = if recursive { s(300) } else { rc.right / 2 };
+        text(dc, RECT { left: status_left, right: rc.right - s(8), ..head }, &status, font, pal().sub, DT_RIGHT);
         let mut y = rh - scroll;
         if hits.is_empty() && !running {
             text(dc, RECT { left: s(8), top: rh, right: rc.right - s(8), bottom: rh + rh }, tr("No matches", "결과 없음", "一致なし"), font, pal().sub, DT_LEFT);
@@ -904,11 +816,16 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
     });
 }
 
-fn find_status(running: bool, n: usize, more: bool) -> String {
+fn find_status(running: bool, n: usize, more: bool, engine: FindEngine, everywhere: bool) -> String {
+    let engine = match engine {
+        FindEngine::Everything if everywhere => tr("Everything · all drives", "Everything · 모든 드라이브", "Everything · すべてのドライブ"),
+        FindEngine::Everything => "Everything",
+        FindEngine::Walk => tr("Folders", "폴더", "フォルダー"),
+    };
     if running && n == 0 {
-        return tr("Searching…", "검색 중…", "検索中…").to_string();
+        return format!("{engine} · {}", tr("Searching…", "검색 중…", "検索中…"));
     }
-    let mut s = format!("{n} {}", tr("results", "개 결과", "件"));
+    let mut s = format!("{engine} · {n} {}", tr("results", "개 결과", "件"));
     if more {
         s.push_str(" · ");
         s.push_str(tr("more", "더 있음", "続きあり"));
@@ -933,41 +850,10 @@ mod tests {
         assert!(name_matches("abc", "a?c") && !name_matches("ac", "a?c"));
         assert!(name_matches("song.mp3", "*.md;*.mp3"));
         assert!(!name_matches("song.mp3", "*.md;*.txt"));
-        assert_eq!(find_engine(false, true), FindEngine::Walk);
-        assert_eq!(find_engine(true, false), FindEngine::Walk);
-        assert_eq!(find_engine(true, true), FindEngine::Everything);
-    }
-
-    #[test]
-    fn everything_query_limits_the_folder_and_the_name() {
-        assert_eq!(everything_query(r"C:\Work\", "report", false), r#""C:\Work\" nopath:*report* !attrib:H"#);
-        assert_eq!(everything_terms("*.pdf;budget"), "nopath:*.pdf|nopath:*budget*");
-        assert_eq!(everything_terms("my file"), "nopath:\"*my file*\"");
-    }
-
-    #[test]
-    fn everything_list_parses_and_marks_more() {
-        let mut bytes = Vec::new();
-        let name: Vec<u16> = "a.txt".encode_utf16().chain(std::iter::once(0)).collect();
-        let path: Vec<u16> = r"C:\d".encode_utf16().chain(std::iter::once(0)).collect();
-        let name_off = 16 + 12;
-        let path_off = name_off + name.len() * 2;
-        for n in [2u32, 1, 0, 1] {
-            bytes.extend_from_slice(&n.to_le_bytes());
-        }
-        bytes.extend_from_slice(&0u32.to_le_bytes());
-        bytes.extend_from_slice(&(name_off as u32).to_le_bytes());
-        bytes.extend_from_slice(&(path_off as u32).to_le_bytes());
-        for u in name.iter().chain(path.iter()) {
-            bytes.extend_from_slice(&u.to_le_bytes());
-        }
-        let (hits, more) = parse_everything(&bytes, 10).unwrap();
-        assert!(more);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].name, "a.txt");
-        assert_eq!(hits[0].path, r"C:\d\a.txt");
-        assert!(!hits[0].dir);
-        assert!(parse_everything(&[], 10).is_none());
+        assert_eq!(find_engine(false, true, true), FindEngine::Walk);
+        assert_eq!(find_engine(true, false, true), FindEngine::Walk);
+        assert_eq!(find_engine(true, true, false), FindEngine::Walk);
+        assert_eq!(find_engine(true, true, true), FindEngine::Everything);
     }
 
     #[test]

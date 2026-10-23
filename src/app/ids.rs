@@ -60,6 +60,7 @@ pub(crate) const TIMER_PINS: usize = 10; // favourites: re-read Explorer home it
 pub(crate) const TIMER_FOCUS: usize = 11; // a click brought the window back: restore focus only if nothing took it
 pub(crate) const TIMER_FIND: usize = 12; // hide the search list after the filter loses focus
 pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
+pub(crate) const WM_EV: u32 = WM_APP + 51; // Everything status changed in the settings window
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;
