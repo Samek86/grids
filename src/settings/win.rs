@@ -2,9 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::Ordering;
 use std::sync::Once;
 use windows::core::{w, BOOL, HSTRING, PCWSTR};
-use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWINDOWATTRIBUTE};
-use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{SetWindowTheme, DRAWITEMSTRUCT, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -113,17 +111,24 @@ fn make_font(face: &str, px: i32, weight: i32, dpi: i32) -> HFONT {
 
 fn rebuild_fonts() {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
-    let face = crate::ui_face();
+    let custom = app(|a| a.s.font_face.clone());
+    let fallback = crate::ui_face();
+    let face = if custom.is_empty() { fallback } else { custom.as_str() };
     let scale = match app(|a| a.s.font) {
         1 => 125,
         2 => 150,
         _ => 100,
     };
     let px = |n: i32| (n * scale / 100).max(1);
-    let (title_face, title_w) = match crate::ui() {
-        1 => ("Malgun Gothic", 700), // no semibold; bold is the Korean title face
-        2 => ("Yu Gothic UI", 700),
-        _ => ("Segoe UI Semibold", 600),
+    // A chosen face is the page title at weight 700. The language default keeps its own title face.
+    let (title_face, title_w) = if custom.is_empty() {
+        match crate::ui() {
+            1 => ("Malgun Gothic", 700), // no semibold; bold is the Korean title face
+            2 => ("Yu Gothic UI", 700),
+            _ => ("Segoe UI Semibold", 600),
+        }
+    } else {
+        (face, 700)
     };
     let new = (
         make_font(face, px(14), 400, dpi),
@@ -166,6 +171,7 @@ unsafe fn build_children(h: HWND) {
     child_at(h, w!("EDIT"), "", 0x80 | tab, S_KEYQ, font);
     let combo = |id, on| child_at(h, w!("COMBOBOX"), "", 3 | 0x200 | 0x00200000 | tab | if on { 0 } else { dis }, id, font);
     combo(S_LANG, true);
+    combo(S_FACE, true);
     combo(S_THEME, true);
     for id in [S_START, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP] {
         combo(id, true);
@@ -184,7 +190,7 @@ unsafe fn build_children(h: HWND) {
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -217,6 +223,7 @@ unsafe fn fill_strings(h: HWND) {
         Lang::Ja => 3,
     };
     fill_combo(h, S_LANG, &[auto, "English".into(), "한국어".into(), "日本語".into()], lang_i);
+    fill_face(h);
     let theme = app(|a| a.s.theme) as usize;
     fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
     let boot = app(|a| a.s.boot) as usize;
@@ -250,6 +257,61 @@ unsafe fn fill_strings(h: HWND) {
     for (id, label) in labels {
         let _ = SetWindowTextW(ctl(h, id), &HSTRING::from(label));
     }
+}
+
+fn ensure_faces() {
+    if ST.with(|s| s.borrow().faces.is_some()) {
+        return;
+    }
+    // The family list exists only while this window does. Startup never calls this.
+    let list = unsafe { crate::installed_families() };
+    ST.with(|s| s.borrow_mut().faces = Some(list));
+}
+
+unsafe fn fill_face(h: HWND) {
+    ensure_faces();
+    let def = format!("{} ({})", tx(s("Default", "기본", "既定")), crate::ui_face());
+    let stored = app(|a| a.s.font_face.clone());
+    let mut items = vec![def];
+    let mut sel = 0usize;
+    ST.with(|s| {
+        if let Some(faces) = s.borrow().faces.as_ref() {
+            for (i, name) in faces.iter().enumerate() {
+                if !stored.is_empty() && crate::same_face(name, &stored) {
+                    sel = i + 1;
+                }
+                items.push(name.clone());
+            }
+        }
+    });
+    if sel == 0 && !stored.is_empty() {
+        items.push(stored);
+        sel = items.len() - 1;
+    }
+    fill_combo(h, S_FACE, &items, sel);
+    let c = ctl(h, S_FACE);
+    if !c.0.is_null() {
+        let dpi = ST.with(|s| s.borrow().dpi.max(96));
+        SendMessageW(c, CB_SETDROPPEDWIDTH, Some(WPARAM(sc(dpi, 320) as usize)), None);
+    }
+}
+
+unsafe fn combo_lb_text(h: HWND, id: i32, sel: usize) -> String {
+    let c = ctl(h, id);
+    if c.0.is_null() {
+        return String::new();
+    }
+    let n = SendMessageW(c, CB_GETLBTEXTLEN, Some(WPARAM(sel)), None).0;
+    if n <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; n as usize + 1];
+    let got = SendMessageW(c, CB_GETLBTEXT, Some(WPARAM(sel)), Some(LPARAM(buf.as_mut_ptr() as isize))).0;
+    if got <= 0 {
+        return String::new();
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(got as usize).min(buf.len());
+    String::from_utf16_lossy(&buf[..end])
 }
 
 unsafe fn fill_combo(h: HWND, id: i32, items: &[String], sel: usize) {
@@ -307,7 +369,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
     let n = app(|a| a.s.favs.len()) as i32;
@@ -1010,6 +1072,28 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
                 crate::save_session();
             }
         }
+        S_FACE => {
+            let name = if sel == 0 { String::new() } else { unsafe { combo_lb_text(h, S_FACE, sel) } };
+            if sel != 0 && name.is_empty() {
+                return true;
+            }
+            let changed = app(|a| {
+                if a.s.font_face == name {
+                    false
+                } else {
+                    a.s.font_face = name;
+                    true
+                }
+            });
+            if changed {
+                unsafe {
+                    crate::publish_shared();
+                    crate::apply_font_all();
+                    crate::save_session();
+                    refresh();
+                }
+            }
+        }
         S_FONT => {
             app(|a| a.s.font = sel.min(2) as u8);
             unsafe {
@@ -1452,7 +1536,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let old = ST.with(|s| {
                     let mut st = s.borrow_mut();
                     let old = (st.font, st.small, st.title_font, st.mono, st.icon);
-                    *st = St::default();
+                    *st = St::default(); // drops the installed-family list
                     old
                 });
                 for f in [old.0, old.1, old.2, old.3, old.4] {
