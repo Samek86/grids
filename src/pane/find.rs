@@ -385,6 +385,9 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         return;
     }
     let enabled = app(|a| a.s.use_everything);
+    if enabled && find_map().get(&(hwnd.0 as isize)).is_some_and(|u| u.recursive) {
+        ask_install_everything_once(hwnd);
+    }
     let (gen, recursive, everywhere, use_ev) = {
         let mut map = find_map();
         let u = map.get_mut(&(hwnd.0 as isize)).unwrap();
@@ -903,5 +906,23 @@ mod tests {
         assert!(stopped.stopped);
         assert!(stopped_hits.is_empty());
         _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// The first subfolder search on a PC without Everything asks once whether to install it. Either answer
+/// is remembered, so it is never asked again. Settings keeps an install button to do it later.
+unsafe fn ask_install_everything_once(owner: HWND) {
+    if app(|a| a.s.ev_asked) || everything::running() || !everything::not_installed() {
+        return;
+    }
+    app(|a| a.s.ev_asked = true);
+    crate::save_session();
+    let q = tr(
+        "Install Everything to make subfolder search much faster?\n\nThis is asked only once. You can install it later from Settings.",
+        "Everything을 설치하면 하위 폴더 검색이 훨씬 빨라져요. 설치할까요?\n\n이 질문은 한 번만 합니다. 나중에 설정 화면에서 설치할 수 있어요.",
+        "Everything をインストールすると、サブフォルダー検索がずっと速くなります。インストールしますか？\n\nこの質問は一度だけです。あとで設定画面からインストールできます。",
+    );
+    if MessageBoxW(Some(owner), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONQUESTION) == IDYES {
+        everything::install_async();
     }
 }
