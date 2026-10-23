@@ -82,7 +82,7 @@ const CMDS: &[Cmd] = &[
     cmd("nav.addr", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x4C, true, false, false, false, false),
     cmd("nav.addr2", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x44, false, false, true, false, false),
     cmd("nav.addr3", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x73, false, false, false, false, false),
-    cmd("view.filter", VIEW, s("Filter", "필터", "フィルター"), 0x46, true, false, false, false, false),
+    cmd("view.filter", VIEW, s("Search this folder", "이 폴더 검색", "このフォルダーを検索"), 0x46, true, false, false, false, false),
     cmd("view.peek", VIEW, s("Quick look", "빠른 미리보기", "クイックルック"), 0x72, false, false, false, false, false),
     cmd("focus.next", VIEW, s("Next focus", "다음 포커스", "次のフォーカス"), 0x75, false, false, false, false, false),
     cmd("focus.prev", VIEW, s("Previous focus", "이전 포커스", "前のフォーカス"), 0x75, false, true, false, false, false),
