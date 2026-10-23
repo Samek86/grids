@@ -212,8 +212,8 @@ struct SettingsFile {
     lang: String,
     #[serde(default = "yes")]
     single: bool,
-    /// One window. Missing means off, so an older grids.json still opens windows.
-    #[serde(default, skip_serializing_if = "is_off")]
+    /// One window. Missing means on: a second launch and new-window actions open tabs in the one window.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
     one_window: bool,
     /// Subfolder search uses Everything when it is running. Missing means on.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
@@ -285,7 +285,7 @@ impl SettingsFile {
             hotkey: true,
             lang: lang_auto(),
             single: true,
-            one_window: false,
+            one_window: true,
             use_everything: true,
             ev_asked: false,
             session: String::new(),
@@ -1154,19 +1154,19 @@ mod tests {
     }
 
     #[test]
-    fn one_window_defaults_off_and_round_trips() {
-        assert!(!Session::default().one_window);
-        assert!(!adopt(r#"{"version":1,"single":true}"#).unwrap().one_window);
+    fn one_window_defaults_on_and_round_trips() {
+        assert!(Session::default().one_window);
+        assert!(adopt(r#"{"version":1,"single":true}"#).unwrap().one_window);
         let mut s = Session::default();
-        s.one_window = true;
-        assert!(Session::parse(&s.to_ini()).one_window);
+        s.one_window = false;
+        assert!(!Session::parse(&s.to_ini()).one_window);
         let text = pretty(&SettingsFile::from_session(&s));
-        assert!(text.contains("\"one_window\": true"), "{text}");
-        assert!(adopt(&text).unwrap().one_window);
-        assert!(!text_of_off());
+        assert!(text.contains("\"one_window\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().one_window);
+        assert!(!text_of_on());
     }
 
-    fn text_of_off() -> bool {
+    fn text_of_on() -> bool {
         pretty(&SettingsFile::from_session(&Session::default())).contains("one_window")
     }
 
