@@ -149,7 +149,6 @@ pub(crate) fn scroll_to_sel(sel: usize, scroll: i32, view_h: i32, row: i32) -> i
 }
 
 pub(crate) struct Walked {
-    pub(crate) hits: Vec<FindHit>,
     pub(crate) more: bool,
     pub(crate) stopped: bool,
 }
@@ -214,7 +213,7 @@ pub(crate) fn walk_search(root: &Path, query: &str, recursive: bool, show_hidden
         stack.extend(kids);
     }
     flush(&mut pending, &hits, more, &mut emit);
-    Walked { hits, more, stopped }
+    Walked { more, stopped }
 }
 
 fn is_dir_follow(e: &std::fs::DirEntry) -> bool {
@@ -695,7 +694,8 @@ fn find_worker() {
                 publish(job.hwnd, job.gen, delta.to_vec(), more, false);
             }
         });
-        if !stop() {
+        // A cancel sets stopped without filling the cap. A full cap sets more and is still delivered.
+        if !stop() && (!walked.stopped || walked.more) {
             publish(job.hwnd, job.gen, Vec::new(), walked.more, true);
         }
     }
@@ -998,19 +998,24 @@ mod tests {
         std::fs::write(root.join("Report.TXT"), b"a").unwrap();
         std::fs::write(root.join("other.md"), b"b").unwrap();
         std::fs::write(root.join("Sub").join("deep.TXT"), b"c").unwrap();
-        let flat = walk_search(&root, "txt", false, true, 10, &|| false, |_, _| {});
-        let names = flat.hits.iter().map(|h| h.name.to_lowercase()).collect::<Vec<_>>();
+        let mut flat_hits = Vec::new();
+        let flat = walk_search(&root, "txt", false, true, 10, &|| false, |d, _| flat_hits.extend_from_slice(d));
+        let names = flat_hits.iter().map(|h| h.name.to_lowercase()).collect::<Vec<_>>();
         assert!(names.contains(&"report.txt".to_string()));
         assert!(!names.iter().any(|n| n == "deep.txt"));
-        let deep = walk_search(&root, "*.txt", true, true, 10, &|| false, |_, _| {});
-        assert_eq!(deep.hits.len(), 2);
+        assert!(!flat.more && !flat.stopped);
+        let mut deep_hits = Vec::new();
+        let deep = walk_search(&root, "*.txt", true, true, 10, &|| false, |d, _| deep_hits.extend_from_slice(d));
+        assert_eq!(deep_hits.len(), 2);
         assert!(!deep.more && !deep.stopped);
-        let cap = walk_search(&root, "*", true, true, 1, &|| false, |_, _| {});
-        assert_eq!(cap.hits.len(), 1);
+        let mut cap_hits = Vec::new();
+        let cap = walk_search(&root, "*", true, true, 1, &|| false, |d, _| cap_hits.extend_from_slice(d));
+        assert_eq!(cap_hits.len(), 1);
         assert!(cap.more);
-        let stopped = walk_search(&root, "*", true, true, 10, &|| true, |_, _| {});
+        let mut stopped_hits = Vec::new();
+        let stopped = walk_search(&root, "*", true, true, 10, &|| true, |d, _| stopped_hits.extend_from_slice(d));
         assert!(stopped.stopped);
-        assert!(stopped.hits.is_empty());
+        assert!(stopped_hits.is_empty());
         _ = std::fs::remove_dir_all(&root);
     }
 }
