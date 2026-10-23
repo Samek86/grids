@@ -959,9 +959,12 @@ pub(crate) fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx:
     }
 }
 
-// Only the list itself is background; rows, group headers, collapse buttons, column headers are not.
+// The list itself is background, and so may a row be: a row reports ROLE_SYSTEM_LISTITEM across all its columns,
+// yet without full-row select only the name is the item, so its date and size cells are empty space. confirm()
+// tells them apart after the click: a press on the name selects or opens it. Group headers, collapse buttons and
+// column headers are never background.
 pub(crate) fn bg_role(role: u32) -> bool {
-    role == ROLE_SYSTEM_LIST
+    role == ROLE_SYSTEM_LIST || role == ROLE_SYSTEM_LISTITEM
 }
 
 // The generation is read before the probe and again after it: a navigation during the probe voids it.
