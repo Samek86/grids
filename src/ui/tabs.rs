@@ -4,6 +4,7 @@ use crate::app::*;
 use crate::pane::*;
 use crate::session::*;
 use crate::i18n::*;
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 // Segoe Fluent Icons / MDL2 Assets code points
 pub(crate) const ICON_SEARCH: &str = "\u{E721}";
@@ -46,10 +47,12 @@ pub(crate) fn glyph(id: i32) -> &'static str {
 // The strip is its own child so splitter hit-testing stays below it. Every hidden tab keeps its
 // grid on the session. Only the most recently hidden tab also keeps its Explorer windows.
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TabHit {
     Tab(usize),
     Close(usize),
+    /// The close slot of a locked tab. It does not close.
+    Lock(usize),
     Plus,
     Empty,
 }
@@ -57,7 +60,25 @@ pub(crate) enum TabHit {
 pub(crate) struct TabLay {
     pub(crate) body: Vec<RECT>,
     pub(crate) close: Vec<Option<RECT>>,
+    pub(crate) lock: Vec<bool>,
     pub(crate) plus: RECT,
+}
+
+/// X uses the accent while the pointer is on it. A lock stays the quiet colour, hot or not.
+pub(crate) fn close_ink(locked: bool, hot: bool, accent: u32, sub: u32) -> u32 {
+    if locked || !hot { sub } else { accent }
+}
+
+pub(crate) fn close_glyph(locked: bool) -> &'static str {
+    if locked { ICON_LOCK } else { ICON_CLOSE }
+}
+
+/// Middle-click closes an unlocked tab. A lock, and the body of a locked tab, do not.
+pub(crate) fn middle_closes(lay: &TabLay, hit: TabHit) -> bool {
+    match hit {
+        TabHit::Close(i) | TabHit::Tab(i) => !lay.lock.get(i).copied().unwrap_or(false),
+        _ => false,
+    }
 }
 
 pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32) -> TabLay {
@@ -74,24 +95,23 @@ pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32) -> TabLay
     let mut x = pad;
     let mut body = Vec::new();
     let mut close = Vec::new();
+    let mut lock = Vec::new();
     for i in 0..n {
         let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
         let cw = s(16);
-        let c = if locked.get(i).copied().unwrap_or(false) {
-            None
-        } else {
-            Some(RECT {
-                left: r.right - s(4) - cw,
-                top: r.top + (h - cw) / 2,
-                right: r.right - s(4),
-                bottom: r.top + (h - cw) / 2 + cw,
-            })
-        };
+        // Locked or not, the slot is the same rectangle the X uses.
+        let c = Some(RECT {
+            left: r.right - s(4) - cw,
+            top: r.top + (h - cw) / 2,
+            right: r.right - s(4),
+            bottom: r.top + (h - cw) / 2 + cw,
+        });
         body.push(r);
         close.push(c);
+        lock.push(locked.get(i).copied().unwrap_or(false));
         x += w + gap;
     }
-    TabLay { body, close, plus: RECT { left: x, top: y, right: x + plus_w, bottom: y + h } }
+    TabLay { body, close, lock, plus: RECT { left: x, top: y, right: x + plus_w, bottom: y + h } }
 }
 
 pub(crate) fn in_rect(r: RECT, x: i32, y: i32) -> bool {
@@ -105,7 +125,7 @@ pub(crate) fn tab_hit(lay: &TabLay, x: i32, y: i32) -> TabHit {
     for (i, r) in lay.body.iter().enumerate() {
         if in_rect(*r, x, y) {
             if lay.close[i].is_some_and(|c| in_rect(c, x, y)) {
-                return TabHit::Close(i);
+                return if lay.lock.get(i).copied().unwrap_or(false) { TabHit::Lock(i) } else { TabHit::Close(i) };
             }
             return TabHit::Tab(i);
         }
@@ -645,11 +665,10 @@ pub(crate) fn current_tab_lay() -> TabLay {
 }
 
 pub(crate) unsafe fn paint_tabs(h: HWND) {
-    let (active, names, locked, colors, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
+    let (active, names, colors, hot, hot_close, hot_plus, dpi, font, icon, accent) = app(|a| {
         (
             a.s.tab,
             a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
-            a.s.tabs.iter().map(|t| t.locked).collect::<Vec<_>>(),
             a.s.tabs.iter().map(|t| t.color).collect::<Vec<_>>(),
             a.tab_hot,
             a.tab_hot_close,
@@ -689,20 +708,14 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
                 let inset = if on { 0 } else { 1 };
                 fill(dc, RECT { left: r.left + inset, top: r.top + inset, right: r.left + inset + s(4), bottom: r.bottom - inset }, c);
             }
-            let lock = locked.get(i).copied().unwrap_or(false);
+            let lock = lay.lock.get(i).copied().unwrap_or(false);
             let nudge = if col.is_some() { s(5) } else { 0 };
             let mut label = *r;
-            if lock {
-                let ir = RECT { left: r.left + nudge + s(4), top: r.top, right: r.left + nudge + s(20), bottom: r.bottom };
-                text(dc, ir, ICON_LOCK, icon, if on { pal().text } else { pal().sub }, DT_CENTER);
-                label.left = ir.right;
-            } else {
-                label.left += s(8) + nudge;
-            }
+            label.left += s(8) + nudge;
             if let Some(c) = lay.close[i] {
                 label.right = c.left;
-                let ink = if hot_close && hot == Some(i) { accent } else { pal().sub };
-                text(dc, c, ICON_CLOSE, icon, ink, DT_CENTER);
+                let ink = close_ink(lock, hot_close && hot == Some(i), accent, pal().sub);
+                text(dc, c, close_glyph(lock), icon, ink, DT_CENTER);
             } else {
                 label.right -= s(8);
             }
@@ -718,6 +731,42 @@ pub(crate) unsafe fn tab_mouse(x: i32, y: i32) -> TabHit {
     tab_hit(&current_tab_lay(), x, y)
 }
 
+/// "Locked" beside the lock glyph. The same tooltip window follows light and dark.
+unsafe fn lock_tooltip(show: bool) {
+    let (tip, tabs, added) = app(|a| (a.tip, a.tabs_hwnd, a.tab_lock_tip));
+    if tip.0.is_null() || tabs.0.is_null() {
+        return;
+    }
+    let label = HSTRING::from(tr("Locked", "잠김", "ロック中"));
+    let ti = TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE,
+        hwnd: tabs,
+        uId: 7,
+        lpszText: PWSTR(label.as_ptr() as *mut u16),
+        ..Default::default()
+    };
+    let lp = LPARAM(&ti as *const _ as isize);
+    if show && !added {
+        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
+        app(|a| a.tab_lock_tip = true);
+    }
+    if !show {
+        if added {
+            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
+        }
+        return;
+    }
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return;
+    }
+    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
+    let at = LPARAM((pt.x as u16 as usize as isize) | ((pt.y as u16 as usize as isize) << 16));
+    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+}
+
 pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
@@ -728,11 +777,12 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let (x, y) = xy(lp);
                 let hit = tab_mouse(x, y);
                 let (hot, close, plus) = match hit {
-                    TabHit::Tab(i) => (Some(i), false, false),
+                    TabHit::Tab(i) | TabHit::Lock(i) => (Some(i), false, false),
                     TabHit::Close(i) => (Some(i), true, false),
                     TabHit::Plus => (None, false, true),
                     TabHit::Empty => (None, false, false),
                 };
+                lock_tooltip(matches!(hit, TabHit::Lock(_)));
                 let (from, paint) = app(|a| {
                     if let Some((pi, px, py, _)) = a.tab_press {
                         if a.tab_drag.is_none() && (x - px).abs() + (y - py).abs() > (4 * a.dpi / 96).max(4) {
@@ -768,6 +818,7 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = TrackMouseEvent(&mut t);
             }
             WM_MOUSELEAVE => {
+                lock_tooltip(false);
                 app(|a| {
                     a.tab_hot = None;
                     a.tab_hot_close = false;
@@ -779,7 +830,8 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let (x, y) = xy(lp);
                 end_rename(true);
                 match tab_mouse(x, y) {
-                    TabHit::Tab(i) | TabHit::Close(i) => {
+                    TabHit::Tab(i) | TabHit::Close(i) | TabHit::Lock(i) => {
+                        // The lock occupies the close slot and does not arm a close.
                         let on_close = matches!(tab_mouse(x, y), TabHit::Close(_));
                         app(|a| a.tab_press = Some((i, x, y, on_close)));
                         SetCapture(h);
@@ -814,14 +866,17 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_MBUTTONUP => {
-                if let TabHit::Tab(i) | TabHit::Close(i) = tab_mouse(xy(lp).0, xy(lp).1) {
-                    close_tab(i);
+                let hit = tab_mouse(xy(lp).0, xy(lp).1);
+                if middle_closes(&current_tab_lay(), hit) {
+                    if let TabHit::Tab(i) | TabHit::Close(i) = hit {
+                        close_tab(i);
+                    }
                 }
             }
             WM_RBUTTONUP => {
                 let (x, y) = xy(lp);
                 let i = match tab_mouse(x, y) {
-                    TabHit::Tab(i) | TabHit::Close(i) => i,
+                    TabHit::Tab(i) | TabHit::Close(i) | TabHit::Lock(i) => i,
                     _ => app(|a| a.s.tab),
                 };
                 tab_menu(i, x, y);
