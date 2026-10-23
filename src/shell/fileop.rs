@@ -602,6 +602,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.del = fresh.del;
         a.s.new_name.clear();
         a.s.dropm = fresh.dropm;
+        a.s.layout_new = fresh.layout_new;
         a.s.boot = fresh.boot;
         a.s.boot_file.clear();
         a.s.autosave = fresh.autosave;
@@ -654,7 +655,7 @@ pub(crate) unsafe fn import_settings(text: &str) -> bool {
 pub(crate) fn apply_boot(s: &mut Session) {
     match s.boot {
         2 => {
-            s.set_heights(vec![2, 2]);
+            s.set_heights(s.layout_heights());
             s.paths = vec![String::new(); MAXP];
             s.views = vec![(0, 0); MAXP];
             s.cols = vec![String::new(); MAXP];

@@ -29,6 +29,7 @@ const S_ADV_IM: i32 = 25;
 const S_ADV_RESET: i32 = 26;
 const S_EV: i32 = 27;
 const S_FACE: i32 = 28;
+const S_LAYOUT: i32 = 29;
 const S_FAV0: i32 = 400;
 
 const TG_SINGLE: u8 = 1;
@@ -116,6 +117,7 @@ enum Ctl {
     DelMode,
     NewName,
     Drop,
+    Layout,
     Accent,
     CopyEng,
     Sess,
@@ -140,6 +142,7 @@ const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Lang },
     Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Face },
     Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
+    Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new tab or a new window.", "새 탭이나 새 창을 열 때의 패널 배치예요.", "新しいタブや新しいウィンドウを開くときのペイン配置です。"), badge: true, live: true, ctl: Ctl::Layout },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_ONE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("This is the dblup setting.", "지금 있는 dblup 설정이에요.", "現在の dblup 設定です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
@@ -520,7 +523,7 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
         Ctl::EvStatus => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.bottom },
         Ctl::EvAct => right_box(rect, sc(dpi, 200), sc(dpi, 32), pad),
         Ctl::CopyEng => right_box(rect, sc(dpi, 140), sc(dpi, 22), pad),
-        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::Font | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop => {
+        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::Font | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout => {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
         }
         Ctl::Sess => right_box(rect, sc(dpi, 108), sc(dpi, 32), pad),
@@ -665,6 +668,7 @@ fn ctl_id(c: Ctl) -> Option<i32> {
         Ctl::DelMode => S_DEL,
         Ctl::NewName => S_NEW,
         Ctl::Drop => S_DROP,
+        Ctl::Layout => S_LAYOUT,
         Ctl::Sess => S_SESS,
         Ctl::About => S_GITHUB,
         Ctl::Accent => S_ACCENT,

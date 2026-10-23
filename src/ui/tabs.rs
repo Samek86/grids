@@ -380,10 +380,7 @@ pub(crate) unsafe fn new_tab() {
         let tab = a.s.tab;
         a.park[tab] = live;
         lru_note(a, tab);
-        let fresh = Session {
-            heights: vec![2, 2],
-            colr: even(2),
-            rowr: vec![even(2); 2],
+        let mut fresh = Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
@@ -392,6 +389,7 @@ pub(crate) unsafe fn new_tab() {
             pane_cur: vec![0; MAXP],
             ..a.s.clone()
         };
+        fresh.set_heights(fresh.layout_heights());
         let name = next_tab_name(&a.s.tabs);
         a.s.tabs.push(Tab::from_live(&fresh, name, false, vec![String::new(); MAXP]));
         a.park.push(no_panes());
