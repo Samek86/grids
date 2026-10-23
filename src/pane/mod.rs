@@ -1,7 +1,9 @@
+mod docparse;
 mod find;
 mod icon;
 mod nav;
 mod peek;
+mod preview;
 mod ptabs;
 mod select;
 mod status;
