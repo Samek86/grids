@@ -37,10 +37,10 @@ const GET_PROPERTY: usize = 13;
 /// Quick Access / Home shell folder. Pinned and frequent items both live here.
 const QUICK_ACCESS: &str = "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
 
-/// System.Home.IsPinned — {635E9051-50A7-4BBE-A265-7784719C26C9}, 2.
+/// System.Home.IsPinned — {30C8EEF4-A832-41E2-AB32-E3C3CA28FD29}, 4 (from PSGetPropertyKeyFromName).
 const PKEY_HOME_ISPINNED: PROPERTYKEY = PROPERTYKEY {
-    fmtid: GUID::from_u128(0x635E9051_50A7_4BBE_A265_7784719C26C9),
-    pid: 2,
+    fmtid: GUID::from_u128(0x30C8EEF4_A832_41E2_AB32_E3C3CA28FD29),
+    pid: 4,
 };
 
 pub(crate) const PIN_WAIT: Duration = Duration::from_secs(2);
