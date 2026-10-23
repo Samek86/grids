@@ -1,0 +1,703 @@
+use std::io::{Read, Seek, SeekFrom};
+use windows::Win32::Globalization::{MultiByteToWideChar, MULTI_BYTE_TO_WIDE_CHAR_FLAGS};
+
+// ---------- reading documents for the preview: text, CSV, ZIP, XML, mail (no Windows UI here) ----------
+
+/// Bytes as text: a BOM decides, else UTF-8 if it is (a character cut at the end is fine), else the Korean
+/// ANSI code page, which is what Windows tools write here.
+pub(crate) fn decode_text(b: &[u8]) -> String {
+    if let Some(r) = b.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(r).into_owned();
+    }
+    if let Some(r) = b.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(r, false);
+    }
+    if let Some(r) = b.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(r, true);
+    }
+    match std::str::from_utf8(b) {
+        Ok(s) => s.to_string(),
+        Err(e) if e.error_len().is_none() => String::from_utf8_lossy(&b[..e.valid_up_to()]).into_owned(),
+        Err(_) => ansi(b, 949),
+    }
+}
+
+pub(crate) fn utf16(b: &[u8], be: bool) -> String {
+    let u: Vec<u16> = b.chunks_exact(2).map(|c| if be { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) }).collect();
+    String::from_utf16_lossy(&u)
+}
+
+/// A code page's bytes (949 = Korean) as text; a lead byte cut off at the end is dropped.
+pub(crate) fn ansi(b: &[u8], cp: u32) -> String {
+    if b.is_empty() {
+        return String::new();
+    }
+    unsafe {
+        let n = MultiByteToWideChar(cp, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), b, None);
+        if n <= 0 {
+            return String::from_utf8_lossy(b).into_owned();
+        }
+        let mut w = vec![0u16; n as usize];
+        MultiByteToWideChar(cp, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), b, Some(&mut w));
+        String::from_utf16_lossy(&w)
+    }
+}
+
+/// Text, not a binary: no NUL in the first 8 KB (UTF-16 has a BOM, then NULs are its own).
+pub(crate) fn looks_text(b: &[u8]) -> bool {
+    if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) {
+        return true;
+    }
+    let head = &b[..b.len().min(8192)];
+    let ctl = head.iter().filter(|&&c| c < 9 || (c > 13 && c < 32 && c != 27)).count();
+    !head.contains(&0) && ctl * 50 <= head.len()
+}
+
+/// CSV / TSV rows: quoted fields may hold the separator, "" and line breaks. At most `max` rows.
+pub(crate) fn csv_rows(text: &str, sep: char, max: usize) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let (mut row, mut cell, mut quoted) = (Vec::new(), String::new(), false);
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '"' if quoted && it.peek() == Some(&'"') => {
+                cell.push('"');
+                it.next();
+            }
+            '"' if quoted => quoted = false,
+            '"' if cell.is_empty() => quoted = true,
+            c if c == sep && !quoted => row.push(std::mem::take(&mut cell)),
+            '\r' if !quoted => {}
+            '\n' if !quoted => {
+                row.push(std::mem::take(&mut cell));
+                rows.push(std::mem::take(&mut row));
+                if rows.len() >= max {
+                    return rows;
+                }
+            }
+            c => cell.push(c),
+        }
+    }
+    if !cell.is_empty() || !row.is_empty() {
+        row.push(cell);
+        rows.push(row);
+    }
+    rows
+}
+
+/// ',' unless the first line has none and has ';' (European Excel).
+pub(crate) fn csv_sep(text: &str) -> char {
+    let first = text.lines().next().unwrap_or("");
+    if !first.contains(',') && first.contains(';') { ';' } else { ',' }
+}
+
+// ---------- ZIP (central directory, stored and deflated entries) ----------
+
+#[derive(Debug, Clone)]
+pub(crate) struct ZipEntry {
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    csize: u64,
+    method: u16,
+    offset: u64,
+}
+
+impl ZipEntry {
+    pub(crate) fn is_dir(&self) -> bool {
+        self.name.ends_with('/')
+    }
+}
+
+fn le16(b: &[u8], at: usize) -> u64 {
+    b.get(at..at + 2).map_or(0, |x| u16::from_le_bytes([x[0], x[1]]) as u64)
+}
+
+fn le32(b: &[u8], at: usize) -> u64 {
+    b.get(at..at + 4).map_or(0, |x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]) as u64)
+}
+
+fn le64(b: &[u8], at: usize) -> u64 {
+    b.get(at..at + 8).map_or(0, |x| u64::from_le_bytes(x.try_into().unwrap()))
+}
+
+/// Every entry of a ZIP, from its central directory (ZIP64 too). None: not a ZIP.
+pub(crate) fn zip_entries<R: Read + Seek>(f: &mut R) -> Option<Vec<ZipEntry>> {
+    let len = f.seek(SeekFrom::End(0)).ok()?;
+    let tail = len.min(65_557 + 20 + 56);
+    f.seek(SeekFrom::Start(len - tail)).ok()?;
+    let mut t = vec![0u8; tail as usize];
+    f.read_exact(&mut t).ok()?;
+    let e = (0..t.len().saturating_sub(21)).rev().find(|&i| le32(&t, i) == 0x0605_4b50)?;
+    let (mut count, mut size, mut start) = (le16(&t, e + 10), le32(&t, e + 12), le32(&t, e + 16));
+    // ZIP64: the locator sits right before the end record and points at the larger one
+    if (count == 0xFFFF || start == 0xFFFF_FFFF) && e >= 20 && le32(&t, e - 20) == 0x0706_4b50 {
+        let at = le64(&t, e - 20 + 8);
+        let mut z = [0u8; 56];
+        f.seek(SeekFrom::Start(at)).ok()?;
+        f.read_exact(&mut z).ok()?;
+        if le32(&z, 0) == 0x0606_4b50 {
+            (count, size, start) = (le64(&z, 32), le64(&z, 40), le64(&z, 48));
+        }
+    }
+    if size > 64 << 20 {
+        return None;
+    }
+    let mut cd = vec![0u8; size as usize];
+    f.seek(SeekFrom::Start(start)).ok()?;
+    f.read_exact(&mut cd).ok()?;
+    let mut out = Vec::new();
+    let mut p = 0;
+    while out.len() < count as usize && le32(&cd, p) == 0x0201_4b50 {
+        let (flags, method) = (le16(&cd, p + 8), le16(&cd, p + 10) as u16);
+        let (mut csize, mut usize_, mut offset) = (le32(&cd, p + 20), le32(&cd, p + 24), le32(&cd, p + 42));
+        let (n, x, c) = (le16(&cd, p + 28) as usize, le16(&cd, p + 30) as usize, le16(&cd, p + 32) as usize);
+        let raw = cd.get(p + 46..p + 46 + n)?;
+        let name = if flags & 0x800 != 0 { String::from_utf8_lossy(raw).into_owned() } else { decode_text(raw) };
+        // ZIP64 extra field: the 64-bit values, in order, of those that were 0xFFFFFFFF
+        let extra = cd.get(p + 46 + n..p + 46 + n + x).unwrap_or(&[]);
+        let mut q = 0;
+        while q + 4 <= extra.len() {
+            let (id, l) = (le16(extra, q), le16(extra, q + 2) as usize);
+            if id == 1 {
+                let mut v = q + 4;
+                for field in [&mut usize_, &mut csize, &mut offset] {
+                    if *field == 0xFFFF_FFFF {
+                        *field = le64(extra, v);
+                        v += 8;
+                    }
+                }
+            }
+            q += 4 + l;
+        }
+        out.push(ZipEntry { name: name.replace('\\', "/"), size: usize_, csize, method, offset });
+        p += 46 + n + x + c;
+    }
+    Some(out)
+}
+
+/// One entry's bytes, at most `max` of them uncompressed. Stored and deflated only.
+pub(crate) fn zip_read<R: Read + Seek>(f: &mut R, e: &ZipEntry, max: usize) -> Option<Vec<u8>> {
+    let mut h = [0u8; 30];
+    f.seek(SeekFrom::Start(e.offset)).ok()?;
+    f.read_exact(&mut h).ok()?;
+    if le32(&h, 0) != 0x0403_4b50 {
+        return None;
+    }
+    f.seek(SeekFrom::Current((le16(&h, 26) + le16(&h, 28)) as i64)).ok()?;
+    let take = if e.method == 0 { e.csize.min(max as u64) } else { e.csize.min(256 << 20) };
+    let mut data = vec![0u8; take as usize];
+    f.read_exact(&mut data).ok()?;
+    match e.method {
+        0 => Some(data),
+        8 => match miniz_oxide::inflate::decompress_to_vec_with_limit(&data, max) {
+            Ok(v) => Some(v),
+            Err(err) if !err.output.is_empty() => Some(err.output), // over the limit: what fits
+            Err(_) => None,
+        },
+        _ => None,
+    }
+}
+
+pub(crate) fn zip_find<'a>(es: &'a [ZipEntry], name: &str) -> Option<&'a ZipEntry> {
+    es.iter().find(|e| e.name.eq_ignore_ascii_case(name))
+}
+
+// ---------- XML text ----------
+
+pub(crate) fn unescape(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let Some(j) = rest.find(';').filter(|&j| j <= 10) else {
+            out.push('&');
+            rest = &rest[1..];
+            continue;
+        };
+        let ent = &rest[1..j];
+        let c = match ent {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some(' '),
+            _ => ent
+                .strip_prefix("#x")
+                .or_else(|| ent.strip_prefix("#X"))
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .or_else(|| ent.strip_prefix('#').and_then(|d| d.parse().ok()))
+                .and_then(char::from_u32),
+        };
+        match c {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[j + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The words of an Office / HWPX / ODF XML part: character data inside any `text` element, a line break
+/// after each `para` element, a tab for `tab` and a break for `br` elements. Tag names are compared whole
+/// ("w:t", "a:p", "hp:t", "text:p").
+pub(crate) fn xml_text(xml: &str, text: &[&str], para: &[&str], tab: &[&str], br: &[&str]) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    let mut rest = xml;
+    while let Some(i) = rest.find('<') {
+        if depth > 0 {
+            out.push_str(&unescape(&rest[..i]));
+        }
+        rest = &rest[i + 1..];
+        let Some(j) = rest.find('>') else { break };
+        let tag = &rest[..j];
+        rest = &rest[j + 1..];
+        if tag.starts_with('?') || tag.starts_with('!') {
+            continue;
+        }
+        let close = tag.starts_with('/');
+        let empty = tag.ends_with('/');
+        let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("");
+        if text.contains(&name) && !empty {
+            depth = if close { depth.saturating_sub(1) } else { depth + 1 };
+        }
+        if close && para.contains(&name) {
+            out.push('\n');
+        }
+        if !close && tab.contains(&name) {
+            out.push('\t');
+        }
+        if !close && br.contains(&name) {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// "AB12" -> column 27 (zero-based), row 11.
+pub(crate) fn cell_ref(r: &str) -> Option<(usize, usize)> {
+    let letters = r.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    let col = r[..letters].chars().try_fold(0usize, |a, c| Some(a * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)))?;
+    let row: usize = r[letters..].parse().ok()?;
+    (col > 0 && row > 0).then(|| (col - 1, row - 1))
+}
+
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let at = tag.find(&format!(" {name}=\""))? + name.len() + 3;
+    let end = tag[at..].find('"')?;
+    Some(&tag[at..at + end])
+}
+
+/// sharedStrings.xml: each <si>'s text, runs joined.
+pub(crate) fn xlsx_strings(xml: &str) -> Vec<String> {
+    xml.split("<si>").skip(1).map(|si| xml_text(si.split("</si>").next().unwrap_or(""), &["t"], &[], &[], &[])).collect()
+}
+
+/// A worksheet as rows of cell text, at most `max_r` x `max_c`; shared strings looked up, inline strings read.
+pub(crate) fn xlsx_rows(sheet: &str, strings: &[String], max_r: usize, max_c: usize) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for c in sheet.split("<c ").skip(1) {
+        let Some(end) = c.find('>') else { continue };
+        let tag = format!(" {}", &c[..end]);
+        let Some((col, row)) = attr(&tag, "r").and_then(cell_ref) else { continue };
+        if row >= max_r || col >= max_c {
+            continue;
+        }
+        let body = c.split("</c>").next().unwrap_or("");
+        let v = body.split("<v>").nth(1).and_then(|v| v.split("</v>").next()).map(unescape);
+        let text = match attr(&tag, "t") {
+            Some("s") => v.and_then(|v| v.trim().parse::<usize>().ok()).and_then(|k| strings.get(k).cloned()).unwrap_or_default(),
+            Some("inlineStr") => xml_text(body, &["t"], &[], &[], &[]),
+            Some("b") => match v.as_deref() {
+                Some("1") => "TRUE".into(),
+                _ => "FALSE".into(),
+            },
+            _ => v.map(|v| tidy_number(&v)).unwrap_or_default(),
+        };
+        if text.is_empty() {
+            continue;
+        }
+        while rows.len() <= row {
+            rows.push(Vec::new());
+        }
+        let r = &mut rows[row];
+        while r.len() <= col {
+            r.push(String::new());
+        }
+        r[col] = text;
+    }
+    rows
+}
+
+/// "0.30000000000000004" -> "0.3": Excel stores doubles; show them the way it would, roughly.
+pub(crate) fn tidy_number(v: &str) -> String {
+    match v.parse::<f64>() {
+        Ok(x) if v.len() > 12 && x.is_finite() => {
+            let s = format!("{:.10}", x);
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        }
+        _ => v.to_string(),
+    }
+}
+
+// ---------- HTML and mail ----------
+
+/// Visible text of an HTML page or mail body: scripts and styles dropped, blocks on their own lines.
+pub(crate) fn html_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    let lower = |s: &str| s.to_ascii_lowercase();
+    while let Some(i) = rest.find('<') {
+        out.push_str(&unescape(&rest[..i]).replace(['\r', '\n'], " "));
+        rest = &rest[i + 1..];
+        let Some(j) = rest.find('>') else { break };
+        let tag = lower(&rest[..j]);
+        rest = &rest[j + 1..];
+        let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("").to_string();
+        if (name == "script" || name == "style" || name == "head") && !tag.starts_with('/') {
+            let end = format!("</{name}");
+            match lower(rest).find(&end) {
+                Some(k) => rest = &rest[k..],
+                None => break,
+            }
+            continue;
+        }
+        if matches!(name.as_str(), "br" | "p" | "div" | "tr" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "table" | "blockquote") {
+            out.push('\n');
+        }
+        if name == "td" || name == "th" {
+            out.push('\t');
+        }
+        if name == "li" && !tag.starts_with('/') {
+            out.push_str("• ");
+        }
+    }
+    out.push_str(&unescape(rest));
+    // trim each line, at most one empty line in a row
+    let mut lines: Vec<&str> = Vec::new();
+    for l in out.lines().map(str::trim) {
+        if !(l.is_empty() && lines.last().is_none_or(|p| p.is_empty())) {
+            lines.push(l);
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn b64(s: &str) -> Vec<u8> {
+    let v = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
+        _ => None,
+    };
+    let bits: Vec<u8> = s.bytes().filter_map(v).collect();
+    bits.chunks(4)
+        .flat_map(|c| {
+            let n = c.iter().fold(0u32, |a, &x| a << 6 | x as u32) << (6 * (4 - c.len()));
+            let b = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+            b.into_iter().take(c.len().saturating_sub(1))
+        })
+        .collect()
+}
+
+fn qp(b: &[u8], header: bool) -> Vec<u8> {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'=' if b.get(i + 1) == Some(&b'\r') || b.get(i + 1) == Some(&b'\n') => {
+                i += if b.get(i + 1) == Some(&b'\r') { 3 } else { 2 }; // soft line break
+                continue;
+            }
+            b'=' if i + 2 < b.len() => match (hex(b[i + 1]), hex(b[i + 2])) {
+                (Some(h), Some(l)) => {
+                    out.push(h << 4 | l);
+                    i += 3;
+                    continue;
+                }
+                _ => out.push(b'='),
+            },
+            b'_' if header => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
+fn charset_text(b: &[u8], charset: &str) -> String {
+    let cs = charset.trim().trim_matches('"').to_ascii_lowercase();
+    match cs.as_str() {
+        "euc-kr" | "ks_c_5601-1987" | "cp949" | "x-windows-949" | "ks_c_5601" => ansi(b, 949),
+        "iso-2022-jp" | "shift_jis" | "shift-jis" => ansi(b, 932),
+        "gb2312" | "gbk" | "gb18030" => ansi(b, 936),
+        "big5" => ansi(b, 950),
+        "iso-8859-1" | "latin1" | "windows-1252" | "us-ascii" | "ascii" => ansi(b, 1252),
+        _ => decode_text(b),
+    }
+}
+
+/// "=?UTF-8?B?7JWI64WV?= there" -> "안녕 there".
+pub(crate) fn mime_words(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    let mut last_word = false;
+    while let Some(i) = rest.find("=?") {
+        let gap = &rest[..i];
+        if !(last_word && gap.trim().is_empty()) {
+            out.push_str(gap);
+        }
+        let w = &rest[i + 2..];
+        let parts: Vec<&str> = w.splitn(3, '?').collect();
+        let Some(end) = parts.get(2).and_then(|t| t.find("?=")) else {
+            out.push_str("=?");
+            rest = w;
+            last_word = false;
+            continue;
+        };
+        let (cs, enc, text) = (parts[0], parts[1], &parts[2][..end]);
+        let raw = if enc.eq_ignore_ascii_case("b") { b64(text) } else { qp(&latin(text), true) };
+        out.push_str(&charset_text(&raw, cs.split('*').next().unwrap_or(cs)));
+        rest = &parts[2][end + 2..];
+        last_word = true;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn split_head(m: &str) -> (&str, &str) {
+    for sep in ["\r\n\r\n", "\n\n"] {
+        if let Some(i) = m.find(sep) {
+            return (&m[..i], &m[i + sep.len()..]);
+        }
+    }
+    (m, "")
+}
+
+/// Unfolded header lines as (lowercase name, value).
+fn headers(h: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for l in h.lines() {
+        if (l.starts_with(' ') || l.starts_with('\t')) && !out.is_empty() {
+            let last = out.last_mut().unwrap();
+            last.1.push(' ');
+            last.1.push_str(l.trim());
+        } else if let Some((k, v)) = l.split_once(':') {
+            out.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    out
+}
+
+fn param(v: &str, name: &str) -> Option<String> {
+    v.split(';').skip(1).find_map(|p| {
+        let (k, val) = p.split_once('=')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| val.trim().trim_matches('"').to_string())
+    })
+}
+
+/// The readable body of a MIME part: text/plain first, else HTML as text; attachments' names listed.
+fn mime_body(head: &[(String, String)], body: &str, files: &mut Vec<String>) -> Option<(bool, String)> {
+    let get = |k: &str| head.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let ctype = get("content-type").unwrap_or("text/plain");
+    let kind = ctype.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let disp = get("content-disposition").unwrap_or("");
+    if let Some(name) = param(disp, "filename").or_else(|| param(ctype, "name")) {
+        if disp.to_ascii_lowercase().starts_with("attachment") || !kind.starts_with("text/") {
+            files.push(mime_words(&name));
+            return None;
+        }
+    }
+    if kind.starts_with("multipart/") {
+        let b = param(ctype, "boundary")?;
+        let mark = format!("--{b}");
+        let mut best: Option<(bool, String)> = None;
+        for part in body.split(&mark).skip(1) {
+            if part.starts_with("--") {
+                break;
+            }
+            let (h, b) = split_head(part.trim_start_matches(['\r', '\n']));
+            if let Some((plain, t)) = mime_body(&headers(h), b, files) {
+                // plain beats html; the first of each kind wins
+                if best.as_ref().is_none_or(|(p, _)| !p && plain) {
+                    best = Some((plain, t));
+                }
+            }
+        }
+        return best;
+    }
+    if !kind.starts_with("text/") {
+        return None;
+    }
+    let raw = match get("content-transfer-encoding").map(|e| e.to_ascii_lowercase()) {
+        Some(e) if e == "base64" => b64(body),
+        Some(e) if e == "quoted-printable" => qp(&latin(body), false),
+        _ => latin(body),
+    };
+    let text = charset_text(&raw, &param(ctype, "charset").unwrap_or_default());
+    match kind.as_str() {
+        "text/html" => Some((false, html_text(&text))),
+        _ => Some((true, text.trim_end().to_string())),
+    }
+}
+
+/// An .eml as readable text: Subject, From, To, Cc, Date, attachments, then the body.
+/// `lang` is the UI language: 1 Korean, 2 Japanese, otherwise English.
+pub(crate) fn eml_text(raw: &[u8], lang: u8) -> String {
+    // headers are ASCII (or should be); bodies decode by their own charset, so read as Latin-1 to keep bytes
+    let m: String = raw.iter().map(|&b| b as char).collect();
+    let (h, body) = split_head(&m);
+    let head = headers(h);
+    let mut out = String::new();
+    let label = |en: &'static str, ko: &'static str, ja: &'static str| match lang { 1 => ko, 2 => ja, _ => en };
+    for (key, en, ko, ja) in [
+        ("subject", "Subject", "제목", "件名"),
+        ("from", "From", "보낸 사람", "差出人"),
+        ("to", "To", "받는 사람", "宛先"),
+        ("cc", "Cc", "참조", "Cc"),
+        ("date", "Date", "날짜", "日付"),
+    ] {
+        if let Some((_, v)) = head.iter().find(|(n, _)| n == key) {
+            out += &format!("{}: {}\n", label(en, ko, ja), mime_words(&latin_bytes_as_text(v)));
+        }
+    }
+    let mut files = Vec::new();
+    let text = mime_body(&head, body, &mut files).map(|(_, t)| t).unwrap_or_default();
+    if !files.is_empty() {
+        out += &format!("{}: {}\n", label("Attachments", "첨부", "添付"), files.join(", "));
+    }
+    out.push('\n');
+    out.push_str(&text);
+    out
+}
+
+// Back to the bytes of text read one byte per char (eml_text).
+fn latin(s: &str) -> Vec<u8> {
+    s.chars().map(|c| c as u32 as u8).collect()
+}
+
+// A header value read byte-per-char: raw UTF-8 (allowed by newer mailers) back to text.
+fn latin_bytes_as_text(v: &str) -> String {
+    decode_text(&latin(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_decoding() {
+        assert_eq!(decode_text(b"\xEF\xBB\xBFhi"), "hi");
+        assert_eq!(decode_text(&[0xFF, 0xFE, b'h', 0, b'i', 0]), "hi");
+        assert_eq!(decode_text("한글".as_bytes()), "한글");
+        assert_eq!(decode_text(&"한글".as_bytes()[..5]), "한"); // cut inside a character
+        assert_eq!(decode_text(&[0xC7, 0xD1, 0xB1, 0xDB]), "한글"); // cp949
+        assert!(looks_text(b"a\tb\r\n") && !looks_text(b"MZ\x90\x00\x03"));
+    }
+
+    #[test]
+    fn csv_parsing() {
+        let rows = csv_rows("a,\"b,c\",\"d \"\"q\"\"\"\r\n1,2\n", ',', 100);
+        assert_eq!(rows, vec![vec!["a", "b,c", "d \"q\""], vec!["1", "2"]]);
+        assert_eq!(csv_rows("x\n\"multi\nline\",y", ',', 100)[1], vec!["multi\nline", "y"]);
+        assert_eq!(csv_rows("1\n2\n3\n", ',', 2).len(), 2);
+        assert_eq!((csv_sep("a;b;c\n"), csv_sep("a,b;c\n")), (';', ','));
+    }
+
+    // A ZIP made by hand: one stored entry, one deflated, a Korean name without the UTF-8 flag.
+    fn zip_bytes(files: &[(&[u8], &[u8], bool, u16)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut cd = Vec::new();
+        for (name, data, deflate, flags) in files {
+            let body = if *deflate { miniz_oxide::deflate::compress_to_vec(data, 6) } else { data.to_vec() };
+            let off = out.len() as u32;
+            let method: u16 = if *deflate { 8 } else { 0 };
+            let mut local = vec![0x50, 0x4b, 3, 4, 20, 0];
+            local.extend(flags.to_le_bytes());
+            local.extend(method.to_le_bytes());
+            local.extend([0u8; 8]); // time, date, crc
+            local.extend((body.len() as u32).to_le_bytes());
+            local.extend((data.len() as u32).to_le_bytes());
+            local.extend((name.len() as u16).to_le_bytes());
+            local.extend(0u16.to_le_bytes());
+            local.extend(*name);
+            out.extend(local);
+            out.extend(&body);
+            let mut c = vec![0x50, 0x4b, 1, 2, 20, 0, 20, 0];
+            c.extend(flags.to_le_bytes());
+            c.extend(method.to_le_bytes());
+            c.extend([0u8; 8]);
+            c.extend((body.len() as u32).to_le_bytes());
+            c.extend((data.len() as u32).to_le_bytes());
+            c.extend((name.len() as u16).to_le_bytes());
+            c.extend([0u8; 12]); // extra, comment, disk, attrs
+            c.extend(off.to_le_bytes());
+            c.extend(*name);
+            cd.extend(c);
+        }
+        let start = out.len() as u32;
+        out.extend(&cd);
+        out.extend([0x50, 0x4b, 5, 6, 0, 0, 0, 0]);
+        out.extend((files.len() as u16).to_le_bytes());
+        out.extend((files.len() as u16).to_le_bytes());
+        out.extend((cd.len() as u32).to_le_bytes());
+        out.extend(start.to_le_bytes());
+        out.extend([0, 0]);
+        out
+    }
+
+    #[test]
+    fn zip_reading() {
+        let big = "<w:p><w:r><w:t>안녕 &amp; hi</w:t></w:r></w:p>".repeat(50);
+        let z = zip_bytes(&[(b"a.txt", b"stored", false, 0x800), (b"word/document.xml", big.as_bytes(), true, 0x800), (&[0xC7, 0xD1, b'.', b't'], b"x", false, 0)]);
+        let mut cur = std::io::Cursor::new(z);
+        let es = zip_entries(&mut cur).unwrap();
+        assert_eq!(es.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), vec!["a.txt", "word/document.xml", "한.t"]);
+        assert_eq!(zip_read(&mut cur, &es[0], 100).unwrap(), b"stored");
+        let doc = zip_read(&mut cur, zip_find(&es, "WORD/document.xml").unwrap(), 1 << 20).unwrap();
+        assert_eq!(doc.len(), big.len());
+        assert_eq!(zip_read(&mut cur, &es[1], 10).unwrap().len(), 10); // capped
+        let text = xml_text(&decode_text(&doc), &["w:t"], &["w:p"], &[], &[]);
+        assert_eq!(text.lines().next(), Some("안녕 & hi"));
+        assert!(zip_entries(&mut std::io::Cursor::new(b"not a zip at all".to_vec())).is_none());
+    }
+
+    #[test]
+    fn xml_and_sheets() {
+        let x = r#"<a:p><a:r><a:t>One</a:t></a:r><a:br/><a:r><a:t xml:space="preserve"> two</a:t></a:r></a:p><a:p><a:t/><a:t>&#xD55C;&lt;</a:t></a:p>"#;
+        assert_eq!(xml_text(x, &["a:t"], &["a:p"], &[], &["a:br"]), "One\n two\n한<\n");
+        assert_eq!((cell_ref("A1"), cell_ref("AB12"), cell_ref("1A")), (Some((0, 0)), Some((27, 11)), None));
+        let ss = xlsx_strings("<sst><si><t>이름</t></si><si><r><t>A</t></r><r><t>B</t></r></si></sst>");
+        assert_eq!(ss, vec!["이름", "AB"]);
+        let sheet = r#"<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row><row r="2"><c r="A2"><v>0.30000000000000004</v></c><c r="B2" t="inlineStr"><is><t>x</t></is></c></row>"#;
+        assert_eq!(xlsx_rows(sheet, &ss, 100, 100), vec![vec!["이름", "", "AB"], vec!["0.3", "x"]]);
+        assert_eq!(xlsx_rows(sheet, &ss, 1, 2), vec![vec!["이름"]]); // limits
+    }
+
+    #[test]
+    fn mail_and_html() {
+        assert_eq!(mime_words("=?UTF-8?B?7JWI64WV?= =?utf-8?Q?_hi?= there"), "안녕 hi there");
+        assert_eq!(mime_words("=?ks_c_5601-1987?B?x9Gx2w==?="), "한글");
+        let eml = b"Subject: =?UTF-8?B?7JWI64WV?=\r\nFrom: a@b.c\r\nContent-Type: multipart/alternative; boundary=\"XX\"\r\n\r\n--XX\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>html</p>\r\n--XX\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n=EC=95=88 plain=\r\n text\r\n--XX\r\nContent-Type: application/pdf; name=\"r.pdf\"\r\nContent-Disposition: attachment; filename=\"r.pdf\"\r\n\r\nJVBE\r\n--XX--\r\n";
+        let t = eml_text(eml, 1);
+        assert!(t.starts_with("제목: 안녕\n보낸 사람: a@b.c\n첨부: r.pdf\n\n"), "{t}");
+        assert!(t.ends_with("안 plain text"), "{t}");
+        assert!(eml_text(b"Subject: hi\r\n\r\nbody", 2).starts_with("件名: hi\n"));
+        let h = html_text("<html><head><title>x</title></head><body><script>var a;</script><h1>Title</h1><p>a &amp; b</p><ul><li>one</li></ul></body></html>");
+        assert_eq!(h, "Title\n\na & b\n\n• one"); // blocks a blank line apart
+    }
+}
