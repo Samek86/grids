@@ -13,18 +13,157 @@ pub(crate) fn logfont(face: &str, px: i32) -> LOGFONTW {
     lf
 }
 
-// Windows' own UI font at this DPI (no custom fonts: they only reached our chrome and cost paint time),
-// plus the MDL2 icon font for the buttons. Pushed to every edit; also used on DPI change.
+fn utf16_face(buf: &[u16]) -> String {
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len()).min(31);
+    String::from_utf16_lossy(&buf[..n])
+}
+
+/// LOGFONT stores 31 UTF-16 units plus a NUL. Longer names cannot be selected.
+fn fits_face(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && !name.starts_with('@') && name.encode_utf16().nth(31).is_none()
+}
+
+pub(crate) fn same_face(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    a.eq_ignore_ascii_case(b) || a.chars().flat_map(|c| c.to_lowercase()).eq(b.chars().flat_map(|c| c.to_lowercase()))
+}
+
+/// `stored` when it is in `installed`, otherwise the language default. Empty stored is the default.
+/// `installed` is the caller's list. This does not ask Windows.
+pub(crate) fn resolve_face<'a>(stored: &str, lang: u8, installed: &'a [&'a str]) -> &'a str {
+    let stored = stored.trim();
+    if fits_face(stored) {
+        if let Some(hit) = installed.iter().copied().find(|n| same_face(n, stored)) {
+            return hit;
+        }
+    }
+    default_face(lang)
+}
+
+struct FaceHit {
+    name: String,
+    proportional: bool,
+    raster: bool,
+}
+
+fn face_rank(h: &FaceHit) -> u8 {
+    // Prefer a proportional outline over a fixed-pitch or raster duplicate of the same name.
+    u8::from(h.proportional) << 1 | u8::from(!h.raster)
+}
+
+fn face_key(name: &str) -> Vec<char> {
+    name.trim().chars().flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// Families for the Settings list: no '@' names, one row per name, proportional outline wins a duplicate.
+fn family_names(hits: &[FaceHit]) -> Vec<String> {
+    let mut best: Vec<FaceHit> = Vec::new();
+    for h in hits {
+        if !fits_face(&h.name) {
+            continue;
+        }
+        let key = face_key(&h.name);
+        if let Some(i) = best.iter().position(|e| face_key(&e.name) == key) {
+            if face_rank(h) > face_rank(&best[i]) {
+                best[i] = FaceHit { name: h.name.trim().to_string(), proportional: h.proportional, raster: h.raster };
+            }
+            continue;
+        }
+        best.push(FaceHit { name: h.name.trim().to_string(), proportional: h.proportional, raster: h.raster });
+    }
+    best.sort_by(|a, b| face_key(&a.name).cmp(&face_key(&b.name)));
+    best.into_iter().map(|h| h.name).collect()
+}
+
+struct Probe<'a> {
+    want: &'a str,
+    found: bool,
+}
+
+unsafe extern "system" fn probe_face(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, lp: LPARAM) -> i32 {
+    if lf.is_null() || lp.0 == 0 {
+        return 1;
+    }
+    let probe = &mut *(lp.0 as *mut Probe);
+    let got = utf16_face(&(*lf).lfFaceName);
+    if same_face(&got, probe.want) {
+        probe.found = true;
+        return 0;
+    }
+    1
+}
+
+/// One family lookup. Does not build the Settings list.
+pub(crate) unsafe fn face_installed(name: &str) -> bool {
+    let name = name.trim();
+    if !fits_face(name) {
+        return false;
+    }
+    let mut lf = logfont(name, 0);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    let mut probe = Probe { want: name, found: false };
+    let dc = GetDC(None);
+    if dc.is_invalid() {
+        return false;
+    }
+    let _ = EnumFontFamiliesExW(dc, &lf, Some(probe_face), LPARAM(&mut probe as *mut Probe as isize), 0);
+    ReleaseDC(None, dc);
+    probe.found
+}
+
+unsafe extern "system" fn collect_face(lf: *const LOGFONTW, tm: *const TEXTMETRICW, ty: u32, lp: LPARAM) -> i32 {
+    if lf.is_null() || lp.0 == 0 {
+        return 1;
+    }
+    let name = utf16_face(&(*lf).lfFaceName);
+    if name.is_empty() {
+        return 1;
+    }
+    let proportional = !tm.is_null() && (*tm).tmPitchAndFamily.0 & TMPF_FIXED_PITCH.0 != 0;
+    let hits = &mut *(lp.0 as *mut Vec<FaceHit>);
+    hits.push(FaceHit { name, proportional, raster: ty & RASTER_FONTTYPE != 0 });
+    1
+}
+
+/// Installed families. Call only while Settings is open; the caller drops the `Vec` when it closes.
+pub(crate) unsafe fn installed_families() -> Vec<String> {
+    let lf = LOGFONTW { lfCharSet: DEFAULT_CHARSET, ..Default::default() };
+    let mut hits = Vec::new();
+    let dc = GetDC(None);
+    if !dc.is_invalid() {
+        let _ = EnumFontFamiliesExW(dc, &lf, Some(collect_face), LPARAM(&mut hits as *mut Vec<FaceHit> as isize), 0);
+        ReleaseDC(None, dc);
+    }
+    family_names(&hits)
+}
+
+// Windows' UI font metrics at this DPI, with the language default or the face chosen in Settings.
+// The MDL2 icon font stays on the buttons. Pushed to every edit; also used on DPI change.
 pub(crate) unsafe fn apply_font_all() {
     across_windows(|| apply_font());
 }
 
 pub(crate) unsafe fn apply_font() {
     let dpi = app(|a| a.dpi);
+    // Empty stays on the language default and does not look up a face. A missing name is cleared.
+    let stored = app(|a| if a.s.font_face.is_empty() { None } else { Some(a.s.font_face.clone()) });
+    let custom = match stored.as_deref() {
+        Some(name) if face_installed(name) => true,
+        Some(_) => {
+            app(|a| a.s.font_face.clear());
+            false
+        }
+        None => false,
+    };
+    let slot = stored.as_deref().unwrap_or("");
+    let list = [slot];
+    let none: &[&str] = &[];
+    let face = if custom { resolve_face(slot, ui(), &list) } else { resolve_face("", ui(), none) };
     let mut ncm = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
     let sys = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, ncm.cbSize, Some(&mut ncm as *mut _ as _), 0, dpi as u32);
-    let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont("Segoe UI", 12 * dpi / 96) };
-    lf.lfFaceName = logfont(ui_face(), 0).lfFaceName; // Segoe UI / Malgun Gothic / Yu Gothic UI
+    let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont(ui_face(), 12 * dpi / 96) };
+    lf.lfFaceName = logfont(face, 0).lfFaceName;
     let scale = match app(|a| a.s.font) {
         1 => 125,
         2 => 150,
@@ -73,6 +212,8 @@ pub(crate) unsafe fn apply_font() {
         _ = DeleteObject(f.into());
     }
     // The folder tree takes this font, so its item height (and the favourites rows) follow DPI and font scale.
+    // Preview headings were cloned from the previous face; the next paint builds them again.
+    drop_peek_fonts();
     super::sync_fav_metrics();
     relayout();
     redraw_all();
@@ -111,5 +252,51 @@ pub(crate) unsafe fn bold_ui_font() -> HFONT {
         _ = DeleteObject(font.into());
     }
     stored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_face_falls_back_to_the_language_default() {
+        let installed = ["Segoe UI", "Malgun Gothic", "Yu Gothic UI", "Consolas"];
+        assert_eq!(resolve_face("", 0, &installed), "Segoe UI");
+        assert_eq!(resolve_face("   ", 1, &installed), "Malgun Gothic");
+        assert_eq!(resolve_face("Nope", 2, &installed), "Yu Gothic UI");
+        assert_eq!(resolve_face("consolas", 0, &installed), "Consolas");
+        assert_eq!(resolve_face("Yu Gothic UI", 1, &installed), "Yu Gothic UI");
+        assert_eq!(resolve_face("@Yu Gothic UI", 2, &installed), "Yu Gothic UI");
+        assert_eq!(crate::default_face(2), "Yu Gothic UI");
+    }
+
+    #[test]
+    fn family_list_skips_vertical_and_nonproportional_duplicates() {
+        let hits = [
+            FaceHit { name: "@Arial".into(), proportional: true, raster: false },
+            FaceHit { name: "Arial".into(), proportional: false, raster: true },
+            FaceHit { name: "Arial".into(), proportional: true, raster: false },
+            FaceHit { name: "consolas".into(), proportional: false, raster: false },
+            FaceHit { name: "Consolas".into(), proportional: false, raster: false },
+            FaceHit { name: "Yu Gothic UI".into(), proportional: true, raster: false },
+            FaceHit { name: String::new(), proportional: true, raster: false },
+        ];
+        assert_eq!(family_names(&hits), ["Arial".to_string(), "consolas".into(), "Yu Gothic UI".into()]);
+    }
+
+    #[test]
+    fn installed_families_are_unique_sorted_and_not_vertical() {
+        let names = unsafe { installed_families() };
+        let mut sorted = names.clone();
+        sorted.sort_by(|a, b| face_key(a).cmp(&face_key(b)));
+        assert_eq!(names, sorted);
+        let mut seen = Vec::new();
+        for n in &names {
+            assert!(fits_face(n), "{n}");
+            let key = face_key(n);
+            assert!(!seen.contains(&key), "duplicate {n}");
+            seen.push(key);
+        }
+    }
 }
 

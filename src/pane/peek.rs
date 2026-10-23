@@ -217,6 +217,21 @@ fn view<R>(f: impl FnOnce(&mut PeekView) -> R) -> R {
     VIEW.with(|v| f(&mut v.borrow_mut()))
 }
 
+/// Heading faces are cloned from the UI font. Drop them when that font changes; the next paint builds new ones.
+pub(crate) unsafe fn drop_peek_fonts() {
+    let old = view(|v| {
+        v.layout = None;
+        v.fonts.take()
+    });
+    if let Some((_, fonts)) = old {
+        for f in fonts {
+            if !f.is_invalid() {
+                _ = DeleteObject(f.into());
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn open_peek(i: usize) {
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let (main, dpi, open) = app(|a| (a.main, a.dpi, a.peek));
