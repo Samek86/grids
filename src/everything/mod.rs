@@ -6,3 +6,8 @@
 mod ipc;
 mod locate;
 mod query;
+mod run;
+
+pub(crate) use ipc::MAX_RESULTS;
+pub(crate) use query::{forces_everywhere, search_text, without_scope_prefix};
+pub(crate) use run::{running, search};
