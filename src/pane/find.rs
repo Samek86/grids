@@ -809,7 +809,7 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         fill(dc, rc, pal().card);
         let head = RECT { left: 0, top: 0, right: rc.right, bottom: rh };
         fill(dc, head, pal().bg);
-        let mark = RECT { left: s(8), top: s(4), right: s(20), bottom: rh - s(4) };
+        let mark = RECT { left: s(8), top: (rh - s(14)) / 2, right: s(8) + s(14), bottom: (rh - s(14)) / 2 + s(14) };
         fill(dc, mark, if recursive { accent } else { pal().card });
         frame(dc, mark, 1, if recursive { accent } else { pal().line });
         if recursive {
