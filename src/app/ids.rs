@@ -10,14 +10,12 @@ pub(crate) const ID_EDIT: i32 = 104;
 pub(crate) const ID_OPEN_IN: i32 = 105;
 pub(crate) const ID_FILTER: i32 = 106;
 pub(crate) const ID_FAV: i32 = 107; // ☆+ / ★: add or remove the pane's folder from favourites
-// top toolbar buttons (children of the main window)
+// Chrome buttons (children of the main window). Drive letters stay on the top row.
+// Layout, save, load and the gear sit at the right of the tab strip.
 pub(crate) const ID_TB_LAYOUT: i32 = 201;
 pub(crate) const ID_TB_SAVE: i32 = 202;
 pub(crate) const ID_TB_LOAD: i32 = 204;
-pub(crate) const ID_TB_THEME: i32 = 205;
-pub(crate) const ID_TB_FAV: i32 = 206;
-pub(crate) const ID_TB_VIEW: i32 = 203;
-pub(crate) const ID_TB_SET: i32 = 207; // gear: settings window
+pub(crate) const ID_TB_SET: i32 = 207; // gear: view menu (settings and theme live there)
 // menu ids
 pub(crate) const ID_HIDDEN: usize = 1100;
 pub(crate) const ID_KEYS: usize = 1101;
@@ -31,6 +29,7 @@ pub(crate) const ID_NEWFILE: usize = 1115;
 pub(crate) const ID_PANEL: usize = 1116; // left panel (folder tree and favourites)
 pub(crate) const ID_EXT: usize = 1117; // show file extensions (Windows setting)
 pub(crate) const ID_FOLLOW: usize = 1118; // follow Windows light / dark
+pub(crate) const ID_THEME: usize = 1122; // view menu: switch to the other of light / dark
 pub(crate) const ID_HOTKEY: usize = 1119; // global hotkey, checked only while it is registered
 pub(crate) const ID_GATHER: usize = 1120; // folders from open Explorer windows and tabs
 pub(crate) const ID_PANE_TABS: usize = 1121; // strips of pane tabs under each pane header

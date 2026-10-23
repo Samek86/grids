@@ -252,31 +252,29 @@ pub(crate) unsafe fn relayout() {
         let tree = RECT { left: sr.left + s(2), top: sr.top + s(2), right: sr.right - s(2), bottom: sr.top + g.tree_h };
         let fav = RECT { left: sr.left + s(2), top: sr.top + g.tree_h + g.gap, right: sr.right - s(2), bottom: sr.bottom - s(2) };
         let mut moves = vec![(a.tree_hwnd, tree), (a.side_hwnd, fav)];
-        let mut x = g.pad;
         let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
-        for (id, w) in [(ID_TB_LAYOUT, s(70)), (ID_TB_SAVE, s(32)), (ID_TB_LOAD, s(32)), (ID_TB_VIEW, s(32)), (ID_TB_FAV, s(32))] {
-            moves.push((tb(id), RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
-            x += w + s(4);
+        let show_bar = a.s.bar;
+        let strip_h = s(32);
+        let strip_top = if show_bar { s(34) } else { 0 };
+        let btn_top = strip_top + (strip_h - s(24)) / 2;
+        // Layout, save, load and the gear share the tab row, at its right edge.
+        let (_, slots) = icon_slots(g.w, btn_top, a.dpi);
+        for (id, r) in slots {
+            moves.push((tb(id), r));
         }
-        let right = g.w - g.pad; // theme, then the settings gear, at the far right
-        moves.push((tb(ID_TB_THEME), RECT { left: right - s(32), top: s(5), right, bottom: s(5) + s(24) }));
-        let gear = right - s(32) - s(4) - s(32);
-        moves.push((tb(ID_TB_SET), RECT { left: gear, top: s(5), right: gear + s(32), bottom: s(5) + s(24) }));
-        // Drive letters after the left cluster. In a narrow window the last ones hide rather than cover the gear.
-        x += s(6);
-        let limit = gear - s(12);
+        // Drive letters fill the top row from the left pad. The last ones hide rather than run off the window.
+        let mut x = g.pad;
+        let limit = g.w - g.pad;
         let mut drive_vis = Vec::new();
         for &(_, _, h) in &a.drives {
             let w = s(32);
             moves.push((h, RECT { left: x, top: s(5), right: x + w, bottom: s(5) + s(24) }));
-            drive_vis.push((h, a.s.bar && x + w <= limit));
+            drive_vis.push((h, show_bar && x + w <= limit));
             x += w + s(2);
         }
-        let show_bar = a.s.bar;
         let show_side = a.s.tree_on;
         let (tree_h, side_h) = (a.tree_hwnd, a.side_hwnd);
-        let strip_top = if show_bar { s(34) } else { 0 };
-        moves.push((a.tabs_hwnd, RECT { left: 0, top: strip_top, right: g.w, bottom: strip_top + s(32) }));
+        moves.push((a.tabs_hwnd, RECT { left: 0, top: strip_top, right: g.w, bottom: strip_top + strip_h }));
         let full = RECT { left: g.gx, top: g.top, right: g.w - g.pad, bottom: g.bot };
         let mut shown = Vec::new();
         for (i, p) in a.panes.iter().enumerate().take(a.s.panes()) {
@@ -290,9 +288,13 @@ pub(crate) unsafe fn relayout() {
         return;
     };
     move_all(&moves, None);
-    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_VIEW, ID_TB_FAV, ID_TB_THEME, ID_TB_SET] {
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET] {
         if let Ok(b) = GetDlgItem(Some(main), id) {
             _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
+            // The strip window is full width underneath them, so they stay above it and take the click.
+            if show_bar {
+                _ = SetWindowPos(b, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
         }
     }
     for (h, on) in drive_vis {

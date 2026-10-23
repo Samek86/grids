@@ -365,6 +365,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
             _ = ShowWindow(main, SW_SHOWNORMAL);
         }
     }
+    show_active_tab();
     relayout();
     focus_view(app(|a| a.s.active));
     let file = app(|a| a.s.file.clone());
@@ -543,6 +544,7 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
             a.panes = no_panes();
         });
         put_filters(&vec![String::new(); MAXP]);
+        show_active_tab();
         tabs_invalidate();
         return Some(tab);
     }
@@ -572,6 +574,7 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
         (tab, parked, filters, switched)
     });
     destroy_set(doomed);
+    show_active_tab();
     if switched {
         put_filters(&filters);
         attach_live();
@@ -609,6 +612,7 @@ unsafe fn undo_take(source: HWND, only: bool, i: usize, tab: Tab) {
             a.park = vec![no_panes()];
             a.park_lru.clear();
         });
+        show_active_tab();
         relayout();
         tabs_invalidate();
     } else {
@@ -661,10 +665,10 @@ pub(crate) unsafe fn move_tab_to_window(i: usize, dest_tabs: HWND, at: usize) {
 pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
     let n = window_count();
     for i in 0..n {
-        let (hwnd, dpi, locked) = app(|a| {
+        let (hwnd, dpi, locked, scroll, bar) = app(|a| {
             let d = &a.desks[i];
             let locked: Vec<bool> = d.s.tabs.iter().map(|t| t.locked).collect();
-            (d.tabs_hwnd, d.dpi, locked)
+            (d.tabs_hwnd, d.dpi, locked, d.tab_scroll, d.s.bar)
         });
         if hwnd.0.is_null() {
             continue;
@@ -680,8 +684,8 @@ pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
         _ = GetClientRect(hwnd, &mut client);
         let mut pt = screen;
         _ = ScreenToClient(hwnd, &mut pt);
-        let lay = tab_lay(client.right.max(1), locked.len().max(1), &locked, dpi);
-        let at = lay.body.iter().position(|r| pt.x < (r.left + r.right) / 2).unwrap_or(lay.body.len());
+        let lay = tab_lay(tab_area_width(client.right.max(1), dpi, bar), locked.len().max(1), &locked, dpi, scroll);
+        let at = lay.insert_at(pt.x);
         return Some((hwnd, at));
     }
     None

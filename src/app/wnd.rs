@@ -191,16 +191,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id if id == ID_TB_LAYOUT as usize => open_grid(),
                 id if id == ID_TB_SAVE as usize => save_current(),
                 id if id == ID_TB_LOAD as usize => open_load(),
-                id if id == ID_TB_FAV as usize => open_favs(),
-                id if id == ID_TB_THEME as usize => {
-                    let dark = app(|a| a.s.dark);
-                    app(|a| a.s.theme = if dark { 1 } else { 2 });
-                    apply_theme();
-                    save_session();
-                }
                 ID_NEWFILE => create_text_file(),
-                id if id == ID_TB_SET as usize => settings::open(h),
-                id if id == ID_TB_VIEW as usize => popup_menu(app(|a| a.view_menu), ID_TB_VIEW),
+                id if id == ID_TB_SET as usize => popup_menu(app(|a| a.view_menu), ID_TB_SET),
                 id if (ID_DRIVE as usize..ID_DRIVE as usize + 26).contains(&id) => {
                     let i = app(|a| a.s.active);
                     if navigate(i, &format!("{}:\\", (b'A' + (id - ID_DRIVE as usize) as u8) as char)) {
@@ -229,6 +221,12 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                     save_session();
                     settings::redraw();
+                }
+                ID_THEME => {
+                    let dark = app(|a| a.s.dark);
+                    app(|a| a.s.theme = if dark { 1 } else { 2 });
+                    apply_theme();
+                    save_session();
                 }
                 ID_EXT => {
                     let on = app(|a| {
@@ -263,6 +261,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 check(ID_PANEL, panel);
                 check(ID_EXT, ext);
                 check(ID_FOLLOW, app(|a| a.s.theme == 0));
+                _ = ModifyMenuW(menu, ID_THEME as u32, MF_BYCOMMAND | MF_STRING, ID_THEME as usize, &HSTRING::from(theme_action_label()));
                 check(ID_HOTKEY, hot);
                 if let Some(i) = crate::keys::index("app.front") {
                     let label = format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(i));
@@ -854,17 +853,23 @@ pub(crate) unsafe fn about(owner: HWND) {
     }
 }
 
-// Toolbar buttons: id, accessible name, tooltip.
-pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 7] {
+// Tab-row buttons: id, accessible name, tooltip.
+pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 4] {
     [
         (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수", "レイアウト: クリック = 均等、ドラッグ = 列ごとの行数")),
         (ID_TB_SAVE, tr("Save session", "세션 저장", "セッションを保存"), ""), // tooltip set by refresh_save_button
         (ID_TB_LOAD, tr("Load", "불러오기", "読み込み"), tr("Load a session", "세션 불러오기", "セッションを読み込む")),
-        (ID_TB_VIEW, tr("View", "보기", "表示"), tr("View: hidden files · colours · language · settings · help", "보기: 숨김 파일 · 선택 색 · 언어 · 설정 · 도움말", "表示: 隠しファイル · 色 · 言語 · 設定 · ヘルプ")),
-        (ID_TB_FAV, tr("Favourites", "즐겨찾기", "お気に入り"), tr("Favourite folders (Ctrl+B; open in the active pane)", "즐겨찾기 폴더 (Ctrl+B, 선택한 패널에서 열기)", "お気に入りフォルダー (Ctrl+B、アクティブなペインで開く)")),
-        (ID_TB_THEME, tr("Theme", "테마", "テーマ"), tr("Light / dark theme", "라이트 / 다크 테마", "ライト / ダーク テーマ")),
-        (ID_TB_SET, tr("Settings", "설정", "設定"), tr("Settings", "설정", "設定")),
+        (ID_TB_SET, tr("Settings and view", "설정 및 보기", "設定と表示"), tr("Settings and view", "설정 및 보기", "設定と表示")),
     ]
+}
+
+/// View-menu label for the hand-picked theme. It names the theme a click will turn on.
+pub(crate) fn theme_action_label() -> &'static str {
+    if app(|a| a.s.dark) {
+        tr("Light theme", "라이트 테마", "ライト テーマ")
+    } else {
+        tr("Dark theme", "다크 테마", "ダーク テーマ")
+    }
 }
 
 // Switches the UI language now: menus, fonts, toolbar tooltips, panes, and an open settings window.
@@ -898,7 +903,7 @@ pub(crate) unsafe fn set_language(lang: Lang) {
     save_session();
 }
 
-// The view popup opened from the top toolbar (no classic menu bar).
+// The view popup opened from the gear on the tab row (no classic menu bar).
 pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     let view = CreatePopupMenu()?;
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
@@ -916,6 +921,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     )?;
     item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
     item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
+    item(view, MF_STRING, ID_THEME, theme_action_label())?;
     item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
     item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;

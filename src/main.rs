@@ -464,16 +464,37 @@ mod tests {
         assert_eq!(moved_active(0, 2, 0), 1);
         assert_eq!(moved_active(1, 0, 2), 0);
 
-        let lay = tab_lay(800, 3, &[false, true, false], 96);
+        let lay = tab_lay(800, 3, &[false, true, false], 96, 0);
         assert_eq!(lay.body.len(), 3);
         assert_eq!(lay.body[0].right - lay.body[0].left, 90);
-        let hidpi = tab_lay(1600, 3, &[false, true, false], 192);
+        assert!(lay.overflow.is_none() && lay.first == 0 && lay.count == 3);
+        let hidpi = tab_lay(1600, 3, &[false, true, false], 192, 0);
         assert_eq!(hidpi.body[0].right - hidpi.body[0].left, 180);
-        let crowd = tab_lay(120, 8, &[false; 8], 96);
+        // 8 tabs at the 44px minimum need 406px; 406 shrinks exactly to that minimum and still fits.
+        let crowd = tab_lay(406, 8, &[false; 8], 96, 0);
         let cw = crowd.body[0].right - crowd.body[0].left;
-        assert!(cw < 90 && cw >= 28);
+        assert!(crowd.overflow.is_none() && cw < 90 && cw >= 44);
         assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
         assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
+        // Past the minimum, a chevron appears and the scroll offset clamps so the last tab stays on screen.
+        let over = tab_lay(200, 12, &[false; 12], 96, 0);
+        assert!(over.overflow.is_some() && over.count >= 1 && over.count < 12);
+        assert!(over.body[0].right - over.body[0].left >= 44);
+        assert!(over.body[11].right <= over.body[11].left);
+        let o = over.overflow.unwrap();
+        assert!(over.plus.right <= o.left && o.right <= 200);
+        assert!(matches!(tab_hit(&over, o.left + 1, o.top + 1), TabHit::Overflow));
+        assert!(matches!(tab_hit(&over, over.plus.left + 1, over.plus.top + 1), TabHit::Plus));
+        let end = tab_lay(200, 12, &[false; 12], 96, 10_000);
+        assert_eq!(end.first + end.count, 12);
+        assert!(end.first < 10_000 && end.body[11].right > end.body[11].left);
+        let active = 11usize;
+        let scroll = scroll_to_show(0, active, over.count, 12);
+        let shown = tab_lay(200, 12, &[false; 12], 96, scroll);
+        assert!(shown.overflow.is_some() && shown.body[active].right > shown.body[active].left);
+        assert_eq!(scroll_to_show(scroll, active, shown.count, 12), scroll);
+        assert_eq!(scroll_to_show(3, 4, 2, 12), 3);
+        assert_eq!(scroll_to_show(0, 11, 2, 12), 10);
         // A locked tab keeps the close slot. The glyph is a lock and it does not close.
         assert!(lay.close.iter().all(|c| c.is_some()));
         assert!(lay.lock[1] && !lay.lock[0]);
@@ -491,8 +512,8 @@ mod tests {
         assert_eq!(close_ink(true, true, 1, 2), 2);
         assert_eq!(close_ink(false, true, 1, 2), 1);
         assert!(matches!(tab_hit(&lay, lay.body[1].left + 4, lay.body[1].top + 4), TabHit::Tab(1)));
-        let hi = tab_lay(3200, 1, &[true], 192).close[0].unwrap();
-        let lo = tab_lay(1600, 1, &[true], 96).close[0].unwrap();
+        let hi = tab_lay(3200, 1, &[true], 192, 0).close[0].unwrap();
+        let lo = tab_lay(1600, 1, &[true], 96, 0).close[0].unwrap();
         assert_eq!(hi.right - hi.left, (lo.right - lo.left) * 2);
 
         let junk = Session::parse("cols=1\ntabs=[{\"id\":\"later\"}]\n");
