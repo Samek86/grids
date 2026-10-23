@@ -160,6 +160,9 @@ struct SettingsFile {
     font_face: String,
     #[serde(default = "yes")]
     bar: bool,
+    /// Drive buttons on the tab row. Missing means on. Omitted while on, so an older file stays unchanged.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    drive_buttons: bool,
     #[serde(default = "yes")]
     stat: bool,
     #[serde(default = "view_details")]
@@ -268,6 +271,7 @@ impl SettingsFile {
             font: 0,
             font_face: String::new(),
             bar: true,
+            drive_buttons: true,
             stat: true,
             view_new: 4,
             start: 0,
@@ -350,6 +354,7 @@ impl SettingsFile {
             font: s.font.min(2),
             font_face: s.font_face.trim().to_string(),
             bar: s.bar,
+            drive_buttons: s.drive_buttons,
             stat: s.stat,
             view_new: s.view_new,
             start: s.start_new.min(2),
@@ -412,6 +417,7 @@ impl SettingsFile {
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
         self.extra.remove("one_window");
+        self.extra.remove("drive_buttons");
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
         self.extra.remove("layout_new");
@@ -470,6 +476,7 @@ impl SettingsFile {
         s.font = self.font.min(2);
         s.font_face = self.font_face.trim().to_string();
         s.bar = self.bar;
+        s.drive_buttons = self.drive_buttons;
         s.stat = self.stat;
         s.view_new = match self.view_new {
             3 => 3,
@@ -810,6 +817,7 @@ mod tests {
         s.theme = 0;
         s.font = 2;
         s.bar = false;
+        s.drive_buttons = false;
         s.stat = false;
         s.view_new = 1;
         s.start_new = 2;
@@ -1233,6 +1241,27 @@ mod tests {
         assert!(text.contains("\"ev_asked\": true"), "{text}");
         assert!(adopt(&text).unwrap().ev_asked);
         assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("ev_asked"));
+    }
+
+    #[test]
+    fn drive_buttons_defaults_on_and_round_trips() {
+        assert!(Session::default().drive_buttons);
+        assert!(adopt(r#"{"version":1}"#).unwrap().drive_buttons);
+        let mut s = Session::default();
+        s.drive_buttons = false;
+        assert!(!Session::parse(&s.to_ini()).drive_buttons);
+        assert!(Session::parse("drivebuttons=1").drive_buttons);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"drive_buttons\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().drive_buttons);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("drive_buttons"));
+        // A key this build now owns is not written twice out of an older file's extra bag.
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("drive_buttons".into(), serde_json::json!(true));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["drive_buttons"], false);
+        assert!(saved.get("extra").is_none());
     }
 
     #[test]

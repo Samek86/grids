@@ -130,8 +130,14 @@ fn tab_reserve(dpi: i32) -> i32 {
     pad + min_w + gap + plus_w + gap + over_w + pad
 }
 
+/// How many drive buttons the tab row reserves. Off reserves none, so the tabs take that width.
+pub(crate) fn drive_slots(show: bool, n: usize) -> usize {
+    if show { n } else { 0 }
+}
+
 /// Layout, save, load, the gear, and `drives` letter buttons, right-aligned on the tab row.
 /// Letters sit to the left of Layout. The last ones drop when the row cannot also keep `tab_reserve`.
+/// `drives == 0` (see `drive_slots`) hides every letter and gives that width to the tabs.
 pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize) -> IconLay {
     let s = |v: i32| v * dpi / 96;
     let (pad, gap, bh) = (s(8), s(4), s(24));
@@ -179,7 +185,8 @@ pub(crate) fn scroll_to_show(scroll: usize, index: usize, shown: usize, n: usize
 }
 
 /// Width the tabs may use. The icon group and the drive buttons that fit keep the rest while the bar is on.
-/// Hidden, the strip uses the full width: the buttons are not on screen.
+/// Hidden drive buttons (`drives == 0`) reserve nothing, so the tabs take that width.
+/// A hidden bar uses the full width: those buttons are not on screen.
 pub(crate) fn tab_area_width(client_w: i32, dpi: i32, bar: bool, drives: usize) -> i32 {
     if bar { icon_slots(client_w.max(1), 0, dpi, drives).tab_w } else { client_w.max(1) }
 }
@@ -817,7 +824,7 @@ pub(crate) fn show_tab(index: usize) {
         }
         let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
         let n = locked.len().max(1);
-        let w = tab_area_width(rc.right, a.dpi, a.s.bar, a.drives.len());
+        let w = tab_area_width(rc.right, a.dpi, a.s.bar, drive_slots(a.s.drive_buttons, a.drives.len()));
         let lay = tab_lay(w, n, &locked, a.dpi, a.tab_scroll);
         let index = index.min(n - 1);
         a.tab_scroll = if lay.overflow.is_none() { 0 } else { scroll_to_show(lay.first, index, lay.count.max(1), n) };
@@ -891,7 +898,7 @@ pub(crate) fn current_tab_lay() -> TabLay {
         let mut rc = RECT::default();
         unsafe { _ = GetClientRect(a.tabs_hwnd, &mut rc) };
         let locked: Vec<bool> = a.s.tabs.iter().map(|t| t.locked).collect();
-        let w = tab_area_width(rc.right.max(1), a.dpi, a.s.bar, a.drives.len());
+        let w = tab_area_width(rc.right.max(1), a.dpi, a.s.bar, drive_slots(a.s.drive_buttons, a.drives.len()));
         let lay = tab_lay(w, locked.len().max(1), &locked, a.dpi, a.tab_scroll);
         a.tab_scroll = lay.first;
         lay
@@ -1233,6 +1240,24 @@ mod tests {
         assert_eq!(hi.drives[n - 1].right + 8, hi.icons[0].1.left);
         assert_eq!(tab_area_width(2000, 192, true, n), hi.tab_w);
         assert_eq!(tab_area_width(2000, 192, false, n), 2000);
+    }
+
+    #[test]
+    fn icon_slots_with_drives_hidden() {
+        let n = 5;
+        let shown = icon_slots(1000, 4, 96, drive_slots(true, n));
+        let hidden = icon_slots(1000, 4, 96, drive_slots(false, n));
+        let bare = icon_slots(1000, 4, 96, 0);
+        assert_eq!(drive_slots(false, n), 0);
+        assert_eq!(drive_slots(true, n), n);
+        assert_eq!(hidden, bare);
+        assert_eq!(hidden.drive_n, 0);
+        assert!(hidden.tab_w > shown.tab_w);
+        assert_eq!(hidden.icons, shown.icons);
+        // The width the letters occupied is now part of the tab strip. The icons stay put.
+        assert_eq!(hidden.tab_w - shown.tab_w, shown.icons[0].1.left - shown.drives[0].left);
+        assert_eq!(tab_area_width(1000, 96, true, drive_slots(false, n)), hidden.tab_w);
+        assert_eq!(tab_area_width(1000, 96, true, drive_slots(true, n)), shown.tab_w);
     }
 }
 

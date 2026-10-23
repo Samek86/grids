@@ -668,7 +668,7 @@ pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
         let (hwnd, dpi, locked, scroll, bar, drives) = app(|a| {
             let d = &a.desks[i];
             let locked: Vec<bool> = d.s.tabs.iter().map(|t| t.locked).collect();
-            (d.tabs_hwnd, d.dpi, locked, d.tab_scroll, d.s.bar, d.drives.len())
+            (d.tabs_hwnd, d.dpi, locked, d.tab_scroll, d.s.bar, drive_slots(d.s.drive_buttons, d.drives.len()))
         });
         if hwnd.0.is_null() {
             continue;

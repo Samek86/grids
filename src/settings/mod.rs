@@ -47,6 +47,7 @@ const TG_DOT: u8 = 12;
 const TG_ONE: u8 = 13;
 const TG_PANE_TABS: u8 = 14;
 const TG_EV: u8 = 15;
+const TG_DRIVES: u8 = 16;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -158,6 +159,7 @@ const LOOK: &[Spec] = &[
     Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own (accent / accent_dark).", "라이트와 다크에 따로 정할 수 있어요(지금 있는 accent / accent_dark).", "ライトとダークで別々に選べます（accent / accent_dark）。"), badge: false, live: true, ctl: Ctl::Accent },
     Spec { title: s("Font size", "글꼴 크기", "フォント サイズ"), desc: s("The toolbar, panes and this window.", "툴바, 패널, 이 창에 적용돼요.", "ツールバー、ペイン、このウィンドウに適用します。"), badge: true, live: true, ctl: Ctl::Font },
     Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_BAR) },
+    Spec { title: s("Show drive buttons", "드라이브 버튼 표시", "ドライブボタンを表示"), desc: s("C: D: E: on the tab row. Off, the tabs use that space.", "탭 줄의 C: D: E: 버튼이에요. 끄면 그 자리를 탭이 써요.", "タブ列の C: D: E: です。オフにするとその分をタブが使います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_DRIVES) },
     Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_STATUS) },
 ];
 const VIEW: &[Spec] = &[
@@ -642,6 +644,7 @@ fn toggle_on(id: u8) -> bool {
         TG_PANE_TABS => app(|a| a.s.pane_tabs_on),
         TG_HIDDEN => unsafe { super::hidden() },
         TG_BAR => app(|a| a.s.bar),
+        TG_DRIVES => app(|a| a.s.drive_buttons),
         TG_STATUS => app(|a| a.s.stat),
         TG_EXT => app(|a| a.s.ext),
         TG_TREE => app(|a| a.s.tree_on),
