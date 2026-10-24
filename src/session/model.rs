@@ -355,7 +355,9 @@ pub(crate) fn even(n: usize) -> Vec<f64> {
     vec![1.0 / n as f64; n]
 }
 
-/// Panes per column for a new tab or a new window.
+/// Panes per column for the settings default (`layout_new`).
+/// A new window, the first start, and startup's "default layout" use this with even splits.
+/// A new window tab copies the tab on screen instead (`layout_for_new_tab`).
 /// 0 side by side, 1 top and bottom, 2 is 2×2, 3 one pane. Above 3 is one pane.
 pub(crate) fn layout_heights_for(layout_new: u8) -> Vec<usize> {
     match layout_new.min(3) {
@@ -364,6 +366,12 @@ pub(crate) fn layout_heights_for(layout_new: u8) -> Vec<usize> {
         3 => vec![1],
         _ => vec![1, 1],
     }
+}
+
+/// Pane counts and split ratios a new window tab takes from the tab on screen.
+/// Not the settings default, and not the one pane a second instance opens for a path.
+pub(crate) fn layout_for_new_tab(heights: &[usize], colr: &[f64], rowr: &[Vec<f64>]) -> (Vec<usize>, Vec<f64>, Vec<Vec<f64>>) {
+    (heights.to_vec(), colr.to_vec(), rowr.to_vec())
 }
 
 pub(crate) fn nums<T: std::str::FromStr>(v: &str) -> Vec<T> {
@@ -460,7 +468,7 @@ impl Session {
         self.heights.iter().sum()
     }
 
-    /// Panes per column for a new tab or a new window.
+    /// Panes per column for a new window (the settings default). A new window tab uses `layout_for_new_tab`.
     pub(crate) fn layout_heights(&self) -> Vec<usize> {
         layout_heights_for(self.layout_new)
     }
@@ -1443,6 +1451,33 @@ mod crumb_tests {
         assert_eq!(high.layout_new, 3);
         assert_eq!(high.layout_heights(), vec![1]);
         assert_eq!(super::layout_heights_for(4), vec![1]);
+    }
+
+    #[test]
+    fn new_window_tab_copies_the_active_layout() {
+        // Dragged ratios and an uneven grid. The settings default is an even 1×2, not this.
+        let heights = vec![1usize, 3];
+        let colr = vec![0.25, 0.75];
+        let rowr = vec![vec![1.0], vec![0.2, 0.5, 0.3]];
+        assert_eq!(super::layout_for_new_tab(&heights, &colr, &rowr), (heights.clone(), colr.clone(), rowr.clone()));
+        assert_ne!(heights, super::layout_heights_for(0));
+        assert_ne!(colr, super::even(heights.len()));
+        // Every arrangement a window tab can show, including ratios that are not even.
+        for heights in [vec![1], vec![2], vec![1, 1], vec![2, 2], vec![4, 1, 2]] {
+            let colr: Vec<f64> = (1..=heights.len()).map(|i| i as f64).collect();
+            let rowr: Vec<Vec<f64>> = heights.iter().map(|&n| (1..=n).map(|k| k as f64).collect()).collect();
+            assert_eq!(super::layout_for_new_tab(&heights, &colr, &rowr), (heights, colr, rowr));
+        }
+        // A new window still opens the settings default, with even splits.
+        let mut win = Session::default();
+        win.layout_new = 2;
+        win.set_heights(win.layout_heights());
+        assert_eq!((win.heights.clone(), win.colr.clone()), (vec![2, 2], super::even(2)));
+        // A path from a second instance stays one pane, which is not this copy.
+        let mut handed = Session::default();
+        handed.set_heights(vec![1]);
+        assert_eq!(handed.heights, vec![1]);
+        assert_ne!(super::layout_for_new_tab(&vec![1, 3], &colr, &rowr).0, handed.heights);
     }
 
     #[test]
