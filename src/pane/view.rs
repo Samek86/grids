@@ -34,6 +34,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
         (ID_FWD, tr("Forward", "앞으로", "進む"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더", "進む  (Alt+→) · 右クリック: 最近のフォルダー")),
         (ID_UP, tr("Parent folder", "상위 폴더", "上のフォルダー"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)", "上のフォルダー  (Alt+↑)")),
         (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기", "別のペインで開く"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동", "別のペインで開く / コピー・移動")),
+        (ID_PANE_ADD, tr("New pane tab", "새 패널 탭", "新しいペイン タブ"), tr("New pane tab  (Ctrl+Alt+T)", "새 패널 탭  (Ctrl+Alt+T)", "新しいペイン タブ  (Ctrl+Alt+T)")),
         (ID_FAV, tr("Favourite", "즐겨찾기", "お気に入り"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)", "お気に入りに追加（塗りつぶしの星: 削除）")),
     ];
     for (id, name, tip) in buttons {
@@ -217,7 +218,7 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
     let s = |v: i32| v * dpi / 96;
-    let pg = pane_geo(rc.right, rc.bottom, dpi);
+    let pg = pane_geo_of(h, rc.right, rc.bottom, dpi);
     // borderless edit, vertically centred inside its pill
     let inside = |p: RECT, l: i32, r: i32| {
         let top = p.top + (p.bottom - p.top - fh) / 2;
@@ -227,11 +228,16 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
     // The icon slot is reserved by width, so the edit does not move when the icon arrives.
     let inset = crumb_field(pg.addr, dpi).left - pg.addr.left;
+    let add = ctl(ID_PANE_ADD);
+    moves.push((add, pg.add));
     moves.push((ctl(ID_EDIT), inside(pg.addr, inset, s(6))));
     moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
     moves.push((ctl(ID_FAV), pg.fav));
     place_find(h);
     move_all(&moves, Some((&eb, pg.view)));
+    // One tab: the add button sits beside ⇄. Two or more: the strip takes over.
+    // SW_SHOWNA so a resize does not move focus onto the button.
+    _ = ShowWindow(add, if pg.add.right > pg.add.left { SW_SHOWNA } else { SW_HIDE });
     show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);
 }
@@ -404,7 +410,7 @@ pub(crate) unsafe fn set_active(i: usize) {
 
 pub(crate) unsafe fn repaint_header(pane: HWND) {
     _ = InvalidateRect(Some(pane), None, false);
-    for id in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN, ID_FAV, ID_EDIT, ID_FILTER] {
+    for id in [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN, ID_PANE_ADD, ID_FAV, ID_EDIT, ID_FILTER] {
         if let Ok(c) = GetDlgItem(Some(pane), id) {
             _ = InvalidateRect(Some(c), None, true);
         }

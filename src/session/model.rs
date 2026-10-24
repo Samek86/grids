@@ -164,10 +164,8 @@ pub(crate) struct Session {
     pub(crate) accent_dark: u32,       // selection colour, dark theme
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
-    /// Strips of pane tabs under each pane header. Off by default. The folders stay while the strips are hidden.
-    /// These are not the window tabs (`tabs` / `tab`): a pane tab is one folder inside one pane.
-    pub(crate) pane_tabs_on: bool,
     /// Per pane, for the window tab on screen: its pane tabs' folders. The current entry is stale; `paths[i]` is the truth.
+    /// A pane tab is one folder inside one pane, not a window tab (`tabs` / `tab`). The strip shows from the second folder on.
     pub(crate) pane_folders: Vec<Vec<String>>,
     pub(crate) pane_cur: Vec<usize>,
     pub(crate) hotkey: bool,           // global hotkey brings Grids forward; the chord is in the keymap
@@ -230,7 +228,6 @@ impl Default for Session {
             accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
-            pane_tabs_on: false,
             pane_folders: vec![Vec::new(); MAXP],
             pane_cur: vec![0; MAXP],
             hotkey: true,
@@ -293,7 +290,6 @@ impl PartialEq for Session {
             && self.accent_dark == o.accent_dark
             && self.dark == o.dark
             && self.dblup == o.dblup
-            && self.pane_tabs_on == o.pane_tabs_on
             && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
@@ -555,7 +551,7 @@ impl Session {
                 "autosave" => s.autosave = v.trim() == "1",
                 "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
-                "panetabs" => s.pane_tabs_on = v.trim() == "1",
+                "panetabs" => {} // older files; pane tabs are always on
                 "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
@@ -654,7 +650,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\npanetabs={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\n", self.dblup as u8, self.pane_tabs_on as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
@@ -1498,18 +1494,19 @@ mod crumb_tests {
         assert_eq!((s.close_pane_tab(0, 0), s.pane_cur[0]), (None, 1));
 
         let mut saved = Session::default();
-        saved.pane_tabs_on = true;
         saved.paths[2] = r"D:\now".into();
         saved.pane_folders[2] = vec![r"C:\a".into(), "old".into(), "::{x}".into()];
         saved.pane_cur[2] = 1;
         let t = saved.to_ini();
-        assert!(t.contains("panetabs=1\n") && t.contains("b2=1|C:\\a|D:\\now|::{x}\n"), "{t}");
+        assert!(t.contains("b2=1|C:\\a|D:\\now|::{x}\n") && !t.contains("panetabs="), "{t}");
         let back = Session::parse(&t);
-        assert!(back.pane_tabs_on);
         assert_eq!((back.pane_tab_list(2), back.pane_cur[2]), (vec![r"C:\a".to_string(), r"D:\now".into(), "::{x}".into()], 1));
         assert!(Session::parse("p0=C:\\a\nb0=0|C:\\a\nb1=9|x|y\n").pane_folders[0].is_empty());
         assert_eq!(Session::parse("b1=9|x|y\n").pane_cur[1], 1);
-        assert!(!Session::parse("side=300\n").pane_tabs_on);
+        // an older panetabs line is ignored; the rest of the file still loads
+        let old = Session::parse("panetabs=0\nside=300\n");
+        assert_eq!(old.side, 300);
+        assert!(!old.to_ini().contains("panetabs"));
         let mut moved = back.clone();
         moved.swap_slots(2, 0);
         assert_eq!((moved.pane_folders[0].len(), moved.pane_cur[0], moved.pane_folders[2].len()), (3, 1, 0));

@@ -69,7 +69,7 @@ const CMDS: &[Cmd] = &[
     cmd("pane.prev", PANE, s("Previous pane", "이전 패널", "前のペイン"), 0x21, true, false, false, false, false),
     cmd("pane.goto", PANE, s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), 0x31, true, false, false, false, true),
     // Distinct from window tabs (Ctrl+T / Ctrl+W) and from moving between panes (Ctrl+PageUp / PageDown).
-    // They run only while pane tabs are on and the focus is in a pane.
+    // They run only while the focus is in a pane.
     cmd("pane.tab.new", PANTAB, s("New pane tab", "새 패널 탭", "新しいペイン タブ"), 0x54, true, false, true, false, false),
     cmd("pane.tab.close", PANTAB, s("Close pane tab", "패널 탭 닫기", "ペイン タブを閉じる"), 0x57, true, false, true, false, false),
     cmd("pane.tab.next", PANTAB, s("Next pane tab", "다음 패널 탭", "次のペイン タブ"), 0x22, true, false, true, false, false),
@@ -549,7 +549,7 @@ Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout ch
 Load: pick a saved session by its layout preview\n\
 Double-click a splitter: split evenly\n\
 Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
-Pane tabs (View → Tabs in panes): folders inside one pane, separate from the window tabs. Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the strips are on and the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
+Pane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
 Arguments: grids.exe C:\\a D:\\b ... or grids.exe work.grids\n\
 If Grids is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.";
 
@@ -561,7 +561,7 @@ const NOTES_KO: &str = "\
 불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
 스플리터 더블클릭: 균등 분할\n\
 패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
-패널 탭 (보기 → 패널 안의 탭): 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 기본은 Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 탭 줄이 켜져 있고 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
+패널 탭: 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 폴더가 하나면 탭 줄이 숨고, ⇄ 오른쪽 버튼으로 탭을 추가합니다(Ctrl+Alt+T). 둘 이상이면 탭 줄이 나옵니다. 기본은 Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
 실행 인자: grids.exe C:\\a D:\\b ... 또는 grids.exe 작업.grids\n\
 이미 실행 중이면 그 프로세스에 새 창이 열립니다. 창 하나만 쓰기가 켜져 있으면 그 창을 앞으로 가져오고, 경로는 탭으로 엽니다.";
 
@@ -573,7 +573,7 @@ const NOTES_JA: &str = "\
 読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
 スプリッターをダブルクリック: 均等に分割\n\
 ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
-ペイン タブ (表示 → ペイン内のタブ): 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。既定は Ctrl+Alt+T / Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、タブ列がオンかつフォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
+ペイン タブ: 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。フォルダーが一つならタブ列は隠れ、⇄ の右のボタンでタブを追加します（Ctrl+Alt+T）。二つ以上でタブ列が出ます。既定は Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、フォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
 引数: grids.exe C:\\a D:\\b ... または grids.exe work.grids\n\
 すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときは、そのウィンドウを前面にし、パスはタブで開きます。";
 
