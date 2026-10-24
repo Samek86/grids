@@ -1690,7 +1690,7 @@ unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
 }
 
 /// One-line prompt. None means cancel.
-unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
+pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let Ok(m) = GetModuleHandleW(None) else { return };
@@ -1718,6 +1718,7 @@ unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
     }
     style_window(h);
     let font = ST.with(|s| s.borrow().font);
+    let font = if font.is_invalid() { app(|a| a.font) } else { font };
     let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000 | WS_BORDER.0, 10, font);
     theme_ctl(edit);
     ASK_EDIT.with(|e| e.set(edit));

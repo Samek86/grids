@@ -52,8 +52,7 @@ pub(crate) fn short_name(path: &str) -> String {
     if path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
         return tr("This PC", "내 PC", "PC").into();
     }
-    let t = path.trim_end_matches('\\');
-    t.rsplit('\\').next().filter(|x| !x.starts_with("::")).unwrap_or(t).to_string()
+    folder_display_name(path)
 }
 
 // Title bar, taskbar and Alt+Tab follow the active pane's folder.

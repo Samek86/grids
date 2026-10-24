@@ -4,7 +4,12 @@ use crate::app::*;
 use crate::pane::*;
 use crate::session::*;
 use crate::i18n::*;
-use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+
+/// Widest a tab grows, at 96 DPI. A longer title is drawn with `DT_END_ELLIPSIS`.
+const TAB_MAX_W: i32 = 90;
+/// Tracking tooltip for the paths under one tab. The lock glyph uses id 7.
+const TAB_TIP_ID: usize = 8;
 
 // Segoe Fluent Icons / MDL2 Assets code points
 pub(crate) const ICON_SEARCH: &str = "\u{E721}";
@@ -125,7 +130,7 @@ pub(crate) struct IconLay {
 fn tab_px(dpi: i32) -> (i32, i32, i32, i32, i32, i32) {
     let s = |v: i32| v * dpi / 96;
     let plus = s(28);
-    (s(6), s(2), plus, s(90), s(44), plus)
+    (s(6), s(2), plus, s(TAB_MAX_W), s(44), plus)
 }
 
 /// Width `tab_lay` needs for one minimum tab, the +, and the ▾. Drive buttons stop before this.
@@ -706,10 +711,7 @@ pub(crate) unsafe fn end_rename(save: bool) {
             let name = text_of(edit);
             app(|a| {
                 if let Some(t) = a.s.tabs.get_mut(i) {
-                    let name = name.trim();
-                    if !name.is_empty() {
-                        t.name = name.chars().take(80).collect();
-                    }
+                    t.name = stored_tab_name(&name);
                 }
             });
         }
@@ -722,24 +724,29 @@ pub(crate) unsafe fn end_rename(save: bool) {
 }
 
 pub(crate) unsafe fn begin_rename(i: usize) {
-    if app(|a| a.tab_edit.0.is_null() || i >= a.s.tabs.len()) {
+    path_tooltip(None);
+    let (owner, prev) = app(|a| {
+        let prev = a.s.tabs.get(i).map(|t| t.name.clone()).unwrap_or_default();
+        (a.main, prev)
+    });
+    if owner.0.is_null() || app(|a| i >= a.s.tabs.len()) {
         return;
     }
-    show_tab(i);
-    let (edit, font, dpi, name) = app(|a| {
-        let name = a.s.tabs.get(i).map(|t| t.name.clone()).unwrap_or_default();
-        (a.tab_edit, a.font, a.dpi, name)
+    // Empty when the tab is automatic, so confirming without typing leaves the folder name in charge.
+    let initial = custom_tab_name(&prev).unwrap_or("").to_string();
+    let title = tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更");
+    let Some(text) = crate::settings::ask(owner, title, &initial) else { return };
+    let next = stored_tab_name(&text);
+    if stored_tab_name(&prev) == next {
+        return;
+    }
+    app(|a| {
+        if let Some(t) = a.s.tabs.get_mut(i) {
+            t.name = next;
+        }
     });
-    let lay = current_tab_lay();
-    let Some(r) = lay.body.get(i).copied().filter(|r| r.right > r.left) else { return };
-    let s = |v: i32| v * dpi / 96;
-    app(|a| a.tab_renaming = Some(i));
-    _ = SetWindowTextW(edit, &HSTRING::from(name.as_str()));
-    SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-    _ = SetWindowPos(edit, None, r.left + s(6), r.top + s(3), (r.right - r.left - s(28)).max(s(24)), r.bottom - r.top - s(6), SWP_NOZORDER | SWP_SHOWWINDOW);
-    _ = SetFocus(Some(edit));
-    let len = GetWindowTextLengthW(edit) as usize;
-    SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(len as isize)));
+    tabs_invalidate();
+    note_save();
 }
 
 pub(crate) unsafe fn set_tab_color(i: usize, color: Option<u32>) {
@@ -753,6 +760,7 @@ pub(crate) unsafe fn set_tab_color(i: usize, color: Option<u32>) {
 }
 
 pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
+    path_tooltip(None);
     let (hwnd, locked, others, color) = app(|a| {
         let tab = a.s.tabs.get(i);
         let locked = tab.is_some_and(|t| t.locked);
@@ -764,7 +772,7 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
         let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
         _ = AppendMenuW(menu, flags, id, &HSTRING::from(text));
     };
-    add(1, tr("Rename tab", "이름 변경", "タブ名の変更"), true);
+    add(1, tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更"), true);
     add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
     add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
     add(6, tr("Move to new window", "새 창으로 이동", "新しいウィンドウへ移動"), true);
@@ -876,7 +884,7 @@ pub(crate) unsafe fn open_tab_list() {
     let (hwnd, names, locked, cur) = app(|a| {
         (
             a.tabs_hwnd,
-            a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            (0..a.s.tabs.len()).map(|i| tab_text(a, i).0).collect::<Vec<_>>(),
             a.s.tabs.iter().map(|t| t.locked).collect::<Vec<_>>(),
             a.s.tab,
         )
@@ -920,11 +928,36 @@ pub(crate) fn current_tab_lay() -> TabLay {
     })
 }
 
+/// Title and path tooltip for tab `i`. The tab on screen uses the live grid; the others use what was saved on the tab.
+fn tab_text(a: &App, i: usize) -> (String, String) {
+    let (name, parked_paths, parked_n, parked_active, live) = {
+        let Some(t) = a.s.tabs.get(i) else { return (String::new(), String::new()) };
+        let n = t.heights.iter().sum::<usize>().clamp(1, MAXP);
+        (t.name.clone(), t.paths.clone(), n, t.active.min(n - 1), i == a.s.tab)
+    };
+    let (paths, n, active) = if live {
+        let n = a.s.panes().clamp(1, MAXP);
+        (a.s.paths.clone(), n, a.s.active.min(n - 1))
+    } else {
+        (parked_paths, parked_n, parked_active)
+    };
+    let path = paths.get(active).map(String::as_str).unwrap_or("");
+    let label = if custom_tab_name(&name).is_none() && path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
+        tr("This PC", "내 PC", "PC").into()
+    } else {
+        tab_label(&name, path)
+    };
+    let pc: String = tr("This PC", "내 PC", "PC").into();
+    let shown: Vec<String> = paths.iter().take(n).map(|p| if p.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") { pc.clone() } else { p.clone() }).collect();
+    let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
+    (label, tab_tip_text(&refs))
+}
+
 pub(crate) unsafe fn paint_tabs(h: HWND) {
     let (active, names, colors, hot, hot_close, hot_plus, hot_over, dpi, font, icon, accent) = app(|a| {
         (
             a.s.tab,
-            a.s.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+            (0..a.s.tabs.len()).map(|i| tab_text(a, i).0).collect::<Vec<_>>(),
             a.s.tabs.iter().map(|t| t.color).collect::<Vec<_>>(),
             a.tab_hot,
             a.tab_hot_close,
@@ -982,7 +1015,7 @@ pub(crate) unsafe fn paint_tabs(h: HWND) {
             // At the minimum width a locked tab keeps the lock and drops the name.
             let room = label.right - label.left;
             if room >= s(8) && !(lock && room < s(18)) {
-                text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT);
+                text(dc, label, names.get(i).map(|n| n.as_str()).unwrap_or(""), font, if on { pal().text } else { pal().sub }, DT_LEFT | DT_END_ELLIPSIS);
             }
         }
         // Same hover and the same icon ink for the + and the chevron.
@@ -1037,6 +1070,57 @@ unsafe fn lock_tooltip(show: bool) {
     SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
 }
 
+/// Full paths of the panes in `tab`, one per line. `None` hides it.
+/// A positive `TTM_SETMAXTIPWIDTH` is what makes the tooltip honour the line breaks.
+unsafe fn path_tooltip(tab: Option<usize>) {
+    let (tip, tabs, added) = app(|a| (a.tip, a.tabs_hwnd, a.tab_path_tip));
+    if tip.0.is_null() || tabs.0.is_null() {
+        return;
+    }
+    let text = tab.filter(|_| app(|a| a.tab_drag.is_none())).and_then(|i| {
+        let body = app(|a| tab_text(a, i).1);
+        (!body.is_empty()).then_some(body)
+    });
+    let Some(text) = text else {
+        if added {
+            let label = HSTRING::from("");
+            let ti = path_tip_info(tabs, &label);
+            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
+        }
+        return;
+    };
+    let label = HSTRING::from(text);
+    let ti = path_tip_info(tabs, &label);
+    let lp = LPARAM(&ti as *const _ as isize);
+    // Wide enough that a normal path stays one line; the breaks between panes still show.
+    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
+    if !added {
+        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
+        app(|a| a.tab_path_tip = true);
+    }
+    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return;
+    }
+    // Below the pointer so the tip never sits under it and swallows a click or double-click.
+    let below = pt.y + 22 * app(|a| a.dpi) as i32 / 96;
+    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
+    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+}
+
+fn path_tip_info(tabs: HWND, label: &HSTRING) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE,
+        hwnd: tabs,
+        uId: TAB_TIP_ID,
+        lpszText: PWSTR(label.as_ptr() as *mut u16),
+        ..Default::default()
+    }
+}
+
 pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
@@ -1054,6 +1138,10 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     TabHit::Empty => (None, false, false, false),
                 };
                 lock_tooltip(matches!(hit, TabHit::Lock(_)));
+                let path_tab = match hit {
+                    TabHit::Tab(i) | TabHit::Close(i) => Some(i),
+                    _ => None,
+                };
                 let (from, paint) = app(|a| {
                     if let Some((pi, px, py, _)) = a.tab_press {
                         if a.tab_drag.is_none() && (x - px).abs() + (y - py).abs() > (4 * a.dpi / 96).max(4) {
@@ -1089,11 +1177,13 @@ pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 if paint || from.is_some() {
                     tabs_invalidate();
                 }
+                path_tooltip(path_tab);
                 let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
                 _ = TrackMouseEvent(&mut t);
             }
             WM_MOUSELEAVE => {
                 lock_tooltip(false);
+                path_tooltip(None);
                 app(|a| {
                     a.tab_hot = None;
                     a.tab_hot_close = false;
