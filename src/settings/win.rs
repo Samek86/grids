@@ -6,7 +6,7 @@ use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, 
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{SetWindowTheme, DRAWITEMSTRUCT, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -851,10 +851,15 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let font = ST.with(|s| s.borrow().font);
     let accent = chrome();
-    let on_card = id != S_CLOSE && id != S_RESET;
+    // Prompt Close is also id 2 (S_CLOSE). Only a settings child uses that id as the accent;
+    // the prompt accents OK, which is id 1.
+    let parent = GetParent(d.hwndItem).unwrap_or_default();
+    let on_settings = parent.0.is_null() || parent == hwnd();
+    let accent_btn = if on_settings { id == S_CLOSE } else { id == 1 };
+    let on_card = if on_settings { id != S_CLOSE && id != S_RESET } else { true };
     let ground = if on_card { crate::pal().card } else { crate::pal().bg };
     crate::fill(dc_of(d), d.rcItem, ground);
-    let (fill, border, ink) = if id == S_CLOSE && !dis {
+    let (fill, border, ink) = if accent_btn && !dis {
         (accent, accent, on_chrome(accent))
     } else if dis {
         (crate::blend(ground, crate::pal().sub, 0.12), crate::pal().line, crate::pal().sub)
@@ -1613,6 +1618,10 @@ thread_local! {
 
 unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_DRAWITEM => {
+            draw_btn(&*(lp.0 as *const DRAWITEMSTRUCT));
+            return LRESULT(1);
+        }
         WM_COMMAND => {
             let id = (wp.0 & 0xffff) as i32;
             if id == 1 {
@@ -1671,6 +1680,7 @@ unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
     let _ = SetWindowPos(edit, None, sc(dpi, 16), sc(dpi, 16), ww - sc(dpi, 48), sc(dpi, 28), SWP_NOZORDER);
     let _ = SetWindowPos(ctl(h, 1), None, ww - sc(dpi, 200), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
     let _ = SetWindowPos(ctl(h, 2), None, ww - sc(dpi, 108), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
+    crate::keys::set_modal(true);
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, false);
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit));
     let mut msg = MSG::default();
@@ -1679,9 +1689,25 @@ unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
             PostQuitMessage(0);
             break;
         }
+        // No dialog manager: Enter and Esc never become IDOK / IDCANCEL on their own.
+        let mine = msg.hwnd == h || IsChild(h, msg.hwnd).as_bool();
+        if msg.message == WM_KEYDOWN && mine {
+            let cmd: usize = if msg.wParam.0 == VK_RETURN.0 as usize {
+                1
+            } else if msg.wParam.0 == VK_ESCAPE.0 as usize {
+                2
+            } else {
+                0
+            };
+            if cmd != 0 {
+                let _ = SendMessageW(h, WM_COMMAND, Some(WPARAM(cmd)), Some(LPARAM(0)));
+                continue;
+            }
+        }
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    crate::keys::set_modal(false);
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, true);
     let _ = SetForegroundWindow(owner);
     ASK_OUT.with(|o| o.borrow_mut().take().flatten())
