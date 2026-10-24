@@ -228,6 +228,7 @@ pub(crate) struct PeekView {
     pub(crate) y: i32, // scrolled down, px
     pub(crate) x: i32, // scrolled right (tables, code), px
     pub(crate) max_y: i32, // how far it can scroll down, from the last paint; 0 = it all fits
+    pub(crate) page_h: i32, // viewport height from that paint; the thumb is sized from it
     pub(crate) edge_at: Option<Instant>, // the wheel reached the top / bottom then
     pub(crate) wheel: i32, // wheel delta toward the next file step (120 a notch)
     pub(crate) layout: Option<(usize, i32, Vec<Line>, i32)>, // (gen, width, lines, total height)
@@ -236,6 +237,9 @@ pub(crate) struct PeekView {
     pub(crate) host_win: Option<HWND>, // the picture area's child window the handler draws in
     pub(crate) hover: bool,            // the mouse is over the popup: ‹ › show
     pub(crate) hot: Hot,
+    pub(crate) bar_hot: bool,        // pointer over the scrollbar thumb
+    pub(crate) bar_drag: Option<i32>, // mouse y minus thumb top, while that thumb is dragged
+    pub(crate) bar_down: bool,        // mouse-down hit the bar, so mouse-up is not ‹ › / ×
 }
 
 thread_local! {
@@ -244,6 +248,19 @@ thread_local! {
 
 fn view<R>(f: impl FnOnce(&mut PeekView) -> R) -> R {
     VIEW.with(|v| f(&mut v.borrow_mut()))
+}
+
+// New file: back to the top. A drag still holding the mouse lets go too.
+unsafe fn reset_scroll() {
+    let captured = view(|v| {
+        (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0);
+        let captured = v.bar_drag.take().is_some() || v.bar_down;
+        (v.page_h, v.bar_hot, v.bar_down) = (0, false, false);
+        captured
+    });
+    if captured {
+        _ = ReleaseCapture();
+    }
 }
 
 /// Heading faces are cloned from the UI font. Drop them when that font changes; the next paint builds new ones.
@@ -323,7 +340,7 @@ unsafe fn show_path(path: &str, plain: bool) {
         return;
     }
     unload_handler();
-    view(|v| (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0));
+    reset_scroll();
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
     let st = peek_geo(rc, dpi).stage;
@@ -343,7 +360,7 @@ pub(crate) unsafe fn load_peek(plain: bool) {
     let (h, i, dpi) = app(|a| (a.peek, a.peek_pane, a.dpi));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     unload_handler();
-    view(|v| (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0));
+    reset_scroll();
     let it = fv.GetItem::<IShellItem>(fv.GetFocusedItem().unwrap_or(-1)).ok();
     let shown = |kind| it.as_ref().and_then(|it| it.GetDisplayName(kind).ok()).map(|p| pwstr(p));
     app(|a| a.peek_name = shown(SIGDN_NORMALDISPLAY).unwrap_or_default());
@@ -669,12 +686,186 @@ unsafe fn layout(dc: HDC, gen: usize, width: i32, text: &str, kind: TextKind, fo
     y
 }
 
+// ---------- scrollbar ----------
+// Pure geometry: thumb size, thumb position, and clamping. No window, so the tests can pin it.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BarHit {
+    None,
+    Thumb,
+    Track,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BarLayout {
+    pub max_y: i32,
+    pub thumb_h: i32,
+    pub thumb_top: i32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BarRects {
+    paint: RECT, // the drawn track
+    hit: RECT,   // wider grab target, ending where › starts
+}
+
+/// `y` clamped into `0..=max_y`. A negative range is empty.
+pub(crate) fn clamp_y(y: i32, max_y: i32) -> i32 {
+    y.clamp(0, max_y.max(0))
+}
+
+/// Move `y` by `dy`. Once the content is taller than the view (`max_y > 0`) the result stays
+/// inside it. Before the first layout `max_y` is 0, and a large `dy` is left for the paint to clamp.
+pub(crate) fn nudge(y: i32, max_y: i32, dy: i32) -> i32 {
+    let y = y.saturating_add(dy).max(0);
+    if max_y > 0 {
+        y.min(max_y)
+    } else {
+        y
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArrowAct {
+    Scroll(i32),
+    Step,
+    Stay, // a key repeat ran into the end: don't walk the file list
+}
+
+/// Up / Down while the page is taller than the window. `dy` is positive.
+pub(crate) fn arrow_act(y: i32, max_y: i32, down: bool, repeat: bool, dy: i32) -> ArrowAct {
+    if max_y > 0 {
+        let next = nudge(y, max_y, if down { dy } else { -dy });
+        if next != y {
+            return ArrowAct::Scroll(next);
+        }
+        if repeat {
+            return ArrowAct::Stay;
+        }
+    }
+    ArrowAct::Step
+}
+
+/// Thumb length along a track of `span` px. Short content gets a long thumb; a huge document
+/// keeps at least `min_thumb`, and never more than the track.
+pub(crate) fn thumb_len(content: i32, view: i32, span: i32, min_thumb: i32) -> i32 {
+    if span <= 0 {
+        return 0;
+    }
+    let min_thumb = min_thumb.max(1).min(span);
+    if content <= view || view <= 0 || content <= 0 {
+        return span;
+    }
+    let raw = (span as i64 * view as i64 / content as i64) as i32;
+    raw.clamp(min_thumb, span)
+}
+
+/// Thumb top, relative to the track, for scroll position `y`.
+pub(crate) fn thumb_offset(y: i32, max_y: i32, travel: i32) -> i32 {
+    if max_y <= 0 || travel <= 0 {
+        0
+    } else {
+        let y = y.clamp(0, max_y);
+        ((y as i64 * travel as i64) / max_y as i64) as i32
+    }
+}
+
+/// Scroll position for a thumb whose top is `rel` px into a travel of `travel`.
+pub(crate) fn thumb_scroll(rel: i32, travel: i32, max_y: i32) -> i32 {
+    if max_y <= 0 || travel <= 0 {
+        0
+    } else {
+        let rel = rel.clamp(0, travel) as i64;
+        ((rel * max_y as i64) / travel as i64).clamp(0, max_y as i64) as i32
+    }
+}
+
+/// `None` when everything fits. Otherwise the thumb sits inside the track for `y`.
+pub(crate) fn bar_layout(content: i32, view: i32, track_top: i32, track_h: i32, min_thumb: i32, y: i32) -> Option<BarLayout> {
+    if view <= 0 || track_h <= 0 || content <= view {
+        return None;
+    }
+    let max_y = content - view;
+    let thumb_h = thumb_len(content, view, track_h, min_thumb);
+    let travel = track_h - thumb_h;
+    let thumb_top = track_top + thumb_offset(y, max_y, travel);
+    Some(BarLayout { max_y, thumb_h, thumb_top })
+}
+
+/// One page toward the click. A click on the thumb leaves `y` alone.
+pub(crate) fn page_toward(y: i32, max_y: i32, thumb_top: i32, thumb_h: i32, click_y: i32, page: i32) -> i32 {
+    let dir: i32 = if click_y < thumb_top {
+        -1
+    } else if click_y >= thumb_top.saturating_add(thumb_h) {
+        1
+    } else {
+        0
+    };
+    nudge(y, max_y, dir.saturating_mul(page.max(0)))
+}
+
+fn thumb_min(dpi: i32) -> i32 {
+    (24 * dpi / 96).max(8)
+}
+
+/// Track in the gutter peek_geo leaves between the stage and ›. The hit rect is wider
+/// (a 6 DIP bar is hard to grab) and stops on ›'s left edge.
+pub(crate) fn peek_bar_rects(stage: RECT, dpi: i32) -> BarRects {
+    let s = |v: i32| v * dpi / 96;
+    let gutter = (s(56) - s(32)) / 2;
+    let w = s(6).max(4).min((gutter - s(2)).max(1));
+    let limit = stage.right + gutter;
+    let mut right = stage.right + (gutter - w).max(0) / 2 + w;
+    if right > limit {
+        right = limit;
+    }
+    let left = (right - w).max(stage.right);
+    let paint = RECT { left, top: stage.top + s(4), right, bottom: stage.bottom - s(4) };
+    let hit = RECT { left: paint.left - s(8), top: paint.top, right: limit, bottom: paint.bottom };
+    BarRects { paint, hit }
+}
+
+/// Where the pointer is on the bar. The thumb wins over the track, across the wider hit width.
+pub(crate) fn bar_hit(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
+    let thumb = RECT { left: hit.left, right: hit.right, ..thumb };
+    if inside(thumb, x, y) {
+        BarHit::Thumb
+    } else if inside(hit, x, y) {
+        BarHit::Track
+    } else {
+        BarHit::None
+    }
+}
+
+/// Track and thumb colours. The track is a theme mix; the thumb carries the accent, nudged
+/// toward the theme text so a dim swatch still reads on both ivory and charcoal.
+pub(crate) fn bar_rgb(bg: u32, text: u32, accent: u32, hot: bool) -> (u32, u32) {
+    let track = blend(bg, text, 0.16);
+    let thumb = if hot { blend(accent, on_color(accent), 0.25) } else { blend(accent, text, 0.12) };
+    (track, thumb)
+}
+
+// A drag or a track click moved `y`. Restart the wheel's "rested at the end" wait when we
+// arrive there, so the fling doesn't also step to the next file.
+fn note_scroll(v: &mut PeekView, prev: i32) {
+    let moved = v.y != prev;
+    let at_edge = v.max_y > 0 && (v.y <= 0 || v.y >= v.max_y);
+    if !at_edge {
+        v.edge_at = None;
+    } else if moved {
+        v.edge_at = Some(Instant::now());
+    }
+    v.wheel = 0;
+}
+
 // ---------- painting ----------
 
 fn clamp_scroll(total: i32, page: i32) {
     view(|v| {
-        v.max_y = (total - page).max(0);
-        v.y = v.y.min(v.max_y).max(0);
+        let page = page.max(0);
+        v.page_h = page;
+        v.max_y = total.saturating_sub(page).max(0);
+        v.y = clamp_y(v.y, v.max_y);
     });
 }
 
@@ -1016,6 +1207,7 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
             None => text(dc, g.stage, tr("Loading…", "불러오는 중…", "読み込み中…"), font, pal().sub, DT_CENTER),
         }
         drop(j);
+        paint_bar(dc, g.stage, dpi, accent);
         // ‹ › while the mouse is over the popup, square like the app's buttons
         if hover {
             for (r, glyph, which) in [(g.prev, ICON_PREV, Hot::Prev), (g.next, ICON_NEXT, Hot::Next)] {
@@ -1030,13 +1222,130 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
     });
 }
 
-// Wheel, PgUp / PgDn, Home / End scroll; Shift+wheel sideways (tables, code).
+// Wheel, PgUp / PgDn, Home / End, and Up / Down scroll. Shift+wheel moves sideways (tables, code).
 unsafe fn scroll_peek(h: HWND, dy: i32, dx: i32) {
     view(|v| {
-        v.y = v.y.saturating_add(dy).max(0);
+        v.y = nudge(v.y, v.max_y, dy);
         v.x = v.x.saturating_add(dx).max(0);
     });
     _ = InvalidateRect(Some(h), None, false);
+}
+
+fn lp_xy(lp: LPARAM) -> (i32, i32) {
+    ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
+}
+
+unsafe fn bar_state(h: HWND) -> Option<(BarRects, BarLayout)> {
+    let dpi = app(|a| a.dpi);
+    let rects = peek_bar_rects(geo_of(h).stage, dpi);
+    let span = rects.paint.bottom - rects.paint.top;
+    view(|v| {
+        if v.max_y <= 0 || v.page_h <= 0 {
+            return None;
+        }
+        bar_layout(v.max_y.saturating_add(v.page_h), v.page_h, rects.paint.top, span, thumb_min(dpi), v.y).map(|b| (rects, b))
+    })
+}
+
+fn thumb_of(rects: BarRects, b: &BarLayout) -> RECT {
+    RECT { left: rects.paint.left, top: b.thumb_top, right: rects.paint.right, bottom: b.thumb_top + b.thumb_h }
+}
+
+unsafe fn thumb_hot(h: HWND, x: i32, y: i32) -> bool {
+    let Some((rects, b)) = bar_state(h) else { return false };
+    bar_hit(rects.hit, thumb_of(rects, &b), x, y) == BarHit::Thumb
+}
+
+// Rounded like the settings window's bar. No pen: the fill is the whole mark.
+unsafe fn round_fill(dc: HDC, r: RECT, rad: i32, fill: u32) {
+    if r.right <= r.left || r.bottom <= r.top {
+        return;
+    }
+    let brush = CreateSolidBrush(cref(fill));
+    let pen = HPEN(GetStockObject(NULL_PEN).0);
+    let op = SelectObject(dc, pen.into());
+    let ob = SelectObject(dc, brush.into());
+    _ = RoundRect(dc, r.left, r.top, r.right, r.bottom, rad.max(1), rad.max(1));
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    _ = DeleteObject(brush.into());
+}
+
+unsafe fn paint_bar(dc: HDC, stage: RECT, dpi: i32, accent: u32) {
+    let rects = peek_bar_rects(stage, dpi);
+    let span = rects.paint.bottom - rects.paint.top;
+    let drawn = view(|v| {
+        if v.max_y <= 0 || v.page_h <= 0 {
+            return None;
+        }
+        let hot = v.bar_hot || v.bar_drag.is_some();
+        bar_layout(v.max_y.saturating_add(v.page_h), v.page_h, rects.paint.top, span, thumb_min(dpi), v.y).map(|b| (b, hot))
+    });
+    let Some((b, hot)) = drawn else { return };
+    let s = |v: i32| v * dpi / 96;
+    let (track, thumb) = bar_rgb(pal().bg, pal().text, accent, hot);
+    round_fill(dc, rects.paint, s(4), track);
+    round_fill(dc, thumb_of(rects, &b), s(4), thumb);
+}
+
+unsafe fn press_bar(h: HWND, x: i32, y: i32) -> bool {
+    let Some((rects, b)) = bar_state(h) else { return false };
+    let thumb = thumb_of(rects, &b);
+    match bar_hit(rects.hit, thumb, x, y) {
+        BarHit::None => false,
+        BarHit::Thumb => {
+            view(|v| v.bar_drag = Some(y - b.thumb_top));
+            true
+        }
+        BarHit::Track => {
+            let page = view(|v| v.page_h.max(1));
+            view(|v| {
+                let prev = v.y;
+                v.y = page_toward(v.y, v.max_y, b.thumb_top, b.thumb_h, y, page);
+                note_scroll(v, prev);
+            });
+            _ = InvalidateRect(Some(h), None, false);
+            true
+        }
+    }
+}
+
+unsafe fn drag_bar(h: HWND, y: i32) {
+    let Some(off) = view(|v| v.bar_drag) else { return };
+    let Some((rects, b)) = bar_state(h) else { return };
+    let travel = (rects.paint.bottom - rects.paint.top - b.thumb_h).max(0);
+    if travel <= 0 {
+        return;
+    }
+    let top = (y - off).clamp(rects.paint.top, rects.paint.bottom - b.thumb_h);
+    let rel = top - rects.paint.top;
+    view(|v| {
+        let prev = v.y;
+        v.y = thumb_scroll(rel, travel, b.max_y);
+        note_scroll(v, prev);
+    });
+    _ = InvalidateRect(Some(h), None, false);
+}
+
+// Up / Down scroll a long page. At the end a fresh press steps to the previous / next file;
+// a repeat stops, so holding the key doesn't run through the list. Left / Right always step.
+unsafe fn arrow_scroll(h: HWND, down: bool, repeat: bool) {
+    let line = app(|a| a.fh).max(1) * 3;
+    let act = view(|v| {
+        let dy = line.max(v.page_h / 10).max(1);
+        let act = arrow_act(v.y, v.max_y, down, repeat, dy);
+        if let ArrowAct::Scroll(y) = act {
+            let prev = v.y;
+            v.y = y;
+            note_scroll(v, prev);
+        }
+        act
+    });
+    match act {
+        ArrowAct::Scroll(_) => _ = InvalidateRect(Some(h), None, false),
+        ArrowAct::Step => step_peek(!down),
+        ArrowAct::Stay => {}
+    }
 }
 
 pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -1055,45 +1364,80 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_PEEK_HOSTED => handler_ready(h, wp.0, lp.0 != 0),
             WM_MOUSEMOVE => {
-                let hot = peek_hit(&geo_of(h), (lp.0 & 0xffff) as i16 as i32, (lp.0 >> 16 & 0xffff) as i16 as i32);
-                let (first, changed) = view(|v| {
-                    let r = (!v.hover, !v.hover || v.hot != hot);
-                    (v.hover, v.hot) = (true, hot);
-                    r
-                });
-                if first {
-                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
-                    _ = TrackMouseEvent(&mut t);
-                }
-                if changed {
-                    _ = InvalidateRect(Some(h), None, false);
+                let (x, y) = lp_xy(lp);
+                if view(|v| v.bar_drag.is_some()) {
+                    drag_bar(h, y);
+                } else {
+                    let hot = peek_hit(&geo_of(h), x, y);
+                    let over = thumb_hot(h, x, y);
+                    let (first, changed) = view(|v| {
+                        let r = (!v.hover, !v.hover || v.hot != hot || v.bar_hot != over);
+                        (v.hover, v.hot, v.bar_hot) = (true, hot, over);
+                        r
+                    });
+                    if first {
+                        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                        _ = TrackMouseEvent(&mut t);
+                    }
+                    if changed {
+                        _ = InvalidateRect(Some(h), None, false);
+                    }
                 }
             }
             WM_MOUSELEAVE => {
-                view(|v| (v.hover, v.hot) = (false, Hot::None));
+                view(|v| (v.hover, v.hot, v.bar_hot) = (false, Hot::None, false));
                 _ = InvalidateRect(Some(h), None, false);
             }
-            // only × and ‹ › act on a click; the content itself never closes the preview
-            WM_LBUTTONUP => match view(|v| v.hot) {
-                Hot::Close => close_peek(h),
-                Hot::Prev => step_peek(true),
-                Hot::Next => step_peek(false),
-                Hot::None => {}
-            },
+            WM_LBUTTONDOWN => {
+                let (x, y) = lp_xy(lp);
+                if press_bar(h, x, y) {
+                    view(|v| v.bar_down = true);
+                    _ = SetCapture(h);
+                }
+            }
+            // only × and ‹ › act on a click; the content itself never closes the preview.
+            // a press that started on the bar is a scroll, even if the pointer has slid onto ›
+            WM_LBUTTONUP => {
+                let on_bar = view(|v| {
+                    let on = v.bar_down;
+                    v.bar_down = false;
+                    v.bar_drag = None;
+                    on
+                });
+                if on_bar {
+                    _ = ReleaseCapture();
+                    _ = InvalidateRect(Some(h), None, false);
+                } else {
+                    match view(|v| v.hot) {
+                        Hot::Close => close_peek(h),
+                        Hot::Prev => step_peek(true),
+                        Hot::Next => step_peek(false),
+                        Hot::None => {}
+                    }
+                }
+            }
+            WM_CAPTURECHANGED => {
+                view(|v| (v.bar_drag, v.bar_down) = (None, false));
+            }
             WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_SHIFT.0 != 0 => scroll_peek(h, 0, -notch(wp.0)),
             WM_MOUSEWHEEL => wheel_peek(h, (wp.0 >> 16) as i16 as i32),
             // tilting the wheel: previous / next file, like the arrows
             WM_MOUSEHWHEEL => step_by_wheel(-((wp.0 >> 16) as i16 as i32)),
-            WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
-                // a held F3 only opens it; its repeats must not close it again
-                VK_ESCAPE | VK_SPACE | VK_F3 if lp.0 & (1 << 30) == 0 => close_peek(h),
-                k @ (VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN) => step_peek(k == VK_LEFT || k == VK_UP),
-                VK_NEXT => scroll_peek(h, page(), 0),
-                VK_PRIOR => scroll_peek(h, -page(), 0),
-                VK_HOME => scroll_peek(h, i32::MIN, i32::MIN),
-                VK_END => scroll_peek(h, i32::MAX, 0),
-                _ => {}
-            },
+            WM_KEYDOWN => {
+                let k = VIRTUAL_KEY(wp.0 as u16);
+                let repeat = lp.0 & (1 << 30) != 0;
+                match k {
+                    // a held F3 only opens it; its repeats must not close it again
+                    VK_ESCAPE | VK_SPACE | VK_F3 if !repeat => close_peek(h),
+                    VK_LEFT | VK_RIGHT => step_peek(k == VK_LEFT),
+                    VK_UP | VK_DOWN => arrow_scroll(h, k == VK_DOWN, repeat),
+                    VK_NEXT => scroll_peek(h, page(), 0),
+                    VK_PRIOR => scroll_peek(h, -page(), 0),
+                    VK_HOME => scroll_peek(h, i32::MIN, i32::MIN),
+                    VK_END => scroll_peek(h, i32::MAX, 0),
+                    _ => {}
+                }
+            }
             // another app or a click behind closes it; stepping takes the activation away only for a moment
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_PEEK_LOST, WPARAM(0), LPARAM(0)),
             WM_PEEK_LOST if GetActiveWindow() != h => _ = DestroyWindow(h),
@@ -1103,7 +1447,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 mark_find_peek(None);
                 unload_handler();
                 want_peek(None);
-                view(|v| (v.layout, v.y, v.x) = (None, 0, 0));
+                reset_scroll();
                 app(|a| a.peek = HWND::default());
                 // Focus has left the result list. Ask the pane to hide those rows unless
                 // close puts the keyboard back on them (or the search box still has it).
@@ -1218,6 +1562,168 @@ mod tests {
             for r in [g.icon, g.title, g.close, g.stage, g.inner, g.prev, g.next] {
                 assert!(r.left >= e && r.top >= e && r.right <= rc.right - e && r.bottom <= rc.bottom - e);
             }
+        }
+    }
+
+    #[test]
+    fn scroll_clamps_and_reaches_the_end() {
+        assert_eq!(clamp_y(-4, 100), 0);
+        assert_eq!(clamp_y(40, 100), 40);
+        assert_eq!(clamp_y(400, 100), 100);
+        assert_eq!(clamp_y(5, 0), 0);
+        assert_eq!(clamp_y(5, -3), 0);
+
+        assert_eq!(nudge(0, 500, 100), 100);
+        assert_eq!(nudge(450, 500, 100), 500);
+        assert_eq!(nudge(10, 500, -40), 0);
+        assert_eq!(nudge(10, 200, i32::MAX), 200);
+        assert_eq!(nudge(10, 200, i32::MIN), 0);
+        // not laid out yet: a jump is kept for the paint to clamp
+        assert_eq!(nudge(10, 0, i32::MAX), i32::MAX);
+        assert_eq!(nudge(10, 0, i32::MIN), 0);
+
+        let max_y = 10_000;
+        let mut y = 0;
+        let mut n = 0;
+        while y < max_y {
+            let next = nudge(y, max_y, 48);
+            assert!(next > y && next <= max_y);
+            y = next;
+            n += 1;
+            assert!(n < 1000);
+        }
+        assert_eq!(nudge(y, max_y, 48), max_y);
+        assert_eq!(nudge(0, max_y, i32::MIN), 0);
+    }
+
+    #[test]
+    fn arrow_scrolls_until_the_end() {
+        use ArrowAct::*;
+        assert_eq!(arrow_act(0, 0, true, false, 40), Step);
+        assert_eq!(arrow_act(0, 0, true, true, 40), Step);
+        assert_eq!(arrow_act(0, 0, false, true, 40), Step);
+        assert_eq!(arrow_act(0, 500, true, false, 40), Scroll(40));
+        assert_eq!(arrow_act(480, 500, true, false, 40), Scroll(500));
+        assert_eq!(arrow_act(500, 500, true, false, 40), Step);
+        assert_eq!(arrow_act(500, 500, true, true, 40), Stay);
+        assert_eq!(arrow_act(0, 500, false, false, 40), Step);
+        assert_eq!(arrow_act(0, 500, false, true, 40), Stay);
+        assert_eq!(arrow_act(20, 500, false, false, 40), Scroll(0));
+        assert_eq!(arrow_act(100, 500, false, true, 40), Scroll(60));
+    }
+
+    #[test]
+    fn thumb_size_position_and_drag() {
+        assert!(bar_layout(100, 100, 0, 200, 24, 0).is_none());
+        assert!(bar_layout(50, 100, 0, 200, 24, 0).is_none());
+        assert!(bar_layout(200, 0, 0, 200, 24, 0).is_none());
+        assert!(bar_layout(200, 100, 0, 0, 24, 0).is_none());
+
+        // content twice the view: thumb is half the track, ends meet the track ends
+        let top = 10;
+        let span = 200;
+        let b = bar_layout(400, 200, top, span, 24, 0).unwrap();
+        assert_eq!(b.max_y, 200);
+        assert_eq!(b.thumb_h, 100);
+        assert_eq!(b.thumb_top, top);
+        let end = bar_layout(400, 200, top, span, 24, 200).unwrap();
+        assert_eq!(end.thumb_top, top + span - end.thumb_h);
+        assert_eq!(end.thumb_top + end.thumb_h, top + span);
+        let mid = bar_layout(400, 200, top, span, 24, 100).unwrap();
+        assert_eq!(mid.thumb_top, top + 50);
+        let travel = span - b.thumb_h;
+        assert_eq!(thumb_scroll(0, travel, b.max_y), 0);
+        assert_eq!(thumb_scroll(travel, travel, b.max_y), b.max_y);
+        assert_eq!(thumb_scroll(50, travel, b.max_y), 100);
+
+        // y outside the range pins the thumb to the ends
+        assert_eq!(bar_layout(400, 200, top, span, 24, -50).unwrap().thumb_top, top);
+        assert_eq!(bar_layout(400, 200, top, span, 24, 9_000).unwrap().thumb_top, end.thumb_top);
+
+        // a long document keeps the minimum thumb, and the bottom still lands on the track end
+        let long = bar_layout(100_000, 100, 0, span, 24, 0).unwrap();
+        assert_eq!(long.thumb_h, 24);
+        let long_end = bar_layout(100_000, 100, 0, span, 24, long.max_y).unwrap();
+        assert_eq!(long_end.thumb_top + long_end.thumb_h, span);
+        assert_eq!(thumb_scroll(span - 24, span - 24, long.max_y), long.max_y);
+        assert_eq!(thumb_len(100_000, 100, span, 24), 24);
+        // min thumb larger than the track cannot overflow it
+        assert_eq!(thumb_len(10_000, 100, 10, 24), 10);
+        let tiny = bar_layout(10_000, 100, 5, 10, 24, 50).unwrap();
+        assert_eq!((tiny.thumb_h, tiny.thumb_top), (10, 5));
+        assert_eq!(thumb_scroll(0, 0, tiny.max_y), 0);
+
+        let mut prev = -1;
+        for y in [0, 1, 10, 100, 1000, 5000, 9999, 10_000] {
+            let b = bar_layout(20_000, 100, 0, 400, 24, y).unwrap();
+            assert!(b.thumb_top >= prev);
+            assert!(b.thumb_top + b.thumb_h <= 400);
+            assert!(b.thumb_h >= 24);
+            prev = b.thumb_top;
+        }
+    }
+
+    #[test]
+    fn track_click_pages_to_the_end() {
+        assert_eq!(page_toward(100, 500, 40, 20, 10, 80), 20);
+        assert_eq!(page_toward(100, 500, 40, 20, 70, 80), 180);
+        assert_eq!(page_toward(100, 500, 40, 20, 40, 80), 100);
+        assert_eq!(page_toward(100, 500, 40, 20, 59, 80), 100);
+        assert_eq!(page_toward(10, 500, 40, 20, 0, 80), 0);
+        assert_eq!(page_toward(490, 500, 40, 20, 100, 80), 500);
+
+        let max_y = 5_000;
+        let page = 400;
+        let mut y = 0;
+        let mut n = 0;
+        while y < max_y {
+            let next = page_toward(y, max_y, 0, 10, 50, page);
+            assert!(next > y);
+            y = next;
+            n += 1;
+            assert!(n < 100);
+        }
+        assert_eq!(y, max_y);
+        assert_eq!(page_toward(0, max_y, 0, 30, 10, page), 0);
+    }
+
+    #[test]
+    fn bar_hit_and_gutter() {
+        let hit = RECT { left: 0, top: 0, right: 20, bottom: 200 };
+        let thumb = RECT { left: 4, top: 30, right: 12, bottom: 60 };
+        assert_eq!(bar_hit(hit, thumb, 2, 40), BarHit::Thumb);
+        assert_eq!(bar_hit(hit, thumb, 18, 59), BarHit::Thumb);
+        assert_eq!(bar_hit(hit, thumb, 10, 10), BarHit::Track);
+        assert_eq!(bar_hit(hit, thumb, 10, 60), BarHit::Track);
+        assert_eq!(bar_hit(hit, thumb, 20, 40), BarHit::None);
+        assert_eq!(bar_hit(hit, thumb, 10, 200), BarHit::None);
+
+        for dpi in [96, 120, 144, 168, 192] {
+            let rc = RECT { left: 0, top: 0, right: 1400, bottom: 900 };
+            let g = peek_geo(rc, dpi);
+            let b = peek_bar_rects(g.stage, dpi);
+            assert!(b.paint.left >= g.stage.right, "dpi {dpi}");
+            assert!(b.paint.right <= g.next.left, "dpi {dpi}");
+            assert!(b.hit.right <= g.next.left, "dpi {dpi}");
+            assert!(b.hit.left < b.paint.left, "dpi {dpi}");
+            assert!(b.paint.top >= g.stage.top && b.paint.bottom <= g.stage.bottom, "dpi {dpi}");
+            assert!(b.paint.right > b.paint.left && b.paint.bottom > b.paint.top, "dpi {dpi}");
+            // ›'s own pixel is not part of the bar
+            assert_eq!(bar_hit(b.hit, b.paint, g.next.left, g.next.top + 1), BarHit::None);
+        }
+    }
+
+    #[test]
+    fn bar_colors_read_on_both_themes() {
+        for (bg, text, accent) in [(LIGHT.bg, LIGHT.text, 0x0067C0u32), (DARK.bg, DARK.text, 0x4CC2FFu32), (DARK.bg, DARK.text, 0x4B4B4Bu32)] {
+            let (track, thumb) = bar_rgb(bg, text, accent, false);
+            let (track_hot, thumb_hot) = bar_rgb(bg, text, accent, true);
+            assert_ne!(track, bg);
+            assert_ne!(thumb, bg);
+            assert_ne!(thumb, track);
+            assert_ne!(thumb_hot, thumb);
+            assert_ne!(thumb_hot, bg);
+            assert_eq!(track_hot, track);
         }
     }
 }
