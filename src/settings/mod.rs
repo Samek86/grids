@@ -46,6 +46,7 @@ const TG_DOT: u8 = 12;
 const TG_ONE: u8 = 13;
 const TG_EV: u8 = 15;
 const TG_DRIVES: u8 = 16;
+const TG_SPACE: u8 = 17;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -164,6 +165,7 @@ const VIEW: &[Spec] = &[
     Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_EXT) },
     Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The folder tree is on top and favourites are below. Drag the divider between them. This hides both.", "위는 폴더 트리, 아래는 즐겨찾기예요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "上はフォルダー ツリー、下はお気に入りです。間の区切りをドラッグして分けます。この項目で両方を隠します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_TREE) },
     Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_EDGE) },
+    Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On when space_preview is missing.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. space_preview 키가 없으면 켜져 있어요.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。space_preview が無いときはオンです。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SPACE) },
 ];
 const FILE: &[Spec] = &[
     Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), badge: false, live: true, ctl: Ctl::CopyEng },
@@ -647,6 +649,7 @@ fn toggle_on(id: u8) -> bool {
         TG_AUTOSAVE => app(|a| a.s.autosave),
         TG_DOT => app(|a| a.s.dot),
         TG_EV => app(|a| a.s.use_everything),
+        TG_SPACE => app(|a| a.s.space_preview),
         // The favourites item is always on the shell menu, directly above Properties.
         TG_FAVMENU => true,
         _ => false,
