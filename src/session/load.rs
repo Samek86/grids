@@ -130,7 +130,7 @@ pub(crate) fn session_cards() -> Vec<(PathBuf, Session, String)> {
 
 /// Popup size for the cards it has now, and the rename box over its card's name.
 pub(crate) unsafe fn fit_load() {
-    let (h, edit, editing, n, dpi, fh) = app(|a| (a.load, a.load_edit, a.load_editing, a.cards.len(), a.dpi, a.fh));
+    let (h, edit, editing, n, dpi) = app(|a| (a.load, a.load_edit, a.load_editing, a.cards.len(), a.dpi));
     if h.0.is_null() {
         return;
     }
@@ -138,8 +138,9 @@ pub(crate) unsafe fn fit_load() {
     _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     if let Some((card, thumb, _)) = editing.and_then(|k| g.cards.get(k)) {
         let r = load_name(card, thumb, dpi);
-        let (inset, eh) = (4 * dpi / 96, fh.min(r.bottom - r.top - 2));
-        _ = MoveWindow(edit, r.left + inset, r.top + (r.bottom - r.top - eh) / 2, r.right - r.left - 2 * inset, eh, false);
+        let inset = 4 * dpi / 96;
+        let outer = RECT { left: r.left + inset, top: r.top, right: (r.right - inset).max(r.left + inset), bottom: r.bottom };
+        place_edit(edit, outer, true);
     }
     _ = InvalidateRect(Some(h), None, false);
 }

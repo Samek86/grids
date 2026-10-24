@@ -214,15 +214,14 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     let Some((eb, dpi, disp)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi, p.disp.clone()))) else {
         return;
     };
-    let fh = app(|a| a.fh) + 2;
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
     let s = |v: i32| v * dpi / 96;
     let pg = pane_geo_of(h, rc.right, rc.bottom, dpi);
-    // borderless edit, vertically centred inside its pill
-    let inside = |p: RECT, l: i32, r: i32| {
-        let top = p.top + (p.bottom - p.top - fh) / 2;
-        RECT { left: p.left + l, top, right: (p.right - r).max(p.left + l), bottom: top + fh }
+    // Borderless edit. Horizontal insets stay; the line is centred in the pill from the font.
+    let in_pill = |edit: HWND, pill: RECT, l: i32, r: i32| {
+        let outer = RECT { left: pill.left + l, top: pill.top, right: (pill.right - r).max(pill.left + l), bottom: pill.bottom };
+        (edit, unsafe { edit_window_rect(edit, outer) })
     };
     let ctl = |id: i32| GetDlgItem(Some(h), id).unwrap_or_default();
     let mut moves: Vec<(HWND, RECT)> = [ID_BACK, ID_FWD, ID_UP, ID_OPEN_IN].iter().zip(pg.btn).map(|(&id, r)| (ctl(id), r)).collect();
@@ -230,8 +229,8 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     let inset = crumb_field(pg.addr, dpi).left - pg.addr.left;
     let add = ctl(ID_PANE_ADD);
     moves.push((add, pg.add));
-    moves.push((ctl(ID_EDIT), inside(pg.addr, inset, s(6))));
-    moves.push((ctl(ID_FILTER), inside(pg.filt, s(24), s(6))));
+    moves.push(in_pill(ctl(ID_EDIT), pg.addr, inset, s(6)));
+    moves.push(in_pill(ctl(ID_FILTER), pg.filt, s(24), s(6)));
     moves.push((ctl(ID_FAV), pg.fav));
     place_find(h);
     move_all(&moves, Some((&eb, pg.view)));
