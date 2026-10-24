@@ -31,8 +31,8 @@ pub(crate) fn match_geo(label_w: i32, fh: i32, dpi: i32) -> MatchGeo {
     let label = RECT { left: s(12), top: 0, right: s(12) + label_w, bottom: h };
     let w = s(320).max(label.right + s(10) + s(120) + s(6));
     let field = RECT { left: label.right + s(10), top: s(5), right: w - s(6), bottom: h - s(5) };
-    let top = (h - fh) / 2;
-    let edit = RECT { left: field.left + s(8), top, right: field.right - s(8), bottom: top + fh };
+    let inner = RECT { left: field.left + s(8), top: field.top, right: (field.right - s(8)).max(field.left + s(8)), bottom: field.bottom };
+    let edit = centered_edit_rect(inner, fh);
     MatchGeo { w, h, label, field, edit }
 }
 
@@ -75,11 +75,26 @@ pub(crate) unsafe fn open_match(i: usize, desel: bool) {
     let square = DWMWCP_DONOTROUND;
     _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
     let edit = child(h, w!("EDIT"), PCWSTR(HSTRING::from(last).as_ptr()), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), 1, font);
-    let e = g.edit;
-    _ = MoveWindow(edit, e.left, e.top, e.right - e.left, e.bottom - e.top, false);
+    place_match_edit(edit, &g);
     app(|a| a.matcher = Some(MatchBox { hwnd: h, edit, pane: i, path, desel }));
     _ = SetFocus(Some(edit));
     SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+}
+
+fn match_edit_box(g: &MatchGeo) -> RECT {
+    RECT { left: g.edit.left, top: g.field.top, right: g.edit.right, bottom: g.field.bottom }
+}
+
+unsafe fn place_match_edit(edit: HWND, g: &MatchGeo) {
+    place_edit(edit, match_edit_box(g), true);
+}
+
+/// Font or DPI changed while the pattern box is open.
+pub(crate) unsafe fn refit_match() {
+    let Some((h, edit, desel)) = app(|a| a.matcher.as_ref().map(|m| (m.hwnd, m.edit, m.desel))) else { return };
+    let g = match_geo_now(desel);
+    _ = SetWindowPos(h, None, 0, 0, g.w, g.h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    place_match_edit(edit, &g);
 }
 
 pub(crate) unsafe fn close_match(back: bool) {

@@ -1,3 +1,5 @@
+use windows::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
+
 use crate::imports::*;
 use crate::app::*;
 use crate::pane::*;
@@ -190,7 +192,8 @@ pub(crate) unsafe fn apply_font() {
         }
         (old, old_icon, old_bold, panes, a.tab_edit, a.load_edit)
     });
-    for e in [edit, load_edit] {
+    let (side_edit, match_edit) = app(|a| (a.side_edit, a.matcher.as_ref().map(|m| m.edit).unwrap_or_default()));
+    for e in [edit, load_edit, side_edit, match_edit] {
         if !e.0.is_null() {
             SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         }
@@ -210,7 +213,96 @@ pub(crate) unsafe fn apply_font() {
     drop_peek_fonts();
     super::sync_fav_metrics();
     relayout();
+    // A font or language change does not resize the panes, so WM_SIZE never recentres the edits.
+    refit_text_edits();
     redraw_all();
+}
+
+/// `tmHeight` of the font the control is using, measured in its own DC.
+/// Includes internal leading. The font was created for this window's DPI.
+unsafe fn edit_line_height(h: HWND) -> Option<i32> {
+    if h.0.is_null() {
+        return None;
+    }
+    let font = HFONT(SendMessageW(h, WM_GETFONT, None, None).0 as _);
+    let dc = GetDC(Some(h));
+    if dc.is_invalid() {
+        return None;
+    }
+    let chosen = if font.0.is_null() { GetStockObject(SYSTEM_FONT) } else { HGDIOBJ(font.0) };
+    let old = SelectObject(dc, chosen);
+    let mut tm = TEXTMETRICW::default();
+    let ok = GetTextMetricsW(dc, &mut tm).as_bool();
+    if !old.is_invalid() {
+        SelectObject(dc, old);
+    }
+    let _ = ReleaseDC(Some(h), dc);
+    (ok && tm.tmHeight > 0).then_some(tm.tmHeight)
+}
+
+/// Client rectangle of a single-line EDIT centred in `outer`.
+///
+/// `line_height` is `TEXTMETRICW.tmHeight` (the line cell, internal leading included).
+/// A single-line EDIT draws that cell from the top of its client, so the client is one
+/// line tall and its top is `outer.top + (outer_height - line_height) / 2`. The painted
+/// frame stays `outer`. A line taller than the frame is clipped to it. A non-positive
+/// line height leaves `outer` unchanged.
+pub(crate) fn centered_edit_rect(outer: RECT, line_height: i32) -> RECT {
+    let box_h = outer.bottom - outer.top;
+    if outer.right <= outer.left || box_h <= 0 {
+        return outer;
+    }
+    let line = if line_height > 0 { line_height.min(box_h) } else { box_h };
+    let top = outer.top + (box_h - line) / 2;
+    RECT { left: outer.left, top, right: outer.right, bottom: top + line }
+}
+
+/// Window rect whose client area is `centered_edit_rect`. Borderless edits are unchanged.
+/// `WS_BORDER` (the name prompt) grows by the DPI-scaled non-client frame so the client,
+/// not the border, is the line cell.
+pub(crate) unsafe fn edit_window_rect(h: HWND, outer: RECT) -> RECT {
+    if h.0.is_null() {
+        return outer;
+    }
+    let client = centered_edit_rect(outer, edit_line_height(h).unwrap_or(0));
+    let w = client.right - client.left;
+    let ht = client.bottom - client.top;
+    if w <= 0 || ht <= 0 {
+        return client;
+    }
+    let style = WINDOW_STYLE(GetWindowLongPtrW(h, GWL_STYLE) as u32);
+    let ex = WINDOW_EX_STYLE(GetWindowLongPtrW(h, GWL_EXSTYLE) as u32);
+    let dpi = GetDpiForWindow(h).max(96);
+    let mut adj = RECT { left: 0, top: 0, right: w, bottom: ht };
+    if AdjustWindowRectExForDpi(&mut adj, style, false, ex, dpi).is_err() {
+        return client;
+    }
+    RECT { left: client.left + adj.left, top: client.top + adj.top, right: client.left + adj.right, bottom: client.top + adj.bottom }
+}
+
+/// Place a single-line EDIT in `outer` (parent client coordinates). `show` false hides it.
+pub(crate) unsafe fn place_edit(h: HWND, outer: RECT, show: bool) {
+    if h.0.is_null() {
+        return;
+    }
+    if !show {
+        let _ = ShowWindow(h, SW_HIDE);
+        return;
+    }
+    let r = edit_window_rect(h, outer);
+    let _ = SetWindowPos(h, None, r.left, r.top, (r.right - r.left).max(1), (r.bottom - r.top).max(1), SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+/// Edits already on screen, after the UI font changes. Panes also move on WM_SIZE.
+unsafe fn refit_text_edits() {
+    let panes: Vec<HWND> = app(|a| a.panes.iter().flatten().map(|p| p.hwnd).collect());
+    for h in panes {
+        layout_pane(h);
+    }
+    super::place_side_edit();
+    super::place_tab_edit();
+    refit_match();
+    crate::fit_load();
 }
 
 /// Bold copy of the window's UI font. Built once, the first time a group row is painted,
@@ -276,6 +368,51 @@ mod tests {
             FaceHit { name: String::new(), proportional: true, raster: false },
         ];
         assert_eq!(family_names(&hits), ["Arial".to_string(), "consolas".into(), "Yu Gothic UI".into()]);
+    }
+
+    #[test]
+    fn edit_line_is_centred_in_the_frame() {
+        // 32px settings-search pill. Line cells stand in for Segoe UI, Malgun Gothic and Yu Gothic UI.
+        let frame = RECT { left: 8, top: 12, right: 212, bottom: 44 };
+        for line in [15, 16, 19, 21] {
+            let r = centered_edit_rect(frame, line);
+            assert_eq!(r.bottom - r.top, line);
+            assert_eq!(r.top, frame.top + (32 - line) / 2);
+            assert_eq!((r.left, r.right), (frame.left, frame.right));
+            assert!(r.top >= frame.top && r.bottom <= frame.bottom);
+        }
+    }
+
+    #[test]
+    fn edit_centring_scales_with_dpi_and_keeps_the_odd_pixel_below() {
+        for dpi in [96, 120, 144, 192] {
+            let s = |v: i32| v * dpi / 96;
+            let frame = RECT { left: s(8), top: s(12), right: s(212), bottom: s(44) };
+            let box_h = frame.bottom - frame.top;
+            for px in [15, 19] {
+                let line = (px * dpi / 96).max(1);
+                let r = centered_edit_rect(frame, line);
+                let used = line.min(box_h);
+                assert_eq!(r.bottom - r.top, used);
+                assert_eq!(r.top, frame.top + (box_h - used) / 2);
+                assert!(r.bottom <= frame.bottom);
+            }
+        }
+        let frame = RECT { left: 0, top: 0, right: 10, bottom: 21 };
+        let r = centered_edit_rect(frame, 16);
+        assert_eq!((r.top, r.bottom), (2, 18));
+    }
+
+    #[test]
+    fn edit_taller_than_the_frame_or_an_empty_box_stays_put() {
+        let frame = RECT { left: 4, top: 8, right: 40, bottom: 20 };
+        assert_eq!(centered_edit_rect(frame, 100), frame);
+        assert_eq!(centered_edit_rect(frame, 0), frame);
+        assert_eq!(centered_edit_rect(frame, -3), frame);
+        let empty = RECT { left: 3, top: 1, right: 3, bottom: 9 };
+        assert_eq!(centered_edit_rect(empty, 4), empty);
+        let flat = RECT { left: 1, top: 5, right: 9, bottom: 4 };
+        assert_eq!(centered_edit_rect(flat, 8), flat);
     }
 
     #[test]

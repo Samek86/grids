@@ -1121,11 +1121,32 @@ fn path_tip_info(tabs: HWND, label: &HSTRING) -> TTTOOLINFOW {
     }
 }
 
+/// Inline tab rename, centred in the same rectangle the title is drawn in. No-op while hidden.
+pub(crate) unsafe fn place_tab_edit() {
+    let (edit, which, dpi, color) = app(|a| {
+        let which = a.tab_renaming;
+        let color = which.and_then(|i| a.s.tabs.get(i).and_then(|t| t.color));
+        (a.tab_edit, which, a.dpi, color)
+    });
+    let Some(i) = which else { return };
+    if edit.0.is_null() || !IsWindowVisible(edit).as_bool() {
+        return;
+    }
+    let lay = current_tab_lay();
+    let Some(r) = lay.body.get(i).copied().filter(|r| r.right > r.left) else { return };
+    let s = |v: i32| v * dpi / 96;
+    let nudge = if color.is_some() { s(5) } else { 0 };
+    let left = r.left + s(8) + nudge;
+    let right = lay.close.get(i).and_then(|c| *c).map(|c| c.left).unwrap_or(r.right - s(8)).max(left + 1);
+    place_edit(edit, RECT { left, top: r.top, right, bottom: r.bottom }, true);
+}
+
 pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         match msg {
             WM_PAINT => paint_tabs(h),
+            WM_SIZE => place_tab_edit(),
             WM_ERASEBKGND => return LRESULT(1),
             WM_MOUSEMOVE => {
                 let (x, y) = xy(lp);

@@ -261,15 +261,24 @@ pub(crate) unsafe fn paint_side(h: HWND) {
     }
 }
 
+/// The rename box over its row. Hidden unless a rename is in progress.
+pub(crate) unsafe fn place_side_edit() {
+    let (edit, id, host, scroll, dpi) = app(|a| (a.side_edit, a.side_edit_at.clone(), a.side_hwnd, a.side_scroll, a.dpi));
+    if edit.0.is_null() || id.is_empty() || host.0.is_null() {
+        return;
+    }
+    let list = rows();
+    let rh = row_h();
+    let y = tree_pos(&list, &id).map(|i| i as i32 * rh - scroll).unwrap_or(0);
+    let s = |v: i32| v * dpi / 96;
+    let outer = RECT { left: s(8), top: y, right: s(8) + s(220), bottom: y + rh };
+    place_edit(edit, outer, true);
+}
+
 pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     let list = rows();
     let label = list.iter().find(|r| r.in_tree() && r.id == id).map(|r| if r.name.is_empty() { short_name(&r.path) } else { r.name.clone() }).unwrap_or_default();
-    let i = tree_pos(&list, id);
-    let rh = row_h();
-    let (host, font, dpi, y) = app(|a| {
-        let y = i.map(|i| i as i32 * rh - a.side_scroll).unwrap_or(0);
-        (a.side_hwnd, a.font, a.dpi, y)
-    });
+    let (host, font) = app(|a| (a.side_hwnd, a.font));
     if host.0.is_null() {
         return;
     }
@@ -284,11 +293,10 @@ pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     if edit.0.is_null() {
         return;
     }
-    let s = |v: i32| v * dpi / 96;
     app(|a| a.side_edit_at = id.to_vec());
     _ = SetWindowTextW(edit, &HSTRING::from(label.as_str()));
     SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-    _ = SetWindowPos(edit, None, s(8), y + s(2), s(220), rh - s(4), SWP_NOZORDER | SWP_SHOWWINDOW);
+    place_side_edit();
     _ = SetFocus(Some(edit));
     let len = GetWindowTextLengthW(edit) as usize;
     SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(len as isize)));
@@ -738,6 +746,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_SIZE => {
                 clamp_side_scroll();
+                place_side_edit();
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_VSCROLL => {
