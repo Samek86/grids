@@ -10,6 +10,7 @@ pub(crate) const ID_EDIT: i32 = 104;
 pub(crate) const ID_OPEN_IN: i32 = 105;
 pub(crate) const ID_FILTER: i32 = 106;
 pub(crate) const ID_FAV: i32 = 107; // ☆+ / ★: add or remove the pane's folder from favourites
+pub(crate) const ID_PANE_ADD: i32 = 108; // add a pane tab; shown only while this pane has one tab
 // Chrome buttons (children of the main window), on the right of the tab strip.
 // Drive letters sit in that group, to the left of Layout.
 pub(crate) const ID_TB_LAYOUT: i32 = 201;
@@ -32,7 +33,6 @@ pub(crate) const ID_FOLLOW: usize = 1118; // follow Windows light / dark
 pub(crate) const ID_THEME: usize = 1122; // view menu: switch to the other of light / dark
 pub(crate) const ID_HOTKEY: usize = 1119; // global hotkey, checked only while it is registered
 pub(crate) const ID_GATHER: usize = 1120; // folders from open Explorer windows and tabs
-pub(crate) const ID_PANE_TABS: usize = 1121; // strips of pane tabs under each pane header
 pub(crate) const WM_THEME_SYNC: u32 = WM_APP + 47;
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;

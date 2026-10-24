@@ -210,9 +210,6 @@ struct SettingsFile {
     dot: bool,
     #[serde(default = "yes")]
     dblup: bool,
-    /// Pane-tab strips. Missing means off. Separate from `tabs`, which are window tabs.
-    #[serde(default, skip_serializing_if = "is_off")]
-    pane_tabs: bool,
     /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     hotkey: bool,
@@ -290,7 +287,6 @@ impl SettingsFile {
             autosave: false,
             dot: true,
             dblup: true,
-            pane_tabs: false,
             hotkey: true,
             lang: lang_auto(),
             single: true,
@@ -372,7 +368,6 @@ impl SettingsFile {
             autosave: s.autosave,
             dot: s.dot,
             dblup: s.dblup,
-            pane_tabs: s.pane_tabs_on,
             hotkey: s.hotkey,
             lang: s.lang.ini().into(),
             single: s.single,
@@ -419,6 +414,8 @@ impl SettingsFile {
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
         self.extra.remove("layout_new");
+        // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
+        self.extra.remove("pane_tabs");
     }
 
     fn to_session(&self) -> Session {
@@ -498,7 +495,6 @@ impl SettingsFile {
         s.autosave = self.autosave;
         s.dot = self.dot;
         s.dblup = self.dblup;
-        s.pane_tabs_on = self.pane_tabs;
         s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
         s.single = self.single;
@@ -1258,6 +1254,22 @@ mod tests {
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["drive_buttons"], false);
         assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn old_pane_tabs_switch_is_ignored() {
+        let off = adopt(r#"{"version":1,"pane_tabs":false,"panes":[{"index":0,"path":"C:\\a","folders":["C:\\a","D:\\b"],"folder":1}]}"#).unwrap();
+        assert_eq!(off.pane_folders[0], vec![r"C:\a".to_string(), r"D:\b".into()]);
+        assert_eq!(off.pane_cur[0], 1);
+        let saved = sync_text(&off);
+        assert!(!saved.contains("pane_tabs"), "{saved}");
+        assert!(adopt(r#"{"pane_tabs":true}"#).is_some());
+        assert!(adopt(r#"{"pane_tabs":"off"}"#).is_some());
+        assert!(adopt(r#"{"pane_tabs":0}"#).is_some());
+        let kept = adopt(r#"{"version":1,"pane_tabs":false,"future_flag":1}"#).unwrap();
+        let again = sync_text(&kept);
+        assert!(!again.contains("pane_tabs"), "{again}");
+        assert!(again.contains("future_flag"));
     }
 
     #[test]

@@ -718,7 +718,7 @@ mod tests {
 
         // pane top bar: number, back, fwd, up, address, ⇄, filter left to right, nothing overlapping, inside the plate
         for (w, dpi) in [(800, 96), (260, 96), (1200, 144)] {
-            let p = pane_geo(w, 500, dpi);
+            let p = pane_geo(w, 500, dpi, true);
             let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
             assert!(p.num.right > p.num.left && p.fav.right <= w && p.view.top >= p.btn[0].bottom);
@@ -727,7 +727,7 @@ mod tests {
         for dpi in [96, 144] {
             let s = |v: i32| v * dpi / 96;
             for w in 60..=600 {
-                let p = pane_geo(w, 500, dpi);
+                let p = pane_geo(w, 500, dpi, true);
                 if p.num.right > p.num.left {
                     let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
                     assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
@@ -738,7 +738,7 @@ mod tests {
             }
         }
         let shown = |w, dpi| {
-            let p = pane_geo(w, 500, dpi);
+            let p = pane_geo(w, 500, dpi, true);
             p.num.right > p.num.left
         };
         assert!(!shown(240, 96) && shown(241, 96) && !shown(361, 144) && shown(362, 144));

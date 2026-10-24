@@ -464,7 +464,6 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.autosave = src.autosave;
     dst.dot = src.dot;
     dst.dblup = src.dblup;
-    dst.pane_tabs_on = src.pane_tabs_on;
     dst.hotkey = src.hotkey;
     dst.lang = src.lang;
     dst.single = src.single;
