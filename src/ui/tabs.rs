@@ -538,7 +538,12 @@ pub(crate) unsafe fn new_tab() {
         let tab = a.s.tab;
         a.park[tab] = live;
         lru_note(a, tab);
-        let mut fresh = Session {
+        // Same arrangement and split ratios as the tab on screen. Paths stay empty, as before.
+        let (heights, colr, rowr) = layout_for_new_tab(&a.s.heights, &a.s.colr, &a.s.rowr);
+        let fresh = Session {
+            heights,
+            colr,
+            rowr,
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
@@ -547,7 +552,6 @@ pub(crate) unsafe fn new_tab() {
             pane_cur: vec![0; MAXP],
             ..a.s.clone()
         };
-        fresh.set_heights(fresh.layout_heights());
         let name = next_tab_name(&a.s.tabs);
         a.s.tabs.push(Tab::from_live(&fresh, name, false, vec![String::new(); MAXP]));
         a.park.push(no_panes());
