@@ -54,6 +54,18 @@ fn sc(dpi: i32, v: i32) -> i32 {
     v * dpi / 96
 }
 
+/// Settings search frame, DIP at 96 DPI. The rect runs from `SEARCH_TOP_DIP` to 44.
+const SEARCH_TOP_DIP: i32 = 12;
+const SEARCH_FRAME_DIP: i32 = 32;
+/// Gap between that frame and the borderless edit, and the corner radius. Shared with the name prompt.
+const FIELD_INSET_DIP: i32 = 2;
+const FIELD_RADIUS_DIP: i32 = 4;
+
+/// Painted height of the settings search frame. `sc(44) - sc(12)`, so it matches `Geo.search` at every DPI.
+fn search_frame_h(dpi: i32) -> i32 {
+    sc(dpi, SEARCH_TOP_DIP + SEARCH_FRAME_DIP) - sc(dpi, SEARCH_TOP_DIP)
+}
+
 fn tx(t: [&'static str; 3]) -> &'static str {
     tr(t[0], t[1], t[2])
 }
@@ -403,7 +415,7 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
     let foot_h = sc(dpi, 56);
     let footer = RECT { left: 0, top: rc.bottom - foot_h, right: rc.right, bottom: rc.bottom };
     let content = RECT { left: nav_w, top: 0, right: rc.right, bottom: footer.top };
-    let search = RECT { left: sc(dpi, 8), top: sc(dpi, 12), right: nav_w - sc(dpi, 8), bottom: sc(dpi, 44) };
+    let search = RECT { left: sc(dpi, 8), top: sc(dpi, SEARCH_TOP_DIP), right: nav_w - sc(dpi, 8), bottom: sc(dpi, SEARCH_TOP_DIP + SEARCH_FRAME_DIP) };
     let close = right_box(footer, sc(dpi, 88), sc(dpi, 32), sc(dpi, 16));
     let hint = RECT { left: sc(dpi, 16), top: footer.top, right: close.left - sc(dpi, 8), bottom: footer.bottom };
     let q = sn.query.as_str();

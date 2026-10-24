@@ -258,8 +258,8 @@ pub(crate) fn centered_edit_rect(outer: RECT, line_height: i32) -> RECT {
 }
 
 /// Window rect whose client area is `centered_edit_rect`. Borderless edits are unchanged.
-/// `WS_BORDER` (the name prompt) grows by the DPI-scaled non-client frame so the client,
-/// not the border, is the line cell.
+/// A `WS_BORDER` edit grows by the DPI-scaled non-client frame so the client, not the
+/// border, is the line cell. The name prompt is borderless and paints its own frame.
 pub(crate) unsafe fn edit_window_rect(h: HWND, outer: RECT) -> RECT {
     if h.0.is_null() {
         return outer;
