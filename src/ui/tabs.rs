@@ -142,19 +142,23 @@ pub(crate) fn drive_slots(show: bool, n: usize) -> usize {
 /// Layout, save, load, the gear, and `drives` letter buttons, right-aligned on the tab row.
 /// Letters sit to the left of Layout. The last ones drop when the row cannot also keep `tab_reserve`.
 /// `drives == 0` (see `drive_slots`) hides every letter and gives that width to the tabs.
-pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize) -> IconLay {
+/// `bar == false` keeps only the gear. The other icons and the letters are not placed, and the tabs use that width.
+pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize, bar: bool) -> IconLay {
     let s = |v: i32| v * dpi / 96;
     let (pad, gap, bh) = (s(8), s(4), s(24));
     let specs = [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET];
     let widths = [s(70), s(32), s(32), s(32)];
-    let icons_w = widths.iter().sum::<i32>() + gap * (specs.len() as i32 - 1);
+    // The gear is the mouse path to settings, so a hidden toolbar still reserves its slot.
+    let on = if bar { [true, true, true, true] } else { [false, false, false, true] };
+    let n_on = on.iter().filter(|v| **v).count() as i32;
+    let icons_w = widths.iter().zip(&on).filter(|(_, v)| **v).map(|(w, _)| *w).sum::<i32>() + gap * (n_on - 1).max(0);
     let icons_left = (row_w - pad - icons_w).max(0);
     let dw = s(32);
     let stride = (dw + gap).max(1);
     // The first button must start far enough right that `tab_w` still holds one minimum tab.
     let min_left = tab_reserve(dpi) + gap;
     let room = icons_left - min_left;
-    let fit = if room < stride { 0 } else { (room / stride) as usize };
+    let fit = if !bar || room < stride { 0 } else { (room / stride) as usize };
     let drive_n = drives.min(26).min(fit);
     let mut drive_rects = [RECT::default(); 26];
     let mut x = icons_left - drive_n as i32 * stride;
@@ -165,6 +169,10 @@ pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize) -> IconL
     }
     let mut icons = [(0, RECT::default()); 4];
     for i in 0..specs.len() {
+        if !on[i] {
+            icons[i] = (specs[i], RECT { left: x, top, right: x, bottom: top });
+            continue;
+        }
         let w = widths[i];
         icons[i] = (specs[i], RECT { left: x, top, right: x + w, bottom: top + bh });
         x += w + gap;
@@ -190,9 +198,9 @@ pub(crate) fn scroll_to_show(scroll: usize, index: usize, shown: usize, n: usize
 
 /// Width the tabs may use. The icon group and the drive buttons that fit keep the rest while the bar is on.
 /// Hidden drive buttons (`drives == 0`) reserve nothing, so the tabs take that width.
-/// A hidden bar uses the full width: those buttons are not on screen.
+/// A hidden bar still reserves the gear. The other icons are not on screen, and the tabs use that width.
 pub(crate) fn tab_area_width(client_w: i32, dpi: i32, bar: bool, drives: usize) -> i32 {
-    if bar { icon_slots(client_w.max(1), 0, dpi, drives).tab_w } else { client_w.max(1) }
+    icon_slots(client_w.max(1), 0, dpi, drives, bar).tab_w
 }
 
 pub(crate) fn tab_lay(width: i32, n: usize, locked: &[bool], dpi: i32, scroll: usize) -> TabLay {
@@ -1191,7 +1199,7 @@ mod tests {
 
     #[test]
     fn icon_slots_stay_right_aligned_without_drives() {
-        let lay = icon_slots(1000, 6, 96, 0);
+        let lay = icon_slots(1000, 6, 96, 0, true);
         assert_eq!(lay.drive_n, 0);
         assert_eq!(lay.tab_w, 810);
         assert_eq!(lay.icons.map(|s| s.0), [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET]);
@@ -1200,15 +1208,16 @@ mod tests {
         assert_eq!(lay.icons[3].1.right, 992);
         assert!(lay.icons.windows(2).all(|w| w[0].1.right + 4 == w[1].1.left));
         assert_eq!(tab_area_width(1000, 96, true, 0), lay.tab_w);
-        assert_eq!(tab_area_width(1000, 96, false, 8), 1000);
+        // Hidden toolbar keeps the gear (right 992, 32px) and the gap in front of it.
+        assert_eq!(tab_area_width(1000, 96, false, 8), 956);
     }
 
     #[test]
     fn icon_slots_with_n_drives() {
         // Letters sit in the group, immediately left of Layout, and do not move the icons.
-        let bare = icon_slots(1000, 4, 96, 0);
+        let bare = icon_slots(1000, 4, 96, 0, true);
         let n = 5;
-        let lay = icon_slots(1000, 4, 96, n);
+        let lay = icon_slots(1000, 4, 96, n, true);
         assert_eq!(lay.drive_n, n);
         assert_eq!(lay.icons, bare.icons);
         assert_eq!(lay.drives[n - 1].right + 4, lay.icons[0].1.left);
@@ -1227,35 +1236,35 @@ mod tests {
         assert!(edge(&tabs) <= lay.drives[0].left);
 
         // A narrow row hides the last letters first. The ones that remain are the prefix.
-        let tight = icon_slots(420, 4, 96, 8);
+        let tight = icon_slots(420, 4, 96, 8, true);
         assert!(tight.drive_n > 0 && tight.drive_n < 8);
-        assert_eq!(tight.icons[0].1.left, icon_slots(420, 4, 96, 0).icons[0].1.left);
+        assert_eq!(tight.icons[0].1.left, icon_slots(420, 4, 96, 0, true).icons[0].1.left);
         assert!(tight.tab_w >= reserve && tight.drives[0].left >= reserve);
-        assert_eq!(icon_slots(420, 4, 96, tight.drive_n + 1).drive_n, tight.drive_n);
+        assert_eq!(icon_slots(420, 4, 96, tight.drive_n + 1, true).drive_n, tight.drive_n);
         let shown = tab_lay(tight.tab_w, 12, &[false; 12], 96, 0);
         assert!(edge(&shown) <= tight.drives[0].left);
 
         // Too narrow for even one letter: the icons stay, every drive is hidden.
-        let tiny = icon_slots(220, 0, 96, 4);
+        let tiny = icon_slots(220, 0, 96, 4, true);
         assert_eq!(tiny.drive_n, 0);
         assert!(tiny.tab_w >= 1 && tiny.icons[0].1.left < reserve);
 
         // The same row at double DPI is the 96dpi layout scaled by two.
-        let hi = icon_slots(2000, 8, 192, n);
+        let hi = icon_slots(2000, 8, 192, n, true);
         assert_eq!(hi.drive_n, n);
         assert_eq!(hi.tab_w, lay.tab_w * 2);
         assert_eq!(hi.drives[0].right - hi.drives[0].left, 64);
         assert_eq!(hi.drives[n - 1].right + 8, hi.icons[0].1.left);
         assert_eq!(tab_area_width(2000, 192, true, n), hi.tab_w);
-        assert_eq!(tab_area_width(2000, 192, false, n), 2000);
+        assert_eq!(tab_area_width(2000, 192, false, n), 1912);
     }
 
     #[test]
     fn icon_slots_with_drives_hidden() {
         let n = 5;
-        let shown = icon_slots(1000, 4, 96, drive_slots(true, n));
-        let hidden = icon_slots(1000, 4, 96, drive_slots(false, n));
-        let bare = icon_slots(1000, 4, 96, 0);
+        let shown = icon_slots(1000, 4, 96, drive_slots(true, n), true);
+        let hidden = icon_slots(1000, 4, 96, drive_slots(false, n), true);
+        let bare = icon_slots(1000, 4, 96, 0, true);
         assert_eq!(drive_slots(false, n), 0);
         assert_eq!(drive_slots(true, n), n);
         assert_eq!(hidden, bare);
@@ -1266,6 +1275,31 @@ mod tests {
         assert_eq!(hidden.tab_w - shown.tab_w, shown.icons[0].1.left - shown.drives[0].left);
         assert_eq!(tab_area_width(1000, 96, true, drive_slots(false, n)), hidden.tab_w);
         assert_eq!(tab_area_width(1000, 96, true, drive_slots(true, n)), shown.tab_w);
+    }
+
+    #[test]
+    fn hidden_bar_keeps_the_gear_and_gives_the_rest_to_the_tabs() {
+        let on = icon_slots(1000, 6, 96, 5, true);
+        let off = icon_slots(1000, 6, 96, 5, false);
+        assert_eq!(off.drive_n, 0);
+        assert_eq!(off.icons[3].0, ID_TB_SET);
+        // Same gear slot as with the toolbar on. The other icons collapse to nothing.
+        assert_eq!(off.icons[3].1, on.icons[3].1);
+        assert!(off.icons[3].1.right > off.icons[3].1.left);
+        for i in 0..3 {
+            assert_eq!(off.icons[i].1.left, off.icons[3].1.left);
+            assert_eq!(off.icons[i].1.right, off.icons[i].1.left);
+        }
+        assert_eq!(off.tab_w, off.icons[3].1.left - 4);
+        assert!(off.tab_w > on.tab_w);
+        assert_eq!(tab_area_width(1000, 96, false, 5), off.tab_w);
+        assert_eq!(tab_area_width(1000, 96, true, 5), on.tab_w);
+
+        let hi_on = icon_slots(2000, 8, 192, 5, true);
+        let hi_off = icon_slots(2000, 8, 192, 5, false);
+        assert_eq!(hi_off.icons[3].1, hi_on.icons[3].1);
+        assert_eq!(hi_off.tab_w, hi_off.icons[3].1.left - 8);
+        assert_eq!(tab_area_width(2000, 192, false, 5), hi_off.tab_w);
     }
 
     #[test]

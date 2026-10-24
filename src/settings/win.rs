@@ -906,7 +906,20 @@ fn flip(id: u8) {
             unsafe { crate::toggle_hidden() };
             return;
         }
-        TG_BAR => app(|a| a.s.bar ^= true),
+        TG_BAR => {
+            app(|a| a.s.bar ^= true);
+            unsafe {
+                crate::save_session();
+                // Every window shares the switch. Lay each one out, or a window that was not
+                // current would keep the icons while its tabs already took that width.
+                crate::across_windows(|| {
+                    crate::relayout();
+                    crate::redraw_all();
+                });
+                redraw();
+            }
+            return;
+        }
         TG_DRIVES => {
             app(|a| a.s.drive_buttons ^= true);
             unsafe {
