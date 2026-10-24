@@ -1618,6 +1618,21 @@ thread_local! {
 
 unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_ERASEBKGND => {
+            let dc = HDC(wp.0 as _);
+            let mut rc = RECT::default();
+            let _ = GetClientRect(h, &mut rc);
+            crate::fill(dc, rc, crate::pal().card);
+            return LRESULT(1);
+        }
+        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+            let dc = HDC(wp.0 as _);
+            SetBkMode(dc, TRANSPARENT);
+            SetBkColor(dc, crate::cref(crate::pal().card));
+            SetTextColor(dc, crate::cref(crate::pal().text));
+            SetDCBrushColor(dc, crate::cref(crate::pal().card));
+            return LRESULT(GetStockObject(DC_BRUSH).0 as isize);
+        }
         WM_DRAWITEM => {
             draw_btn(&*(lp.0 as *const DRAWITEMSTRUCT));
             return LRESULT(1);
@@ -1667,19 +1682,23 @@ unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<String> {
     let _ = GetWindowRect(owner, &mut orc);
     let x = orc.left + (orc.right - orc.left - ww) / 2;
     let y = orc.top + (orc.bottom - orc.top - hh) / 2;
-    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
+    // Shown only after the dark caption attributes are set, or the first frame stays light.
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("GridsAsk"), &HSTRING::from(title), style, x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
     if h.0.is_null() {
         return None;
     }
+    style_window(h);
     let font = ST.with(|s| s.borrow().font);
     let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000 | WS_BORDER.0, 10, font);
+    theme_ctl(edit);
     ASK_EDIT.with(|e| e.set(edit));
     let _ = child_at(h, w!("BUTTON"), tx(s("OK", "확인", "OK")), 0xB | 0x00010000, 1, font);
     let _ = child_at(h, w!("BUTTON"), tx(CLOSE_L), 0xB | 0x00010000, 2, font);
     let _ = SetWindowPos(edit, None, sc(dpi, 16), sc(dpi, 16), ww - sc(dpi, 48), sc(dpi, 28), SWP_NOZORDER);
     let _ = SetWindowPos(ctl(h, 1), None, ww - sc(dpi, 200), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
     let _ = SetWindowPos(ctl(h, 2), None, ww - sc(dpi, 108), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
+    let _ = ShowWindow(h, SW_SHOW);
     crate::keys::set_modal(true);
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(owner, false);
     let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit));
