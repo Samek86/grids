@@ -114,6 +114,7 @@ pub(crate) struct Desk {
     pub(crate) tab_hot: Option<usize>,
     pub(crate) tab_hot_close: bool,
     pub(crate) tab_lock_tip: bool, // tracking tooltip for a locked tab's lock glyph is installed
+    pub(crate) tab_path_tip: bool, // tracking tooltip listing that tab's pane paths is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
     pub(crate) tab_scroll: usize,  // first visible window tab while the strip overflows
@@ -258,6 +259,7 @@ pub(crate) fn blank_desk() -> Desk {
         tab_hot: None,
         tab_hot_close: false,
         tab_lock_tip: false,
+        tab_path_tip: false,
         tab_hot_plus: false,
         tab_hot_over: false,
         tab_scroll: 0,

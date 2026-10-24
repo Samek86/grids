@@ -67,12 +67,17 @@ pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
     if !gone(e.code()) {
         return false;
     }
-    app(|a| {
+    let cleared = app(|a| {
         a.s.recent.retain(|r| !r.eq_ignore_ascii_case(path));
-        if a.s.paths[i].eq_ignore_ascii_case(path) {
+        let hit = a.s.paths[i].eq_ignore_ascii_case(path);
+        if hit {
             a.s.paths[i].clear();
         }
+        hit
     });
+    if cleared {
+        tabs_invalidate();
+    }
     let root = path.get(..3).unwrap_or("");
     let local = root.len() == 3 && root.as_bytes()[1] == b':' && matches!(GetDriveTypeW(&HSTRING::from(root)), 2 | 3);
     if !local {
@@ -781,6 +786,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()), p.ticket)
         })
     }) else {
+        tabs_invalidate();
         return;
     };
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
@@ -836,6 +842,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             note_filter_view(hw, &filter_of(i));
         }
     }
+    tabs_invalidate();
     note_save();
 }
 

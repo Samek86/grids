@@ -416,6 +416,7 @@ pub(crate) unsafe fn set_active(i: usize) {
             sync_tree(&item);
         }
         mark_drive();
+        tabs_invalidate();
     }
 }
 

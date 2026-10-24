@@ -10,6 +10,7 @@ use crate::store;
 /// also lives on the session fields the rest of the window already reads.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Tab {
+    /// Custom title. Empty, and a legacy all-digit title such as `"1"`, show the active pane's folder.
     pub(crate) name: String,
     pub(crate) locked: bool,
     /// Stripe colour 0xRRGGBB. None draws the tab in the theme colours.
@@ -28,6 +29,67 @@ pub(crate) struct Tab {
     pub(crate) pane_folders: Vec<Vec<String>>,
     /// Per pane: which pane-tab is current. The current entry in `pane_folders` is stale; `paths[i]` is the truth.
     pub(crate) pane_cur: Vec<usize>,
+}
+
+/// A title the user typed. Empty and the old numeric defaults (`"1"`, `"2"`, …) are automatic.
+pub(crate) fn custom_tab_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().all(|c| c.is_ascii_digit()) {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// What a rename stores. Empty means automatic: the strip shows the active pane's folder.
+/// A legacy all-digit title is cleared, so `"1"` does not stick as a custom name.
+pub(crate) fn stored_tab_name(typed: &str) -> String {
+    match custom_tab_name(typed) {
+        Some(name) => name.chars().take(80).collect(),
+        None => String::new(),
+    }
+}
+
+/// Folder name for an automatic tab.
+///
+/// `C:\` and `C:` are `C:`. A trailing slash is ignored, so `C:\Work\docs\` is `docs`.
+/// A UNC path uses its last component (`\\server\share` is `share`, `\\server\share\docs` is `docs`).
+/// This PC's shell name is `This PC`. An empty path is empty. Any other path with no usable
+/// segment (a `::{…}` name that is not This PC) falls back to the path itself.
+pub(crate) fn folder_display_name(path: &str) -> String {
+    if path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
+        return "This PC".into();
+    }
+    let t = path.trim_end_matches(['\\', '/']);
+    if let Some(name) = t.rsplit(['\\', '/']).next() {
+        if !name.is_empty() && !name.starts_with("::") {
+            return name.to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Label on the tab strip: a custom title, otherwise the active pane's folder.
+/// With no folder yet, a stored token such as `"1"` stays visible so the tab is not blank.
+pub(crate) fn tab_label(stored: &str, path: &str) -> String {
+    if let Some(custom) = custom_tab_name(stored) {
+        return custom.to_string();
+    }
+    let folder = folder_display_name(path);
+    if !folder.is_empty() {
+        return folder;
+    }
+    let stored = stored.trim();
+    if !stored.is_empty() {
+        stored.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Tooltip body: one full path per pane, in pane order. Empty panes are left out.
+pub(crate) fn tab_tip_text(paths: &[&str]) -> String {
+    paths.iter().copied().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\r\n")
 }
 
 pub(crate) fn pad_filters(mut f: Vec<String>) -> Vec<String> {
@@ -85,7 +147,8 @@ pub(crate) fn pack_pane_tabs(s: &Session) -> (Vec<Vec<String>>, Vec<usize>) {
     (folders, cur)
 }
 
-/// The next default name: 1, then 2, skipping numbers already used.
+/// The next automatic token: 1, then 2, skipping numbers already stored.
+/// The strip does not show this while the tab has a folder; see `tab_label`.
 pub(crate) fn next_tab_name(tabs: &[Tab]) -> String {
     let mut n = 1u32;
     loop {
@@ -100,11 +163,12 @@ pub(crate) fn next_tab_name(tabs: &[Tab]) -> String {
     }
 }
 
-/// A copied tab keeps a numbered name as the next free number, and any other name as "Name (2)".
+/// A copy of an automatic tab (empty or a legacy number) takes the next free number.
+/// A custom title becomes "Name (2)".
 pub(crate) fn duplicate_name(tabs: &[Tab], src: &str) -> String {
-    if !src.is_empty() && src.chars().all(|c| c.is_ascii_digit()) {
+    let Some(src) = custom_tab_name(src) else {
         return next_tab_name(tabs);
-    }
+    };
     let mut n = 2u32;
     loop {
         let s = format!("{src} ({n})");
@@ -1606,6 +1670,84 @@ mod swap_tests {
         saved.reorder(&cur.order);
         assert_eq!(saved.paths[0], cur.paths[0]);
         assert_eq!(saved.paths[1], cur.paths[1]);
+    }
+}
+
+#[cfg(test)]
+mod tab_name_tests {
+    use super::*;
+
+    #[test]
+    fn folder_name_drive_root_and_unc() {
+        assert_eq!(folder_display_name(r"C:\Users\me\Documents"), "Documents");
+        assert_eq!(folder_display_name(r"C:\Users\me\Documents\"), "Documents");
+        assert_eq!(folder_display_name(r"C:\"), "C:");
+        assert_eq!(folder_display_name("C:"), "C:");
+        assert_eq!(folder_display_name("D:/"), "D:");
+        assert_eq!(folder_display_name(r"\\server\share\docs"), "docs");
+        assert_eq!(folder_display_name(r"\\server\share\"), "share");
+        assert_eq!(folder_display_name(r"\\server\share"), "share");
+        assert_eq!(folder_display_name(r"\\server"), "server");
+        assert_eq!(folder_display_name(""), "");
+        assert_eq!(folder_display_name(r"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), "This PC");
+        // A shell name that is not This PC has no leaf. The path itself is the fallback.
+        assert_eq!(folder_display_name(r"::{DEADBEEF}"), r"::{DEADBEEF}");
+    }
+
+    #[test]
+    fn effective_label_uses_custom_or_the_folder() {
+        assert_eq!(tab_label("Work", r"C:\other"), "Work");
+        assert_eq!(tab_label("  Pics  ", r"D:\"), "Pics");
+        assert_eq!(tab_label("1", r"C:\Users\me\Documents"), "Documents");
+        assert_eq!(tab_label("12", r"D:\"), "D:");
+        assert_eq!(tab_label("", r"C:\a\b"), "b");
+        assert_eq!(tab_label("1", r"\\srv\share"), "share");
+        // No folder yet: the stored token keeps the tab from going blank.
+        assert_eq!(tab_label("1", ""), "1");
+        assert_eq!(tab_label("", ""), "");
+        assert_eq!(tab_label("1", r"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), "This PC");
+        assert_eq!(stored_tab_name("  Work  "), "Work");
+        assert_eq!(stored_tab_name("1"), "");
+        assert_eq!(stored_tab_name("   "), "");
+        assert_eq!(stored_tab_name(""), "");
+        assert_eq!(stored_tab_name(&"가".repeat(100)).chars().count(), 80);
+        assert_eq!(tab_tip_text(&[r"C:\a", "", r"D:\b"]), "C:\\a\r\nD:\\b");
+        assert_eq!(tab_tip_text(&["", ""]), "");
+    }
+
+    #[test]
+    fn legacy_numeric_name_stays_stored_and_displays_as_the_folder() {
+        let old = serde_json::json!({
+            "name": "1",
+            "locked": false,
+            "layout": {"columns": [1], "active": 0},
+            "panes": [{"index": 0, "path": "C:\\Work\\docs"}]
+        });
+        let t = tab_from_value(&old).unwrap();
+        assert_eq!(t.name, "1");
+        assert_eq!(tab_label(&t.name, &t.paths[t.active]), "docs");
+
+        // A missing title is still the automatic token, same as older files.
+        let blank = serde_json::json!({"name": "", "locked": true, "layout": {"columns": [1]}});
+        let t = tab_from_value(&blank).unwrap();
+        assert_eq!((t.name.as_str(), t.locked), ("1", true));
+        assert_eq!(tab_label(&t.name, r"E:\photos"), "photos");
+
+        let custom = serde_json::json!({
+            "name": "Work",
+            "layout": {"columns": [2], "active": 1},
+            "panes": [{"index": 0, "path": "D:\\"}, {"index": 1, "path": "E:\\pics"}]
+        });
+        let t = tab_from_value(&custom).unwrap();
+        assert_eq!(t.name, "Work");
+        assert_eq!(tab_label(&t.name, &t.paths[t.active]), "Work");
+        assert_eq!(tab_tip_text(&[&t.paths[0], &t.paths[1]]), "D:\\\r\nE:\\pics");
+
+        let auto = Tab { name: "1".into(), ..t.clone() };
+        assert_eq!(duplicate_name(&[t.clone()], ""), "1");
+        assert_eq!(duplicate_name(&[auto.clone()], "1"), "2");
+        assert_eq!(duplicate_name(&[auto], ""), "2");
+        assert_eq!(duplicate_name(&[t], "Work"), "Work (2)");
     }
 }
 

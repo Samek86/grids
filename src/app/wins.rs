@@ -420,7 +420,6 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
     if args.is_empty() || app(|a| a.main.0.is_null()) {
         return;
     }
-    let session_file = session_arg(&args).is_some();
     let mut built = fresh_tab_session();
     if let Some(f) = session_arg(&args) {
         let Ok(t) = std::fs::read_to_string(f) else {
@@ -431,19 +430,9 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
     } else {
         apply_args(&mut built, args);
     }
-    let mut tabs = built.view_tabs();
+    let tabs = built.view_tabs();
     if tabs.is_empty() {
         return;
-    }
-    if !session_file {
-        if let Some(t) = tabs.first_mut() {
-            if let Some(p) = t.paths.iter().find(|p| !p.is_empty()) {
-                let n = short_name(p);
-                if !n.is_empty() {
-                    t.name = n;
-                }
-            }
-        }
     }
     let pick = built.tab.min(tabs.len() - 1);
     let base = app(|a| a.s.tabs.len());
