@@ -380,7 +380,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             }
         }
     }
-    move_to(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 2)), true);
+    move_edit(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 2)), true);
     move_to(ctl(h, S_CLOSE), g.close, true);
     let content = g.content;
     for item in &g.items {
@@ -406,7 +406,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 }
             }
             Item::KeyBar { edit, reset } => {
-                move_to(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
+                move_edit(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
             Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && *i < 128 && btn.right > btn.left => {
@@ -447,6 +447,34 @@ unsafe fn move_to(h: HWND, r: RECT, show: bool) {
         return;
     }
     let _ = SetWindowPos(h, None, r.left, r.top, (r.right - r.left).max(1), (r.bottom - r.top).max(1), SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+/// A single-line EDIT draws its line from the top of its client area, and fonts such as
+/// Malgun Gothic carry a tall descent, so the glyphs ride high in a tall frame. Push the
+/// control down until the glyph band (internal leading to baseline) sits at the frame's middle.
+unsafe fn move_edit(h: HWND, r: RECT, show: bool) {
+    let avail = r.bottom - r.top;
+    let Some((lead, ascent)) = edit_metrics(h) else { return move_to(h, r, show) };
+    let glyph_mid = (lead + ascent) / 2;
+    let shift = (avail / 2 - glyph_mid).clamp(0, (avail - ascent - 2).max(0));
+    move_to(h, RECT { top: r.top + shift, ..r }, show);
+}
+
+unsafe fn edit_metrics(h: HWND) -> Option<(i32, i32)> {
+    if h.0.is_null() {
+        return None;
+    }
+    let font = HFONT(SendMessageW(h, WM_GETFONT, None, None).0 as _);
+    let dc = GetDC(Some(h));
+    if dc.is_invalid() {
+        return None;
+    }
+    let old = SelectObject(dc, font.into());
+    let mut tm = TEXTMETRICW::default();
+    let ok = GetTextMetricsW(dc, &mut tm).as_bool();
+    SelectObject(dc, old);
+    ReleaseDC(Some(h), dc);
+    ok.then_some((tm.tmInternalLeading, tm.tmAscent))
 }
 
 unsafe fn paint(h: HWND) {
