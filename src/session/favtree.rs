@@ -1,6 +1,6 @@
 // Favourites are a tree of groups and leaves. Leaves are folders or files.
-// The flat `favs` list is the leaves, depth-first, so the star, the settings
-// page, and an old `fav=` line keep working. Groups live only in the tree.
+// The flat `favs` list is the leaves, depth-first, so the star and an old
+// `fav=` line keep working. The settings page and the left panel read the tree.
 
 use std::time::{Duration, Instant};
 
@@ -467,9 +467,9 @@ pub(crate) fn toggle_open(tree: &mut Vec<FavNode>, id: &[usize]) -> bool {
     true
 }
 
-pub(crate) fn visible_rows(tree: &[FavNode]) -> Vec<FavRow> {
+fn collect_rows(tree: &[FavNode], all: bool) -> Vec<FavRow> {
     let mut out = Vec::new();
-    fn walk(nodes: &[FavNode], prefix: &mut Vec<usize>, depth: u8, out: &mut Vec<FavRow>) {
+    fn walk(nodes: &[FavNode], prefix: &mut Vec<usize>, depth: u8, all: bool, out: &mut Vec<FavRow>) {
         for (i, n) in nodes.iter().enumerate() {
             prefix.push(i);
             out.push(FavRow {
@@ -482,16 +482,28 @@ pub(crate) fn visible_rows(tree: &[FavNode]) -> Vec<FavRow> {
                 path: n.path.clone(),
                 kind: RowKind::Tree,
             });
-            if n.is_group() && n.open {
-                walk(&n.children, prefix, depth.saturating_add(1), out);
+            if n.is_group() && (all || n.open) {
+                walk(&n.children, prefix, depth.saturating_add(1), all, out);
             }
             prefix.pop();
         }
     }
-    walk(tree, &mut Vec::new(), 0, &mut out);
+    walk(tree, &mut Vec::new(), 0, all, &mut out);
     out
 }
 
+/// Rows the left panel shows. Children of a collapsed group stay hidden.
+pub(crate) fn visible_rows(tree: &[FavNode]) -> Vec<FavRow> {
+    collect_rows(tree, false)
+}
+
+/// Every group and leaf, including children of a collapsed group.
+/// Settings manages the stored tree, so a closed group still lists what is inside it.
+pub(crate) fn tree_rows(tree: &[FavNode]) -> Vec<FavRow> {
+    collect_rows(tree, true)
+}
+
+#[cfg(test)]
 pub(crate) fn leaf_paths(tree: &[FavNode]) -> Vec<Vec<usize>> {
     let mut out = Vec::new();
     fn walk(nodes: &[FavNode], prefix: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
@@ -509,11 +521,13 @@ pub(crate) fn leaf_paths(tree: &[FavNode]) -> Vec<Vec<usize>> {
     out
 }
 
+#[cfg(test)]
 pub(crate) fn remove_leaf(tree: &mut Vec<FavNode>, index: usize) -> bool {
     let Some(id) = leaf_paths(tree).get(index).cloned() else { return false };
     delete_at(tree, &id)
 }
 
+#[cfg(test)]
 pub(crate) fn rename_leaf(tree: &mut Vec<FavNode>, index: usize, name: &str) -> bool {
     let Some(id) = leaf_paths(tree).get(index).cloned() else { return false };
     rename_at(tree, &id, name)
@@ -561,6 +575,7 @@ pub(crate) fn nudge_node(tree: &mut Vec<FavNode>, id: &[usize], down: bool) -> O
 }
 
 /// Same result as removing the flat leaf `from` and inserting it at `to`.
+#[cfg(test)]
 pub(crate) fn reorder_leaves(tree: &mut Vec<FavNode>, from: usize, to: usize) -> bool {
     if from == to {
         return false;
@@ -872,8 +887,13 @@ mod tests {
         let file = leaf_paths(&tree).pop().unwrap();
         apply_drop(&mut tree, &file, &[0], 1);
         assert_eq!(visible_rows(&tree).len(), 2);
+        assert_eq!(tree_rows(&tree).len(), 2);
         toggle_open(&mut tree, &[0]);
         assert_eq!(visible_rows(&tree).len(), 1);
+        let stored = tree_rows(&tree);
+        assert_eq!(stored.len(), 2, "a collapsed group still keeps its child in the stored tree");
+        assert_eq!(stored[1].depth, 1);
+        assert!(stored[1].file);
         assert_eq!(drop_zone(true, 5, 28), 0);
         assert_eq!(drop_zone(true, 14, 28), 1);
         assert_eq!(drop_zone(false, 2, 28), 0);
