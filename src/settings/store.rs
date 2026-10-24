@@ -153,9 +153,7 @@ struct SettingsFile {
     dark: bool,
     #[serde(default = "theme_auto")]
     theme: String,
-    #[serde(default)]
-    font: u8,
-    /// UI face. Missing or empty uses the language default. Not a size (that is `font`).
+    /// UI face. Missing or empty uses the language default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     font_face: String,
     #[serde(default = "yes")]
@@ -268,7 +266,6 @@ impl SettingsFile {
             accent_dark: accent_dark(),
             dark: false,
             theme: theme_auto(),
-            font: 0,
             font_face: String::new(),
             bar: true,
             drive_buttons: true,
@@ -351,7 +348,6 @@ impl SettingsFile {
             accent_dark: format!("{:06X}", s.accent_dark & 0xFFFFFF),
             dark: s.dark,
             theme: ["auto", "light", "dark"][s.theme.min(2) as usize].into(),
-            font: s.font.min(2),
             font_face: s.font_face.trim().to_string(),
             bar: s.bar,
             drive_buttons: s.drive_buttons,
@@ -416,6 +412,8 @@ impl SettingsFile {
         }
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
+        // Retired UI scale. An older grids.json still loads; the key is not written back.
+        self.extra.remove("font");
         self.extra.remove("one_window");
         self.extra.remove("drive_buttons");
         self.extra.remove("use_everything");
@@ -473,7 +471,6 @@ impl SettingsFile {
             "dark" => 2,
             _ => 0,
         };
-        s.font = self.font.min(2);
         s.font_face = self.font_face.trim().to_string();
         s.bar = self.bar;
         s.drive_buttons = self.drive_buttons;
@@ -815,7 +812,6 @@ mod tests {
         s.lang = Lang::Ko;
         s.single = false;
         s.theme = 0;
-        s.font = 2;
         s.bar = false;
         s.drive_buttons = false;
         s.stat = false;
@@ -1326,6 +1322,27 @@ mod tests {
         named.lang = Lang::En;
         assert!(!named.to_ini().contains("font_face"));
         assert!(Session::parse(&format!("font_face=Consolas\n{}", named.to_ini())).font_face.is_empty());
+    }
+
+    #[test]
+    fn old_font_size_key_still_parses() {
+        let s = adopt(r#"{"version":1,"font":2,"font_face":"Consolas","lang":"en","future":{"keep":true}}"#).unwrap();
+        assert_eq!(s.lang, Lang::En);
+        assert_eq!(s.font_face, "Consolas");
+        let saved: Value = serde_json::from_str(&sync_text(&s)).unwrap();
+        assert!(saved.get("font").is_none(), "{saved}");
+        assert_eq!(saved["font_face"], "Consolas");
+        assert_eq!(saved["lang"], "en");
+        assert_eq!(saved["future"]["keep"], true);
+        let odd = adopt(r#"{"font":"large","lang":"ja"}"#).unwrap();
+        assert_eq!(odd.lang, Lang::Ja);
+        let dropped: Value = serde_json::from_str(&sync_text(&odd)).unwrap();
+        assert!(dropped.get("font").is_none(), "{dropped}");
+
+        let ini = Session::parse("font=2\nlang=ko\nbar=0\n");
+        assert_eq!(ini.lang, Lang::Ko);
+        assert!(!ini.bar);
+        assert!(!ini.to_ini().contains("font="));
     }
 
     #[test]

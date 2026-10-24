@@ -164,12 +164,6 @@ pub(crate) unsafe fn apply_font() {
     let sys = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, ncm.cbSize, Some(&mut ncm as *mut _ as _), 0, dpi as u32);
     let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont(ui_face(), 12 * dpi / 96) };
     lf.lfFaceName = logfont(face, 0).lfFaceName;
-    let scale = match app(|a| a.s.font) {
-        1 => 125,
-        2 => 150,
-        _ => 100,
-    };
-    lf.lfHeight = lf.lfHeight * scale / 100;
     let font = CreateFontIndirectW(&lf);
     let small = CreateFontIndirectW(&LOGFONTW { lfHeight: lf.lfHeight * 85 / 100, ..lf });
     let icon_font = CreateFontIndirectW(&logfont("Segoe MDL2 Assets", 14 * dpi / 96));
@@ -188,7 +182,7 @@ pub(crate) unsafe fn apply_font() {
         let old = std::mem::replace(&mut a.font, font);
         let old_icon = std::mem::replace(&mut a.icon_font, icon_font);
         // Group labels clone this face on the next paint. Drop the previous one now so a DPI
-        // or font-scale change cannot keep a bold font at the old size.
+        // change cannot keep a bold font at the old size.
         let old_bold = std::mem::replace(&mut a.bold_font, HFONT::default());
         let mut panes: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
         for set in &a.park {
@@ -211,7 +205,7 @@ pub(crate) unsafe fn apply_font() {
     for f in [old, old_icon, old_bold].into_iter().filter(|f| !f.is_invalid()) {
         _ = DeleteObject(f.into());
     }
-    // The folder tree takes this font, so its item height (and the favourites rows) follow DPI and font scale.
+    // The folder tree takes this font, so its item height (and the favourites rows) follow DPI.
     // Preview headings were cloned from the previous face; the next paint builds them again.
     drop_peek_fonts();
     super::sync_fav_metrics();
@@ -220,7 +214,7 @@ pub(crate) unsafe fn apply_font() {
 }
 
 /// Bold copy of the window's UI font. Built once, the first time a group row is painted,
-/// and thrown away by `apply_font` (DPI, font scale) or when the window closes.
+/// and thrown away by `apply_font` (a DPI or face change) or when the window closes.
 pub(crate) unsafe fn bold_ui_font() -> HFONT {
     let cached = app(|a| a.bold_font);
     if !cached.is_invalid() {

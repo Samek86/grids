@@ -442,7 +442,6 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.accent_dark = src.accent_dark;
     dst.dark = src.dark;
     dst.theme = src.theme;
-    dst.font = src.font;
     dst.font_face = src.font_face.clone();
     dst.bar = src.bar;
     dst.drive_buttons = src.drive_buttons;
