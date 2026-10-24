@@ -173,6 +173,10 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return false;
     }
+    // The favourites window: Esc closes, Enter opens the selected item, arrows move through it.
+    if fav_manager_captures(m.hwnd) {
+        return fav_manager_on_key(vk, ctrl, alt);
+    }
     if app(|a| a.matcher.as_ref().map(|b| b.edit)) == Some(m.hwnd) {
         match VIRTUAL_KEY(vk) {
             VK_RETURN => {

@@ -130,6 +130,9 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         return text(dc, RECT { left: icon.right + s(4), ..rc }, &text_of(d.hwndItem), font, pal().text, DT_LEFT);
     }
     // icon only, names live in the tooltips; save turns green with a dot while the layout differs
+    if id == ID_TB_FAV {
+        return draw_star(dc, rc, fg, Star::Outline, dpi);
+    }
     let dirty = id == ID_TB_SAVE && app(|a| a.dirty);
     text(dc, rc, glyph(id), icon_font, if dirty { GREEN } else { fg }, DT_CENTER);
     if dirty {
@@ -141,8 +144,7 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
 // coverage per pixel of an n×n box. Font stars are too sharp, so it's computed: 4×4 samples per pixel.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Star {
-    #[allow(dead_code)] // hollow star: Plus is this shape with a +, and the unit tests check the ring
-    Outline,
+    Outline, // tab-row favourites button; Plus is this shape with a +
     Filled,
     Plus, // outline with a + in its exact centre (add to favourites)
 }
