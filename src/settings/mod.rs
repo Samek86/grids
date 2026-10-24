@@ -103,7 +103,6 @@ const FOOT: [&str; 3] = s("Changes apply right away", "변경은 바로 적용�
 const CLOSE_L: [&str; 3] = s("Close", "닫기", "閉じる");
 const FIND: [&str; 3] = s("Find a setting", "설정 검색", "設定を検索");
 const NONE: [&str; 3] = s("No matches", "결과 없음", "一致なし");
-const NEW: [&str; 3] = s("New", "신규", "新規");
 const PAGES: [[&str; 3]; 9] = [
     s("General", "일반", "一般"),
     s("Appearance", "모양", "外観"),
@@ -143,56 +142,55 @@ enum Ctl {
 struct Spec {
     title: [&'static str; 3],
     desc: [&'static str; 3],
-    badge: bool,
     live: bool,
     ctl: Ctl,
 }
 
 const GEN: &[Spec] = &[
-    Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Lang },
-    Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), badge: true, live: true, ctl: Ctl::Face },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), badge: false, live: true, ctl: Ctl::Start },
-    Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), badge: true, live: true, ctl: Ctl::Layout },
-    Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
-    Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_ONE) },
-    Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("In a file list, a double-click on empty space opens the parent folder.", "파일 목록의 빈 곳을 더블클릭하면 상위 폴더를 열어요.", "ファイル一覧の空白をダブルクリックすると、上のフォルダーを開きます。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
-    Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), badge: false, live: true, ctl: Ctl::EvStatus },
-    Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), badge: false, live: true, ctl: Ctl::Toggle(TG_EV) },
-    Spec { title: s("Get Everything", "Everything 준비", "Everything の準備"), desc: s("Start it when it is installed. Install uses winget when that is available, otherwise the voidtools download page opens.", "설치되어 있으면 시작해요. 설치는 winget이 있으면 winget을 쓰고, 없으면 voidtools 다운로드 페이지를 열어요.", "インストール済みなら起動します。インストールは winget があれば winget、なければ voidtools のダウンロードページを開きます。"), badge: false, live: true, ctl: Ctl::EvAct },
+    Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language. A change applies right away.", "기본값은 Windows 표시 언어를 따라요. 바꾸면 바로 적용돼요.", "既定では Windows の表示言語に従います。変えるとすぐに適用されます。"), live: true, ctl: Ctl::Lang },
+    Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), live: true, ctl: Ctl::Face },
+    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), live: true, ctl: Ctl::Start },
+    Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
+    Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
+    Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), live: true, ctl: Ctl::Toggle(TG_ONE) },
+    Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("In a file list, a double-click on empty space opens the parent folder.", "파일 목록의 빈 곳을 더블클릭하면 상위 폴더를 열어요.", "ファイル一覧の空白をダブルクリックすると、上のフォルダーを開きます。"), live: true, ctl: Ctl::Toggle(TG_DBLUP) },
+    Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), live: true, ctl: Ctl::EvStatus },
+    Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), live: true, ctl: Ctl::Toggle(TG_EV) },
+    Spec { title: s("Get Everything", "Everything 준비", "Everything の準備"), desc: s("Start it when it is installed. Install uses winget when that is available, otherwise the voidtools download page opens.", "설치되어 있으면 시작해요. 설치는 winget이 있으면 winget을 쓰고, 없으면 voidtools 다운로드 페이지를 열어요.", "インストール済みなら起動します。インストールは winget があれば winget、なければ voidtools のダウンロードページを開きます。"), live: true, ctl: Ctl::EvAct },
 ];
 
 const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
 const LOOK: &[Spec] = &[
-    Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Theme },
-    Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own colour.", "라이트와 다크에 색을 따로 정할 수 있어요.", "ライトとダークで色を別々に選べます。"), badge: false, live: true, ctl: Ctl::Accent },
-    Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_BAR) },
-    Spec { title: s("Show drive buttons", "드라이브 버튼 표시", "ドライブボタンを表示"), desc: s("C: D: E: on the tab row. Off, the tabs use that space.", "탭 줄의 C: D: E: 버튼이에요. 끄면 그 자리를 탭이 써요.", "タブ列の C: D: E: です。オフにするとその分をタブが使います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_DRIVES) },
-    Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_STATUS) },
+    Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), live: true, ctl: Ctl::Theme },
+    Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own colour.", "라이트와 다크에 색을 따로 정할 수 있어요.", "ライトとダークで色を別々に選べます。"), live: true, ctl: Ctl::Accent },
+    Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_BAR) },
+    Spec { title: s("Show drive buttons", "드라이브 버튼 표시", "ドライブボタンを表示"), desc: s("C: D: E: on the tab row. Off, the tabs use that space.", "탭 줄의 C: D: E: 버튼이에요. 끄면 그 자리를 탭이 써요.", "タブ列の C: D: E: です。オフにするとその分をタブが使います。"), live: true, ctl: Ctl::Toggle(TG_DRIVES) },
+    Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), live: true, ctl: Ctl::Toggle(TG_STATUS) },
 ];
 const VIEW: &[Spec] = &[
-    Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("Used when a pane has no view of its own yet.", "아직 보기가 없는 패널에 써요.", "まだ表示を持たないペインに使います。"), badge: true, live: true, ctl: Ctl::ViewMode },
-    Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), badge: true, live: true, ctl: Ctl::StartDir },
-    Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), badge: false, live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
-    Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_EXT) },
-    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The folder tree is on top and favourites are below. Drag the divider between them. This hides both.", "위는 폴더 트리, 아래는 즐겨찾기예요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "上はフォルダー ツリー、下はお気に入りです。間の区切りをドラッグして分けます。この項目で両方を隠します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_TREE) },
-    Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_EDGE) },
-    Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On by default.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. 기본값은 켜짐.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。既定はオンです。"), badge: false, live: true, ctl: Ctl::Toggle(TG_SPACE) },
+    Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("Used when a pane has no view of its own yet.", "아직 보기가 없는 패널에 써요.", "まだ表示を持たないペインに使います。"), live: true, ctl: Ctl::ViewMode },
+    Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), live: true, ctl: Ctl::StartDir },
+    Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
+    Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), live: true, ctl: Ctl::Toggle(TG_EXT) },
+    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The folder tree is on top and favourites are below. Drag the divider between them. This hides both.", "위는 폴더 트리, 아래는 즐겨찾기예요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "上はフォルダー ツリー、下はお気に入りです。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_EDGE) },
+    Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On by default.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. 기본값은 켜짐.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_SPACE) },
 ];
 const FILE: &[Spec] = &[
-    Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), badge: false, live: true, ctl: Ctl::CopyEng },
-    Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
-    Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::DelMode },
-    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu and by Ctrl+Alt+N. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일과 Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルと Ctrl+Alt+N が使います。空なら表示言語に従います。"), badge: true, live: true, ctl: Ctl::NewName },
-    Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), badge: true, live: true, ctl: Ctl::Drop },
+    Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), live: true, ctl: Ctl::CopyEng },
+    Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
+    Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), live: true, ctl: Ctl::DelMode },
+    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu and by Ctrl+Alt+N. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일과 Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルと Ctrl+Alt+N が使います。空なら表示言語に従います。"), live: true, ctl: Ctl::NewName },
+    Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[
-    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), badge: false, live: true, ctl: Ctl::Sess },
-    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
-    Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_DOT) },
+    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
+    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
+    Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
-    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("portable.txt next to the exe keeps this file there.", "exe 옆 portable.txt가 있으면 이 파일을 그 옆에 둬요.", "exe の隣の portable.txt があると、このファイルをそこに置きます。"), badge: false, live: true, ctl: Ctl::Adv },
-    Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), badge: false, live: true, ctl: Ctl::AdvReset },
+    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("portable.txt next to the exe keeps this file there.", "exe 옆 portable.txt가 있으면 이 파일을 그 옆에 둬요.", "exe の隣の portable.txt があると、このファイルをそこに置きます。"), live: true, ctl: Ctl::Adv },
+    Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), live: true, ctl: Ctl::AdvReset },
 ];
 
 const KEY_NOTE: [&str; 3] = s(
@@ -205,7 +203,6 @@ const GROUP_L: [&str; 3] = s("Group", "그룹", "グループ");
 const ABOUT: &[Spec] = &[Spec {
     title: s("grids", "grids", "grids"),
     desc: s("Upstream efww/grids · fork Samek86/grids", "원본 efww/grids · 포크 Samek86/grids", "上流 efww/grids · フォーク Samek86/grids"),
-    badge: false,
     live: true,
     ctl: Ctl::About,
 }];
