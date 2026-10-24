@@ -192,6 +192,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id if id == ID_TB_SAVE as usize => save_current(),
                 id if id == ID_TB_LOAD as usize => open_load(),
                 ID_NEWFILE => create_text_file(),
+                id if id == ID_TB_FAV as usize => open_fav_manager(h),
                 id if id == ID_TB_SET as usize => popup_menu(app(|a| a.view_menu), ID_TB_SET),
                 id if (ID_DRIVE as usize..ID_DRIVE as usize + 26).contains(&id) => {
                     let i = app(|a| a.s.active);
@@ -862,11 +863,16 @@ pub(crate) unsafe fn about(owner: HWND) {
 }
 
 // Tab-row buttons: id, accessible name, tooltip.
-pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 4] {
+pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 5] {
     [
         (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수", "レイアウト: クリック = 均等、ドラッグ = 列ごとの行数")),
         (ID_TB_SAVE, tr("Save session", "세션 저장", "セッションを保存"), ""), // tooltip set by refresh_save_button
         (ID_TB_LOAD, tr("Load", "불러오기", "読み込み"), tr("Load a session", "세션 불러오기", "セッションを読み込む")),
+        (
+            ID_TB_FAV,
+            tr("Favourites", "즐겨찾기", "お気に入り"),
+            tr("Favourites: search, edit, and open in the active pane", "즐겨찾기: 검색하고 편집하고 활성 패널에서 열기", "お気に入り: 検索、編集、アクティブなペインで開く"),
+        ),
         (ID_TB_SET, tr("Settings and view", "설정 및 보기", "設定と表示"), tr("Settings and view", "설정 및 보기", "設定と表示")),
     ]
 }

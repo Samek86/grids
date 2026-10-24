@@ -57,12 +57,13 @@ fn sc(dpi: i32, v: i32) -> i32 {
 /// Settings search frame, DIP at 96 DPI. The rect runs from `SEARCH_TOP_DIP` to 44.
 const SEARCH_TOP_DIP: i32 = 12;
 const SEARCH_FRAME_DIP: i32 = 32;
-/// Gap between that frame and the borderless edit, and the corner radius. Shared with the name prompt.
-const FIELD_INSET_DIP: i32 = 2;
-const FIELD_RADIUS_DIP: i32 = 4;
+/// Gap between that frame and the borderless edit, and the corner radius. Shared with the name prompt
+/// and the favourites window search box.
+pub(crate) const FIELD_INSET_DIP: i32 = 2;
+pub(crate) const FIELD_RADIUS_DIP: i32 = 4;
 
 /// Painted height of the settings search frame. `sc(44) - sc(12)`, so it matches `Geo.search` at every DPI.
-fn search_frame_h(dpi: i32) -> i32 {
+pub(crate) fn search_frame_h(dpi: i32) -> i32 {
     sc(dpi, SEARCH_TOP_DIP + SEARCH_FRAME_DIP) - sc(dpi, SEARCH_TOP_DIP)
 }
 
@@ -76,6 +77,10 @@ const WHITE: u32 = 0xFFFFFF;
 
 /// Accent used by this window. A chosen colour is used as-is. The old built-in gray
 /// selection colour reads as no accent, so that default is Windows blue (#0067c0 / #4cc2ff).
+pub(crate) fn chrome_color() -> u32 {
+    chrome()
+}
+
 fn chrome() -> u32 {
     let (c, dark) = app(|a| (a.s.accent_now(), a.s.dark));
     let plain = if dark { super::DARK.accents[1].1 } else { super::LIGHT.accents[1].1 };
@@ -201,7 +206,6 @@ const KEY_NOTE: [&str; 3] = s(
     "行をダブルクリックするか変更を押し、新しいキーを押します。Esc で取消。重複は入れ替えできます。",
 );
 const LIST_H: [&str; 3] = s("List", "목록", "一覧");
-const GROUP_L: [&str; 3] = s("Group", "그룹", "グループ");
 const ABOUT: &[Spec] = &[Spec {
     title: s("grids", "grids", "grids"),
     desc: s("Upstream efww/grids · fork Samek86/grids", "원본 efww/grids · 포크 Samek86/grids", "上流 efww/grids · フォーク Samek86/grids"),
@@ -243,7 +247,8 @@ fn page_match(q: &str, page: usize) -> bool {
         return true;
     }
     if page == 4 {
-        return fav_tree_rows().iter().any(|r| fav_row_hit(r, q)) || has(tx(LIST_H), q);
+        let rows = fav_tree_rows();
+        return !crate::filter_fav_rows(&rows, q).is_empty() || has(tx(LIST_H), q);
     }
     if page == 5 {
         return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
@@ -614,55 +619,25 @@ fn fav_node(i: usize) -> Option<crate::FavRow> {
     fav_tree_rows().get(i).cloned()
 }
 
-fn fav_row_hit(r: &crate::FavRow, q: &str) -> bool {
-    has(&r.name, q) || (!r.path.is_empty() && (has(&r.path, q) || has(&super::short_name(&r.path), q)))
-}
-
-/// A match keeps its ancestors and its descendants, so a nested row stays under its group.
-fn fav_keep(rows: &[crate::FavRow], q: &str) -> Vec<usize> {
-    if q.is_empty() {
-        return (0..rows.len()).collect();
-    }
-    let mut on = vec![false; rows.len()];
-    for r in rows.iter() {
-        if !fav_row_hit(r, q) {
-            continue;
-        }
-        for (j, other) in rows.iter().enumerate() {
-            if other.id.starts_with(&r.id) || r.id.starts_with(&other.id) {
-                on[j] = true;
-            }
-        }
-    }
-    on.into_iter().enumerate().filter(|(_, keep)| *keep).map(|(i, _)| i).collect()
-}
-
 fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
     let dpi = sn.dpi.max(96);
     let all = fav_tree_rows();
-    let rows = fav_keep(&all, rq);
+    let rows = crate::filter_fav_rows(&all, rq);
     if !rq.is_empty() && rows.is_empty() && !has(tx(LIST_H), rq) {
         return y;
     }
     g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, LIST_H));
     y += sc(dpi, 28);
-    let head_h = sc(dpi, 32);
-    let row_h = sc(dpi, 40);
-    let table = RECT { left, top: y, right, bottom: y + head_h + row_h * if rows.is_empty() { 1 } else { rows.len() as i32 } };
-    g.items.push(Item::Table(table));
-    g.items.push(Item::FavHead(RECT { left, top: y, right, bottom: y + head_h }));
-    y += head_h;
-    if rows.is_empty() {
-        g.items.push(Item::FavRow { i: usize::MAX, rect: RECT { left, top: y, right, bottom: y + row_h }, rename: RECT::default(), btn: RECT::default() });
-        y += row_h;
+    let board = crate::layout_fav_board(&rows, left, right, y, dpi);
+    g.items.push(Item::Table(board.table));
+    g.items.push(Item::FavHead(board.head));
+    if let Some(rect) = board.empty {
+        g.items.push(Item::FavRow { i: usize::MAX, rect, rename: RECT::default(), btn: RECT::default() });
     }
-    for i in rows {
-        let del = RECT { left: right - sc(dpi, 16) - sc(dpi, 72), top: y + sc(dpi, 6), right: right - sc(dpi, 16), bottom: y + row_h - sc(dpi, 6) };
-        let rename = RECT { left: del.left - sc(dpi, 8) - sc(dpi, 88), top: del.top, right: del.left - sc(dpi, 8), bottom: del.bottom };
-        g.items.push(Item::FavRow { i, rect: RECT { left, top: y, right, bottom: y + row_h }, rename, btn: del });
-        y += row_h;
+    for slot in board.slots {
+        g.items.push(Item::FavRow { i: slot.index, rect: slot.rect, rename: slot.rename, btn: slot.delete });
     }
-    y + sc(dpi, 8)
+    board.bottom + sc(dpi, 8)
 }
 
 fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {

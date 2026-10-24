@@ -70,6 +70,8 @@ pub(crate) struct Desk {
     pub(crate) load_edit: HWND,         // rename box on a card; made on first use, hidden when done
     pub(crate) load_editing: Option<usize>, // card being renamed
     pub(crate) fav_popup: HWND,
+    /// Large favourites window. One per process; owned by this desk when it opened it.
+    pub(crate) fav_mgr: HWND,
     pub(crate) fav_closed: Option<Instant>,
     pub(crate) fav_hot: Option<(usize, bool)>, // (row, on its ✕)
     pub(crate) fav_prev: HWND,                 // focus before the popup opened; Esc goes back there
@@ -215,6 +217,7 @@ pub(crate) fn blank_desk() -> Desk {
         load_edit: HWND::default(),
         load_editing: None,
         fav_popup: HWND::default(),
+        fav_mgr: HWND::default(),
         fav_closed: None,
         fav_hot: None,
         fav_prev: HWND::default(),
@@ -374,7 +377,10 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if h.0.is_null() || d.main.0.is_null() {
         return false;
     }
-    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || h == d.peek || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.fav_mgr || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || h == d.peek || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
+        return true;
+    }
+    if !d.fav_mgr.0.is_null() && unsafe { IsChild(d.fav_mgr, h).as_bool() } {
         return true;
     }
     unsafe { IsChild(d.main, h).as_bool() }

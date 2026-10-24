@@ -506,11 +506,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
             Item::Card(c) => draw_card(dc, c, sn, accent),
             Item::Head(r, t) => crate::text(dc, *r, tx(*t), sn.font, crate::pal().text, DT_LEFT),
             Item::Table(r) => rfill(dc, *r, sc(dpi, 6), crate::pal().card, Some(crate::pal().line)),
-            Item::FavHead(r) => {
-                crate::text(dc, RECT { left: r.left + sc(dpi, 40), right: r.left + (r.right - r.left) * 32 / 100, ..*r }, tx(s("Name", "이름", "名前")), sn.small, crate::pal().sub, DT_LEFT);
-                crate::text(dc, RECT { left: r.left + (r.right - r.left) * 32 / 100, ..*r }, tx(s("Path", "경로", "パス")), sn.small, crate::pal().sub, DT_LEFT);
-                crate::fill(dc, RECT { top: r.bottom - 1, ..*r }, crate::pal().line);
-            }
+            Item::FavHead(r) => crate::paint_fav_head(dc, *r, dpi, sn.small),
             Item::FavRow { i, rect, .. } => {
                 let empty = *i == usize::MAX;
                 let row = if empty { None } else { fav_rows.get(*i) };
@@ -710,36 +706,7 @@ unsafe fn draw_toggle(dc: HDC, r: RECT, on: bool, enabled: bool, accent: u32, dp
 }
 
 unsafe fn draw_fav_row(dc: HDC, row: Option<&crate::FavRow>, r: RECT, sn: &Snap, empty: bool) {
-    let dpi = sn.dpi.max(96);
-    if empty {
-        crate::text(dc, r, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", "お気に入りはまだありません · ペインヘッダーの ☆+ で追加"), sn.small, crate::pal().sub, DT_CENTER);
-        return;
-    }
-    let Some(row) = row else { return };
-    let name_right = r.left + (r.right - r.left) * 32 / 100;
-    let slot = sc(dpi, 16).max(1);
-    let icon_w = sc(dpi, 22);
-    let max_indent = (name_right - r.left - sc(dpi, 12) - icon_w - sc(dpi, 4) - sc(dpi, 36)).max(0);
-    let indent = (sc(dpi, 14) * row.depth.min(8) as i32).min(max_indent);
-    let icon = RECT { left: r.left + sc(dpi, 12) + indent, right: r.left + sc(dpi, 12) + indent + icon_w, ..r };
-    // Shell index from the favourites cache. A glyph stands in until that lookup finishes.
-    let (shell_path, shell_file) = if row.group { ("", false) } else { (row.path.as_str(), row.file) };
-    if let Some((list, index, dim)) = crate::shell_icon(shell_path, shell_file) {
-        let iy = r.top + (r.bottom - r.top - slot).max(0) / 2;
-        let ix = icon.left + (icon_w - slot).max(0) / 2;
-        crate::draw_fav_icon(dc, list, index, ix, iy, slot, dim);
-    } else {
-        let glyph = if shell_file { "\u{E8A5}" } else { "\u{E8B7}" };
-        crate::text(dc, icon, glyph, sn.icon, crate::pal().sub, DT_CENTER);
-    }
-    let name_r = RECT { left: icon.right + sc(dpi, 4), right: name_right.max(icon.right + sc(dpi, 4)), ..r };
-    crate::text(dc, name_r, &row.name, sn.font, crate::pal().text, DT_LEFT);
-    let path_r = RECT { left: name_right + sc(dpi, 8), right: r.right - sc(dpi, 180), ..r };
-    let path = if row.group { tx(GROUP_L).to_string() } else { row.path.clone() };
-    if path_r.right > path_r.left {
-        crate::text(dc, path_r, &path, sn.small, crate::pal().sub, DT_LEFT);
-    }
-    crate::fill(dc, RECT { top: r.bottom - 1, ..r }, crate::pal().line);
+    crate::paint_fav_row(dc, row, r, sn.dpi.max(96), sn.font, sn.small, sn.icon, empty, false);
 }
 
 unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn: &Snap) {
@@ -1023,8 +990,7 @@ unsafe fn delete_fav(k: usize) {
         a.s.sync_favs();
         a.fav_hot = None;
     });
-    crate::favs_changed();
-    crate::save_session();
+    crate::commit_favs();
 }
 
 unsafe fn on_command(h: HWND, id: i32, code: u32) {
@@ -1269,8 +1235,7 @@ unsafe fn rename_fav(h: HWND, k: usize) {
         crate::rename_at(&mut a.s.tree, &row.id, &name);
         a.s.sync_favs();
     });
-    crate::favs_changed();
-    crate::save_session();
+    crate::commit_favs();
 }
 
 unsafe fn reset_keys(h: HWND) {
@@ -1566,8 +1531,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     let _ = ReleaseCapture();
                 }
                 if fav.is_some() {
-                    crate::favs_changed();
-                    crate::save_session();
+                    crate::commit_favs();
                 }
             }
             WM_MOUSEWHEEL => {

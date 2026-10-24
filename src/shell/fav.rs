@@ -52,6 +52,7 @@ pub(crate) unsafe fn favs_changed() {
         _ = InvalidateRect(Some(pop), None, false);
     }
     settings::refresh();
+    refresh_fav_manager();
     across_windows(|| {
         repaint_fav_buttons();
         let h = app(|a| a.side_hwnd);
@@ -60,6 +61,12 @@ pub(crate) unsafe fn favs_changed() {
         }
     });
     note_save();
+}
+
+/// The settings editor and the favourites window both write through here.
+pub(crate) unsafe fn commit_favs() {
+    favs_changed();
+    save_session();
 }
 
 pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
