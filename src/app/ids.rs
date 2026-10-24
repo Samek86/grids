@@ -16,6 +16,7 @@ pub(crate) const ID_PANE_ADD: i32 = 108; // add a pane tab; shown only while thi
 pub(crate) const ID_TB_LAYOUT: i32 = 201;
 pub(crate) const ID_TB_SAVE: i32 = 202;
 pub(crate) const ID_TB_LOAD: i32 = 204;
+pub(crate) const ID_TB_FAV: i32 = 206; // star, immediately left of the gear: favourites window
 pub(crate) const ID_TB_SET: i32 = 207; // gear: view menu (settings and theme live there)
 // menu ids
 pub(crate) const ID_HIDDEN: usize = 1100;
