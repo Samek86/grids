@@ -636,15 +636,6 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 12), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 12) };
     let title_line = if c.spec.desc[0].is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
     crate::text(dc, title_line, &title, sn.font, color, DT_LEFT);
-    if c.spec.badge {
-        let bw = text_w(dc, sn.small, tx(NEW)) + sc(dpi, 10);
-        let tw = text_w(dc, sn.font, &title);
-        let br = RECT { left: title_line.left + tw + sc(dpi, 8), top: (title_line.top + title_line.bottom) / 2 - sc(dpi, 8), right: title_line.left + tw + sc(dpi, 8) + bw, bottom: (title_line.top + title_line.bottom) / 2 + sc(dpi, 8) };
-        if br.right < text_r.right {
-            rfill(dc, br, sc(dpi, 3), accent, None);
-            crate::text(dc, br, tx(NEW), sn.small, on_chrome(accent), DT_CENTER);
-        }
-    }
     if c.spec.ctl == Ctl::EvStatus {
         let line = sc(dpi, 18);
         let desc_r = RECT { top: title_line.bottom, bottom: title_line.bottom + line, ..text_r };
