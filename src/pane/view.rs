@@ -262,7 +262,7 @@ pub(crate) unsafe fn relayout() {
         let strip_h = s(32);
         let strip_top = 0;
         let btn_top = strip_top + (strip_h - s(24)) / 2;
-        // Drive letters, then Layout, save, load and the gear, at the right of the tab row.
+        // Drive letters, then Layout, save, load, the favourites star and the gear, at the right of the tab row.
         // The last letters hide first so a minimum tab stays clear of the group.
         // The gear stays when the toolbar is off; the other icons and the letters do not.
         let icons = icon_slots(g.w, btn_top, a.dpi, drive_slots(a.s.drive_buttons, a.drives.len()), show_bar);
@@ -296,7 +296,7 @@ pub(crate) unsafe fn relayout() {
         return;
     };
     move_all(&moves, None);
-    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET] {
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_FAV, ID_TB_SET] {
         if let Ok(b) = GetDlgItem(Some(main), id) {
             // The gear stays: with the toolbar hidden it is the only mouse path to settings.
             let on = show_bar || id == ID_TB_SET;
@@ -320,7 +320,7 @@ pub(crate) unsafe fn relayout() {
         _ = InvalidateRect(Some(strip), None, true);
     }
     // The strip is full width underneath the icons. Raise the visible ones so they take the click.
-    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET] {
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_FAV, ID_TB_SET] {
         if let Ok(b) = GetDlgItem(Some(main), id) {
             if show_bar || id == ID_TB_SET {
                 _ = SetWindowPos(b, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -930,6 +930,7 @@ pub(crate) unsafe fn apply_theme() {
     prime_theme(dark);
     across_windows(|| apply_theme_desk());
     settings::refresh();
+    refresh_fav_manager();
 }
 
 pub(crate) unsafe fn pick_accent() {
