@@ -14,7 +14,7 @@ const ID_SIDE_EDIT: i32 = 209;
 
 /// Favourites row height in px. `tree` is the folder tree's `TVM_GETITEMHEIGHT`.
 /// When that control is not up yet, `font_px` (the UI font's line height, already scaled
-/// for DPI and the font setting) plus the padding a tree view adds.
+/// for DPI) plus the padding a tree view adds.
 pub(crate) fn fav_row_height(tree: i32, font_px: i32) -> i32 {
     if tree > 0 {
         tree
@@ -50,7 +50,7 @@ fn row_h() -> i32 {
     }
 }
 
-/// Give the folder tree the UI font (so its item height follows DPI and the font setting)
+/// Give the folder tree the UI font (so its item height follows DPI)
 /// and keep the favourites scroll inside the new row size.
 pub(crate) unsafe fn sync_fav_metrics() {
     let (font, fh, dpi) = app(|a| (a.font, a.fh, a.dpi));
