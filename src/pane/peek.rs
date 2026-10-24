@@ -145,7 +145,13 @@ pub(crate) fn fix_alpha(bgra: &mut [u8]) {
     }
 }
 
+// Accent line around the popup: 3px at 96 dpi, and never thinner than one pixel.
+fn peek_edge(dpi: i32) -> i32 {
+    (3 * dpi / 96).max(1)
+}
+
 // The popup is laid out like the main window: the frame colour around, content on a plate.
+// Everything sits inside `peek_edge`, so the accent border neither covers it nor gets covered.
 pub(crate) struct PeekGeo {
     pub(crate) icon: RECT,  // file icon in the header
     pub(crate) title: RECT, // name, then the facts
@@ -158,15 +164,17 @@ pub(crate) struct PeekGeo {
 
 pub(crate) fn peek_geo(rc: RECT, dpi: i32) -> PeekGeo {
     let s = |v: i32| v * dpi / 96;
+    let e = peek_edge(dpi);
+    let rc = RECT { left: rc.left + e, top: rc.top + e, right: rc.right - e, bottom: rc.bottom - e };
     let (head, side, b, ic, pad) = (s(48), s(56), s(32), s(16), s(20));
-    let close = RECT { left: rc.right - s(12) - b, top: (head - b) / 2, right: rc.right - s(12), bottom: (head + b) / 2 };
-    let icon = RECT { left: side, top: (head - ic) / 2, right: side + ic, bottom: (head + ic) / 2 };
-    let title = RECT { left: icon.right + s(10), top: 0, right: close.left - s(12), bottom: head };
-    let stage = RECT { left: side, top: head, right: rc.right - side, bottom: rc.bottom - s(24) };
+    let close = RECT { left: rc.right - s(12) - b, top: rc.top + (head - b) / 2, right: rc.right - s(12), bottom: rc.top + (head + b) / 2 };
+    let icon = RECT { left: rc.left + side, top: rc.top + (head - ic) / 2, right: rc.left + side + ic, bottom: rc.top + (head + ic) / 2 };
+    let title = RECT { left: icon.right + s(10), top: rc.top, right: close.left - s(12), bottom: rc.top + head };
+    let stage = RECT { left: rc.left + side, top: rc.top + head, right: rc.right - side, bottom: rc.bottom - s(24) };
     let inner = RECT { left: stage.left + pad, top: stage.top + pad, right: stage.right - pad, bottom: stage.bottom - pad };
     let mid = (stage.top + stage.bottom) / 2;
     let arrow = |x: i32| RECT { left: x, top: mid - b / 2, right: x + b, bottom: mid + b / 2 };
-    PeekGeo { icon, title, close, stage, inner, prev: arrow((side - b) / 2), next: arrow(rc.right - side + (side - b) / 2) }
+    PeekGeo { icon, title, close, stage, inner, prev: arrow(rc.left + (side - b) / 2), next: arrow(rc.right - side + (side - b) / 2) }
 }
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -399,11 +407,13 @@ unsafe fn start_handler(h: HWND, gen: usize) {
     if HOST_GEN.swap(gen, Ordering::SeqCst) == gen {
         return;
     }
-    // handlers size themselves to their parent: give them the plate inside its 1px edge, nothing else
+    // The handler fills the plate. `stage` is already inside the accent border (peek_geo); the extra
+    // pixel keeps the child off the plate's own line, which WS_CLIPCHILDREN would otherwise clip.
     let st = geo_of(h).stage;
-    let (w, ht) = (st.right - st.left - 2, st.bottom - st.top - 2);
+    let line = 1;
+    let (w, ht) = (st.right - st.left - line * 2, st.bottom - st.top - line * 2);
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
-    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPeekHost"), w!(""), style, st.left + 1, st.top + 1, w, ht, Some(h), None, None, None) else {
+    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPeekHost"), w!(""), style, st.left + line, st.top + line, w, ht, Some(h), None, None, None) else {
         return load_peek(true);
     };
     view(|v| v.host_win = Some(win));
@@ -853,14 +863,13 @@ unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFON
 }
 
 pub(crate) unsafe fn paint_peek(h: HWND) {
-    let (dpi, font, icon_font, name, ilist) = app(|a| (a.dpi, a.font, a.icon_font, a.peek_name.clone(), a.ilist.clone()));
+    let (dpi, font, icon_font, name, ilist, accent) = app(|a| (a.dpi, a.font, a.icon_font, a.peek_name.clone(), a.ilist.clone(), a.s.accent_now()));
     let (hosted, hover, hot) = view(|v| (v.hosted, v.hover, v.hot));
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let g = peek_geo(rc, dpi);
         let f = fonts(dpi, font);
         fill(dc, rc, pal().bg);
-        frame(dc, rc, 1, pal().line);
         let j = peek_job();
         let gen = j.gen;
         // header: icon, name in bold, the facts after it in the secondary colour
@@ -932,6 +941,8 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
                 text(dc, r, glyph, icon_font, if on { pal().text } else { pal().sub }, DT_CENTER);
             }
         }
+        // Last, so nothing drawn above covers it. Content rects stay inside this thickness.
+        frame(dc, rc, peek_edge(dpi), accent);
     });
 }
 
@@ -1084,14 +1095,34 @@ mod tests {
     fn peek_layout() {
         let rc = RECT { left: 0, top: 0, right: 1120, bottom: 810 };
         let g = peek_geo(rc, 96);
-        assert_eq!((g.stage.left, g.stage.top, g.stage.right, g.stage.bottom), (56, 48, 1064, 786));
-        assert_eq!((g.inner.left, g.inner.top), (76, 68));
-        assert!(g.close.right <= rc.right && g.close.bottom <= 48 && g.title.right < g.close.left);
+        assert_eq!((g.stage.left, g.stage.top, g.stage.right, g.stage.bottom), (59, 51, 1061, 783));
+        assert_eq!((g.inner.left, g.inner.top), (79, 71));
+        assert!(g.close.right <= rc.right - 3 && g.close.top >= 3 && g.title.top >= 3 && g.title.right < g.close.left);
         assert!(g.prev.right <= g.stage.left && g.next.left >= g.stage.right);
         assert_eq!((g.prev.top + g.prev.bottom) / 2, (g.stage.top + g.stage.bottom) / 2);
         assert_eq!(peek_hit(&g, g.next.left + 4, g.next.top + 4), Hot::Next);
         assert_eq!(peek_hit(&g, g.prev.left + 4, g.prev.top + 4), Hot::Prev);
         assert_eq!(peek_hit(&g, g.close.left + 4, g.close.top + 4), Hot::Close);
         assert_eq!(peek_hit(&g, 500, 400), Hot::None);
+    }
+
+    #[test]
+    fn peek_border_inset() {
+        let rc = RECT { left: 0, top: 0, right: 1120, bottom: 810 };
+        assert_eq!(peek_edge(1), 1);
+        assert_eq!((peek_edge(96), peek_edge(144)), (3, 4));
+        for dpi in [96, 144] {
+            let e = peek_edge(dpi);
+            let s = |v: i32| v * dpi / 96;
+            let g = peek_geo(rc, dpi);
+            assert_eq!(g.stage.left, e + s(56));
+            assert_eq!(g.stage.top, e + s(48));
+            assert_eq!(g.stage.right, rc.right - e - s(56));
+            assert_eq!(g.stage.bottom, rc.bottom - e - s(24));
+            assert_eq!((g.inner.left, g.inner.top, g.inner.right, g.inner.bottom), (g.stage.left + s(20), g.stage.top + s(20), g.stage.right - s(20), g.stage.bottom - s(20)));
+            for r in [g.icon, g.title, g.close, g.stage, g.inner, g.prev, g.next] {
+                assert!(r.left >= e && r.top >= e && r.right <= rc.right - e && r.bottom <= rc.bottom - e);
+            }
+        }
     }
 }

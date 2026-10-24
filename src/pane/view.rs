@@ -489,13 +489,13 @@ pub(crate) unsafe fn start_reveal(main: HWND) {
 }
 
 pub(crate) unsafe fn set_accent(c: u32) {
-    let (bars, panes, drives) = app(|a| {
+    let (bars, panes, drives, peek) = app(|a| {
         if a.s.dark {
             a.s.accent_dark = c;
         } else {
             a.s.accent = c;
         }
-        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.drives.iter().map(|d| d.2).collect::<Vec<_>>())
+        (a.bars, a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>(), a.drives.iter().map(|d| d.2).collect::<Vec<_>>(), a.peek)
     });
     let old = SetClassLongPtrW(bars[0], GCLP_HBRBACKGROUND, CreateSolidBrush(cref(c)).0 as isize);
     if old != 0 {
@@ -506,6 +506,9 @@ pub(crate) unsafe fn set_accent(c: u32) {
     }
     for h in drives {
         _ = InvalidateRect(Some(h), None, false); // the active drive's underline
+    }
+    if !peek.0.is_null() {
+        _ = InvalidateRect(Some(peek), None, false); // open quick preview reads the accent as it paints
     }
     drop_group_brushes();
     settings::redraw();
