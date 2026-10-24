@@ -103,6 +103,8 @@ const FOOT: [&str; 3] = s("Changes apply right away", "변경은 바로 적용�
 const CLOSE_L: [&str; 3] = s("Close", "닫기", "閉じる");
 const FIND: [&str; 3] = s("Find a setting", "설정 검색", "設定を検索");
 const NONE: [&str; 3] = s("No matches", "결과 없음", "一致なし");
+/// Content shown when the nav query matches no page. Distinct from `NONE`, which is the nav label and an empty shortcut row.
+const NO_RESULTS: [&str; 3] = s("No results", "검색 결과 없음", "検索結果なし");
 const PAGES: [[&str; 3]; 9] = [
     s("General", "일반", "一般"),
     s("Appearance", "모양", "外観"),
@@ -258,9 +260,39 @@ fn row_q(q: &str, page: usize) -> &str {
     }
 }
 
+/// True when `q` matches no settings page. An empty query matches every page.
+fn search_miss(q: &str) -> bool {
+    !q.is_empty() && !(0..PAGES.len()).any(|p| page_match(q, p))
+}
+
+/// Page to show for a nav-search change.
+///
+/// `anchor` is the page the user had before this search auto-navigated (a nav click,
+/// or the page when the box was last empty). A query that matches nothing restores
+/// that page and does not stay on a page a shorter prefix opened. A prefix such as
+/// "Ag" matches only Shortcuts, because chord text includes PageUp / PageDown, and
+/// the next letter must not leave Shortcuts selected.
+fn pick_search(anchor: usize, page: usize, q: &str) -> usize {
+    if q.is_empty() || page_match(q, page) {
+        page
+    } else {
+        (0..PAGES.len()).find(|&p| page_match(q, p)).unwrap_or(anchor)
+    }
+}
+
+/// `(anchor, page)` after one search-box change. Clearing the box keeps the page
+/// that was showing and makes it the next anchor.
+fn commit_search(anchor: usize, page: usize, q: &str) -> (usize, usize) {
+    let page = pick_search(anchor, page, q);
+    let anchor = if q.is_empty() { page } else { anchor };
+    (anchor, page)
+}
+
 struct St {
     hwnd: HWND,
     page: usize,
+    /// Page to restore when a search matches nothing. Not updated when search auto-switches.
+    anchor: usize,
     scroll: i32,
     scroll_max: i32,
     dpi: i32,
@@ -286,6 +318,7 @@ impl Default for St {
         St {
             hwnd: HWND::default(),
             page: 0,
+            anchor: 0,
             scroll: 0,
             scroll_max: 0,
             dpi: 96,
@@ -427,6 +460,9 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
         nav[i] = RECT { left: sc(dpi, 8), top: y, right: nav_w - sc(dpi, 8), bottom: y + sc(dpi, 36) };
         y += sc(dpi, 36);
     }
+    // No page matches: leave the body empty so paint can show the miss message
+    // instead of the retained page (Shortcuts would otherwise lay out an empty table).
+    let miss = search_miss(q);
     let mut g = Geo {
         nav_w,
         nav,
@@ -443,6 +479,9 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
         thumb: RECT::default(),
         has_bar: false,
     };
+    if miss {
+        return g;
+    }
     // Lay out once to learn the height, then again inset for the scrollbar if needed.
     // A scrollbar narrows the shortcut column, and that can wrap another chord line,
     // so the height that is painted (not the wider first pass) decides the scroll range.
@@ -627,6 +666,11 @@ fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
 }
 
 fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
+    // A nav query that matches no page must not fall through to this empty table.
+    // `rq` filters rows, but the bar, header and a blank row were still emitted.
+    if search_miss(&sn.query) {
+        return y;
+    }
     let dpi = sn.dpi.max(96);
     // Both queries apply: a key typed in the page box, and a nav query that did not match the title.
     let rows: Vec<usize> = (0..crate::keys::len()).filter(|&i| {
@@ -711,3 +755,138 @@ fn ctl_id(c: Ctl) -> Option<i32> {
 pub(crate) mod store;
 mod win;
 pub(crate) use win::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn ui_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct Lang(u8);
+    impl Drop for Lang {
+        fn drop(&mut self) {
+            crate::UI.store(self.0, Ordering::Relaxed);
+        }
+    }
+
+    fn lang(v: u8) -> Lang {
+        let prev = crate::UI.load(Ordering::Relaxed);
+        crate::UI.store(v, Ordering::Relaxed);
+        Lang(prev)
+    }
+
+    fn shot(page: usize, query: &str) -> Snap {
+        Snap {
+            page,
+            scroll: 0,
+            dpi: 96,
+            query: query.to_string(),
+            keyq: String::new(),
+            hot: None,
+            font: HFONT::default(),
+            small: HFONT::default(),
+            title_font: HFONT::default(),
+            mono: HFONT::default(),
+            icon: HFONT::default(),
+        }
+    }
+
+    fn client() -> RECT {
+        RECT { left: 0, top: 0, right: 1000, bottom: 700 }
+    }
+
+    #[test]
+    fn no_results_copy_follows_the_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        assert_eq!(tx(NO_RESULTS), "No results");
+        crate::UI.store(1, Ordering::Relaxed);
+        assert_eq!(tx(NO_RESULTS), "검색 결과 없음");
+        crate::UI.store(2, Ordering::Relaxed);
+        assert_eq!(tx(NO_RESULTS), "検索結果なし");
+    }
+
+    #[test]
+    fn typing_agy_does_not_open_shortcuts_or_lay_out_its_table() {
+        let _lock = ui_lock();
+        let _keep = lang(1);
+        // "Ag" matches only Shortcuts: chord text is "Ctrl+PageUp" / "Ctrl+PageDown".
+        // "Agy" matches nothing. Keeping the page a prefix opened is what showed the empty table.
+        assert!(page_match("Ag", 5));
+        assert_eq!((0..9).find(|&p| page_match("Ag", p)), Some(5));
+        assert!(search_miss("Agy"));
+        assert!((0..9).all(|p| !page_match("Agy", p)));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        assert_eq!((0..9).find(|&p| page_match("Ag", p)), Some(5));
+        assert!(search_miss("Agy"));
+        crate::UI.store(1, Ordering::Relaxed);
+
+        let mut anchor = 0usize;
+        let mut page = 0usize;
+        for q in ["A", "Ag", "Agy"] {
+            (anchor, page) = commit_search(anchor, page, q);
+        }
+        assert_eq!(anchor, 0);
+        assert_eq!(page, 0, "Agy must not leave Shortcuts selected");
+
+        let g = geo(client(), &shot(page, "Agy"));
+        assert!(g.show.iter().all(|on| !*on), "nav has no items");
+        assert!(g.items.is_empty(), "content must not lay out the shortcuts table");
+        assert!(!g.has_bar);
+
+        (anchor, page) = commit_search(anchor, page, "");
+        assert_eq!((anchor, page), (0, 0));
+        let restored = geo(client(), &shot(page, ""));
+        assert!(restored.show.iter().all(|on| *on));
+        assert!(!restored.items.is_empty(), "clearing the search restores the page");
+    }
+
+    #[test]
+    fn a_miss_keeps_shortcuts_when_that_was_the_page_but_hides_the_table() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        assert_eq!(pick_search(5, 5, "Agy"), 5);
+        assert_eq!(commit_search(5, 5, "Agy"), (5, 5));
+        assert!(search_miss("Agy"));
+        let g = geo(client(), &shot(5, "Agy"));
+        assert!(g.items.is_empty());
+        assert!(g.show.iter().all(|on| !*on));
+        // The page the user picked still wins when the query actually matches it.
+        crate::UI.store(1, Ordering::Relaxed);
+        assert_eq!(pick_search(0, 0, "단축키"), 5);
+        assert_eq!(pick_search(2, 5, "단축키"), 5);
+        assert!(!search_miss("단축키"));
+        assert!(!search_miss(""));
+    }
+
+    #[test]
+    fn clearing_a_real_shortcut_hit_stays_on_that_page() {
+        let _lock = ui_lock();
+        let _keep = lang(1);
+        let (anchor, page) = commit_search(0, 0, "Ag");
+        assert_eq!((anchor, page), (0, 5));
+        assert_eq!(commit_search(anchor, page, ""), (5, 5));
+    }
+
+    #[test]
+    fn a_miss_restores_the_page_from_before_search_moved() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        assert!(!page_match("Ag", 6));
+        let (anchor, page) = commit_search(6, 6, "Ag");
+        assert_eq!(anchor, 6);
+        assert_ne!(page, 6);
+        assert_eq!(commit_search(anchor, page, "Agy"), (6, 6));
+        // Current page is kept when it still matches, even if an earlier page matches too.
+        assert!(page_match("a", 3));
+        assert_eq!(pick_search(0, 3, "a"), 3);
+        let body = geo(client(), &shot(0, "language"));
+        assert!(body.show[0]);
+        assert!(!body.items.is_empty());
+    }
+}
