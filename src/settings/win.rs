@@ -485,6 +485,19 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     crate::text(dc, g.hint, tx(FOOT), sn.small, crate::pal().sub, DT_LEFT);
     let _ = SaveDC(dc);
     let _ = IntersectClipRect(dc, g.content.left, g.content.top, g.content.right, g.content.bottom);
+    // A miss keeps the user's page but must not paint it. Shortcuts would otherwise
+    // show its title and the empty key table while the nav says nothing matched.
+    if search_miss(&sn.query) {
+        let r = RECT {
+            left: g.content.left + sc(dpi, 28),
+            top: g.content.top + sc(dpi, 24),
+            right: g.content.right - sc(dpi, 28),
+            bottom: g.content.top + sc(dpi, 72),
+        };
+        crate::text(dc, r, tx(NO_RESULTS), sn.title_font, crate::pal().text, DT_LEFT);
+        let _ = RestoreDC(dc, -1);
+        return;
+    }
     let title = tx(PAGES[sn.page]);
     crate::text(dc, g.title, title, sn.title_font, crate::pal().text, DT_LEFT);
     let fav_rows = if sn.page == 4 { fav_tree_rows() } else { Vec::new() };
@@ -1020,11 +1033,15 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
     }
     if code == EN_CHANGE && id == S_SEARCH {
         let q = crate::text_of(ctl(h, S_SEARCH));
-        let page = ST.with(|s| s.borrow().page);
-        let page = if page_match(&q, page) { page } else { (0..9).find(|p| page_match(&q, *p)).unwrap_or(page) };
+        let (anchor, page) = ST.with(|s| {
+            let st = s.borrow();
+            (st.anchor, st.page)
+        });
+        let (anchor, page) = commit_search(anchor, page, &q);
         ST.with(|s| {
             let mut st = s.borrow_mut();
             st.query = q;
+            st.anchor = anchor;
             st.page = page;
             st.scroll = 0;
         });
@@ -1344,6 +1361,7 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
             ST.with(|s| {
                 let mut st = s.borrow_mut();
                 st.page = i;
+                st.anchor = i;
                 st.scroll = 0;
             });
             layout(h);
