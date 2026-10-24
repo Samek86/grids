@@ -187,7 +187,6 @@ pub(crate) struct Session {
     /// Slot i shows what slot `order[i]` held when the session was last saved. Empty means as saved.
     pub(crate) order: Vec<u8>,
     pub(crate) theme: u8,              // 0 follow Windows, 1 light, 2 dark
-    pub(crate) font: u8,               // 0 default, 1 large, 2 larger
     /// Chosen UI face. Empty uses the language default (Segoe UI / Malgun Gothic / Yu Gothic UI).
     pub(crate) font_face: String,
     pub(crate) bar: bool,              // tab-row icons and drive buttons
@@ -248,7 +247,6 @@ impl Default for Session {
             tints: vec![0; MAXP],
             order: Vec::new(),
             theme: 0,
-            font: 0,
             font_face: String::new(),
             bar: true,
             drive_buttons: true,
@@ -309,7 +307,6 @@ impl PartialEq for Session {
             && self.cols == o.cols
             && self.tints == o.tints
             && self.theme == o.theme
-            && self.font == o.font
             && self.font_face == o.font_face
             && self.bar == o.bar
             && self.drive_buttons == o.drive_buttons
@@ -533,7 +530,8 @@ impl Session {
                     };
                     saw_theme = true;
                 }
-                "font" => s.font = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                // Retired UI scale (0/1/2). An older grids.ini still loads; the key is not written back.
+                "font" => {}
                 "bar" => s.bar = v.trim() != "0",
                 "drivebuttons" => s.drive_buttons = v.trim() != "0",
                 "stat" => s.stat = v.trim() != "0",
@@ -641,7 +639,7 @@ impl Session {
             o += &format!("order={}\n", join(&self.order));
         }
         let theme = ["auto", "light", "dark"][self.theme.min(2) as usize];
-        o += &format!("theme={theme}\nfont={}\nbar={}\ndrivebuttons={}\nstat={}\n", self.font, self.bar as u8, self.drive_buttons as u8, self.stat as u8);
+        o += &format!("theme={theme}\nbar={}\ndrivebuttons={}\nstat={}\n", self.bar as u8, self.drive_buttons as u8, self.stat as u8);
         o += &format!("viewnew={}\nstart={}\n", self.view_new, self.start_new);
         if !self.start_path.is_empty() {
             o += &format!("startp={}\n", self.start_path);
