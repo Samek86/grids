@@ -4,10 +4,31 @@ use crate::imports::*;
 use crate::app::*;
 use crate::ui::*;
 use crate::i18n::*;
-use super::focus_view;
 use super::preview::*;
+use super::{focus_find_list, focus_view, step_find_sel};
 use windows::Win32::UI::Controls::ILD_NORMAL;
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
+
+/// Quick look was opened on a search result, so arrows walk that list and closing it returns there.
+static FROM_FIND: AtomicBool = AtomicBool::new(false);
+static FROM_FIND_PANE: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub(crate) fn peek_shows_find(i: usize) -> bool {
+    FROM_FIND.load(Ordering::SeqCst) && FROM_FIND_PANE.load(Ordering::SeqCst) == i
+}
+
+fn mark_find_peek(i: Option<usize>) {
+    match i {
+        Some(i) => {
+            FROM_FIND_PANE.store(i, Ordering::SeqCst);
+            FROM_FIND.store(true, Ordering::SeqCst);
+        }
+        None => {
+            FROM_FIND.store(false, Ordering::SeqCst);
+            FROM_FIND_PANE.store(usize::MAX, Ordering::SeqCst);
+        }
+    }
+}
 
 pub(crate) const WM_PEEK_DONE: u32 = WM_APP + 45; // wParam = generation; the pixels stay in PEEK
 pub(crate) const WM_PEEK_LOST: u32 = WM_APP + 51; // the preview went inactive: close it unless it is active again
@@ -240,15 +261,10 @@ pub(crate) unsafe fn drop_peek_fonts() {
     }
 }
 
-pub(crate) unsafe fn open_peek(i: usize) {
-    let Some(fv) = view_of::<IFolderView2>(i) else { return };
+unsafe fn create_peek(i: usize) -> bool {
     let (main, dpi, open) = app(|a| (a.main, a.dpi, a.peek));
     if !open.0.is_null() {
-        return;
-    }
-    if fv.GetFocusedItem().unwrap_or(-1) < 0 {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
+        return false;
     }
     let s = |v: i32| v * dpi / 96;
     let mut rc = RECT::default();
@@ -258,16 +274,72 @@ pub(crate) unsafe fn open_peek(i: usize) {
     _ = ClientToScreen(main, &mut pt);
     let style = WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN;
     let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsPeek"), w!(""), style, pt.x, pt.y, w, h, Some(main), None, None, None) else {
-        return;
+        return false;
     };
     let square = DWMWCP_DONOTROUND;
     _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
     app(|a| (a.peek, a.peek_pane) = (h, i));
+    true
+}
+
+pub(crate) unsafe fn open_peek(i: usize) {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return };
+    if !app(|a| a.peek.0.is_null()) {
+        return;
+    }
+    if fv.GetFocusedItem().unwrap_or(-1) < 0 {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    if !create_peek(i) {
+        return;
+    }
+    mark_find_peek(None);
     load_peek(false);
+}
+
+/// Quick look at one search result. Arrows then walk the result list, not the folder behind it.
+pub(crate) unsafe fn open_peek_path(i: usize, path: &str, name: &str) {
+    if !app(|a| a.peek.0.is_null()) {
+        return;
+    }
+    if path.is_empty() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    // Set before the popup exists, so a hide timer that lands during creation keeps this pane's rows.
+    mark_find_peek(Some(i));
+    if !create_peek(i) {
+        mark_find_peek(None);
+        return;
+    }
+    app(|a| a.peek_name = name.to_string());
+    show_path(path, false);
+}
+
+unsafe fn show_path(path: &str, plain: bool) {
+    let (h, dpi) = app(|a| (a.peek, a.dpi));
+    if h.0.is_null() {
+        return;
+    }
+    unload_handler();
+    view(|v| (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0));
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let st = peek_geo(rc, dpi).stage;
+    want_peek(Some(PeekReq { path: path.to_string(), w: st.right - st.left, h: st.bottom - st.top, hwnd: h.0 as isize, plain }));
+    _ = InvalidateRect(Some(h), None, false);
 }
 
 // Asks the worker for the pane's focused item at the picture area's size. plain: skip the preview handler.
 pub(crate) unsafe fn load_peek(plain: bool) {
+    if FROM_FIND.load(Ordering::SeqCst) {
+        let path = peek_job().req.as_ref().map(|r| r.path.clone());
+        if let Some(path) = path {
+            show_path(&path, plain);
+            return;
+        }
+    }
     let (h, i, dpi) = app(|a| (a.peek, a.peek_pane, a.dpi));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     unload_handler();
@@ -290,15 +362,24 @@ pub(crate) unsafe fn load_peek(plain: bool) {
 }
 
 // Next / previous in the view's own order. Only a real neighbour (S_OK, in range) that got selected moves it.
+// A result preview walks the result list instead, and stays on this row at either end.
 pub(crate) unsafe fn step_peek(prev: bool) {
-    let Some(fv) = view_of::<IFolderView2>(app(|a| a.peek_pane)) else { return };
-    let cur = fv.GetFocusedItem().unwrap_or(-1);
-    let mut next = -1;
-    let hr = (Interface::vtable(&fv).GetVisibleItem)(Interface::as_raw(&fv), cur, prev.into(), &mut next);
-    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
-    let flags = SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0;
-    if hr == S_OK && (0..n).contains(&next) && fv.SelectItem(next, flags as u32).is_ok() {
-        load_peek(false);
+    if FROM_FIND.load(Ordering::SeqCst) {
+        let i = app(|a| a.peek_pane);
+        if let Some(hit) = step_find_sel(i, prev) {
+            app(|a| a.peek_name = hit.name);
+            show_path(&hit.path, false);
+        }
+    } else {
+        let Some(fv) = view_of::<IFolderView2>(app(|a| a.peek_pane)) else { return };
+        let cur = fv.GetFocusedItem().unwrap_or(-1);
+        let mut next = -1;
+        let hr = (Interface::vtable(&fv).GetVisibleItem)(Interface::as_raw(&fv), cur, prev.into(), &mut next);
+        let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
+        let flags = SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0;
+        if hr == S_OK && (0..n).contains(&next) && fv.SelectItem(next, flags as u32).is_ok() {
+            load_peek(false);
+        }
     }
     // selecting puts the focus in the list; the preview stays open and keeps the keys, like Quick Look
     let h = app(|a| a.peek);
@@ -310,8 +391,11 @@ pub(crate) unsafe fn step_peek(prev: bool) {
 
 pub(crate) unsafe fn close_peek(h: HWND) {
     let i = app(|a| a.peek_pane);
+    let from_find = FROM_FIND.load(Ordering::SeqCst);
     _ = DestroyWindow(h);
-    focus_view(i);
+    if !(from_find && focus_find_list(i)) {
+        focus_view(i);
+    }
 }
 
 // ---------- Windows preview handlers (Office, Outlook, HTML, fonts, PDF readers) ----------
@@ -1014,10 +1098,21 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => _ = PostMessageW(Some(h), WM_PEEK_LOST, WPARAM(0), LPARAM(0)),
             WM_PEEK_LOST if GetActiveWindow() != h => _ = DestroyWindow(h),
             WM_DESTROY => {
+                let from_find = FROM_FIND.load(Ordering::SeqCst);
+                let i = app(|a| a.peek_pane);
+                mark_find_peek(None);
                 unload_handler();
                 want_peek(None);
                 view(|v| (v.layout, v.y, v.x) = (None, 0, 0));
                 app(|a| a.peek = HWND::default());
+                // Focus has left the result list. Ask the pane to hide those rows unless
+                // close puts the keyboard back on them (or the search box still has it).
+                if from_find {
+                    let pane = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)).unwrap_or_default();
+                    if !pane.0.is_null() {
+                        _ = SetTimer(Some(pane), TIMER_FIND, 120, None);
+                    }
+                }
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
