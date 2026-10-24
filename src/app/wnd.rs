@@ -653,7 +653,10 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let list = GetDlgItem(Some(h), ID_FILTER).ok();
                 let on_filter = list.is_some_and(|e| e == focus);
                 let on_list = focus_is_find(h, focus);
-                if !on_filter && !on_list {
+                // Quick look opened from a result takes focus off this list. Keep the rows up
+                // until that preview closes, or Space just after a click would hide them.
+                let peeking = pane_of(h).is_some_and(peek_shows_find);
+                if !on_filter && !on_list && !peeking {
                     if let Some(i) = pane_of(h) {
                         hide_find(i);
                     }

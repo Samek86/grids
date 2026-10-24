@@ -356,6 +356,15 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             }
             true
         }
+        // A click on a result row focuses that list. Space then previews the selected row
+        // at once: this is not the file list's type-ahead. The setting still turns it off,
+        // and an open IME composition keeps the space.
+        VK_SPACE if !ctrl && !shift && !alt && find_focused(a) && app(|x| x.s.space_preview) && !ime_composing(m.hwnd) => {
+            if m.lParam.0 & (1 << 30) == 0 {
+                preview_find_sel(a);
+            }
+            true
+        }
         _ => shell(),
     }
 }
@@ -419,6 +428,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "nav.addr" | "nav.addr2" | "nav.addr3" => return focus_ctl(a, ID_EDIT),
         "view.filter" => return focus_ctl(a, ID_FILTER),
         "view.peek" if list => open_peek(a),
+        "view.peek" if find_focused(a) => preview_find_sel(a),
         "view.peek" => return shell(),
         "focus.next" => cycle_focus(false),
         "focus.prev" => cycle_focus(true),
