@@ -40,7 +40,6 @@ const TG_EXT: u8 = 6;
 const TG_TREE: u8 = 7;
 const TG_EDGE: u8 = 8;
 const TG_CONFIRM: u8 = 9;
-const TG_FAVMENU: u8 = 10;
 const TG_AUTOSAVE: u8 = 11;
 const TG_DOT: u8 = 12;
 const TG_ONE: u8 = 13;
@@ -174,9 +173,6 @@ const FILE: &[Spec] = &[
     Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu and by Ctrl+Alt+N. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일과 Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルと Ctrl+Alt+N が使います。空なら表示言語に従います。"), badge: true, live: true, ctl: Ctl::NewName },
     Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), badge: true, live: true, ctl: Ctl::Drop },
 ];
-const FAV: &[Spec] = &[
-    Spec { title: s("Show add or remove favourites on the right-click menu", "우클릭 메뉴에 즐겨찾기 추가/제거 표시", "右クリック メニューにお気に入りの追加と削除を表示"), desc: s("Always on. The item sits directly above Properties.", "항상 켜져 있어요. 속성 바로 위에 있어요.", "常にオンです。項目はプロパティのすぐ上です。"), badge: false, live: true, ctl: Ctl::Toggle(TG_FAVMENU) },
-];
 const SESS: &[Spec] = &[
     Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), badge: false, live: true, ctl: Ctl::Sess },
     Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), badge: false, live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
@@ -192,12 +188,8 @@ const KEY_NOTE: [&str; 3] = s(
     "행을 더블클릭하거나 변경을 누른 뒤 새 단축키를 누르세요. Esc는 취소, 겹치면 맞바꿀 수 있어요.",
     "行をダブルクリックするか変更を押し、新しいキーを押します。Esc で取消。重複は入れ替えできます。",
 );
-const FAV_NOTE: [&str; 3] = s(
-    "Folder groups and file favourites will be managed here once the favourites tree arrives.",
-    "나중에 9b(즐겨찾기 트리)가 들어오면 여기서 폴더 그룹과 파일 즐겨찾기도 관리해요.",
-    "お気に入りツリーが入ったら、ここでフォルダー グループとファイルのお気に入りも管理します。",
-);
 const LIST_H: [&str; 3] = s("List", "목록", "一覧");
+const GROUP_L: [&str; 3] = s("Group", "그룹", "グループ");
 const ABOUT: &[Spec] = &[Spec {
     title: s("grids", "grids", "grids"),
     desc: s("Upstream efww/grids · fork Samek86/grids", "원본 efww/grids · 포크 Samek86/grids", "上流 efww/grids · フォーク Samek86/grids"),
@@ -212,7 +204,6 @@ fn page_cards(p: usize) -> &'static [Spec] {
         1 => LOOK,
         2 => VIEW,
         3 => FILE,
-        4 => FAV,
         6 => SESS,
         7 => ADV,
         8 => ABOUT,
@@ -241,7 +232,7 @@ fn page_match(q: &str, page: usize) -> bool {
         return true;
     }
     if page == 4 {
-        return app(|a| a.s.favs.iter().any(|f| has(f, q) || has(&super::short_name(f), q))) || has(tx(LIST_H), q);
+        return fav_tree_rows().iter().any(|r| fav_row_hit(r, q)) || has(tx(LIST_H), q);
     }
     if page == 5 {
         return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
@@ -277,7 +268,8 @@ struct St {
     track: RECT,
     thumb_h: i32,
     drag: Option<i32>,
-    fav_drag: Option<usize>,
+    /// Tree id of the favourites row being dragged. Indices shift as the node moves.
+    fav_drag: Option<Vec<usize>>,
 }
 
 impl Default for St {
@@ -562,11 +554,46 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
     CardItem { spec, rect, ctl, sw, adv }
 }
 
+/// Stored favourites tree, depth-first, including children of a collapsed group.
+fn fav_tree_rows() -> Vec<crate::FavRow> {
+    app(|a| {
+        a.s.ensure_fav_tree();
+        crate::tree_rows(&a.s.tree)
+    })
+}
+
+fn fav_node(i: usize) -> Option<crate::FavRow> {
+    fav_tree_rows().get(i).cloned()
+}
+
+fn fav_row_hit(r: &crate::FavRow, q: &str) -> bool {
+    has(&r.name, q) || (!r.path.is_empty() && (has(&r.path, q) || has(&super::short_name(&r.path), q)))
+}
+
+/// A match keeps its ancestors and its descendants, so a nested row stays under its group.
+fn fav_keep(rows: &[crate::FavRow], q: &str) -> Vec<usize> {
+    if q.is_empty() {
+        return (0..rows.len()).collect();
+    }
+    let mut on = vec![false; rows.len()];
+    for r in rows.iter() {
+        if !fav_row_hit(r, q) {
+            continue;
+        }
+        for (j, other) in rows.iter().enumerate() {
+            if other.id.starts_with(&r.id) || r.id.starts_with(&other.id) {
+                on[j] = true;
+            }
+        }
+    }
+    on.into_iter().enumerate().filter(|(_, keep)| *keep).map(|(i, _)| i).collect()
+}
+
 fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
     let dpi = sn.dpi.max(96);
-    let favs: Vec<String> = app(|a| a.s.favs.clone());
-    let rows: Vec<usize> = favs.iter().enumerate().filter(|(_, f)| rq.is_empty() || has(f, rq) || has(&super::short_name(f), rq)).map(|(i, _)| i).collect();
-    if !rq.is_empty() && rows.is_empty() && !has(tx(LIST_H), rq) && !has(tx(FAV_NOTE), rq) {
+    let all = fav_tree_rows();
+    let rows = fav_keep(&all, rq);
+    if !rq.is_empty() && rows.is_empty() && !has(tx(LIST_H), rq) {
         return y;
     }
     g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, LIST_H));
@@ -587,9 +614,7 @@ fn fav_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         g.items.push(Item::FavRow { i, rect: RECT { left, top: y, right, bottom: y + row_h }, rename, btn: del });
         y += row_h;
     }
-    y += sc(dpi, 8);
-    g.items.push(Item::Note(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }, FAV_NOTE));
-    y + sc(dpi, 36)
+    y + sc(dpi, 8)
 }
 
 fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
@@ -650,8 +675,6 @@ fn toggle_on(id: u8) -> bool {
         TG_DOT => app(|a| a.s.dot),
         TG_EV => app(|a| a.s.use_everything),
         TG_SPACE => app(|a| a.s.space_preview),
-        // The favourites item is always on the shell menu, directly above Properties.
-        TG_FAVMENU => true,
         _ => false,
     }
 }
