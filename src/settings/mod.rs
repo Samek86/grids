@@ -14,7 +14,6 @@ const S_RESET: i32 = 4;
 const S_LANG: i32 = 10;
 const S_START: i32 = 11;
 const S_THEME: i32 = 12;
-const S_FONT: i32 = 13;
 const S_VIEW: i32 = 14;
 const S_DIR: i32 = 15;
 const S_DEL: i32 = 16;
@@ -112,7 +111,6 @@ enum Ctl {
     Face,
     Start,
     Theme,
-    Font,
     ViewMode,
     StartDir,
     DelMode,
@@ -157,7 +155,6 @@ const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), badge: false, live: true, ctl: Ctl::Theme },
     Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own (accent / accent_dark).", "라이트와 다크에 따로 정할 수 있어요(지금 있는 accent / accent_dark).", "ライトとダークで別々に選べます（accent / accent_dark）。"), badge: false, live: true, ctl: Ctl::Accent },
-    Spec { title: s("Font size", "글꼴 크기", "フォント サイズ"), desc: s("The toolbar, panes and this window.", "툴바, 패널, 이 창에 적용돼요.", "ツールバー、ペイン、このウィンドウに適用します。"), badge: true, live: true, ctl: Ctl::Font },
     Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), badge: true, live: true, ctl: Ctl::Toggle(TG_BAR) },
     Spec { title: s("Show drive buttons", "드라이브 버튼 표시", "ドライブボタンを表示"), desc: s("C: D: E: on the tab row. Off, the tabs use that space.", "탭 줄의 C: D: E: 버튼이에요. 끄면 그 자리를 탭이 써요.", "タブ列の C: D: E: です。オフにするとその分をタブが使います。"), badge: true, live: true, ctl: Ctl::Toggle(TG_DRIVES) },
     Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), badge: true, live: true, ctl: Ctl::Toggle(TG_STATUS) },
@@ -525,7 +522,7 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
         Ctl::EvStatus => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.bottom },
         Ctl::EvAct => right_box(rect, sc(dpi, 200), sc(dpi, 32), pad),
         Ctl::CopyEng => right_box(rect, sc(dpi, 140), sc(dpi, 22), pad),
-        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::Font | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout => {
+        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout => {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
         }
         Ctl::Sess => right_box(rect, sc(dpi, 108), sc(dpi, 32), pad),
@@ -665,7 +662,6 @@ fn ctl_id(c: Ctl) -> Option<i32> {
         Ctl::Face => S_FACE,
         Ctl::Start => S_START,
         Ctl::Theme => S_THEME,
-        Ctl::Font => S_FONT,
         Ctl::ViewMode => S_VIEW,
         Ctl::StartDir => S_DIR,
         Ctl::DelMode => S_DEL,

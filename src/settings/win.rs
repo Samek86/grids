@@ -114,12 +114,6 @@ fn rebuild_fonts() {
     let custom = app(|a| a.s.font_face.clone());
     let fallback = crate::ui_face();
     let face = if custom.is_empty() { fallback } else { custom.as_str() };
-    let scale = match app(|a| a.s.font) {
-        1 => 125,
-        2 => 150,
-        _ => 100,
-    };
-    let px = |n: i32| (n * scale / 100).max(1);
     // A chosen face is the page title at weight 700. The language default keeps its own title face.
     let (title_face, title_w) = if custom.is_empty() {
         match crate::ui() {
@@ -131,9 +125,9 @@ fn rebuild_fonts() {
         (face, 700)
     };
     let new = (
-        make_font(face, px(14), 400, dpi),
-        make_font(face, px(12), 400, dpi),
-        make_font(title_face, px(24), title_w, dpi),
+        make_font(face, 14, 400, dpi),
+        make_font(face, 12, 400, dpi),
+        make_font(title_face, 24, title_w, dpi),
         make_font("Consolas", 12, 400, dpi),
         make_font("Segoe MDL2 Assets", 14, 400, dpi),
     );
@@ -173,7 +167,7 @@ unsafe fn build_children(h: HWND) {
     combo(S_LANG, true);
     combo(S_FACE, true);
     combo(S_THEME, true);
-    for id in [S_START, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT] {
+    for id in [S_START, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT] {
         combo(id, true);
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
@@ -190,7 +184,7 @@ unsafe fn build_children(h: HWND) {
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -228,8 +222,6 @@ unsafe fn fill_strings(h: HWND) {
     fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
     let boot = app(|a| a.s.boot) as usize;
     fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout", "기본 레이아웃", "既定のレイアウト")).into()], boot.min(2));
-    let font = app(|a| a.s.font) as usize;
-    fill_combo(h, S_FONT, &[tx(s("Default", "기본", "既定")).into(), tx(s("Large", "크게", "大きく")).into(), tx(s("Larger", "더 크게", "さらに大きく")).into()], font.min(2));
     let view_i = match app(|a| a.s.view_new) { 3 => 1, 1 => 2, _ => 0 };
     fill_combo(h, S_VIEW, &[tx(s("Details", "자세히", "詳細")).into(), tx(s("List", "목록", "一覧")).into(), tx(s("Large icons", "큰 아이콘", "大きなアイコン")).into()], view_i);
     let start = app(|a| a.s.start_new) as usize;
@@ -371,7 +363,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_FONT, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
     let n = app(|a| a.s.favs.len()) as i32;
@@ -1108,14 +1100,6 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
                     crate::save_session();
                     refresh();
                 }
-            }
-        }
-        S_FONT => {
-            app(|a| a.s.font = sel.min(2) as u8);
-            unsafe {
-                crate::apply_font();
-                crate::save_session();
-                refresh();
             }
         }
         S_VIEW => {

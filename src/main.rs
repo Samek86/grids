@@ -230,7 +230,7 @@ mod tests {
         let fresh = Session::default();
         let round = Session::parse(&fresh.to_ini());
         assert_eq!(round.theme, 0);
-        assert_eq!((round.font, round.bar, round.stat, round.view_new, round.start_new), (0, true, true, 4, 0));
+        assert_eq!((round.bar, round.stat, round.view_new, round.start_new), (true, true, 4, 0));
         assert_eq!((round.ext, round.tree_on, round.edge, round.confirm, round.del), (true, true, true, true, 0));
         assert_eq!((round.dropm, round.layout_new, round.boot, round.autosave, round.dot), (0, 0, 0, false, true));
         assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
@@ -242,7 +242,7 @@ mod tests {
         let t = Session::parse("theme=auto\ndark=1\nfont=2\nbar=0\nstat=0\nviewnew=1\nstart=2\nstartp=C:\\Work\next=0\ntree=0\nedge=0\nconfirm=0\ndel=1\nnewname=note.txt\ndrop=1\nboot=1\nbootf=C:\\s.grids\nautosave=1\ndot=0\nfav=C:\\WORK\tWork\n");
         assert_eq!(t.theme, 0);
         assert!(t.dark);
-        assert_eq!(t.font, 2);
+        assert!(!t.to_ini().contains("font="));
         assert!(!t.bar && !t.stat && !t.ext && !t.tree_on && !t.edge && !t.confirm && !t.dot);
         assert_eq!(t.view_new, 1);
         assert_eq!(t.start_new, 2);
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(fav_path(&t.favs[0]), "C:\\WORK");
         assert_eq!(fav_label(&t.favs[0]), "Work");
         let back = Session::parse(&t.to_ini());
-        assert_eq!((back.font, back.new_name, back.start_path, back.boot_file, back.favs), (t.font, t.new_name.clone(), t.start_path.clone(), t.boot_file.clone(), t.favs.clone()));
+        assert_eq!((back.new_name, back.start_path, back.boot_file, back.favs), (t.new_name.clone(), t.start_path.clone(), t.boot_file.clone(), t.favs.clone()));
         let mut s = Session::default();
         s.lang = Lang::Ja;
         s.single = false;

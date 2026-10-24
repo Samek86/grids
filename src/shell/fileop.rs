@@ -588,7 +588,6 @@ pub(crate) unsafe fn reset_prefs() {
     let fresh = Session::default();
     app(|a| {
         a.s.theme = fresh.theme;
-        a.s.font = fresh.font;
         a.s.font_face.clear();
         a.s.bar = fresh.bar;
         a.s.drive_buttons = fresh.drive_buttons;
