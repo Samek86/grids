@@ -366,7 +366,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
     for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
-    let n = app(|a| a.s.favs.len()) as i32;
+    let n = fav_tree_rows().len().min(128) as i32;
     for base in [S_FAV0, S_FAV0 + 128] {
         for i in 0..128 {
             let c = ctl(h, base + i);
@@ -409,7 +409,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 move_to(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
-            Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && btn.right > btn.left => {
+            Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && *i < 128 && btn.right > btn.left => {
                 let id = S_FAV0 + *i as i32;
                 let mut b = ctl(h, id);
                 if b.0.is_null() {
@@ -487,6 +487,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     let _ = IntersectClipRect(dc, g.content.left, g.content.top, g.content.right, g.content.bottom);
     let title = tx(PAGES[sn.page]);
     crate::text(dc, g.title, title, sn.title_font, crate::pal().text, DT_LEFT);
+    let fav_rows = if sn.page == 4 { fav_tree_rows() } else { Vec::new() };
     for item in &g.items {
         match item {
             Item::Card(c) => draw_card(dc, c, sn, accent),
@@ -497,7 +498,11 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 crate::text(dc, RECT { left: r.left + (r.right - r.left) * 32 / 100, ..*r }, tx(s("Path", "경로", "パス")), sn.small, crate::pal().sub, DT_LEFT);
                 crate::fill(dc, RECT { top: r.bottom - 1, ..*r }, crate::pal().line);
             }
-            Item::FavRow { i, rect, .. } => draw_fav_row(dc, *i, *rect, sn),
+            Item::FavRow { i, rect, .. } => {
+                let empty = *i == usize::MAX;
+                let row = if empty { None } else { fav_rows.get(*i) };
+                draw_fav_row(dc, row, *rect, sn, empty);
+            }
             Item::Note(r, t) => crate::text(dc, *r, tx(*t), sn.small, crate::pal().sub, DT_LEFT),
             Item::KeyBar { edit, .. } => rfill(dc, *edit, sc(dpi, 4), crate::pal().card, Some(crate::pal().line)),
             Item::KeyHead(r) => {
@@ -700,22 +705,36 @@ unsafe fn draw_toggle(dc: HDC, r: RECT, on: bool, enabled: bool, accent: u32, dp
     ellipse(dc, RECT { left: x, top: y, right: x + k, bottom: y + k }, knob, None);
 }
 
-unsafe fn draw_fav_row(dc: HDC, i: usize, r: RECT, sn: &Snap) {
+unsafe fn draw_fav_row(dc: HDC, row: Option<&crate::FavRow>, r: RECT, sn: &Snap, empty: bool) {
     let dpi = sn.dpi.max(96);
-    if i == usize::MAX {
+    if empty {
         crate::text(dc, r, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", "お気に入りはまだありません · ペインヘッダーの ☆+ で追加"), sn.small, crate::pal().sub, DT_CENTER);
         return;
     }
-    let path = app(|a| a.s.favs.get(i).cloned().unwrap_or_default());
-    if path.is_empty() {
-        return;
+    let Some(row) = row else { return };
+    let name_right = r.left + (r.right - r.left) * 32 / 100;
+    let slot = sc(dpi, 16).max(1);
+    let icon_w = sc(dpi, 22);
+    let max_indent = (name_right - r.left - sc(dpi, 12) - icon_w - sc(dpi, 4) - sc(dpi, 36)).max(0);
+    let indent = (sc(dpi, 14) * row.depth.min(8) as i32).min(max_indent);
+    let icon = RECT { left: r.left + sc(dpi, 12) + indent, right: r.left + sc(dpi, 12) + indent + icon_w, ..r };
+    // Shell index from the favourites cache. A glyph stands in until that lookup finishes.
+    let (shell_path, shell_file) = if row.group { ("", false) } else { (row.path.as_str(), row.file) };
+    if let Some((list, index, dim)) = crate::shell_icon(shell_path, shell_file) {
+        let iy = r.top + (r.bottom - r.top - slot).max(0) / 2;
+        let ix = icon.left + (icon_w - slot).max(0) / 2;
+        crate::draw_fav_icon(dc, list, index, ix, iy, slot, dim);
+    } else {
+        let glyph = if shell_file { "\u{E8A5}" } else { "\u{E8B7}" };
+        crate::text(dc, icon, glyph, sn.icon, crate::pal().sub, DT_CENTER);
     }
-    let icon = RECT { left: r.left + sc(dpi, 12), right: r.left + sc(dpi, 34), ..r };
-    crate::text(dc, icon, "\u{E8B7}", sn.icon, crate::pal().sub, DT_CENTER);
-    let name_r = RECT { left: icon.right + sc(dpi, 4), right: r.left + (r.right - r.left) * 32 / 100, ..r };
-    crate::text(dc, name_r, &crate::fav_label(&path), sn.font, crate::pal().text, DT_LEFT);
-    let path_r = RECT { left: name_r.right + sc(dpi, 8), right: r.right - sc(dpi, 180), ..r };
-    crate::text(dc, path_r, crate::fav_path(&path), sn.small, crate::pal().sub, DT_LEFT);
+    let name_r = RECT { left: icon.right + sc(dpi, 4), right: name_right.max(icon.right + sc(dpi, 4)), ..r };
+    crate::text(dc, name_r, &row.name, sn.font, crate::pal().text, DT_LEFT);
+    let path_r = RECT { left: name_right + sc(dpi, 8), right: r.right - sc(dpi, 180), ..r };
+    let path = if row.group { tx(GROUP_L).to_string() } else { row.path.clone() };
+    if path_r.right > path_r.left {
+        crate::text(dc, path_r, &path, sn.small, crate::pal().sub, DT_LEFT);
+    }
     crate::fill(dc, RECT { top: r.bottom - 1, ..r }, crate::pal().line);
 }
 
@@ -983,9 +1002,10 @@ fn flip(id: u8) {
 }
 
 unsafe fn delete_fav(k: usize) {
+    let Some(id) = fav_node(k).map(|r| r.id) else { return };
     app(|a| {
         a.s.ensure_fav_tree();
-        crate::remove_leaf(&mut a.s.tree, k);
+        crate::delete_at(&mut a.s.tree, &id);
         a.s.sync_favs();
         a.fav_hot = None;
     });
@@ -1220,15 +1240,15 @@ unsafe fn reset_ini(h: HWND) {
 }
 
 unsafe fn rename_fav(h: HWND, k: usize) {
-    let cur = app(|a| a.s.favs.get(k).map(|f| crate::fav_label(f)).unwrap_or_default());
-    let Some(name) = ask(h, tx(s("Rename", "이름 변경", "名前の変更")), &cur) else { return };
+    let Some(row) = fav_node(k) else { return };
+    let Some(name) = ask(h, tx(s("Rename", "이름 변경", "名前の変更")), &row.name) else { return };
     let name = name.trim().to_string();
     if name.is_empty() {
         return;
     }
     app(|a| {
         a.s.ensure_fav_tree();
-        crate::rename_leaf(&mut a.s.tree, k, &name);
+        crate::rename_at(&mut a.s.tree, &row.id, &name);
         a.s.sync_favs();
     });
     crate::favs_changed();
@@ -1333,8 +1353,10 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
     for item in &g.items {
         if let Item::FavRow { i, rect, rename, btn } = item {
             if *i != usize::MAX && inside(*rect, x, y) && !inside(*rename, x, y) && !inside(*btn, x, y) {
-                ST.with(|s| s.borrow_mut().fav_drag = Some(*i));
-                let _ = SetCapture(h);
+                if let Some(row) = fav_node(*i) {
+                    ST.with(|s| s.borrow_mut().fav_drag = Some(row.id));
+                    let _ = SetCapture(h);
+                }
                 return;
             }
         }
@@ -1390,6 +1412,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 });
                 rebuild_fonts();
                 build_children(h);
+                crate::note_side(h);
                 crate::everything::bind_settings(h.0 as isize);
                 crate::everything::probe_async();
                 refresh();
@@ -1450,25 +1473,36 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             WM_MOUSEMOVE => {
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
-                if let Some(from) = ST.with(|s| s.borrow().fav_drag) {
+                if let Some(from) = ST.with(|s| s.borrow().fav_drag.clone()) {
                     let sn = snap();
                     let mut rc = RECT::default();
                     let _ = GetClientRect(h, &mut rc);
                     let g = geo(rc, &sn);
-                    let to = g.items.iter().find_map(|it| match it {
-                        Item::FavRow { i, rect, .. } if *i != usize::MAX && y >= rect.top && y < rect.bottom => Some(*i),
+                    let hit = g.items.iter().find_map(|it| match it {
+                        Item::FavRow { i, rect, .. } if *i != usize::MAX && y >= rect.top && y < rect.bottom => Some((*i, *rect)),
                         _ => None,
                     });
-                    if let Some(to) = to.filter(|to| *to != from) {
-                        app(|a| {
+                    if let Some((to_i, rect)) = hit {
+                        let moved = app(|a| {
                             a.s.ensure_fav_tree();
-                            if crate::reorder_leaves(&mut a.s.tree, from, to) {
-                                a.s.sync_favs();
+                            let target = crate::tree_rows(&a.s.tree).get(to_i).map(|r| (r.id.clone(), r.group));
+                            let Some((tid, group)) = target else { return None };
+                            if tid == from {
+                                return None;
                             }
+                            let zone = crate::drop_zone(group, y - rect.top, (rect.bottom - rect.top).max(1));
+                            let new_id = crate::apply_drop(&mut a.s.tree, &from, &tid, zone)?;
+                            if new_id == from {
+                                return None;
+                            }
+                            a.s.sync_favs();
+                            Some(new_id)
                         });
-                        ST.with(|s| s.borrow_mut().fav_drag = Some(to));
-                        layout(h);
-                        let _ = InvalidateRect(Some(h), None, false);
+                        if let Some(new_id) = moved {
+                            ST.with(|s| s.borrow_mut().fav_drag = Some(new_id));
+                            layout(h);
+                            let _ = InvalidateRect(Some(h), None, false);
+                        }
                     }
                     let _ = x;
                     return LRESULT(0);
@@ -1541,10 +1575,17 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 layout(h);
                 let _ = InvalidateRect(Some(h), None, false);
             }
+            crate::WM_FAV_ICON => {
+                crate::clear_icon_refresh();
+                if ST.with(|s| s.borrow().page) == 4 {
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
+            }
             WM_CLOSE => {
                 let _ = DestroyWindow(h);
             }
             WM_DESTROY => {
+                crate::drop_side(h);
                 crate::everything::bind_settings(0);
                 crate::keys::cancel();
                 let old = ST.with(|s| {
