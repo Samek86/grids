@@ -265,7 +265,8 @@ pub(crate) unsafe fn relayout() {
         let btn_top = strip_top + (strip_h - s(24)) / 2;
         // Drive letters, then Layout, save, load and the gear, at the right of the tab row.
         // The last letters hide first so a minimum tab stays clear of the group.
-        let icons = icon_slots(g.w, btn_top, a.dpi, drive_slots(a.s.drive_buttons, a.drives.len()));
+        // The gear stays when the toolbar is off; the other icons and the letters do not.
+        let icons = icon_slots(g.w, btn_top, a.dpi, drive_slots(a.s.drive_buttons, a.drives.len()), show_bar);
         for (id, r) in icons.icons {
             moves.push((tb(id), r));
         }
@@ -298,19 +299,13 @@ pub(crate) unsafe fn relayout() {
     move_all(&moves, None);
     for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET] {
         if let Ok(b) = GetDlgItem(Some(main), id) {
-            _ = ShowWindow(b, if show_bar { SW_SHOW } else { SW_HIDE });
-            // The strip window is full width underneath them, so they stay above it and take the click.
-            if show_bar {
-                _ = SetWindowPos(b, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            // The gear stays: with the toolbar hidden it is the only mouse path to settings.
+            let on = show_bar || id == ID_TB_SET;
+            _ = ShowWindow(b, if on { SW_SHOW } else { SW_HIDE });
         }
     }
-    for (h, on) in drive_vis {
-        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
-        // The strip is full width underneath them, so a visible letter stays above it and takes the click.
-        if on {
-            _ = SetWindowPos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+    for (h, on) in &drive_vis {
+        _ = ShowWindow(*h, if *on { SW_SHOW } else { SW_HIDE });
     }
     if !tree_h.0.is_null() {
         _ = ShowWindow(tree_h, if show_side { SW_SHOW } else { SW_HIDE });
@@ -321,9 +316,25 @@ pub(crate) unsafe fn relayout() {
     let strip = app(|a| a.tabs_hwnd);
     if !strip.0.is_null() {
         _ = ShowWindow(strip, SW_SHOW);
+        // The strip's rect does not change with the toolbar, so a size message never arrives.
+        // Invalidate it or the tabs keep the previous width until the window is resized.
+        _ = InvalidateRect(Some(strip), None, true);
     }
-    for (h, on) in shown {
-        _ = ShowWindow(h, if on { SW_SHOW } else { SW_HIDE });
+    // The strip is full width underneath the icons. Raise the visible ones so they take the click.
+    for id in [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_SET] {
+        if let Ok(b) = GetDlgItem(Some(main), id) {
+            if show_bar || id == ID_TB_SET {
+                _ = SetWindowPos(b, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+    }
+    for (h, on) in &drive_vis {
+        if *on {
+            _ = SetWindowPos(*h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+    for (h, on) in &shown {
+        _ = ShowWindow(*h, if *on { SW_SHOW } else { SW_HIDE });
     }
     start_reveal(main); // sidebar size may have changed: keep its selection in view
     if let Ok(b) = GetDlgItem(Some(main), ID_TB_LAYOUT) {
