@@ -111,7 +111,7 @@ pub(crate) fn geo(a: &App) -> Geo {
     let (pad, gap) = (s(8), s(8));
     let side = if a.s.tree_on { a.s.side.clamp(s(120), (rc.right - gap - pad - s(240)).max(s(120))) } else { 0 };
     let gx = if a.s.tree_on { side + gap } else { pad };
-    let top = s(32); // tab strip. `bar` hides the icon group, not this row.
+    let top = s(32); // tab strip. `bar` hides the icon group except the gear, not this row.
     let bot = if a.s.stat { (rc.bottom - s(24)).max(top) } else { rc.bottom };
     let plate = (bot - top).max(0);
     let tree_h = if side > 0 { split_heights(plate, a.s.side_split, gap, side_min(a.dpi)).0 } else { 0 };
