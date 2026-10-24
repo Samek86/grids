@@ -252,11 +252,11 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather" | "file.mkdir") && m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
-        // Pane-tab chords stay out of the address bar (already returned) and out of every other focus.
-        // They also stay quiet while the strips are hidden, so a shared key cannot fight the window tabs.
+        // Pane-tab chords stay out of the address bar (already returned) and out of every other focus,
+        // so they never take Ctrl+T, Ctrl+W or Ctrl+Page Down from the window tabs and the panes.
         if matches!(id, "pane.tab.new" | "pane.tab.close" | "pane.tab.next" | "pane.tab.prev") {
             let in_pane = list || pane_of(m.hwnd).is_some();
-            if !app(|x| x.s.pane_tabs_on) || !in_pane {
+            if !in_pane {
                 return shell();
             }
         }

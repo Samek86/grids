@@ -514,7 +514,7 @@ pub(crate) unsafe fn place_find(pane: HWND) {
     }
     let mut rc = RECT::default();
     _ = GetClientRect(pane, &mut rc);
-    let view = pane_geo(rc.right, rc.bottom, app(|a| a.dpi)).view;
+    let view = pane_geo_of(pane, rc.right, rc.bottom, app(|a| a.dpi)).view;
     let (w, h) = ((view.right - view.left).max(0), (view.bottom - view.top).max(0));
     _ = SetWindowPos(list, Some(HWND_TOP), view.left, view.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }

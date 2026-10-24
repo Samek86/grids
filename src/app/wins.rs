@@ -303,7 +303,6 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         a.zoom = None;
         a.closed.clear();
     });
-    sync_pane_tabs(app(|a| a.s.pane_tabs_on));
     if seed {
         let seeded = app(|a| crate::store::sync_text(&a.s));
         LAST_SAVED.with(|l| *l.borrow_mut() = seeded);

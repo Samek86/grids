@@ -497,7 +497,7 @@ pub(crate) unsafe fn kind_menu(i: usize) {
     _ = AppendMenuW(menu, clear, 101, &HSTRING::from(tr("Clear filter", "필터 지우기", "フィルターをクリア")));
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
-    let pg = pane_geo(rc.right, rc.bottom, app(|a| a.dpi));
+    let pg = pane_geo_of(h, rc.right, rc.bottom, app(|a| a.dpi));
     let mut at = POINT { x: pg.filt.left, y: pg.filt.bottom };
     _ = ClientToScreen(h, &mut at);
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
@@ -789,7 +789,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     }
     sync_addr(h);
     request_icon(h, ticket, pidl);
-    if PANE_TABS.load(Ordering::Relaxed) {
+    if app(|a| a.s.pane_tab_list(i).len() > 1) {
         repaint_pane_tabs(i); // the current pane tab's name is this folder's
     }
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {

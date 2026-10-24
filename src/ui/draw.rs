@@ -444,7 +444,7 @@ pub(crate) fn crumb_field(addr: RECT, dpi: i32) -> RECT {
 pub(crate) fn addr_rect(h: HWND, dpi: i32) -> RECT {
     let mut rc = RECT::default();
     unsafe { _ = GetClientRect(h, &mut rc) };
-    pane_geo(rc.right, rc.bottom, dpi).addr
+    pane_geo_of(h, rc.right, rc.bottom, dpi).addr
 }
 
 /// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
@@ -796,7 +796,7 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
     let crumbs_on = GetDlgItem(Some(h), ID_EDIT).is_ok_and(|e| !IsWindowVisible(e).as_bool());
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
-        let pg = pane_geo(rc.right, rc.bottom, dpi);
+        let pg = pane_geo_of(h, rc.right, rc.bottom, dpi);
         fill(dc, rc, pal().card);
         // active: header bar in the selection colour, same colour as the border
         fill(dc, RECT { bottom: pg.view.top, ..rc }, head);

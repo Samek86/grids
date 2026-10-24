@@ -1,33 +1,30 @@
 // Pane tabs: folders one Explorer view switches between. Separate from the window tabs
-// (one tab = a whole grid) in ui/tabs.rs. The strips can hide; the folders stay.
+// (one tab = a whole grid) in ui/tabs.rs. One folder hides the strip and shows the add
+// button on the bar. Two or more show the strip and hide that button. The folders stay.
 
 use crate::imports::*;
 use crate::app::*;
 use crate::ui::*;
 use crate::session::*;
-use super::{focus_view, go_near, redraw_all, relayout, set_active};
+use super::{focus_view, go_near, layout_pane, set_active};
 
-/// View menu and the settings toggle. Strips show or hide; the folders are kept.
-pub(crate) unsafe fn toggle_pane_tabs() {
-    let on = app(|a| {
-        a.s.pane_tabs_on ^= true;
-        a.s.pane_tabs_on
-    });
-    sync_pane_tabs(on);
-    publish_shared();
-    across_windows(|| {
-        relayout();
-        redraw_all();
-    });
-    note_save();
-    crate::settings::redraw();
+/// The bar and the list move when the strip appears or disappears. Otherwise only the strip repaints.
+unsafe fn apply_pane_tab_chrome(i: usize, before: usize) {
+    let after = app(|a| a.s.pane_tab_list(i).len());
+    let Some(h) = app(|a| a.panes.get(i)?.as_ref().map(|p| p.hwnd)) else { return };
+    if (before > 1) != (after > 1) {
+        layout_pane(h);
+        _ = InvalidateRect(Some(h), None, false);
+    } else if after > 1 {
+        repaint_pane_tabs(i);
+    }
 }
 
 pub(crate) unsafe fn repaint_pane_tabs(i: usize) {
     let Some(h) = app(|a| a.panes.get(i)?.as_ref().map(|p| p.hwnd)) else { return };
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
-    let strip = pane_geo(rc.right, rc.bottom, app(|a| a.dpi)).tabs;
+    let strip = pane_geo_of(h, rc.right, rc.bottom, app(|a| a.dpi)).tabs;
     if strip.bottom > strip.top {
         _ = InvalidateRect(Some(h), Some(&strip), false);
     }
@@ -35,12 +32,13 @@ pub(crate) unsafe fn repaint_pane_tabs(i: usize) {
 
 /// A change that browses. Undone when the folder cannot be opened (go_near already tried its parent).
 unsafe fn pane_tab_go(i: usize, change: impl FnOnce(&mut Session) -> Option<String>) {
-    let (before_f, before_c, to) = app(|a| {
+    let (before_n, before_f, before_c, to) = app(|a| {
         a.s.ensure_pane_tabs();
+        let before_n = a.s.pane_tab_list(i).len();
         let before_f = a.s.pane_folders[i].clone();
         let before_c = a.s.pane_cur[i];
         let to = change(&mut a.s);
-        (before_f, before_c, to)
+        (before_n, before_f, before_c, to)
     });
     if let Some(to) = to {
         if !go_near(i, &to) {
@@ -51,14 +49,15 @@ unsafe fn pane_tab_go(i: usize, change: impl FnOnce(&mut Session) -> Option<Stri
             _ = MessageBeep(MB_ICONWARNING);
         }
     }
-    repaint_pane_tabs(i);
+    apply_pane_tab_chrome(i, before_n);
     note_save();
     focus_view(i);
 }
 
 pub(crate) unsafe fn new_pane_tab(i: usize) {
+    let before = app(|a| a.s.pane_tab_list(i).len());
     app(|a| a.s.add_pane_tab(i));
-    repaint_pane_tabs(i);
+    apply_pane_tab_chrome(i, before);
     note_save();
 }
 
@@ -93,7 +92,7 @@ pub(crate) enum PaneTabHit {
     Strip,
 }
 
-/// What is under (x, y) in a pane's strip. None outside it, or while the strips are hidden.
+/// What is under (x, y) in a pane's strip. None outside it, or while this pane has one tab.
 pub(crate) fn pane_tab_hit(pg: &PaneGeo, n: usize, x: i32, y: i32, dpi: i32) -> Option<PaneTabHit> {
     if !inside(pg.tabs, x, y) {
         return None;
@@ -112,7 +111,7 @@ pub(crate) fn pane_tab_hit(pg: &PaneGeo, n: usize, x: i32, y: i32, dpi: i32) -> 
 pub(crate) unsafe fn on_pane_strip(h: HWND, x: i32, y: i32) -> bool {
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
-    inside(pane_geo(rc.right, rc.bottom, app(|a| a.dpi)).tabs, x, y)
+    inside(pane_geo_of(h, rc.right, rc.bottom, app(|a| a.dpi)).tabs, x, y)
 }
 
 /// Left click picks, closes or adds. Middle click closes. False when the point is not on the strip.
@@ -121,7 +120,7 @@ pub(crate) unsafe fn pane_tab_mouse(h: HWND, i: usize, x: i32, y: i32, middle: b
     _ = GetClientRect(h, &mut rc);
     let dpi = app(|a| a.dpi);
     let n = app(|a| a.s.pane_tab_list(i).len());
-    let Some(hit) = pane_tab_hit(&pane_geo(rc.right, rc.bottom, dpi), n, x, y, dpi) else { return false };
+    let Some(hit) = pane_tab_hit(&pane_geo_of(h, rc.right, rc.bottom, dpi), n, x, y, dpi) else { return false };
     set_active(i);
     match (hit, middle) {
         (PaneTabHit::Tab(k) | PaneTabHit::Close(k), true) => close_pane_tab(i, k),
