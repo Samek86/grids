@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::imports::*;
 use super::*;
 use crate::ui::*;
@@ -82,6 +84,60 @@ pub(crate) unsafe fn select_new_file(i: usize, name: &str) -> bool {
         || sv.SelectItem(pidl, (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_ENSUREVISIBLE.0 | SVSI_FOCUSED.0) as u32).is_ok();
     CoTaskMemFree(Some(pidl as _));
     ok
+}
+
+thread_local! {
+    static LAST_TYPED: RefCell<Option<Instant>> = const { RefCell::new(None) };
+}
+
+fn last_typed_ago() -> Option<Duration> {
+    LAST_TYPED.with(|c| c.borrow().map(|t| t.elapsed()))
+}
+
+fn note_typed() {
+    LAST_TYPED.with(|c| *c.borrow_mut() = Some(Instant::now()));
+}
+
+/// Keys that type into Explorer's find-as-you-type: letters, digits, punctuation, and the IME process key
+/// (Korean and Japanese composition arrives as VK_PROCESSKEY, 0xE5).
+pub(crate) fn types_char(vk: VIRTUAL_KEY) -> bool {
+    matches!(vk.0, 0x30..=0x39 | 0x41..=0x5A | 0x60..=0x6F | 0xBA..=0xC0 | 0xDB..=0xDF | 0xE5)
+}
+
+/// Space opens the preview unless a name is being typed (a key within the last second).
+pub(crate) fn space_peeks(typed_ago: Option<Duration>) -> bool {
+    typed_ago.is_none_or(|d| d >= Duration::from_secs(1))
+}
+
+/// Space opens quick look when the setting is on, no name is being typed, and no IME composition is open.
+pub(crate) fn space_opens(typed_ago: Option<Duration>, composing: bool, enabled: bool) -> bool {
+    enabled && !composing && space_peeks(typed_ago)
+}
+
+/// Korean and Japanese IMEs keep a composition string while a syllable or a reading is open.
+/// Space then belongs to the IME (commit or convert), not to the preview.
+fn ime_composing(hwnd: HWND) -> bool {
+    unsafe { composition_pending(hwnd) || composition_pending(GetFocus()) }
+}
+
+unsafe fn composition_pending(start: HWND) -> bool {
+    use windows::Win32::UI::Input::Ime::{ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPSTR};
+    let mut h = start;
+    for _ in 0..12 {
+        if h.0.is_null() {
+            return false;
+        }
+        let himc = ImmGetContext(h);
+        if !himc.0.is_null() {
+            let n = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+            let _ = ImmReleaseContext(h, himc);
+            if n > 0 {
+                return true;
+            }
+        }
+        h = GetParent(h).unwrap_or_default();
+    }
+    false
 }
 
 pub(crate) unsafe fn key(m: &MSG) -> bool {
@@ -189,6 +245,11 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             && !svh.0.is_null()
             && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())
     });
+    // Explorer's find-as-you-type: a letter, digit, punctuation or IME process key in the list
+    // starts the one-second window in which Space stays part of the name.
+    if list && !ctrl && !alt && types_char(VIRTUAL_KEY(vk)) {
+        note_typed();
+    }
     // F6 leaves the address and the filter. Every other chord stays out of a name being typed.
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
@@ -264,7 +325,14 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     // Not an app shortcut. F5, Del, and Ctrl+V still belong to the file list
     // unless the user has bound that chord above.
-    match VIRTUAL_KEY(vk) {
+    // Read the typing clock before a composing Space refreshes it.
+    let ch = VIRTUAL_KEY(vk);
+    let typed_ago = last_typed_ago();
+    let composing = ch == VK_SPACE && list && !ctrl && !alt && ime_composing(m.hwnd);
+    if composing {
+        note_typed();
+    }
+    match ch {
         VK_F5 if list => {
             resum_sizes();
             shell()
@@ -279,6 +347,14 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             } else {
                 true
             }
+        }
+        // Space: quick look, as in Finder. The preview's own Space still closes it.
+        // A space soon after typing, or while an IME is composing, stays with the list.
+        VK_SPACE if !ctrl && !shift && !alt && list && space_opens(typed_ago, composing, app(|x| x.s.space_preview)) => {
+            if m.lParam.0 & (1 << 30) == 0 {
+                open_peek(a);
+            }
+            true
         }
         _ => shell(),
     }
@@ -527,6 +603,25 @@ mod focus_tests {
         assert!(tree_input_after(false, true, false)); // arrow in the tree
         assert!(!tree_input_after(true, true, true)); // Ctrl+Tab / F6 in the tree
         assert!(tree_input_after(true, false, false) && !tree_input_after(false, false, false));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{space_opens, space_peeks, types_char};
+    use std::time::Duration;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_7, VK_A, VK_DOWN, VK_F3, VK_RETURN, VK_SPACE, VIRTUAL_KEY};
+
+    #[test]
+    fn space_previews() {
+        assert!(space_peeks(None) && space_peeks(Some(Duration::from_millis(1500))));
+        assert!(!space_peeks(Some(Duration::from_millis(300)))); // "my f|": the space is part of the name
+        assert!(types_char(VK_A) && types_char(VK_7) && types_char(VIRTUAL_KEY(0xE5))); // 0xE5: Korean / Japanese IME
+        assert!(!types_char(VK_SPACE) && !types_char(VK_DOWN) && !types_char(VK_F3) && !types_char(VK_RETURN));
+        assert!(space_opens(None, false, true));
+        assert!(!space_opens(Some(Duration::from_millis(300)), false, true));
+        assert!(!space_opens(None, true, true)); // IME composition: the space stays in the name
+        assert!(!space_opens(None, false, false)); // space_preview off
     }
 }
 

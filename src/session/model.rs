@@ -164,6 +164,8 @@ pub(crate) struct Session {
     pub(crate) accent_dark: u32,       // selection colour, dark theme
     pub(crate) dark: bool,
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
+    /// Space in a file list opens quick look. Missing from the file means on.
+    pub(crate) space_preview: bool,
     /// Per pane, for the window tab on screen: its pane tabs' folders. The current entry is stale; `paths[i]` is the truth.
     /// A pane tab is one folder inside one pane, not a window tab (`tabs` / `tab`). The strip shows from the second folder on.
     pub(crate) pane_folders: Vec<Vec<String>>,
@@ -228,6 +230,7 @@ impl Default for Session {
             accent_dark: 0x4CC2FF,
             dark: false,
             dblup: true,
+            space_preview: true,
             pane_folders: vec![Vec::new(); MAXP],
             pane_cur: vec![0; MAXP],
             hotkey: true,
@@ -290,6 +293,7 @@ impl PartialEq for Session {
             && self.accent_dark == o.accent_dark
             && self.dark == o.dark
             && self.dblup == o.dblup
+            && self.space_preview == o.space_preview
             && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
@@ -552,6 +556,7 @@ impl Session {
                 "dot" => s.dot = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
                 "panetabs" => {} // older files; pane tabs are always on
+                "spacepreview" => s.space_preview = v.trim() != "0",
                 "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
@@ -650,7 +655,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
