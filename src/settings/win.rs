@@ -5,7 +5,7 @@ use windows::core::{w, BOOL, HSTRING, PCWSTR};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWINDOWATTRIBUTE};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{SetWindowTheme, DRAWITEMSTRUCT, WM_MOUSELEAVE};
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -380,7 +380,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             }
         }
     }
-    crate::place_edit(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, 2)), true);
+    crate::place_edit(ctl(h, S_SEARCH), inset(g.search, sc(sn.dpi, FIELD_INSET_DIP)), true);
     move_to(ctl(h, S_CLOSE), g.close, true);
     let content = g.content;
     for item in &g.items {
@@ -406,7 +406,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 }
             }
             Item::KeyBar { edit, reset } => {
-                crate::place_edit(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, 2)), intersects(*edit, content));
+                crate::place_edit(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, FIELD_INSET_DIP)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
             Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && *i < 128 && btn.right > btn.left => {
@@ -462,7 +462,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     let accent = chrome();
     crate::fill(dc, rc, crate::pal().bg);
     crate::fill(dc, RECT { bottom: g.footer.top + 1, top: g.footer.top, ..g.footer }, crate::pal().line);
-    rfill(dc, g.search, sc(dpi, 4), crate::pal().card, Some(crate::pal().line));
+    draw_field(dc, g.search, dpi);
     if !g.show.iter().any(|s| *s) {
         crate::text(dc, RECT { left: sc(dpi, 16), top: g.search.bottom + sc(dpi, 12), right: g.nav_w - sc(dpi, 8), bottom: g.search.bottom + sc(dpi, 40) }, tx(NONE), sn.font, crate::pal().sub, DT_LEFT);
     }
@@ -504,7 +504,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 draw_fav_row(dc, row, *rect, sn, empty);
             }
             Item::Note(r, t) => crate::text(dc, *r, tx(*t), sn.small, crate::pal().sub, DT_LEFT),
-            Item::KeyBar { edit, .. } => rfill(dc, *edit, sc(dpi, 4), crate::pal().card, Some(crate::pal().line)),
+            Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
                 crate::text(dc, a, tx(s("Category", "분류", "分類")), sn.small, crate::pal().sub, DT_LEFT);
@@ -801,6 +801,11 @@ unsafe fn text_w(dc: HDC, font: HFONT, s: &str) -> i32 {
     let _ = DrawTextW(dc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, old);
     r.right
+}
+
+/// Search-box frame: card fill, `line` border, 4 DIP corners. The name prompt uses this too.
+unsafe fn draw_field(dc: HDC, r: RECT, dpi: i32) {
+    rfill(dc, r, sc(dpi, FIELD_RADIUS_DIP), crate::pal().card, Some(crate::pal().line));
 }
 
 unsafe fn rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>) {
@@ -1618,13 +1623,11 @@ thread_local! {
 
 unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_ERASEBKGND => {
-            let dc = HDC(wp.0 as _);
-            let mut rc = RECT::default();
-            let _ = GetClientRect(h, &mut rc);
-            crate::fill(dc, rc, crate::pal().card);
-            return LRESULT(1);
+        WM_PAINT => {
+            paint_ask(h);
+            return LRESULT(0);
         }
+        WM_ERASEBKGND => return LRESULT(1),
         WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
             let dc = HDC(wp.0 as _);
             SetBkMode(dc, TRANSPARENT);
@@ -1659,6 +1662,12 @@ unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         WM_DPICHANGED => {
             let r = &*(lp.0 as *const RECT);
             let _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            let font = ask_font();
+            if !font.is_invalid() {
+                for id in [1, 2, 10] {
+                    SendMessageW(ctl(h, id), WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+                }
+            }
             layout_ask(h);
             return LRESULT(0);
         }
@@ -1667,17 +1676,97 @@ unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
     DefWindowProcW(h, msg, wp, lp)
 }
 
-/// The prompt's bordered EDIT, centred in the same 28 DIP slot. Buttons stay put.
+fn ask_font() -> HFONT {
+    let font = ST.with(|s| s.borrow().font);
+    if font.is_invalid() { app(|a| a.font) } else { font }
+}
+
+fn ask_style() -> WINDOW_STYLE {
+    WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN
+}
+
+const ASK_MARGIN_DIP: i32 = 16;
+const ASK_GAP_DIP: i32 = 16;
+const ASK_BTN_W_DIP: i32 = 80;
+const ASK_BTN_H_DIP: i32 = 28;
+const ASK_BTN_GAP_DIP: i32 = 12;
+
+/// Client height that puts the same margin above the field and below the buttons.
+fn ask_client_h(dpi: i32) -> i32 {
+    let dpi = dpi.max(96);
+    search_frame_h(dpi) + sc(dpi, ASK_GAP_DIP) + sc(dpi, ASK_BTN_H_DIP) + 2 * sc(dpi, ASK_MARGIN_DIP)
+}
+
+/// Outer size. Width stays 420 DIP. Height grows so the client fits `ask_client_h` under the caption.
+fn ask_outer(dpi: i32) -> (i32, i32) {
+    let dpi = dpi.max(96);
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: ask_client_h(dpi) };
+    let h = unsafe {
+        if AdjustWindowRectExForDpi(&mut r, ask_style(), false, WS_EX_DLGMODALFRAME, dpi as u32).is_ok() {
+            (r.bottom - r.top).max(ask_client_h(dpi))
+        } else {
+            ask_client_h(dpi) + sc(dpi, 48)
+        }
+    };
+    (sc(dpi, 420), h)
+}
+
+struct AskLay {
+    field: RECT,
+    edit: RECT,
+    ok: RECT,
+    cancel: RECT,
+}
+
+/// Field, edit slot and buttons inside the client, under the caption title.
+/// The field is the settings search frame. The edit slot is that frame inset by the same 2 DIP,
+/// and `place_edit` centres the line in the slot with `centered_edit_rect`.
+fn ask_lay(client_w: i32, client_h: i32, dpi: i32) -> AskLay {
+    let dpi = dpi.max(96);
+    let s = |v: i32| sc(dpi, v);
+    let margin = s(ASK_MARGIN_DIP);
+    let gap = s(ASK_GAP_DIP);
+    let btn_w = s(ASK_BTN_W_DIP);
+    let btn_h = s(ASK_BTN_H_DIP);
+    let btn_gap = s(ASK_BTN_GAP_DIP);
+    let frame_h = search_frame_h(dpi).max(1);
+    let cw = client_w.max(1);
+    let ch = client_h.max(1);
+    let block = frame_h + gap + btn_h;
+    let top = ((ch - block) / 2).max(0);
+    let left = margin.min(cw / 2);
+    let right = (cw - margin).max(left + 1);
+    let field = RECT { left, top, right, bottom: top + frame_h };
+    let edit = inset(field, s(FIELD_INSET_DIP).min(frame_h / 2));
+    let by = field.bottom + gap;
+    let cancel = RECT { left: (right - btn_w).max(left), top: by, right, bottom: by + btn_h };
+    let ok_right = (cancel.left - btn_gap).max(left);
+    let ok = RECT { left: (ok_right - btn_w).max(0), top: by, right: ok_right, bottom: by + btn_h };
+    AskLay { field, edit, ok, cancel }
+}
+
+unsafe fn paint_ask(h: HWND) {
+    let dpi = GetDpiForWindow(h).max(96) as i32;
+    crate::buffered(h, |dc, rc| {
+        crate::fill(dc, rc, crate::pal().card);
+        let lay = ask_lay(rc.right - rc.left, rc.bottom - rc.top, dpi);
+        draw_field(dc, lay.field, dpi);
+    });
+}
+
+/// Place the borderless edit in the search-height frame, and the buttons under it.
 unsafe fn layout_ask(h: HWND) {
     let dpi = GetDpiForWindow(h).max(96) as i32;
-    let mut wr = RECT::default();
-    let _ = GetWindowRect(h, &mut wr);
-    let ww = (wr.right - wr.left).max(1);
-    let top = sc(dpi, 16);
-    let slot = RECT { left: sc(dpi, 16), top, right: ww - sc(dpi, 32), bottom: top + sc(dpi, 28) };
-    crate::place_edit(ASK_EDIT.with(|e| e.get()), slot, true);
-    let _ = SetWindowPos(ctl(h, 1), None, ww - sc(dpi, 200), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
-    let _ = SetWindowPos(ctl(h, 2), None, ww - sc(dpi, 108), sc(dpi, 60), sc(dpi, 80), sc(dpi, 28), SWP_NOZORDER);
+    let mut rc = RECT::default();
+    let _ = GetClientRect(h, &mut rc);
+    let lay = ask_lay(rc.right - rc.left, rc.bottom - rc.top, dpi);
+    let edit = ASK_EDIT.with(|e| e.get());
+    let m = sc(dpi, 8) as isize;
+    SendMessageW(edit, 0x00D3, Some(WPARAM(3)), Some(LPARAM(m | (m << 16)))); // EM_SETMARGINS, same as the search box
+    crate::place_edit(edit, lay.edit, true);
+    move_to(ctl(h, 1), lay.ok, true);
+    move_to(ctl(h, 2), lay.cancel, true);
+    let _ = InvalidateRect(Some(h), None, false);
 }
 
 /// One-line prompt. None means cancel.
@@ -1686,31 +1775,29 @@ pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<Stri
     ONCE.call_once(|| {
         let Ok(m) = GetModuleHandleW(None) else { return };
         let _ = RegisterClassW(&WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(ask_proc),
             hInstance: m.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as *mut _),
             lpszClassName: w!("GridsAsk"),
             ..Default::default()
         });
     });
     ASK_OUT.with(|o| *o.borrow_mut() = None);
     let dpi = GetDpiForWindow(owner).max(96) as i32;
-    let (ww, hh) = (sc(dpi, 420), sc(dpi, 140));
+    let (ww, hh) = ask_outer(dpi);
     let mut orc = RECT::default();
     let _ = GetWindowRect(owner, &mut orc);
     let x = orc.left + (orc.right - orc.left - ww) / 2;
     let y = orc.top + (orc.bottom - orc.top - hh) / 2;
     // Shown only after the dark caption attributes are set, or the first frame stays light.
-    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("GridsAsk"), &HSTRING::from(title), style, x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
+    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("GridsAsk"), &HSTRING::from(title), ask_style(), x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
     if h.0.is_null() {
         return None;
     }
     style_window(h);
-    let font = ST.with(|s| s.borrow().font);
-    let font = if font.is_invalid() { app(|a| a.font) } else { font };
-    let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000 | WS_BORDER.0, 10, font);
+    let font = ask_font();
+    let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000, 10, font);
     theme_ctl(edit);
     ASK_EDIT.with(|e| e.set(edit));
     let _ = child_at(h, w!("BUTTON"), tx(s("OK", "확인", "OK")), 0xB | 0x00010000, 1, font);
@@ -1792,5 +1879,52 @@ mod tests {
         assert_eq!(pack_chords(&[70, 60, 40], column_w(1000, false), gap).len(), 1);
         assert_eq!(key_row_h_from_lines(1, 96), sc(96, 40));
         assert!(key_row_h_from_lines(2, 96) > key_row_h_from_lines(1, 96));
+    }
+
+    #[test]
+    fn ask_field_matches_the_settings_search_frame() {
+        // The painted search rect is top 12, bottom 44: 32px at 96 DPI, not sc(32) at every DPI.
+        assert_eq!(search_frame_h(96), 32);
+        assert_eq!(search_frame_h(191), sc(191, 44) - sc(191, 12));
+        assert_ne!(search_frame_h(191), sc(191, 32));
+        for dpi in [96, 120, 144, 191, 192] {
+            let cw = sc(dpi, 388);
+            let ch = ask_client_h(dpi);
+            let lay = ask_lay(cw, ch, dpi);
+            let frame_h = lay.field.bottom - lay.field.top;
+            let inset_d = sc(dpi, FIELD_INSET_DIP);
+            assert_eq!(frame_h, search_frame_h(dpi));
+            assert_eq!(frame_h, sc(dpi, 44) - sc(dpi, 12));
+            assert!(frame_h > sc(dpi, 16), "frame stays taller than one text line");
+            assert_eq!(lay.edit.top, lay.field.top + inset_d);
+            assert_eq!(lay.edit.bottom, lay.field.bottom - inset_d);
+            assert_eq!((lay.edit.left, lay.edit.right), (lay.field.left + inset_d, lay.field.right - inset_d));
+            // Same centring the borderless edit gets from place_edit / centered_edit_rect.
+            for px in [15, 16, 19] {
+                let line = (px * dpi / 96).max(1);
+                let text = crate::centered_edit_rect(lay.edit, line);
+                let slot_h = lay.edit.bottom - lay.edit.top;
+                let used = line.min(slot_h);
+                assert_eq!(text.bottom - text.top, used);
+                assert_eq!(text.top, lay.edit.top + (slot_h - used) / 2);
+                assert!(text.top >= lay.field.top && text.bottom <= lay.field.bottom);
+                assert!(text.bottom - text.top < frame_h);
+            }
+            let above = lay.field.top;
+            let below = ch - lay.ok.bottom;
+            assert_eq!(above, below);
+            assert_eq!(above, sc(dpi, ASK_MARGIN_DIP));
+            assert_eq!(lay.ok.top - lay.field.bottom, sc(dpi, ASK_GAP_DIP));
+            assert_eq!(lay.cancel.top, lay.ok.top);
+            assert_eq!(lay.cancel.bottom - lay.cancel.top, sc(dpi, ASK_BTN_H_DIP));
+            assert_eq!(lay.ok.bottom - lay.ok.top, sc(dpi, ASK_BTN_H_DIP));
+            assert_eq!(lay.cancel.left - lay.ok.right, sc(dpi, ASK_BTN_GAP_DIP));
+            assert_eq!(lay.cancel.right, lay.field.right);
+            assert_eq!(lay.field.left, sc(dpi, ASK_MARGIN_DIP));
+            assert_eq!(cw - lay.field.right, sc(dpi, ASK_MARGIN_DIP));
+            assert!(lay.ok.left >= lay.field.left);
+            assert!(lay.ok.bottom <= ch && lay.field.top >= 0);
+            assert!(lay.ok.top >= lay.field.bottom);
+        }
     }
 }
