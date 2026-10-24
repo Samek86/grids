@@ -33,6 +33,7 @@ pub(crate) fn glyph(id: i32) -> &'static str {
         ID_FWD => "\u{E72A}",
         ID_UP => "\u{E74A}",
         ID_OPEN_IN => "\u{E8AB}",
+        ID_PANE_ADD => ICON_PLUS,
         ID_TB_LAYOUT => "\u{E8A9}",
         ID_TB_SAVE => "\u{E74E}",
         ID_TB_LOAD => "\u{E838}",
@@ -810,7 +811,6 @@ pub(crate) unsafe fn install_grids(s: Session) {
         a.park_lru.clear();
         a.zoom = None;
     });
-    sync_pane_tabs(app(|a| a.s.pane_tabs_on));
     show_active_tab();
 }
 

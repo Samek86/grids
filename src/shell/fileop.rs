@@ -610,14 +610,12 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.single = fresh.single;
         a.s.one_window = fresh.one_window;
         a.s.dblup = fresh.dblup;
-        a.s.pane_tabs_on = fresh.pane_tabs_on;
         a.s.accent = fresh.accent;
         a.s.accent_dark = fresh.accent_dark;
     });
     set_language(Lang::Auto);
     crate::keys::reset_all();
     apply_ext(true);
-    sync_pane_tabs(app(|a| a.s.pane_tabs_on));
     relayout();
     save_session();
     settings::refresh();

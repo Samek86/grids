@@ -189,39 +189,35 @@ pub(crate) fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
     RECT { left: x0, top: y0, right: x1, bottom: y1 }
 }
 
-// Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; an optional pane-tab
-// strip under that bar; the Explorer view below. Window tabs are a different strip, on the main window.
+// Inside a pane plate: icon buttons, address pill, ⇄, filter pill on top; a pane-tab
+// strip under that bar when this pane has two or more tabs; the Explorer view below.
+// One tab hides the strip (the list uses it) and shows `add` just to the right of ⇄.
+// Window tabs are a different strip, on the main window.
 pub(crate) struct PaneGeo {
     pub(crate) num: RECT,      // pane number (Ctrl+N); zero width when the pane is too narrow
     pub(crate) btn: [RECT; 4], // back, forward, up, open-in
     pub(crate) addr: RECT,
+    pub(crate) add: RECT, // add-tab button; zero width while the strip is showing
     pub(crate) filt: RECT,
     pub(crate) fav: RECT,
-    pub(crate) tabs: RECT, // pane-tab strip between the bar and the list; empty while pane tabs are off
+    pub(crate) tabs: RECT, // pane-tab strip between the bar and the list; empty while this pane has one tab
     pub(crate) view: RECT,
 }
 
-/// Copy of `Session::pane_tabs_on` so `pane_geo` can run without borrowing the session.
-pub(crate) static PANE_TABS: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn sync_pane_tabs(on: bool) {
-    PANE_TABS.store(on, Ordering::Relaxed);
-}
-
-pub(crate) fn pane_strip_h(dpi: i32) -> i32 {
-    if PANE_TABS.load(Ordering::Relaxed) { 26 * dpi / 96 } else { 0 }
-}
-
-pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
+/// `strip` when this pane has two or more tabs. Callers that have a window use `pane_geo_of`.
+pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32, strip: bool) -> PaneGeo {
     let s = |v: i32| v * dpi / 96;
     let (bar, bh, b, pad) = (s(30), s(22), s(24), s(4));
-    let strip = pane_strip_h(dpi);
+    let strip_h = if strip { s(26) } else { 0 };
     let y = (bar - bh) / 2;
     let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
     let fav = r(w - pad - b, b);
-    let fw = s(150).min((w - 2 * pad - 5 * b) / 3).max(0);
+    // back, forward, up, ⇄, favourite; the add-tab button joins them while the strip is hidden
+    let nbtn = if strip { 5 } else { 6 };
+    let fw = s(150).min((w - 2 * pad - nbtn * b) / 3).max(0);
     let filt = r(fav.left - s(2) - fw, fw);
-    let open = r(filt.left - s(2) - b, b);
+    let add = if strip { RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh } } else { r(filt.left - s(2) - b, b) };
+    let open = r(add.left - s(2) - b, b);
     // pane number at the far left, only while the address edit (pill minus its s(8)/s(6) insets) keeps s(32)
     let nw = s(18);
     let nw = if open.left - s(4) - (pad + 3 * b + s(4) + nw) >= s(8) + s(6) + s(32) { nw } else { 0 };
@@ -231,12 +227,19 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32) -> PaneGeo {
         num: r(pad, nw),
         btn: [r(x, b), r(x + b, b), r(x + 2 * b, b), open],
         addr: r(addr_x, open.left - s(4) - addr_x),
+        add,
         filt,
         fav,
-        tabs: RECT { left: s(2), top: bar, right: w - s(2), bottom: bar + strip },
+        tabs: RECT { left: s(2), top: bar, right: w - s(2), bottom: bar + strip_h },
         // 2px in, so the active ring stays visible around the list
-        view: RECT { left: s(2), top: bar + strip, right: w - s(2), bottom: h - s(2) },
+        view: RECT { left: s(2), top: bar + strip_h, right: w - s(2), bottom: h - s(2) },
     }
+}
+
+/// This window's bar. The strip is on only while that pane has two or more tabs.
+pub(crate) fn pane_geo_of(h: HWND, w: i32, height: i32, dpi: i32) -> PaneGeo {
+    let strip = pane_of(h).is_some_and(|i| app(|a| a.s.pane_tab_list(i).len() > 1));
+    pane_geo(w, height, dpi, strip)
 }
 
 /// Pane tabs share the strip evenly up to a comfortable width, then a '+' after the last. (tabs, '+')
@@ -271,7 +274,7 @@ pub(crate) fn filter_icon_rect(filt: RECT, s24: i32) -> Option<RECT> {
 pub(crate) fn tint_band(w: i32, dpi: i32, active: bool) -> RECT {
     let s = |v: i32| v * dpi / 96;
     let inset = if active { s(2) } else { 1 };
-    let top = pane_geo(w, s(100), dpi).num.top;
+    let top = pane_geo(w, s(100), dpi, false).num.top;
     let thick = s(3).min((top - inset).max(0));
     RECT { left: inset, top: inset, right: w - inset, bottom: inset + thick }
 }
@@ -609,7 +612,7 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             for w in [120, 400] {
                 for active in [false, true] {
-                    let (b, top) = (tint_band(w, dpi, active), pane_geo(w, 300, dpi).num.top);
+                    let (b, top) = (tint_band(w, dpi, active), pane_geo(w, 300, dpi, false).num.top);
                     let border = if active { 2 * dpi / 96 } else { 1 };
                     assert!(b.top >= border && b.bottom <= top && b.bottom - b.top >= 2, "{dpi} {w} {active}");
                 }
@@ -724,12 +727,55 @@ mod tests {
             addr: RECT::default(),
             filt: RECT::default(),
             fav: RECT::default(),
+            add: RECT::default(),
             tabs: strip,
             view: RECT::default(),
         };
         assert!(matches!(crate::pane_tab_hit(&pg, 2, 6, 40, 96), Some(crate::PaneTabHit::Tab(0))));
         assert!(matches!(crate::pane_tab_hit(&pg, 2, 350, 40, 96), Some(crate::PaneTabHit::Plus)));
         assert!(crate::pane_tab_hit(&pg, 2, 1, 40, 96).is_none());
+    }
+
+    #[test]
+    fn one_tab_hides_the_strip_and_keeps_an_add_button() {
+        let one = pane_geo(800, 500, 96, false);
+        let many = pane_geo(800, 500, 96, true);
+        assert_eq!(one.tabs.bottom, one.tabs.top);
+        assert_eq!(many.tabs.bottom - many.tabs.top, 26);
+        assert_eq!(many.view.top - one.view.top, 26);
+        assert_eq!(one.view.bottom, many.view.bottom);
+        assert_eq!(one.add.right - one.add.left, 24);
+        assert_eq!(many.add.left, many.add.right);
+        assert_eq!(one.btn[3].right + 2, one.add.left);
+        assert_eq!(one.add.right + 2, one.filt.left);
+        assert_eq!(many.btn[3].right + 2, many.filt.left);
+        assert!(one.addr.right < many.addr.right);
+        // the number needs a wider pane once the add button takes a slot
+        let edge = |strip| (60..=800).find(|&w| pane_geo(w, 500, 96, strip).num.right > pane_geo(w, 500, 96, strip).num.left).unwrap();
+        assert!(edge(false) > edge(true));
+        for (dpi, strip) in [(96, false), (144, false), (96, true), (144, true)] {
+            let s = |v: i32| v * dpi / 96;
+            for w in [400, 800, 1200] {
+                let p = pane_geo(w, 400, dpi, strip);
+                let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.add, p.filt, p.fav];
+                assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi} strip={strip}");
+                assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom, "{w}@{dpi}");
+            }
+            for w in 60..=700 {
+                let p = pane_geo(w, 400, dpi, strip);
+                assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom, "{w}@{dpi}");
+                if strip {
+                    assert_eq!((p.add.right, p.tabs.bottom - p.tabs.top), (p.add.left, s(26)));
+                    assert_eq!(p.view.top, p.tabs.bottom);
+                } else {
+                    assert_eq!((p.tabs.bottom, p.add.right - p.add.left), (p.tabs.top, s(24)));
+                    assert_eq!(p.view.top, p.tabs.top);
+                    if p.btn[3].left >= p.btn[2].right {
+                        assert!(p.btn[3].right <= p.add.left && p.add.right <= p.filt.left, "{w}@{dpi}");
+                    }
+                }
+            }
+        }
     }
 }
 
