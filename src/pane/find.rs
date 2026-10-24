@@ -338,6 +338,75 @@ pub(crate) unsafe fn focus_is_find(pane: HWND, focus: HWND) -> bool {
     })
 }
 
+/// The search-result list of this pane has the keyboard focus.
+pub(crate) unsafe fn find_focused(i: usize) -> bool {
+    let Some(hwnd) = pane_hwnd(i) else { return false };
+    focus_is_find(hwnd, GetFocus())
+}
+
+/// Put the keyboard on the result list, when that list is on screen.
+pub(crate) unsafe fn focus_find_list(i: usize) -> bool {
+    let Some(hwnd) = pane_hwnd(i) else { return false };
+    let list = {
+        let map = find_map();
+        let Some(u) = map.get(&(hwnd.0 as isize)) else { return false };
+        if !u.show {
+            return false;
+        }
+        hwnd_of(u.list)
+    };
+    if list.0.is_null() || !IsWindow(Some(list)).as_bool() || !IsWindowVisible(list).as_bool() {
+        return false;
+    }
+    _ = SetFocus(Some(list));
+    true
+}
+
+/// The next or previous result, or nothing at either end. `sel` outside `0..n` has no neighbour.
+pub(crate) fn find_neighbour(sel: usize, n: usize, prev: bool) -> Option<usize> {
+    if n == 0 || sel >= n {
+        return None;
+    }
+    if prev { sel.checked_sub(1) } else { (sel + 1 < n).then_some(sel + 1) }
+}
+
+/// Move the result selection by one row and return that hit. Stays put at either end.
+pub(crate) unsafe fn step_find_sel(i: usize, prev: bool) -> Option<FindHit> {
+    let hwnd = pane_hwnd(i)?;
+    let dpi = app(|a| a.dpi);
+    let mut map = find_map();
+    let u = map.get_mut(&(hwnd.0 as isize))?;
+    if !u.show {
+        return None;
+    }
+    let next = find_neighbour(u.sel, u.hits.len(), prev)?;
+    u.sel = next;
+    let view_h = list_view_h(hwnd_of(u.list), dpi);
+    u.scroll = scroll_to_sel(u.sel, u.scroll, view_h, row_h(dpi));
+    let hit = u.hits[u.sel].clone();
+    let list = hwnd_of(u.list);
+    drop(map);
+    if !list.0.is_null() {
+        _ = InvalidateRect(Some(list), None, false);
+    }
+    Some(hit)
+}
+
+/// Quick look at the selected result. Nothing is selected: the same beep as an empty file list.
+pub(crate) unsafe fn preview_find_sel(i: usize) {
+    let Some(hwnd) = pane_hwnd(i) else { return };
+    let hit = {
+        let map = find_map();
+        let Some(u) = map.get(&(hwnd.0 as isize)) else { return };
+        if !u.show { None } else { u.hits.get(u.sel).cloned() }
+    };
+    let Some(hit) = hit else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    super::open_peek_path(i, &hit.path, &hit.name);
+}
+
 pub(crate) unsafe fn find_retarget(i: usize) {
     let Some(hwnd) = pane_hwnd(i) else { return };
     let focused = pane_ctl(i, ID_FILTER).is_some_and(|e| GetFocus() == e);
@@ -692,11 +761,44 @@ pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             let (x, y) = crate::xy(lp);
-            let activated = click_find(pane, x, y, msg == WM_LBUTTONDBLCLK);
-            if !activated {
+            let row = click_find(pane, x, y, msg == WM_LBUTTONDBLCLK);
+            if row && msg != WM_LBUTTONDBLCLK {
+                // A result row takes keyboard focus. The header, its checkbox, and empty space
+                // leave the caret in the search box. Space and F3 are read in the key loop
+                // once this window is focused, and preview the selected row.
+                _ = SetFocus(Some(h));
+            } else if !row {
                 if let Ok(e) = GetDlgItem(Some(pane), ID_FILTER) {
                     _ = SetFocus(Some(e));
                 }
+            }
+        }
+        // Up and Down move the row. Enter opens it. Esc clears the search, as in the box.
+        // Space and F3 are not here: the key loop previews the selected row while this window is focused.
+        WM_KEYDOWN => {
+            let Some(i) = pane_of(pane) else { return DefWindowProcW(h, msg, wp, lp) };
+            let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
+            let plain = !down(VK_CONTROL) && !down(VK_SHIFT) && !down(VK_MENU);
+            match VIRTUAL_KEY(wp.0 as u16) {
+                VK_UP if plain => { nudge_find(i, -1); }
+                VK_DOWN if plain => { nudge_find(i, 1); }
+                VK_PRIOR if plain => { nudge_find(i, -8); }
+                VK_NEXT if plain => { nudge_find(i, 8); }
+                VK_RETURN => {
+                    if !open_find_sel(i) {
+                        apply_filter(i);
+                        focus_view(i);
+                    }
+                }
+                VK_ESCAPE => {
+                    if let Ok(e) = GetDlgItem(Some(pane), ID_FILTER) {
+                        _ = SetWindowTextW(e, w!(""));
+                    }
+                    find_clear(i);
+                    apply_filter(i);
+                    focus_view(i);
+                }
+                _ => return DefWindowProcW(h, msg, wp, lp),
             }
         }
         _ => return DefWindowProcW(h, msg, wp, lp),
@@ -776,7 +878,7 @@ unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
             return false;
         }
         u.sel = idx as usize;
-        let hit = if dbl { u.hits.get(u.sel).cloned() } else { None };
+        let hit = u.hits.get(u.sel).cloned();
         let list = hwnd_of(u.list);
         drop(map);
         if !list.0.is_null() {
@@ -784,11 +886,14 @@ unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
         }
         hit
     };
-    if let Some(hit) = hit {
-        activate_hit(i, &hit);
-        return true;
+    // True for a result row: the caller focuses this list. A double-click opens the hit
+    // and moves focus on to the folder. The header returns false above.
+    if dbl {
+        if let Some(hit) = hit {
+            activate_hit(i, &hit);
+        }
     }
-    false
+    true
 }
 
 unsafe fn paint_find(h: HWND, pane: HWND) {
@@ -936,6 +1041,18 @@ mod tests {
         assert_eq!(header_hit(364, 120, true), HeaderHit::Scope);
         assert_eq!(header_hit(365, 120, true), HeaderHit::None);
         assert_eq!(header_hit(187, 120, false), HeaderHit::None);
+    }
+
+    #[test]
+    fn result_neighbour_stops_at_either_end() {
+        assert_eq!(find_neighbour(0, 3, true), None);
+        assert_eq!(find_neighbour(0, 3, false), Some(1));
+        assert_eq!(find_neighbour(1, 3, true), Some(0));
+        assert_eq!(find_neighbour(2, 3, false), None);
+        assert_eq!(find_neighbour(2, 3, true), Some(1));
+        assert_eq!(find_neighbour(0, 0, false), None);
+        assert_eq!(find_neighbour(0, 1, false), None);
+        assert_eq!(find_neighbour(4, 3, false), None);
     }
 
     #[test]
