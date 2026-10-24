@@ -949,6 +949,7 @@ fn flip(id: u8) {
             }
             return;
         }
+        TG_SPACE => app(|a| a.s.space_preview ^= true),
         TG_DOT => {
             app(|a| a.s.dot ^= true);
             unsafe {
