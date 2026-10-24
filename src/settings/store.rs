@@ -223,6 +223,9 @@ struct SettingsFile {
     /// Subfolder search uses Everything when it is running. Missing means on.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     use_everything: bool,
+    /// Space in a file list opens quick look. Missing means on. Omitted while on, so an older file stays unchanged.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    space_preview: bool,
     /// The one-time Everything install question was shown. Missing means not yet.
     #[serde(default, skip_serializing_if = "is_off")]
     ev_asked: bool,
@@ -292,6 +295,7 @@ impl SettingsFile {
             single: true,
             one_window: true,
             use_everything: true,
+            space_preview: true,
             ev_asked: false,
             session: String::new(),
             favorites: Vec::new(),
@@ -373,6 +377,7 @@ impl SettingsFile {
             single: s.single,
             one_window: s.one_window,
             use_everything: s.use_everything,
+            space_preview: s.space_preview,
             ev_asked: s.ev_asked,
             session: s.file.clone(),
             favorites,
@@ -413,6 +418,7 @@ impl SettingsFile {
         self.extra.remove("drive_buttons");
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
+        self.extra.remove("space_preview");
         self.extra.remove("layout_new");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
@@ -500,6 +506,7 @@ impl SettingsFile {
         s.single = self.single;
         s.one_window = self.one_window;
         s.use_everything = self.use_everything;
+        s.space_preview = self.space_preview;
         s.ev_asked = self.ev_asked;
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
@@ -1284,6 +1291,27 @@ mod tests {
         assert!(text.contains("\"use_everything\": false"), "{text}");
         assert!(!adopt(&text).unwrap().use_everything);
         assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("use_everything"));
+    }
+
+    #[test]
+    fn space_preview_defaults_on_and_round_trips() {
+        assert!(Session::default().space_preview);
+        assert!(adopt(r#"{"version":1}"#).unwrap().space_preview);
+        assert!(Session::parse("side=1\n").space_preview);
+        let mut s = Session::default();
+        s.space_preview = false;
+        assert!(!Session::parse(&s.to_ini()).space_preview);
+        assert!(Session::parse("spacepreview=1").space_preview);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"space_preview\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().space_preview);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("space_preview"));
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("space_preview".into(), serde_json::json!(true));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["space_preview"], false);
+        assert!(saved.get("extra").is_none());
     }
 
     #[test]

@@ -534,11 +534,14 @@ fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
 
 const EXPLORER: [&str; 3] = [
     "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\
-Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\n",
+Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\
+Space\tQuick look, same as F3. A space within a second of typing, or during IME composition, stays part of the name. Settings → Panes & view can turn this off\n\n",
     "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\
-Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\n",
+Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\
+Space\t빠른 미리보기. F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어 조합 중에는 이름의 일부로 들어가요. 설정 → 패널·보기에서 끌 수 있어요\n\n",
     "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\
-Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\n",
+Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\
+Space\tクイックルック。F3 と同じです。入力から 1 秒以内、または日本語・韓国語の変換中のスペースは名前の一部になります。設定 → ペインと表示でオフにできます\n\n",
 ];
 
 const NOTES_EN: &str = "\

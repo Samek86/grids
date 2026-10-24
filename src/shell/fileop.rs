@@ -610,6 +610,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.single = fresh.single;
         a.s.one_window = fresh.one_window;
         a.s.dblup = fresh.dblup;
+        a.s.space_preview = fresh.space_preview;
         a.s.accent = fresh.accent;
         a.s.accent_dark = fresh.accent_dark;
     });
