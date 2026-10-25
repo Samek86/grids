@@ -13,7 +13,7 @@ use crate::imports::*;
 use crate::session::*;
 use crate::ui::*;
 
-use super::{apply_filter, focus_view, hidden, navigate};
+use super::{apply_filter, focus_view, hidden, navigate, new_pane_tab, set_active};
 
 pub(crate) const FIND_CAP: usize = 300;
 
@@ -226,6 +226,10 @@ struct FindUi {
     more: bool,
     running: bool,
     everywhere: bool,
+    // Scope and subfolder flag of the search that produced `hits`. A refresh reuses those
+    // hits only when both still match; the pill used to flip and then resume the old search.
+    searched_sub: bool,
+    searched_all: bool,
     engine: FindEngine,
     sel: usize,
     scroll: i32,
@@ -436,13 +440,16 @@ pub(crate) unsafe fn refresh_find(i: usize) {
             more: false,
             running: false,
             everywhere: false,
+            searched_sub: false,
+            searched_all: false,
             engine: FindEngine::Walk,
             sel: 0,
             scroll: 0,
             list: 0,
             show: false,
         });
-        if u.query == query && u.root.eq_ignore_ascii_case(&root) && (u.running || !u.hits.is_empty()) {
+        let all = u.everywhere || forces_everywhere(&query);
+        if same_find(&query, &u.query, &root, &u.root, u.recursive, u.searched_sub, all, u.searched_all, u.running, u.hits.len()) {
             u.show = true;
             true
         } else {
@@ -472,6 +479,8 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         let up = u.recursive && enabled && everything::running();
         let use_ev = find_engine(u.recursive, enabled, up) == FindEngine::Everything;
         u.engine = if use_ev { FindEngine::Everything } else { FindEngine::Walk };
+        u.searched_sub = u.recursive;
+        u.searched_all = u.everywhere || forces_everywhere(&query);
         (u.gen, u.recursive, u.everywhere, use_ev)
     };
     // Any other pane's walk is stale once this one starts.
@@ -495,29 +504,44 @@ pub(crate) unsafe fn refresh_find(i: usize) {
     WAKE.notify_one();
 }
 
+/// One click on the scope pill, from the caption the user sees.
+/// That caption is "all drives" when `everywhere` is set or the query starts with `all:` / `everywhere:`.
+/// Turning it off removes the prefix. Leaving the prefix in the edit kept the old caption until a later refresh.
+/// `(everywhere, replacement edit text)`.
+pub(crate) fn scope_after_click(everywhere: bool, query: &str) -> (bool, Option<String>) {
+    if everywhere || forces_everywhere(query) {
+        (false, without_scope_prefix(query))
+    } else {
+        (true, None)
+    }
+}
+
+/// The in-flight search is already what the pill asked for. Text and folder are not enough:
+/// the same words in the other scope must not reuse those hits.
+pub(crate) fn same_find(query: &str, prev_query: &str, root: &str, prev_root: &str, sub: bool, searched_sub: bool, all: bool, searched_all: bool, running: bool, hits: usize) -> bool {
+    query == prev_query && root.eq_ignore_ascii_case(prev_root) && sub == searched_sub && all == searched_all && (running || hits > 0)
+}
+
 pub(crate) unsafe fn toggle_find_scope(i: usize) {
     let Some(hwnd) = pane_hwnd(i) else { return };
-    if let Some(e) = pane_ctl(i, ID_FILTER) {
-        let text = text_of(e);
-        if let Some(rest) = without_scope_prefix(&text) {
-            {
-                let mut map = find_map();
-                if let Some(u) = map.get_mut(&(hwnd.0 as isize)) {
-                    u.everywhere = false;
-                }
-            }
-            _ = SetWindowTextW(e, &HSTRING::from(rest));
-            return;
-        }
-    }
+    let Some(edit) = pane_ctl(i, ID_FILTER) else { return };
+    let text = text_of(edit);
+    let cur = find_map().get(&(hwnd.0 as isize)).map(|u| u.everywhere).unwrap_or(false);
+    let (everywhere, replace) = scope_after_click(cur, &text);
     {
         let mut map = find_map();
         if let Some(u) = map.get_mut(&(hwnd.0 as isize)) {
-            u.everywhere = !u.everywhere;
+            u.everywhere = everywhere;
             u.query.clear();
         }
     }
+    if let Some(rest) = replace {
+        // EN_CHANGE cancels the running search and arms the filter timer. Killed below.
+        _ = SetWindowTextW(edit, &HSTRING::from(rest));
+    }
+    _ = KillTimer(Some(hwnd), TIMER_FILTER);
     refresh_find(i);
+    repaint_find(hwnd);
 }
 
 pub(crate) unsafe fn toggle_find_sub(i: usize) {
@@ -530,6 +554,14 @@ pub(crate) unsafe fn toggle_find_sub(i: usize) {
         }
     }
     refresh_find(i);
+    repaint_find(hwnd);
+}
+
+unsafe fn repaint_find(pane: HWND) {
+    let list = find_map().get(&(pane.0 as isize)).map(|u| hwnd_of(u.list)).unwrap_or_default();
+    if !list.0.is_null() {
+        _ = InvalidateRect(Some(list), None, false);
+    }
 }
 
 pub(crate) unsafe fn nudge_find(i: usize, delta: i32) -> bool {
@@ -676,26 +708,74 @@ unsafe fn ensure_list(pane: HWND) -> HWND {
     CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsFind"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(pane), None, None, None).unwrap_or_default()
 }
 
+/// Enter. A folder is browsed to in this pane. A file is launched and the pane moves to its folder.
+/// Double-click does not come here: a file stays in the result list, a folder opens in a new pane tab.
 unsafe fn activate_hit(i: usize, hit: &FindHit) {
     let open = hit_open(&hit.path, hit.dir);
-    if let Some(e) = pane_ctl(i, ID_FILTER) {
-        _ = SetWindowTextW(e, w!(""));
-    }
-    find_clear(i);
-    apply_filter(i);
+    clear_find_query(i);
     match open {
         FindHitOpen::Folder(p) => {
             navigate(i, &p);
         }
         FindHitOpen::File { path, folder } => {
             let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
-            ShellExecuteW(None, w!("open"), &HSTRING::from(&path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+            launch_file(&path);
             if !folder.is_empty() && !same_dir(&folder, &cur) {
                 navigate(i, &folder);
             }
         }
     }
     focus_view(i);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FindDbl {
+    Launch(String),
+    NewTab(String),
+}
+
+/// Double-click. A file is launched and the result list stays. A folder opens in a new tab of this pane.
+pub(crate) fn dblclick_hit(path: &str, dir: bool) -> FindDbl {
+    if dir { FindDbl::NewTab(path.to_string()) } else { FindDbl::Launch(path.to_string()) }
+}
+
+fn launch_file(path: &str) {
+    unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL); }
+}
+
+unsafe fn clear_find_query(i: usize) {
+    if let Some(e) = pane_ctl(i, ID_FILTER) {
+        _ = SetWindowTextW(e, w!(""));
+    }
+    if let Some(h) = pane_hwnd(i) {
+        // SetWindowText arms the filter timer. Drop it before find_clear hides the list.
+        _ = KillTimer(Some(h), TIMER_FILTER);
+        _ = KillTimer(Some(h), TIMER_FIND);
+    }
+    find_clear(i);
+    apply_filter(i);
+}
+
+unsafe fn open_find_dbl(i: usize, hit: &FindHit) {
+    match dblclick_hit(&hit.path, hit.dir) {
+        FindDbl::Launch(path) => {
+            // The filter's hide timer is still pending on a fast double-click. Launching the file
+            // moves focus away, and that timer would then take the result list down.
+            if let Some(h) = pane_hwnd(i) {
+                _ = KillTimer(Some(h), TIMER_FIND);
+            }
+            launch_file(&path);
+        }
+        FindDbl::NewTab(folder) => {
+            clear_find_query(i);
+            set_active(i);
+            new_pane_tab(i);
+            if !navigate(i, &folder) {
+                _ = MessageBeep(MB_ICONWARNING);
+            }
+            focus_view(i);
+        }
+    }
 }
 
 fn same_dir(a: &str, b: &str) -> bool {
@@ -761,7 +841,7 @@ pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             let (x, y) = crate::xy(lp);
-            let row = click_find(pane, x, y, msg == WM_LBUTTONDBLCLK);
+            let row = click_find(h, pane, x, y, msg == WM_LBUTTONDBLCLK);
             if row && msg != WM_LBUTTONDBLCLK {
                 // A result row takes keyboard focus. The header, its checkbox, and empty space
                 // leave the caret in the search box. Space and F3 are read in the key loop
@@ -772,6 +852,23 @@ pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp
                     _ = SetFocus(Some(e));
                 }
             }
+        }
+        // DefWindowProc turns a right-button up into this. Keyboard (Shift+F10) passes lp = -1.
+        WM_CONTEXTMENU => {
+            let screen = if lp.0 == -1 {
+                let mut rc = RECT::default();
+                _ = GetWindowRect(h, &mut rc);
+                POINT { x: (rc.left + rc.right) / 2, y: (rc.top + rc.bottom) / 2 }
+            } else {
+                POINT { x: (lp.0 & 0xffff) as i16 as i32, y: ((lp.0 >> 16) & 0xffff) as i16 as i32 }
+            };
+            let y = if lp.0 == -1 {
+                None
+            } else {
+                let mut p = screen;
+                ScreenToClient(h, &mut p).as_bool().then_some(p.y)
+            };
+            find_context(pane, y, screen);
         }
         // Up and Down move the row. Enter opens it. Esc clears the search, as in the box.
         // Space and F3 are not here: the key loop previews the selected row while this window is focused.
@@ -821,15 +918,30 @@ unsafe fn scroll_find(pane: HWND, dy: i32) {
     }
 }
 
-/// Design pixels (96 dpi) of the search-list header.
-/// The subfolder checkbox and its label occupy `[0, SUB_LABEL_RIGHT)`.
-/// The scope pill is `[SCOPE_LEFT, SCOPE_RIGHT)`.
-const SUB_LABEL_RIGHT: i32 = 146;
-const SCOPE_LEFT: i32 = 150;
-const SCOPE_RIGHT: i32 = 292;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeaderGeom {
+    pub sub: RECT,
+    pub scope: Option<RECT>,
+    pub status_left: i32,
+}
 
-fn header_px(v: i32, dpi: i32) -> i32 {
-    v * dpi / 96
+/// Header controls from measured label widths (already in pixels) plus a small DIP pad.
+/// The checkbox square sits in `sub` (it starts at 8 DIP and is 14 DIP wide; the label starts at 26).
+/// `scope` is the pill, only while the search includes subfolders, inset 3 DIP from the header row.
+pub(crate) fn header_geom(dpi: i32, width: i32, header_h: i32, sub_text: i32, scope_text: i32, recursive: bool) -> HeaderGeom {
+    let s = |v: i32| v.saturating_mul(dpi.max(1)) / 96;
+    let width = width.max(0);
+    let sub_right = (s(26) + sub_text.max(0) + s(8)).min(width);
+    let sub = RECT { left: 0, top: 0, right: sub_right, bottom: header_h.max(0) };
+    if !recursive {
+        return HeaderGeom { sub, scope: None, status_left: (width / 2).max(sub_right) };
+    }
+    let (pad, gap) = (s(8), s(6));
+    let left = sub_right + gap;
+    let right = (left + scope_text.max(0) + pad * 2).min(width.max(left));
+    let top = s(3).min(header_h.max(0));
+    let bottom = (header_h - s(3)).max(top);
+    HeaderGeom { sub, scope: Some(RECT { left, top, right, bottom }), status_left: right + gap }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -840,19 +952,64 @@ pub(crate) enum HeaderHit {
 }
 
 /// Click target in the search-list header. The checkbox square and the Subfolders label
-/// are `Sub`. The scope pill is `Scope` only while the search includes subfolders.
+/// are `Sub`. The scope pill is `Scope` only on the rectangle it is drawn in.
 /// The gap before the pill and the status text are `None`.
-pub(crate) fn header_hit(x: i32, dpi: i32, recursive: bool) -> HeaderHit {
-    if x >= 0 && x < header_px(SUB_LABEL_RIGHT, dpi) {
+pub(crate) fn header_hit(x: i32, y: i32, g: &HeaderGeom) -> HeaderHit {
+    if inside(g.sub, x, y) {
         HeaderHit::Sub
-    } else if recursive && x >= header_px(SCOPE_LEFT, dpi) && x < header_px(SCOPE_RIGHT, dpi) {
+    } else if g.scope.is_some_and(|r| inside(r, x, y)) {
         HeaderHit::Scope
     } else {
         HeaderHit::None
     }
 }
 
-unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
+/// Row under a click in the result list. `y` is in the list's client area; the header occupies `rh`.
+pub(crate) fn row_at(y: i32, scroll: i32, rh: i32, n: usize) -> Option<usize> {
+    if rh <= 0 || y < rh || n == 0 {
+        return None;
+    }
+    let idx = (y - rh + scroll) / rh;
+    (idx >= 0 && (idx as usize) < n).then_some(idx as usize)
+}
+
+unsafe fn text_px(dc: HDC, font: HFONT, s: &str) -> i32 {
+    if s.is_empty() || dc.is_invalid() {
+        return 0;
+    }
+    let w: Vec<u16> = s.encode_utf16().collect();
+    let mut sz = SIZE::default();
+    let old = SelectObject(dc, font.into());
+    let _ = GetTextExtentPoint32W(dc, &w, &mut sz);
+    SelectObject(dc, old);
+    sz.cx
+}
+
+/// `dc` is the paint DC when we already have one. A click measures on a fresh DC.
+/// A failed measure falls back to the old fixed text widths so the controls stay clickable.
+unsafe fn header_now(h: HWND, dc: Option<HDC>, dpi: i32, header_h: i32, width: i32, recursive: bool, all: bool) -> HeaderGeom {
+    let font = app(|a| a.font);
+    let sub = tr("Subfolders", "하위 폴더", "サブフォルダー");
+    let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
+    let (release, dc) = match dc {
+        Some(dc) => (false, dc),
+        None => (true, GetDC(Some(h))),
+    };
+    let (sub_w, scope_w) = if dc.is_invalid() {
+        (0, 0)
+    } else {
+        (text_px(dc, font, sub), if recursive { text_px(dc, font, scope) } else { 0 })
+    };
+    if release && !dc.is_invalid() {
+        _ = ReleaseDC(Some(h), dc);
+    }
+    let dip = |v: i32| v * dpi.max(1) / 96;
+    let sub_w = if sub_w > 0 { sub_w } else { dip(112) };
+    let scope_w = if !recursive || scope_w > 0 { scope_w } else { dip(110) };
+    header_geom(dpi, width, header_h, sub_w, scope_w, recursive)
+}
+
+unsafe fn click_find(list: HWND, pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
     let i = match pane_of(pane) {
         Some(i) => i,
         None => return false,
@@ -860,24 +1017,33 @@ unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
     let dpi = app(|a| a.dpi);
     let rh = row_h(dpi);
     if y < rh {
-        // CS_DBLCLKS: a quick second press is WM_LBUTTONDBLCLK, not another WM_LBUTTONDOWN.
-        // Toggle once for that message, the same as a single click. `dbl` stays for result rows.
-        let recursive = find_map().get(&(pane.0 as isize)).is_some_and(|u| u.recursive);
-        match header_hit(x, dpi, recursive) {
-            HeaderHit::Sub => toggle_find_sub(i),
-            HeaderHit::Scope => toggle_find_scope(i),
-            HeaderHit::None => {}
+        // CS_DBLCLKS turns the second press into WM_LBUTTONDBLCLK, not another WM_LBUTTONDOWN.
+        // Toggling on both flipped the pill back inside the double-click time, so a quick
+        // second click looked like the first had done nothing. Toggle once, on the first down.
+        if !dbl {
+            let mut rc = RECT::default();
+            _ = GetClientRect(list, &mut rc);
+            let (recursive, all) = {
+                let map = find_map();
+                match map.get(&(pane.0 as isize)) {
+                    Some(u) => (u.recursive, u.everywhere || forces_everywhere(&u.query)),
+                    None => return false,
+                }
+            };
+            let g = header_now(list, None, dpi, rh, rc.right, recursive, all);
+            match header_hit(x, y, &g) {
+                HeaderHit::Sub => toggle_find_sub(i),
+                HeaderHit::Scope => toggle_find_scope(i),
+                HeaderHit::None => {}
+            }
         }
         return false;
     }
     let hit = {
         let mut map = find_map();
         let Some(u) = map.get_mut(&(pane.0 as isize)) else { return false };
-        let idx = (y - rh + u.scroll) / rh;
-        if idx < 0 || idx as usize >= u.hits.len() {
-            return false;
-        }
-        u.sel = idx as usize;
+        let Some(idx) = row_at(y, u.scroll, rh, u.hits.len()) else { return false };
+        u.sel = idx;
         let hit = u.hits.get(u.sel).cloned();
         let list = hwnd_of(u.list);
         drop(map);
@@ -886,14 +1052,43 @@ unsafe fn click_find(pane: HWND, x: i32, y: i32, dbl: bool) -> bool {
         }
         hit
     };
-    // True for a result row: the caller focuses this list. A double-click opens the hit
-    // and moves focus on to the folder. The header returns false above.
+    // True for a result row: the caller focuses this list. A double-click launches a file
+    // in place, or opens a folder in a new pane tab. The header returns false above.
     if dbl {
         if let Some(hit) = hit {
-            activate_hit(i, &hit);
+            open_find_dbl(i, &hit);
         }
     }
     true
+}
+
+/// Right-click (or the keyboard menu) on a result row: the Explorer menu for that full path.
+/// `y` is the client y; None is the keyboard menu for the row that is already selected.
+unsafe fn find_context(pane: HWND, y: Option<i32>, screen: POINT) {
+    let Some(i) = pane_of(pane) else { return };
+    let dpi = app(|a| a.dpi);
+    let rh = row_h(dpi);
+    let hit = {
+        let mut map = find_map();
+        let Some(u) = map.get_mut(&(pane.0 as isize)) else { return };
+        if !u.show || u.hits.is_empty() {
+            return;
+        }
+        if let Some(y) = y {
+            let Some(idx) = row_at(y, u.scroll, rh, u.hits.len()) else { return };
+            u.sel = idx;
+        }
+        let hit = u.hits.get(u.sel).cloned();
+        let list = hwnd_of(u.list);
+        drop(map);
+        if !list.0.is_null() {
+            _ = InvalidateRect(Some(list), None, false);
+        }
+        hit
+    };
+    let Some(hit) = hit else { return };
+    let items = [(hit.path, !hit.dir)];
+    _ = crate::shell::show_paths_ctx(i, &items, screen);
 }
 
 unsafe fn paint_find(h: HWND, pane: HWND) {
@@ -914,24 +1109,23 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         fill(dc, rc, pal().card);
         let head = RECT { left: 0, top: 0, right: rc.right, bottom: rh };
         fill(dc, head, pal().bg);
+        let g = header_now(h, Some(dc), dpi, rh, rc.right, recursive, all);
         let mark = RECT { left: s(8), top: (rh - s(14)) / 2, right: s(8) + s(14), bottom: (rh - s(14)) / 2 + s(14) };
         fill(dc, mark, if recursive { accent } else { pal().card });
         frame(dc, mark, 1, if recursive { accent } else { pal().line });
         if recursive {
             text(dc, mark, "\u{E73E}", icon_font, on_color(accent), DT_CENTER);
         }
-        let label_right = if recursive { header_px(SUB_LABEL_RIGHT, dpi) } else { rc.right / 2 };
-        text(dc, RECT { left: s(26), right: label_right, ..head }, tr("Subfolders", "하위 폴더", "サブフォルダー"), font, pal().text, DT_LEFT);
-        if recursive {
-            let pill = RECT { left: header_px(SCOPE_LEFT, dpi), top: s(3), right: header_px(SCOPE_RIGHT, dpi), bottom: rh - s(3) };
+        let sub_label = tr("Subfolders", "하위 폴더", "サブフォルダー");
+        text(dc, RECT { left: s(26), right: g.sub.right, ..head }, sub_label, font, pal().text, DT_LEFT);
+        if let Some(pill) = g.scope {
             fill(dc, pill, pal().card);
             frame(dc, pill, 1, if all { accent } else { pal().line });
             let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
             text(dc, pill, scope, font, if all { accent } else { pal().text }, DT_CENTER);
         }
         let status = find_status(running, hits.len(), more, engine, all && engine == FindEngine::Everything);
-        let status_left = if recursive { s(300) } else { rc.right / 2 };
-        text(dc, RECT { left: status_left, right: rc.right - s(8), ..head }, &status, font, pal().sub, DT_RIGHT);
+        text(dc, RECT { left: g.status_left, right: rc.right - s(8), ..head }, &status, font, pal().sub, DT_RIGHT);
         let mut y = rh - scroll;
         if hits.is_empty() && !running {
             text(dc, RECT { left: s(8), top: rh, right: rc.right - s(8), bottom: rh + rh }, tr("No matches", "결과 없음", "一致なし"), font, pal().sub, DT_LEFT);
@@ -1007,40 +1201,92 @@ mod tests {
     }
 
     #[test]
-    fn header_hit_is_the_checkbox_label_or_the_scope_pill() {
-        // 96 dpi: label ends at 146, pill is [150, 292).
-        assert_eq!(header_hit(0, 96, true), HeaderHit::Sub);
-        assert_eq!(header_hit(8, 96, true), HeaderHit::Sub);
-        assert_eq!(header_hit(19, 96, true), HeaderHit::Sub);
-        assert_eq!(header_hit(26, 96, true), HeaderHit::Sub);
-        assert_eq!(header_hit(145, 96, true), HeaderHit::Sub);
-        assert_eq!(header_hit(146, 96, true), HeaderHit::None);
-        assert_eq!(header_hit(149, 96, true), HeaderHit::None);
-        assert_eq!(header_hit(150, 96, true), HeaderHit::Scope);
-        assert_eq!(header_hit(291, 96, true), HeaderHit::Scope);
-        assert_eq!(header_hit(292, 96, true), HeaderHit::None);
-        assert_eq!(header_hit(400, 96, true), HeaderHit::None);
-        assert_eq!(header_hit(-1, 96, true), HeaderHit::None);
-        // The pill is drawn only while the search includes subfolders.
-        assert_eq!(header_hit(0, 96, false), HeaderHit::Sub);
-        assert_eq!(header_hit(145, 96, false), HeaderHit::Sub);
-        assert_eq!(header_hit(150, 96, false), HeaderHit::None);
-        assert_eq!(header_hit(291, 96, false), HeaderHit::None);
-        // 192 dpi is exactly double; 120 dpi truncates the same way the paint scale does.
-        assert_eq!(header_hit(291, 192, true), HeaderHit::Sub);
-        assert_eq!(header_hit(292, 192, true), HeaderHit::None);
-        assert_eq!(header_hit(299, 192, true), HeaderHit::None);
-        assert_eq!(header_hit(300, 192, true), HeaderHit::Scope);
-        assert_eq!(header_hit(583, 192, true), HeaderHit::Scope);
-        assert_eq!(header_hit(584, 192, true), HeaderHit::None);
-        assert_eq!(header_hit(300, 192, false), HeaderHit::None);
-        assert_eq!(header_hit(181, 120, true), HeaderHit::Sub);
-        assert_eq!(header_hit(182, 120, true), HeaderHit::None);
-        assert_eq!(header_hit(186, 120, true), HeaderHit::None);
-        assert_eq!(header_hit(187, 120, true), HeaderHit::Scope);
-        assert_eq!(header_hit(364, 120, true), HeaderHit::Scope);
-        assert_eq!(header_hit(365, 120, true), HeaderHit::None);
-        assert_eq!(header_hit(187, 120, false), HeaderHit::None);
+    fn header_fits_the_label_and_the_pill_matches_its_rect() {
+        // 96 dpi. 52px is about "하위 폴더", 84px about "모든 드라이브", in the UI font.
+        // The old hit ran to 146 and the old pill was 142 wide, with empty space after the words.
+        let g = header_geom(96, 800, 22, 52, 84, true);
+        assert_eq!(g.sub, RECT { left: 0, top: 0, right: 86, bottom: 22 });
+        assert!(g.sub.right <= 146 * 70 / 100);
+        let pill = g.scope.unwrap();
+        assert_eq!((pill.left, pill.right, pill.top, pill.bottom), (92, 192, 3, 19));
+        assert_eq!(pill.right - pill.left, 100); // text 84 + 8 DIP of pad on each side; the old pill was 142
+        assert!(pill.left >= g.sub.right);
+        assert_eq!(g.status_left, 198);
+        assert_eq!(header_hit(0, 10, &g), HeaderHit::Sub);
+        assert_eq!(header_hit(8, 10, &g), HeaderHit::Sub);
+        assert_eq!(header_hit(85, 10, &g), HeaderHit::Sub);
+        assert_eq!(header_hit(86, 10, &g), HeaderHit::None);
+        assert_eq!(header_hit(91, 10, &g), HeaderHit::None);
+        assert_eq!(header_hit(92, 10, &g), HeaderHit::Scope);
+        assert_eq!(header_hit(191, 10, &g), HeaderHit::Scope);
+        assert_eq!(header_hit(192, 10, &g), HeaderHit::None);
+        // The pill is inset; the row above and below it is not the button.
+        assert_eq!(header_hit(100, 0, &g), HeaderHit::None);
+        assert_eq!(header_hit(100, 2, &g), HeaderHit::None);
+        assert_eq!(header_hit(100, 3, &g), HeaderHit::Scope);
+        assert_eq!(header_hit(100, 18, &g), HeaderHit::Scope);
+        assert_eq!(header_hit(100, 19, &g), HeaderHit::None);
+        assert_eq!(header_hit(-1, 10, &g), HeaderHit::None);
+        // No pill until the search includes subfolders. The label stays fitted.
+        let flat = header_geom(96, 800, 22, 52, 84, false);
+        assert!(flat.scope.is_none());
+        assert_eq!(flat.sub.right, 86);
+        assert_eq!(flat.status_left, 400);
+        assert_eq!(header_hit(92, 10, &flat), HeaderHit::None);
+        // 192 dpi doubles the pads and the insets. Text width is already in physical pixels.
+        let hi = header_geom(192, 1600, 44, 104, 168, true);
+        assert_eq!(hi.sub.right, 172);
+        let hi_pill = hi.scope.unwrap();
+        assert_eq!((hi_pill.left, hi_pill.right, hi_pill.top, hi_pill.bottom), (184, 384, 6, 38));
+        assert_eq!(header_hit(183, 20, &hi), HeaderHit::None);
+        assert_eq!(header_hit(184, 20, &hi), HeaderHit::Scope);
+        assert_eq!(header_hit(184, 5, &hi), HeaderHit::None);
+        // 120 dpi truncates the same way the paint scale does: 26*120/96 = 32, 8*120/96 = 10, 6*120/96 = 7, 3*120/96 = 3.
+        let mid = header_geom(120, 1000, 27, 65, 105, true);
+        assert_eq!(mid.sub.right, 107);
+        let mid_pill = mid.scope.unwrap();
+        assert_eq!((mid_pill.left, mid_pill.right, mid_pill.top, mid_pill.bottom), (114, 239, 3, 24));
+        assert_eq!(header_hit(113, 10, &mid), HeaderHit::None);
+        assert_eq!(header_hit(114, 10, &mid), HeaderHit::Scope);
+        assert_eq!(header_hit(238, 10, &mid), HeaderHit::Scope);
+        assert_eq!(header_hit(239, 10, &mid), HeaderHit::None);
+        assert_eq!(header_hit(114, 10, &header_geom(120, 1000, 27, 65, 105, false)), HeaderHit::None);
+    }
+
+    #[test]
+    fn scope_click_follows_the_caption_and_a_refresh_keeps_that_scope() {
+        assert_eq!(scope_after_click(false, "report"), (true, None));
+        assert_eq!(scope_after_click(true, "report"), (false, None));
+        // The pill already says "all drives" because of the prefix. One click turns that off
+        // and takes the prefix with it, instead of flipping the flag and leaving the caption.
+        assert_eq!(scope_after_click(false, "all: report"), (false, Some("report".into())));
+        assert_eq!(scope_after_click(true, "  Everywhere: report"), (false, Some("report".into())));
+        assert_eq!(scope_after_click(true, "all: report"), (false, Some("report".into())));
+        assert!(same_find("report", "report", r"C:\Work", r"c:\work", true, true, false, false, false, 4));
+        // Same words, other scope: do not reuse the hits. This is what made the pill snap back.
+        assert!(!same_find("report", "report", r"C:\Work", r"C:\Work", true, true, true, false, true, 4));
+        assert!(!same_find("report", "report", r"C:\Work", r"C:\Work", false, true, false, false, true, 4));
+        assert!(!same_find("report", "other", r"C:\Work", r"C:\Work", true, true, false, false, true, 4));
+        assert!(!same_find("report", "report", r"C:\Work", r"D:\", true, true, false, false, true, 4));
+        assert!(!same_find("report", "report", r"C:\Work", r"C:\Work", true, true, false, false, false, 0));
+    }
+
+    #[test]
+    fn double_click_launches_a_file_and_opens_a_folder_in_a_new_tab() {
+        assert_eq!(dblclick_hit(r"C:\a\b.txt", false), FindDbl::Launch(r"C:\a\b.txt".into()));
+        assert_eq!(dblclick_hit(r"C:\a\Sub", true), FindDbl::NewTab(r"C:\a\Sub".into()));
+    }
+
+    #[test]
+    fn result_row_ignores_the_header_and_the_space_below_the_list() {
+        assert_eq!(row_at(21, 0, 22, 3), None);
+        assert_eq!(row_at(22, 0, 22, 3), Some(0));
+        assert_eq!(row_at(43, 0, 22, 3), Some(0));
+        assert_eq!(row_at(44, 0, 22, 3), Some(1));
+        assert_eq!(row_at(22, 22, 22, 3), Some(1));
+        assert_eq!(row_at(88, 0, 22, 3), None);
+        assert_eq!(row_at(30, 0, 0, 3), None);
+        assert_eq!(row_at(30, 0, 22, 0), None);
     }
 
     #[test]
