@@ -59,6 +59,7 @@ pub(crate) const TIMER_ICON: usize = 9; // favourites: pre-warm shell icon index
 pub(crate) const TIMER_PINS: usize = 10; // favourites: re-read Explorer home items after a pin or unpin
 pub(crate) const TIMER_FOCUS: usize = 11; // a click brought the window back: restore focus only if nothing took it
 pub(crate) const TIMER_FIND: usize = 12; // hide the search list after the filter loses focus
+pub(crate) const TIMER_PEEK_ZOOM: usize = 13; // peek: re-render PDF pages after the wheel settles
 pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
 pub(crate) const WM_EV: u32 = WM_APP + 51; // Everything status changed in the settings window
 // tree-view messages (the sidebar's SysTreeView32)
