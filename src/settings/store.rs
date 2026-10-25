@@ -128,6 +128,26 @@ struct FavJson {
     name: String,
 }
 
+/// Quick look sizes in DIP. `image` is pictures; `doc` is text and PDF. Absent means fit the file.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct PeekJson {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    doc: Option<[i32; 2]>,
+}
+
+fn peek_pair(v: Option<[i32; 2]>) -> Option<(i32, i32)> {
+    let [w, h] = v?;
+    (w > 0 && h > 0 && w <= 16_000 && h <= 16_000).then_some((w, h))
+}
+
+fn peek_json(s: &Session) -> Option<PeekJson> {
+    let image = s.peek_image.map(|(w, h)| [w, h]);
+    let doc = s.peek_doc.map(|(w, h)| [w, h]);
+    (image.is_some() || doc.is_some()).then_some(PeekJson { image, doc })
+}
+
 /// Version 1. `tabs` is the focused window. `windows` is every window, focused first.
 /// `favorites_tree` is the favourites tree. Unknown keys land in `extra` and are written back.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -226,6 +246,9 @@ struct SettingsFile {
     /// Space in a file list opens quick look. Missing means on. Omitted while on, so an older file stays unchanged.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     space_preview: bool,
+    /// Quick look window size in DIP, per kind. Omitted until the user resizes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peek: Option<PeekJson>,
     /// The one-time Everything install question was shown. Missing means not yet.
     #[serde(default, skip_serializing_if = "is_off")]
     ev_asked: bool,
@@ -296,6 +319,7 @@ impl SettingsFile {
             one_window: true,
             use_everything: true,
             space_preview: true,
+            peek: None,
             ev_asked: false,
             session: String::new(),
             favorites: Vec::new(),
@@ -378,6 +402,7 @@ impl SettingsFile {
             one_window: s.one_window,
             use_everything: s.use_everything,
             space_preview: s.space_preview,
+            peek: peek_json(s),
             ev_asked: s.ev_asked,
             session: s.file.clone(),
             favorites,
@@ -507,6 +532,8 @@ impl SettingsFile {
         s.one_window = self.one_window;
         s.use_everything = self.use_everything;
         s.space_preview = self.space_preview;
+        s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
+        s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
@@ -1312,6 +1339,28 @@ mod tests {
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["space_preview"], false);
         assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn peek_sizes_round_trip_in_dip_and_stay_out_until_set() {
+        assert!(Session::default().peek_image.is_none() && Session::default().peek_doc.is_none());
+        assert!(adopt(r#"{"version":1}"#).unwrap().peek_image.is_none());
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("peek"));
+        let mut s = Session::default();
+        s.peek_image = Some((960, 540));
+        s.peek_doc = Some((820, 720));
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"image\": [") || text.contains("\"image\":["), "{text}");
+        assert!(text.contains("960") && text.contains("540") && text.contains("820"), "{text}");
+        let back = adopt(&text).unwrap();
+        assert_eq!((back.peek_image, back.peek_doc), (Some((960, 540)), Some((820, 720))));
+        // A named session is the ini shape and does not carry the quick look size.
+        assert!(Session::parse(&s.to_ini()).peek_image.is_none());
+        let bad = adopt(r#"{"version":1,"peek":{"image":[0,10],"doc":[-4,20]}}"#).unwrap();
+        assert!(bad.peek_image.is_none() && bad.peek_doc.is_none());
+        let one = adopt(r#"{"version":1,"peek":{"doc":[400,300]}}"#).unwrap();
+        assert_eq!(one.peek_doc, Some((400, 300)));
+        assert!(one.peek_image.is_none());
     }
 
     #[test]
