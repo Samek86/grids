@@ -67,8 +67,8 @@ fn rows() -> Vec<FavRow> {
         a.s.ensure_fav_tree();
         let pins = if a.s.pins_open { pin_list() } else { Vec::new() };
         let files = pin_files();
-        let pins_label = tr("Explorer pins", "탐색기 고정", "エクスプローラーのピン留め");
-        let files_label = tr("Explorer favourite files", "탐색기 즐겨찾기 파일", "エクスプローラーのお気に入りファイル");
+        let pins_label = pins_section_label();
+        let files_label = files_section_label();
         compose_side(&a.s.tree, a.s.pins_open, &pins, pins_label, a.s.files_open, &files, files_label)
     })
 }
@@ -108,7 +108,7 @@ pub(crate) fn sync_side_scrollbar() {
     unsafe { windows::Win32::UI::Controls::SetScrollInfo(h, SB_VERT, &si, true) };
 }
 
-fn clamp_side_scroll() {
+pub(crate) fn clamp_side_scroll() {
     let max = max_side_scroll();
     app(|a| a.side_scroll = a.side_scroll.min(max));
     sync_side_scrollbar();

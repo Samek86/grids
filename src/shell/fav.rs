@@ -55,6 +55,7 @@ pub(crate) unsafe fn favs_changed() {
     refresh_fav_manager();
     across_windows(|| {
         repaint_fav_buttons();
+        clamp_side_scroll();
         let h = app(|a| a.side_hwnd);
         if !h.0.is_null() {
             _ = InvalidateRect(Some(h), None, false);
