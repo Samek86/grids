@@ -617,7 +617,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.accent = fresh.accent;
         a.s.accent_dark = fresh.accent_dark;
     });
-    set_language(Lang::Auto);
+    set_language(fresh.lang);
     crate::keys::reset_all();
     apply_ext(true);
     relayout();
