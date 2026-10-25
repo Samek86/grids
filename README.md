@@ -62,11 +62,11 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 <p align="center"><img width="760" alt="settings" src="docs/images/settings.png"></p>
 
-📦 **One portable exe, about 1.3 MB.** Nothing to install.
+📦 **One portable exe, about 1.2 MB.** Nothing to install.
 
 ## Install
 
-Download `grids.exe` from [https://github.com/Samek86/grids](https://github.com/Samek86/grids), put it in any folder, and run it. One portable exe, about 1.3 MB. Nothing to install.
+Download the latest zip from [Releases](https://github.com/Samek86/grids/releases/latest), unzip `grids.exe` into any folder, and run it. One portable exe, about 1.2 MB. Nothing to install.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
