@@ -1,4 +1,4 @@
-// Embeds app.manifest (common controls v6 + per-monitor DPI) and app.ico (made by icon.py).
+// Embeds app.manifest (common controls v6 + per-monitor DPI) and app.ico (the Panegrid icon kit's Panegrid.ico).
 // Writes a binary .res by hand and lets windres only convert it to COFF, so no C preprocessor is needed.
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
