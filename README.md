@@ -20,33 +20,53 @@
   </picture>
 </p>
 
-Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails, rename, and copy progress all work as they do in Explorer. Up to 16 panes in one window, a folder tree on the left, and layouts you change with one drag.
+Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Lay out up to 16 of them in one window, then save the whole thing as a session.
 
 ## Features
 
-- 🪟 **Up to 16 panes.** Column order, widths, and sort stay with the pane from folder to folder, and any column can be narrower than Explorer allows (the Size column stops at 90 px there). The status line sums selected folders in the background. F5 sums again, and shows "partial" when some items could not be read.
-- 🧩 **Free layouts.** Up to 4 columns, each with 1 to 4 panes. Click Layout for an even grid, or press and drag across it to set each column. Six presets. A new tab copies the current tab's layout and split ratios.
-- ↔️ **Drag to resize.** Drag a boundary between panes, the sidebar edge, or the divider between the folder tree and favourites. Double-click a boundary to even it out. Each part of the left panel keeps a minimum height.
-- ⭐ **Tree and favourites.** The folder tree follows the active pane and keeps the current folder's name in view, even in a deep folder. Star a folder from the pane header, or right-click and choose Add to favourites, directly above Properties. Make groups, nest them, and drag items between them. Double-click a folder to open it here, or a file to open it with its usual app.
-- 🧭 **A toolbar on every pane.** Address bar, back / forward / up, and a name filter (`*.pdf;*.txt`, or any part of a name). The address bar also takes `..`, a subfolder, a file to open, or a command such as `cmd`, `wt`, or `powershell` in that pane's folder. Open the selected folder in another pane and its columns come along, or copy / move the selection (up to 10,000). Drop a folder on a pane's top bar to open it there.
-- 🔎 **Everything search.** A subfolder search asks [voidtools Everything](https://www.voidtools.com/) when it is running, and walks the disk otherwise. Nothing from Everything is loaded until you search or open Settings, and `Everything64.dll` is not used. The same box filters the current folder (`Ctrl+F`).
-- 🗂️ **Tabs, drives, and sessions.** The row has window tabs, drive buttons (C: D: E: …), Layout, Save session, and Load session. The active pane's drive is underlined, buttons come and go as drives are plugged in, and a chevron lists every tab when they do not fit. Sessions save the layout, folders, and each pane's columns. Cards preview a layout: hover for a ✕ that deletes it, or right-click to rename in place (a name that's taken is refused, never overwritten). A green dot on Save shows unsaved layout changes. A deleted local folder opens the nearest folder that is still there, and the status line says which one was missing. Pane tabs hold more folders inside one pane. One folder hides the strip; two or more show it under the header.
-- 👁️ **Quick look.** F3 or Space. A header shows the icon, a bold name, and the facts. Text, tables, and Office or HTML sit on a white plate. Pictures and PDF pages sit on the stage. PDF pages come from Windows' own engine, up to 50, with no reader toolbars. Text and source have line numbers, Markdown keeps its structure, CSV / TSV is a table, and ZIP and folder lists are zebra-striped. Office, HTML, Outlook mail, and fonts use Explorer's preview handlers. Without a handler, Word / Excel / PowerPoint / OpenDocument show their text or first sheet, HWP / HWPX their built-in preview, and .eml its headers and body. Anything else is a card. Documents over 10 MB are skipped. None of this loads until you open a preview, and Esc or Space closes it at once, even while it is opening.
-- 🎨 **Light, dark, and pane colour.** Six selection colours on each theme. The active pane is outlined and its header tinted. In the dark theme, group titles such as "Devices and drives" are drawn in a light colour with a thin rule. New installs follow Windows. Dark theme or Light theme picks one by hand and turns following off. Right-click the empty part of a pane header, or its number, and pick one of the six colours (or none). The colour is saved with the session, separate from the tab colour, and the ⇄ menu shows its name.
-- 📦 **One small exe.** About 450 KB, nothing to install. Ctrl+N opens another window in the same process, and running `grids.exe` again does too. Each window has its own tabs. Drag a tab off the strip to move it. Closing the last window saves every window for the next launch. Single-window mode keeps a single window. Win+Alt+E brings Grids forward from any app; press it again to minimize.
+### 🧩 Multi-pane layouts & sessions
 
-<p align="center">
-  <a href="docs/demo.mp4"><img alt="Grids in motion" src="docs/demo.gif"></a><br>
-  <a href="docs/demo.mp4">Watch the full launch video with sound</a> (35 s)
-</p>
+Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and save layout + folders + columns as a named session you can reload in one click.
 
-| Layout picker | Favourites | Sessions |
-| --- | --- | --- |
-| ![Layout picker](docs/layout-picker.png) | ![Favourites](docs/favourites.png) | ![Sessions](docs/sessions.png) |
+<table><tr><td><img alt="layout" src="docs/images/layout.png"></td><td><img alt="sessions" src="docs/images/sessions.png"></td></tr></table>
+
+### 🗂️ Tabs that name themselves
+
+Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (path in the tooltip); double-click or right-click → Rename to pin your own name, and pick a tab colour.
+
+### ⭐ Favourites popup with Explorer pins
+
+Ctrl+B or the ★ opens a themed favourites popup: groups, nesting, drag to reorder, and your Explorer Quick-access pins right alongside.
+
+<p align="center"><img width="760" alt="favorites" src="docs/images/favorites.png"></p>
+
+### 👁️ Quick preview
+
+Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files. Resizable, and it remembers its size.
+
+<p align="center"><img width="760" alt="preview" src="docs/images/preview.png"></p>
+
+### 🔎 Pane search via Everything
+
+Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Everything for instant results (or walks the disk if Everything isn't running).
+
+<p align="center"><img width="760" alt="search" src="docs/images/search.png"></p>
+
+### 🖱️ The real Explorer, everywhere
+
+The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
+
+### 🎨 Themes & accent
+
+Light and dark that follow Windows, six accent colours per theme, per-pane colours, and a settings window in English, 한국어 and 日本語.
+
+<p align="center"><img width="760" alt="settings" src="docs/images/settings.png"></p>
+
+📦 **One portable exe, about 1.3 MB.** Nothing to install.
 
 ## Install
 
-Download `grids.exe` from [https://github.com/Samek86/grids](https://github.com/Samek86/grids), put it in any folder, and run it. One portable exe, about 450 KB. Nothing to install.
+Download `grids.exe` from [https://github.com/Samek86/grids](https://github.com/Samek86/grids), put it in any folder, and run it. One portable exe, about 1.3 MB. Nothing to install.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
@@ -66,45 +86,48 @@ This builds `target\release\grids.exe` and copies it to `build\grids.exe`. `icon
 
 ## Keyboard shortcuts
 
-These are the defaults. Settings → Shortcuts can change any of them; the new key works immediately. Typing in the address bar, the filter, or a tab name is left alone. F6 still leaves those fields. Coming back from another app restores keyboard focus to the list, the address, the filter, the folder tree, or favourites. A click restores focus only when that click did not land on a control. The address and filter keep their text and caret.
+Defaults; every one can be changed in Settings → Shortcuts.
 
-| Keys | Action |
-| --- | --- |
-| Ctrl+T | New tab, with the current tab's layout |
-| Ctrl+W | Close the tab (a locked tab stays) |
-| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
-| Ctrl+Shift+T | Reopen the last closed tab |
-| Ctrl+PageDown / Ctrl+PageUp | Next / previous pane |
-| Ctrl+1 … Ctrl+9 | Go to pane 1–9 (the number at the left of each pane header; hidden in very narrow panes) |
-| Alt+Shift+← / → / ↑ / ↓ | Pane to the left / right / above / below |
-| Ctrl+Alt+Shift+← / → / ↑ / ↓ | Swap the active pane with the one in that direction (folder, history, filter and columns stay; also ⇄ → Swap places with). The save dot stays until you save or swap back, including after a restart |
-| Alt+← / Alt+→ | Back / forward |
-| Alt+↑ | Parent folder |
-| Alt+↓ | Recent folders (all panes, newest first; right-click ← / → too) |
-| Ctrl+L, Alt+D, F4 | Address bar, with the current folder's icon on the left when the field is wide enough. Idle, it shows the path as crumbs (`C: › Users › Public`): click a crumb to open it, click a › to list the folders inside (the one this pane shows is bold), `…` lists the folded parents, and the current folder or an empty part of the bar edits the path. A slow folder is listed off the UI thread, and the menu is placed again just before it opens. Resizing or a DPI change cancels it. Also `..`, a subfolder name, a file to open, or a command such as `cmd`, `wt`, `powershell` (runs in this pane's folder). A fragment such as `down` opens the best recent folder, or a favourite folder from the tree |
-| Ctrl+F | Search this folder (the same box still filters the list). An empty box shows “Search · Ctrl+F” until you type or focus it. A word matches anywhere in the name, `*` and `?` are wildcards, and `;` means either term; case does not matter. Matches stream in while you type, a new keystroke or Esc cancels the search. A folder walk stops at 300 and says there are more; Everything stops at 5,000. Enter or double-click opens a file (and moves the pane to the folder that holds it) or opens a folder in this pane. Subfolders, on the result list, searches below this folder. When Everything is running and Use Everything for search is on (Settings → General, on by default), that search asks Everything and the list says Everything; otherwise it walks and the list says Folders. Everything's own syntax is passed through (`ext:`, `size:`, `dm:`, `regex:`, `path:`). This folder or All drives on that list, or a query starting with `all:`, chooses this folder or every indexed drive. ZIP, 7z, RAR and CAB match by name, the same as other files. Folders stay in the filtered list. The icon, or Alt+↓ while the box has focus, opens file kinds. The shortcut can be changed in Settings → Shortcuts. A screen reader hears “Pane N address” and “Pane N search” |
-| Num+ or Ctrl+Shift+A / Num− / Num* | Select, deselect, or invert files by a pattern such as `*.jpg`. The count stays on the status line for 5 seconds |
-| F6 / Shift+F6 | Next / previous focus: file list, address, filter, folder tree, favourites |
-| F3 / Space | Quick look at the focused file: pictures, text and code (line numbers), Markdown, CSV tables, Office / PDF / HTML / mail up to 10 MB, HWP / HWPX, ZIP contents and folders. Anything else is a card of facts. Arrows or the wheel move to the next or previous file and the preview stays open. On long text the wheel scrolls first and moves on past the end after it has rested there for 350 ms; tilting the wheel always steps. Page Up / Page Down scroll. Esc, Space or F3 closes it, including while it is still opening, and returns to the list. Holding the key opens it once. A space within a second of typing, or during IME composition, stays in the name. Settings → Panes & view can turn Space off (`space_preview`, on when missing) |
-| F7 | New folder through Explorer's own command, selected and ready to rename |
-| Ctrl+Alt+T | New pane tab (the current folder), while the focus is in a pane. With one tab, the button to the right of ⇄ does the same |
-| Ctrl+Alt+W | Close the pane tab (the last one stays) |
-| Ctrl+Alt+Page Down / Ctrl+Alt+Page Up | Next / previous pane tab |
-| Enter / Esc | Apply / cancel the address or filter |
-| Ctrl+H | Show hidden files |
-| Ctrl+Shift+E | Show or hide the left panel (folder tree and favourites). The width comes back as it was |
-| Ctrl+Shift+O | Open the folders of open Explorer windows and tabs in panes, from the active pane on (also View menu; panes already showing one of them stay put) |
-| Ctrl+S | Save the current session |
-| Ctrl+B | Favourites (↑/↓, Enter to open, Del to remove). With the panel or this list focused, Alt+↑/↓ moves the selected row. Dragging in the panel reorders it; letting go outside cancels |
-| Ctrl+Shift+M | Maximize / restore the active pane (or double-click its header) |
-| Ctrl+Shift+C | Copy the full path of the selected items (or of the current folder) |
-| Ctrl+Alt+N | New text file |
-| Ctrl+Shift+N | New folder |
-| Ctrl+, | Settings |
-| Ctrl+/ | Shortcut list, in the app's own colours. Holding the keys opens it once |
-| F2, Del, Ctrl+C / X / V, F5 | Same as Explorer. Ctrl+V of a copied picture (screenshot or a browser image) saves a PNG in the folder and leaves the selection, focus and folder as they were. The status line shows the file name |
-
-Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu). A splitter under the pointer shows a thin line in the selection colour, including the left-panel edge and the divider between the folder tree and favourites.
+| Group | Keys | Action |
+| --- | --- | --- |
+| **Tabs** | Ctrl+T | New tab |
+|  | Ctrl+W | Close tab |
+|  | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
+|  | Ctrl+Shift+T | Reopen closed tab |
+|  | Double-click a tab, or right-click → Rename | Rename tab (right-click also has Tab colour) |
+| **Panes** | Ctrl+PgDn / Ctrl+PgUp | Next / previous pane |
+|  | Ctrl+1 … 9 | Go to pane 1–9 |
+|  | Alt+Shift+arrows | Move to the pane in that direction |
+|  | Ctrl+Alt+Shift+arrows | Swap with the pane in that direction |
+|  | Ctrl+Shift+M | Maximise / restore pane |
+| **Pane tabs** | Ctrl+Alt+T / Ctrl+Alt+W | New / close pane tab |
+|  | Ctrl+Alt+PgDn / PgUp | Next / previous pane tab |
+| **Navigate** | Alt+← / Alt+→ | Back / forward |
+|  | Alt+↑ / Alt+↓ | Parent folder / recent folders |
+|  | Ctrl+L, Alt+D, F4 | Address bar |
+| **View** | Ctrl+F | Search this folder (Subfolders → Everything) |
+|  | Space / F3 | Quick preview |
+|  | F6 / Shift+F6 | Next / previous focus |
+|  | Ctrl+H | Hidden files |
+|  | Ctrl+Shift+E | Left panel |
+|  | Ctrl+Shift+O | Open Explorer windows' folders |
+| **Preview** | Ctrl+wheel | Zoom 10–800% |
+|  | Ctrl+0 | Reset zoom |
+|  | Drag | Pan a zoomed picture |
+|  | Wheel, ↑ / ↓, PgUp / PgDn, Home / End | Scroll |
+|  | ← / → | Previous / next file |
+|  | Esc / Space / F3 | Close |
+| **File** | Ctrl+Shift+C | Copy full path |
+|  | Num+ or Ctrl+Shift+A / Num− / Num* | Select / deselect / invert by pattern |
+|  | Ctrl+Alt+N | New text file |
+|  | Ctrl+Shift+N, F7 | New folder |
+|  | F2, Del, Ctrl+C / X / V, F5 | Same as Explorer (Ctrl+V of a picture saves a PNG) |
+| **Other** | Ctrl+B | Favourites popup |
+|  | Ctrl+S | Save session |
+|  | Ctrl+, | Settings |
+|  | F1 / Ctrl+/ | Shortcut help / list |
+|  | Ctrl+N | New window |
+|  | Win+Alt+E | Bring Grids to front |
 
 ## Settings
 
@@ -136,7 +159,6 @@ View → Show file extensions is Windows' own setting, the same one Explorer use
 ## Roadmap
 
 - [ ] Code-signed builds, so SmartScreen does not warn the first time you run `grids.exe`
-- [ ] A font size setting (only `font_face` is stored today)
 - [ ] Interface languages beyond English, 한국어, and 日本語
 
 ## Credits
