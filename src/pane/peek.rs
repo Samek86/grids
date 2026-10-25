@@ -587,9 +587,11 @@ unsafe fn geo_of(h: HWND) -> PeekGeo {
 #[derive(Default)]
 pub(crate) struct PeekView {
     pub(crate) y: i32, // scrolled down, px
-    pub(crate) x: i32, // scrolled right (tables, code), px
+    pub(crate) x: i32, // scrolled right (tables, code, zoomed pictures), px
     pub(crate) max_y: i32, // how far it can scroll down, from the last paint; 0 = it all fits
+    pub(crate) max_x: i32, // how far a zoomed picture can scroll right; 0 hides the horizontal bar
     pub(crate) page_h: i32, // viewport height from that paint; the thumb is sized from it
+    pub(crate) page_w: i32, // viewport width from that paint; the horizontal thumb is sized from it
     pub(crate) edge_at: Option<Instant>, // the wheel reached the top / bottom then
     pub(crate) wheel: i32, // wheel delta toward the next file step (120 a notch)
     pub(crate) layout: Option<(usize, i32, Vec<Line>, i32)>, // (gen, width, lines, total height)
@@ -598,9 +600,11 @@ pub(crate) struct PeekView {
     pub(crate) host_win: Option<HWND>, // the picture area's child window the handler draws in
     pub(crate) hover: bool,            // the mouse is over the popup: ‹ › show
     pub(crate) hot: Hot,
-    pub(crate) bar_hot: bool,        // pointer over the scrollbar thumb
+    pub(crate) bar_hot: bool,         // pointer over the vertical scrollbar thumb
     pub(crate) bar_drag: Option<i32>, // mouse y minus thumb top, while that thumb is dragged
-    pub(crate) bar_down: bool,        // mouse-down hit the bar, so mouse-up is not ‹ › / ×
+    pub(crate) hbar_hot: bool,        // pointer over the horizontal scrollbar thumb
+    pub(crate) hbar_drag: Option<i32>, // mouse x minus thumb left, while that thumb is dragged
+    pub(crate) bar_down: bool,        // mouse-down hit a bar, so mouse-up is not ‹ › / ×
     restore: Option<RECT>,            // normal rect, in screen px, to return to from maximise
     maximized: bool,
     sized_image: bool, // the user resized this kind while this preview is open
@@ -629,11 +633,11 @@ fn view<R>(f: impl FnOnce(&mut PeekView) -> R) -> R {
 // New file: back to the top. A drag still holding the mouse lets go too.
 unsafe fn reset_scroll() {
     let captured = view(|v| {
-        (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0);
+        (v.y, v.x, v.layout, v.max_y, v.max_x, v.edge_at, v.wheel) = (0, 0, None, 0, 0, None, 0);
         v.zoom = 1.0;
-        let captured = v.bar_drag.take().is_some() || v.bar_down || v.pan_pt.take().is_some() || v.pan_drag;
+        let captured = v.bar_drag.take().is_some() || v.hbar_drag.take().is_some() || v.bar_down || v.pan_pt.take().is_some() || v.pan_drag;
         v.pan_drag = false;
-        (v.page_h, v.bar_hot, v.bar_down) = (0, false, false);
+        (v.page_h, v.page_w, v.bar_hot, v.hbar_hot, v.bar_down) = (0, 0, false, false, false);
         captured
     });
     if captured {
@@ -1483,9 +1487,7 @@ pub(crate) fn peek_bar_rects(stage: RECT, dpi: i32) -> BarRects {
     BarRects { paint, hit }
 }
 
-/// Where the pointer is on the bar. The thumb wins over the track, across the wider hit width.
-pub(crate) fn bar_hit(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
-    let thumb = RECT { left: hit.left, right: hit.right, ..thumb };
+fn hit_kind(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
     if inside(thumb, x, y) {
         BarHit::Thumb
     } else if inside(hit, x, y) {
@@ -1493,6 +1495,56 @@ pub(crate) fn bar_hit(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
     } else {
         BarHit::None
     }
+}
+
+/// Where the pointer is on the vertical bar. The thumb wins over the track, across the wider hit width.
+pub(crate) fn bar_hit(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
+    let thumb = RECT { left: hit.left, right: hit.right, ..thumb };
+    hit_kind(hit, thumb, x, y)
+}
+
+/// Where the pointer is on the horizontal bar. The thumb wins, across the taller hit height.
+pub(crate) fn hbar_hit(hit: RECT, thumb: RECT, x: i32, y: i32) -> BarHit {
+    let thumb = RECT { top: hit.top, bottom: hit.bottom, ..thumb };
+    hit_kind(hit, thumb, x, y)
+}
+
+/// Clear square, in px, kept where the two tracks would meet.
+pub(crate) fn bar_corner(dpi: i32) -> i32 {
+    let s = |v: i32| v * dpi / 96;
+    s(6).max(4) + s(4)
+}
+
+/// Horizontal track along the bottom of the stage. `corner` keeps the right end clear when the
+/// vertical bar is showing, so the two tracks do not meet.
+pub(crate) fn peek_hbar_rects(stage: RECT, dpi: i32, corner: i32) -> BarRects {
+    let s = |v: i32| v * dpi / 96;
+    let inset = s(4);
+    let thick = s(6).max(4);
+    let left = stage.left + inset;
+    let right = (stage.right - inset - corner.max(0)).max(left);
+    let bottom = stage.bottom - inset;
+    let top = bottom - thick;
+    let paint = RECT { left, top, right, bottom };
+    let hit = RECT { left: paint.left, top: (paint.top - s(8)).max(stage.top), right: paint.right, bottom: paint.bottom };
+    BarRects { paint, hit }
+}
+
+fn reserve_corner(mut rects: BarRects, corner: i32) -> BarRects {
+    if corner > 0 {
+        rects.paint.bottom = (rects.paint.bottom - corner).max(rects.paint.top);
+        rects.hit.bottom = rects.paint.bottom;
+    }
+    rects
+}
+
+/// Vertical track, and the horizontal one when `horiz` is set. A corner is reserved only when
+/// both show; a single bar keeps the full edge.
+pub(crate) fn peek_scroll_rects(stage: RECT, dpi: i32, vert: bool, horiz: bool) -> (Option<BarRects>, Option<BarRects>) {
+    let corner = if vert && horiz { bar_corner(dpi) } else { 0 };
+    let v = vert.then(|| reserve_corner(peek_bar_rects(stage, dpi), corner));
+    let h = horiz.then(|| peek_hbar_rects(stage, dpi, corner));
+    (v, h)
 }
 
 /// Track and thumb colours. The track is a theme mix; the thumb carries the accent, nudged
@@ -1524,6 +1576,8 @@ fn clamp_scroll(total: i32, page: i32) {
         v.page_h = page;
         v.max_y = total.saturating_sub(page).max(0);
         v.y = clamp_y(v.y, v.max_y);
+        // Text, tables and lists keep their own sideways scroll and do not grow this bar.
+        (v.max_x, v.page_w) = (0, 0);
     });
 }
 
@@ -1858,7 +1912,9 @@ unsafe fn set_zoom(h: HWND, new_z: f64, at: Option<(i32, i32)>) {
         v.x = sx;
         v.y = sy;
         v.page_h = vh;
+        v.page_w = vw;
         v.max_y = new.1.saturating_sub(vh).max(0);
+        v.max_x = new.0.saturating_sub(vw).max(0);
         v.edge_at = None;
         v.wheel = 0;
     });
@@ -1957,7 +2013,9 @@ fn clamp_plane(cw: i32, ch: i32, vw: i32, vh: i32, align: (FitAlign, FitAlign)) 
         v.x = sx;
         v.y = sy;
         v.page_h = vh.max(0);
+        v.page_w = vw.max(0);
         v.max_y = ch.saturating_sub(vh.max(0)).max(0);
+        v.max_x = cw.saturating_sub(vw.max(0)).max(0);
     });
 }
 
@@ -2306,7 +2364,7 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
             None => text(dc, g.stage, tr("Loading…", "불러오는 중…", "読み込み中…"), font, pal().sub, DT_CENTER),
         }
         drop(j);
-        paint_bar(dc, g.stage, dpi, accent);
+        paint_bars(dc, h, accent);
         // ‹ › while the mouse is over the popup, square like the app's buttons
         if hover {
             for (r, glyph, which) in [(g.prev, ICON_PREV, Hot::Prev), (g.next, ICON_NEXT, Hot::Next)] {
@@ -2334,25 +2392,72 @@ fn lp_xy(lp: LPARAM) -> (i32, i32) {
     ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
 }
 
-unsafe fn bar_state(h: HWND) -> Option<(BarRects, BarLayout)> {
-    let dpi = app(|a| a.dpi);
-    let rects = peek_bar_rects(geo_of(h).stage, dpi);
-    let span = rects.paint.bottom - rects.paint.top;
-    view(|v| {
-        if v.max_y <= 0 || v.page_h <= 0 {
-            return None;
-        }
-        bar_layout(v.max_y.saturating_add(v.page_h), v.page_h, rects.paint.top, span, thumb_min(dpi), v.y).map(|b| (rects, b))
-    })
+struct BarNow {
+    rects: BarRects,
+    lay: BarLayout,
+    hot: bool,
 }
 
 fn thumb_of(rects: BarRects, b: &BarLayout) -> RECT {
     RECT { left: rects.paint.left, top: b.thumb_top, right: rects.paint.right, bottom: b.thumb_top + b.thumb_h }
 }
 
+fn hthumb_of(rects: BarRects, b: &BarLayout) -> RECT {
+    RECT { left: b.thumb_top, top: rects.paint.top, right: b.thumb_top + b.thumb_h, bottom: rects.paint.bottom }
+}
+
+/// Vertical bar, then the horizontal one. The horizontal bar is only for a zoomed picture or
+/// PDF that is wider than the stage: hidden at fit, and hidden when the width already fits.
+unsafe fn bars_now(h: HWND) -> (Option<BarNow>, Option<BarNow>) {
+    let dpi = app(|a| a.dpi);
+    let stage = geo_of(h).stage;
+    view(|v| {
+        let show_v = v.max_y > 0 && v.page_h > 0;
+        let show_h = !is_fit(v.zoom) && v.max_x > 0 && v.page_w > 0;
+        let (vr, hr) = peek_scroll_rects(stage, dpi, show_v, show_h);
+        let min_thumb = thumb_min(dpi);
+        let vert = vr.and_then(|rects| {
+            let span = rects.paint.bottom - rects.paint.top;
+            bar_layout(v.max_y.saturating_add(v.page_h), v.page_h, rects.paint.top, span, min_thumb, v.y).map(|lay| BarNow {
+                hot: v.bar_hot || v.bar_drag.is_some(),
+                rects,
+                lay,
+            })
+        });
+        let horiz = hr.and_then(|rects| {
+            let span = rects.paint.right - rects.paint.left;
+            bar_layout(v.max_x.saturating_add(v.page_w), v.page_w, rects.paint.left, span, min_thumb, v.x).map(|lay| BarNow {
+                hot: v.hbar_hot || v.hbar_drag.is_some(),
+                rects,
+                lay,
+            })
+        });
+        (vert, horiz)
+    })
+}
+
 unsafe fn thumb_hot(h: HWND, x: i32, y: i32) -> bool {
-    let Some((rects, b)) = bar_state(h) else { return false };
-    bar_hit(rects.hit, thumb_of(rects, &b), x, y) == BarHit::Thumb
+    bars_now(h).0.is_some_and(|b| bar_hit(b.rects.hit, thumb_of(b.rects, &b.lay), x, y) == BarHit::Thumb)
+}
+
+unsafe fn hthumb_hot(h: HWND, x: i32, y: i32) -> bool {
+    bars_now(h).1.is_some_and(|b| hbar_hit(b.rects.hit, hthumb_of(b.rects, &b.lay), x, y) == BarHit::Thumb)
+}
+
+/// Pointer is on either track or thumb, so the click is a scroll and not a pan or a zoom reset.
+unsafe fn bar_under(h: HWND, x: i32, y: i32) -> bool {
+    let (v, hz) = bars_now(h);
+    if let Some(b) = v {
+        if bar_hit(b.rects.hit, thumb_of(b.rects, &b.lay), x, y) != BarHit::None {
+            return true;
+        }
+    }
+    if let Some(b) = hz {
+        if hbar_hit(b.rects.hit, hthumb_of(b.rects, &b.lay), x, y) != BarHit::None {
+            return true;
+        }
+    }
+    false
 }
 
 // Rounded like the settings window's bar. No pen: the fill is the whole mark.
@@ -2370,57 +2475,95 @@ unsafe fn round_fill(dc: HDC, r: RECT, rad: i32, fill: u32) {
     _ = DeleteObject(brush.into());
 }
 
-unsafe fn paint_bar(dc: HDC, stage: RECT, dpi: i32, accent: u32) {
-    let rects = peek_bar_rects(stage, dpi);
-    let span = rects.paint.bottom - rects.paint.top;
-    let drawn = view(|v| {
-        if v.max_y <= 0 || v.page_h <= 0 {
-            return None;
-        }
-        let hot = v.bar_hot || v.bar_drag.is_some();
-        bar_layout(v.max_y.saturating_add(v.page_h), v.page_h, rects.paint.top, span, thumb_min(dpi), v.y).map(|b| (b, hot))
-    });
-    let Some((b, hot)) = drawn else { return };
+unsafe fn paint_bars(dc: HDC, h: HWND, accent: u32) {
+    let dpi = app(|a| a.dpi);
+    let (vert, horiz) = bars_now(h);
     let s = |v: i32| v * dpi / 96;
-    let (track, thumb) = bar_rgb(pal().bg, pal().text, accent, hot);
-    round_fill(dc, rects.paint, s(4), track);
-    round_fill(dc, thumb_of(rects, &b), s(4), thumb);
+    let (bg, text) = (pal().bg, pal().text);
+    if let Some(b) = vert {
+        let (track, thumb) = bar_rgb(bg, text, accent, b.hot);
+        round_fill(dc, b.rects.paint, s(4), track);
+        round_fill(dc, thumb_of(b.rects, &b.lay), s(4), thumb);
+    }
+    if let Some(b) = horiz {
+        let (track, thumb) = bar_rgb(bg, text, accent, b.hot);
+        round_fill(dc, b.rects.paint, s(4), track);
+        round_fill(dc, hthumb_of(b.rects, &b.lay), s(4), thumb);
+    }
 }
 
 unsafe fn press_bar(h: HWND, x: i32, y: i32) -> bool {
-    let Some((rects, b)) = bar_state(h) else { return false };
-    let thumb = thumb_of(rects, &b);
-    match bar_hit(rects.hit, thumb, x, y) {
-        BarHit::None => false,
-        BarHit::Thumb => {
-            view(|v| v.bar_drag = Some(y - b.thumb_top));
-            true
-        }
-        BarHit::Track => {
-            let page = view(|v| v.page_h.max(1));
-            view(|v| {
-                let prev = v.y;
-                v.y = page_toward(v.y, v.max_y, b.thumb_top, b.thumb_h, y, page);
-                note_scroll(v, prev);
-            });
-            _ = InvalidateRect(Some(h), None, false);
-            true
+    let (vert, horiz) = bars_now(h);
+    if let Some(b) = vert {
+        match bar_hit(b.rects.hit, thumb_of(b.rects, &b.lay), x, y) {
+            BarHit::None => {}
+            BarHit::Thumb => {
+                view(|v| v.bar_drag = Some(y - b.lay.thumb_top));
+                return true;
+            }
+            BarHit::Track => {
+                let page = view(|v| v.page_h.max(1));
+                view(|v| {
+                    let prev = v.y;
+                    v.y = page_toward(v.y, v.max_y, b.lay.thumb_top, b.lay.thumb_h, y, page);
+                    note_scroll(v, prev);
+                });
+                _ = InvalidateRect(Some(h), None, false);
+                return true;
+            }
         }
     }
+    if let Some(b) = horiz {
+        match hbar_hit(b.rects.hit, hthumb_of(b.rects, &b.lay), x, y) {
+            BarHit::None => {}
+            BarHit::Thumb => {
+                view(|v| v.hbar_drag = Some(x - b.lay.thumb_top));
+                return true;
+            }
+            BarHit::Track => {
+                let page = view(|v| v.page_w.max(1));
+                view(|v| {
+                    let prev = v.y;
+                    v.x = page_toward(v.x, v.max_x, b.lay.thumb_top, b.lay.thumb_h, x, page);
+                    note_scroll(v, prev);
+                });
+                _ = InvalidateRect(Some(h), None, false);
+                return true;
+            }
+        }
+    }
+    false
 }
 
 unsafe fn drag_bar(h: HWND, y: i32) {
     let Some(off) = view(|v| v.bar_drag) else { return };
-    let Some((rects, b)) = bar_state(h) else { return };
-    let travel = (rects.paint.bottom - rects.paint.top - b.thumb_h).max(0);
+    let Some(b) = bars_now(h).0 else { return };
+    let travel = (b.rects.paint.bottom - b.rects.paint.top - b.lay.thumb_h).max(0);
     if travel <= 0 {
         return;
     }
-    let top = (y - off).clamp(rects.paint.top, rects.paint.bottom - b.thumb_h);
-    let rel = top - rects.paint.top;
+    let top = (y - off).clamp(b.rects.paint.top, b.rects.paint.bottom - b.lay.thumb_h);
+    let rel = top - b.rects.paint.top;
     view(|v| {
         let prev = v.y;
-        v.y = thumb_scroll(rel, travel, b.max_y);
+        v.y = thumb_scroll(rel, travel, b.lay.max_y);
+        note_scroll(v, prev);
+    });
+    _ = InvalidateRect(Some(h), None, false);
+}
+
+unsafe fn drag_hbar(h: HWND, x: i32) {
+    let Some(off) = view(|v| v.hbar_drag) else { return };
+    let Some(b) = bars_now(h).1 else { return };
+    let travel = (b.rects.paint.right - b.rects.paint.left - b.lay.thumb_h).max(0);
+    if travel <= 0 {
+        return;
+    }
+    let left = (x - off).clamp(b.rects.paint.left, b.rects.paint.right - b.lay.thumb_h);
+    let rel = left - b.rects.paint.left;
+    view(|v| {
+        let prev = v.y;
+        v.x = thumb_scroll(rel, travel, b.lay.max_y);
         note_scroll(v, prev);
     });
     _ = InvalidateRect(Some(h), None, false);
@@ -2627,10 +2770,13 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_SETCURSOR => {
                 let ht = (lp.0 & 0xffff) as u32;
                 if ht == HTCLIENT {
-                    let drag = view(|v| v.pan_drag);
+                    let (drag, on_bar_drag) = view(|v| (v.pan_drag, v.bar_drag.is_some() || v.hbar_drag.is_some()));
                     let mut pt = POINT::default();
-                    let over = GetCursorPos(&mut pt).is_ok() && ScreenToClient(h, &mut pt).as_bool() && inside(geo_of(h).stage, pt.x, pt.y);
-                    if drag || (over && pan_ready(h)) {
+                    let got = GetCursorPos(&mut pt).is_ok() && ScreenToClient(h, &mut pt).as_bool();
+                    let over = got && inside(geo_of(h).stage, pt.x, pt.y);
+                    // The bar sits on the stage. A hand there would say the click pans.
+                    let on_bar = got && bar_under(h, pt.x, pt.y);
+                    if !on_bar_drag && !on_bar && (drag || (over && pan_ready(h))) {
                         SetCursor(Some(peek_cursor(drag)));
                         return LRESULT(1);
                     }
@@ -2692,6 +2838,8 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 } else if view(|v| v.bar_drag.is_some()) {
                     drag_bar(h, y);
+                } else if view(|v| v.hbar_drag.is_some()) {
+                    drag_hbar(h, x);
                 } else if let Some((ox, oy)) = view(|v| v.drag_pt) {
                     if (x - ox).abs() + (y - oy).abs() >= 4 {
                         view(|v| v.drag_pt = None);
@@ -2704,9 +2852,10 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 } else {
                     let hot = peek_hit(&geo_of(h), x, y);
                     let over = thumb_hot(h, x, y);
+                    let hover_h = hthumb_hot(h, x, y);
                     let (first, changed) = view(|v| {
-                        let r = (!v.hover, !v.hover || v.hot != hot || v.bar_hot != over);
-                        (v.hover, v.hot, v.bar_hot) = (true, hot, over);
+                        let r = (!v.hover, !v.hover || v.hot != hot || v.bar_hot != over || v.hbar_hot != hover_h);
+                        (v.hover, v.hot, v.bar_hot, v.hbar_hot) = (true, hot, over, hover_h);
                         r
                     });
                     if first {
@@ -2722,7 +2871,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_MOUSELEAVE => {
-                view(|v| (v.hover, v.hot, v.bar_hot) = (false, Hot::None, false));
+                view(|v| (v.hover, v.hot, v.bar_hot, v.hbar_hot) = (false, Hot::None, false, false));
                 peek_tip(h, Hot::None);
                 _ = InvalidateRect(Some(h), None, false);
             }
@@ -2759,6 +2908,9 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     toggle_peek_max(h);
                 } else if matches!(hot, Hot::Max | Hot::Close | Hot::Prev | Hot::Next) {
                     view(|v| v.suppress_up = true);
+                } else if bar_under(h, x, y) {
+                    // On the bar: not a content double-click, so zoom stays where it is.
+                    view(|v| v.suppress_up = true);
                 } else if inside(g.stage, x, y) && zoom_shape().is_some() {
                     view(|v| v.suppress_up = true);
                     set_zoom(h, 1.0, Some((x - g.stage.left, y - g.stage.top)));
@@ -2772,6 +2924,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let on = v.bar_down;
                     v.bar_down = false;
                     v.bar_drag = None;
+                    v.hbar_drag = None;
                     let dragged = v.drag_pt.take().is_some();
                     let panned = v.pan_pt.take().is_some();
                     v.pan_drag = false;
@@ -2794,7 +2947,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_CAPTURECHANGED => {
                 view(|v| {
-                    (v.bar_drag, v.bar_down, v.drag_pt) = (None, false, None);
+                    (v.bar_drag, v.hbar_drag, v.bar_down, v.drag_pt) = (None, None, false, None);
                     v.pan_pt = None;
                     v.pan_drag = false;
                 });
@@ -3112,6 +3265,71 @@ mod tests {
             // ›'s own pixel is not part of the bar
             assert_eq!(bar_hit(b.hit, b.paint, g.next.left, g.next.top + 1), BarHit::None);
         }
+    }
+
+    fn overlaps(a: RECT, b: RECT) -> bool {
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+    }
+
+    #[test]
+    fn horizontal_bar_tracks_the_pan_and_leaves_a_corner() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let g = peek_geo(RECT { left: 0, top: 0, right: 1400, bottom: 900 }, dpi);
+            let stage = g.stage;
+            let alone = peek_hbar_rects(stage, dpi, 0);
+            assert!(alone.paint.left >= stage.left && alone.paint.right <= stage.right, "{dpi}");
+            assert!(alone.paint.top >= stage.top && alone.paint.bottom <= stage.bottom, "{dpi}");
+            assert!(alone.paint.right - alone.paint.left > alone.paint.bottom - alone.paint.top, "{dpi}");
+            assert!(alone.hit.top < alone.paint.top && alone.hit.top >= stage.top, "{dpi}");
+            assert_eq!((alone.hit.left, alone.hit.right), (alone.paint.left, alone.paint.right));
+            // › sits in the side margin, beside the stage, not on this track.
+            assert!(alone.paint.right <= g.next.left, "{dpi}");
+
+            let (Some(v_only), None) = peek_scroll_rects(stage, dpi, true, false) else { panic!("vertical only") };
+            let full = peek_bar_rects(stage, dpi);
+            assert_eq!(
+                (v_only.paint.left, v_only.paint.top, v_only.paint.right, v_only.paint.bottom),
+                (full.paint.left, full.paint.top, full.paint.right, full.paint.bottom)
+            );
+            let (None, Some(h_only)) = peek_scroll_rects(stage, dpi, false, true) else { panic!("horizontal only") };
+            assert_eq!(h_only.paint.right, alone.paint.right);
+
+            let (Some(v), Some(h)) = peek_scroll_rects(stage, dpi, true, true) else { panic!("both") };
+            assert!(v.paint.bottom < full.paint.bottom, "{dpi}");
+            assert!(h.paint.right < alone.paint.right, "{dpi}");
+            assert!(v.paint.bottom <= h.paint.top, "{dpi}");
+            assert!(h.paint.right <= v.paint.left, "{dpi}");
+            assert!(!overlaps(v.paint, h.paint), "{dpi}");
+            assert!(!overlaps(v.hit, h.hit), "{dpi}");
+            // The corner cell itself is empty.
+            let corner = RECT { left: h.paint.right, top: v.paint.bottom, right: v.paint.right, bottom: h.paint.bottom };
+            assert!(corner.right > corner.left && corner.bottom > corner.top, "{dpi}");
+            assert!(!overlaps(corner, v.paint) && !overlaps(corner, h.paint), "{dpi}");
+        }
+
+        // Wider than the view: the thumb is half the track and follows the horizontal offset.
+        let stage = RECT { left: 10, top: 20, right: 510, bottom: 420 };
+        let h = peek_hbar_rects(stage, 96, 0);
+        let span = h.paint.right - h.paint.left;
+        assert!(bar_layout(span, span, h.paint.left, span, 24, 0).is_none());
+        let start = bar_layout(span * 2, span, h.paint.left, span, 24, 0).unwrap();
+        assert_eq!(start.max_y, span);
+        assert_eq!(start.thumb_h, span / 2);
+        assert_eq!(start.thumb_top, h.paint.left);
+        let mid = bar_layout(span * 2, span, h.paint.left, span, 24, span / 2).unwrap();
+        assert_eq!(mid.thumb_top, h.paint.left + span / 4);
+        let end = bar_layout(span * 2, span, h.paint.left, span, 24, span).unwrap();
+        assert_eq!(end.thumb_top + end.thumb_h, h.paint.right);
+        let travel = span - start.thumb_h;
+        assert_eq!(thumb_scroll(travel, travel, start.max_y), start.max_y);
+        assert_eq!(page_toward(span / 2, span, mid.thumb_top, mid.thumb_h, h.paint.left, span / 5), span / 2 - span / 5);
+        assert_eq!(page_toward(span / 2, span, mid.thumb_top, mid.thumb_h, h.paint.right - 1, span / 5), span / 2 + span / 5);
+
+        let thumb = hthumb_of(h, &mid);
+        assert_eq!(hbar_hit(h.hit, thumb, mid.thumb_top + 2, h.hit.top), BarHit::Thumb);
+        assert_eq!(hbar_hit(h.hit, thumb, h.paint.left + 1, (h.paint.top + h.paint.bottom) / 2), BarHit::Track);
+        assert_eq!(hbar_hit(h.hit, thumb, h.paint.left + 1, h.hit.top - 1), BarHit::None);
+        assert_eq!(hbar_hit(h.hit, thumb, h.paint.right, h.paint.top + 1), BarHit::None);
     }
 
     #[test]
