@@ -5,10 +5,10 @@
 > **Panegrid는 efww의 [efww/grids](https://github.com/efww/grids) 포크입니다.** 실행 파일 이름(`panegrid.exe`), 창 클래스, 설정 폴더, 단축키(Win+Shift+E)를 따로 쓰므로, 원래 Grids의 설정을 건드리지 않고 나란히 실행할 수 있습니다.
 
 <p align="center">
-  <a href="https://github.com/Samek86/grids"><img alt="플랫폼: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Samek86/panegrid"><img alt="플랫폼: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
   <a href="LICENSE"><img alt="라이선스: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="https://github.com/Samek86/grids"><img alt="언어: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
-  <a href="https://github.com/Samek86/grids/commits"><img alt="최근 커밋" src="https://img.shields.io/github/last-commit/Samek86/grids"></a>
+  <a href="https://github.com/Samek86/panegrid"><img alt="언어: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/Samek86/panegrid/commits"><img alt="최근 커밋" src="https://img.shields.io/github/last-commit/Samek86/panegrid"></a>
 </p>
 
 <p align="center">
@@ -68,7 +68,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 ## 설치
 
-[Releases](https://github.com/Samek86/grids/releases/latest)에서 최신 zip `panegrid-<version>-x64.zip`을 받습니다. 안에 `panegrid.exe`가 들어 있습니다. 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
+[Releases](https://github.com/Samek86/panegrid/releases/latest)에서 최신 zip `panegrid-<version>-x64.zip`을 받습니다. 안에 `panegrid.exe`가 들어 있습니다. 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
 
 코드 서명이 없는 exe라 처음 실행할 때 Windows SmartScreen 경고가 뜰 수 있습니다. **추가 정보 → 실행**을 누르세요.
 

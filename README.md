@@ -5,10 +5,10 @@
 > **Panegrid is a fork of [efww/grids](https://github.com/efww/grids)** by efww. It uses its own exe name (`panegrid.exe`), window class, settings folder and hotkey (Win+Shift+E), so it can run next to the original Grids without touching its settings.
 
 <p align="center">
-  <a href="https://github.com/Samek86/grids"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Samek86/panegrid"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="https://github.com/Samek86/grids"><img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
-  <a href="https://github.com/Samek86/grids/commits"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/Samek86/grids"></a>
+  <a href="https://github.com/Samek86/panegrid"><img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/Samek86/panegrid/commits"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/Samek86/panegrid"></a>
 </p>
 
 <p align="center">
@@ -68,7 +68,7 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 ## Install
 
-Download the latest release zip, `panegrid-<version>-x64.zip`, from [Releases](https://github.com/Samek86/grids/releases/latest). It contains `panegrid.exe`. Unzip it into any folder and run it. One portable exe, about 1.2 MB. Nothing to install.
+Download the latest release zip, `panegrid-<version>-x64.zip`, from [Releases](https://github.com/Samek86/panegrid/releases/latest). It contains `panegrid.exe`. Unzip it into any folder and run it. One portable exe, about 1.2 MB. Nothing to install.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
