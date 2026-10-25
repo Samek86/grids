@@ -37,6 +37,7 @@ pub(crate) const WM_PEEK_DONE: u32 = WM_APP + 45; // wParam = generation; the pi
 pub(crate) const WM_PEEK_LOST: u32 = WM_APP + 51; // the preview went inactive: close it unless it is active again
 pub(crate) const WM_PEEK_HOSTED: u32 = WM_APP + 52; // wParam = generation, lParam = 1 shown / 0 failed
 const WM_PEEK_HOST_SIZE: u32 = WM_APP + 53; // thread message: the host window changed size
+const WM_PEEK_ZOOM: u32 = WM_APP + 54; // wParam = generation; a PDF page was re-rendered for zoom. Does not resize.
 
 const ICON_PREV: &str = "";
 const ICON_NEXT: &str = "";
@@ -64,6 +65,28 @@ pub(crate) struct Pix {
     pub(crate) w: i32,
     pub(crate) h: i32,
     pub(crate) bgra: Vec<u8>, // premultiplied, top-down
+    pub(crate) lay_w: i32,    // fit-render size; zoom swaps the buffer but layout stays on this
+    pub(crate) lay_h: i32,
+}
+
+impl Pix {
+    pub(crate) fn new(w: i32, h: i32, bgra: Vec<u8>) -> Self {
+        Self { w, h, bgra, lay_w: w, lay_h: h }
+    }
+
+    /// Size the fit render produced. A sharper zoom buffer keeps this so layout does not double-scale.
+    pub(crate) fn lay(&self) -> (i32, i32) {
+        if self.lay_w > 0 && self.lay_h > 0 { (self.lay_w, self.lay_h) } else { (self.w, self.h) }
+    }
+}
+
+/// PDF pages re-rendered at the zoomed size. Does not bump `gen` or clear the picture on screen.
+#[derive(Clone)]
+struct ZoomReq {
+    gen: usize,
+    seq: u64,
+    stage_w: i32,
+    zoom: f64,
 }
 
 // One worker, newest request only. gen moves on every want, so a result for an item already left
@@ -72,6 +95,7 @@ pub(crate) struct PeekJob {
     pub(crate) gen: usize,
     pub(crate) req: Option<PeekReq>,
     pub(crate) done: Option<Peeked>,
+    zoom: Option<ZoomReq>,
 }
 
 pub(crate) struct Peeked {
@@ -82,6 +106,7 @@ pub(crate) struct Peeked {
 
 impl PeekJob {
     pub(crate) fn want(&mut self, req: Option<PeekReq>) {
+        self.zoom = None;
         (self.gen, self.req, self.done) = (self.gen + 1, req, None);
     }
 
@@ -103,9 +128,31 @@ impl PeekJob {
             _ => false,
         }
     }
+
+    /// Swap one PDF page for a sharper render. `lay_*` on `p` is the fit size and must already be set.
+    fn put_zoom_page(&mut self, gen: usize, seq: u64, i: usize, p: Pix) -> bool {
+        if self.gen != gen || self.zoom.as_ref().map(|z| z.seq) != Some(seq) {
+            return false;
+        }
+        match &mut self.done {
+            Some(Peeked { body: Body::Pages { pages, total }, .. }) if (i as u32) < *total => {
+                if i < pages.len() {
+                    let (lay_w, lay_h) = pages[i].lay();
+                    pages[i] = Pix { lay_w, lay_h, ..p };
+                    true
+                } else if i == pages.len() {
+                    pages.push(p);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
-pub(crate) static PEEK: Mutex<PeekJob> = Mutex::new(PeekJob { gen: 0, req: None, done: None });
+pub(crate) static PEEK: Mutex<PeekJob> = Mutex::new(PeekJob { gen: 0, req: None, done: None, zoom: None });
 pub(crate) static PEEK_WAKE: Condvar = Condvar::new();
 
 pub(crate) fn peek_job() -> std::sync::MutexGuard<'static, PeekJob> {
@@ -124,43 +171,134 @@ pub(crate) fn want_peek(req: Option<PeekReq>) {
 
 // Lives until the process ends. COM is up only while one preview is made; the lock is never held then.
 pub(crate) fn peek_worker() {
-    let mut seen = 0;
+    let mut seen = 0usize;
     loop {
         let (gen, req) = {
             let mut j = peek_job();
-            while j.req.is_none() || j.gen == seen {
+            loop {
+                let fresh = j.req.is_some() && j.gen != seen;
+                // A zoom re-render for the file already on screen. A new file still goes first.
+                let zooming = j.zoom.as_ref().is_some_and(|z| z.gen == j.gen && j.done.is_some());
+                if fresh || zooming {
+                    break;
+                }
                 j = PEEK_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
             }
-            (j.gen, j.req.clone().unwrap())
+            let fresh = j.req.is_some() && j.gen != seen;
+            (j.gen, if fresh { j.req.clone() } else { None })
         };
-        seen = gen;
         unsafe {
             let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-            let body = content(&req);
-            let (icon, meta) = meta(&req.path, &body);
-            let more = match &body {
-                Body::Pages { pages, total } if (pages.len() as u32) < *total => Some(*total),
-                _ => None,
-            };
-            let tell = || _ = PostMessageW(Some(HWND(req.hwnd as _)), WM_PEEK_DONE, WPARAM(gen), LPARAM(0));
-            if peek_job().publish(gen, Peeked { body, icon, meta }) {
-                tell();
-                // the first page is up; the rest follow while this is still the item shown
-                if let (Some(total), Ok(doc)) = (more, pdf_open(&req.path)) {
-                    for i in 1..total {
-                        let Some(p) = (peek_job().gen == gen).then(|| pdf_page(&doc, i, req.w, req.h)).flatten() else { break };
-                        if !peek_job().add_page(gen, p) {
-                            break;
-                        }
-                        tell();
-                    }
-                }
+            if let Some(req) = req {
+                seen = gen;
+                render_peek(gen, &req);
             }
+            render_zoom();
             if com {
                 CoUninitialize();
             }
         }
     }
+}
+
+unsafe fn render_peek(gen: usize, req: &PeekReq) {
+    let body = content(req);
+    let (icon, meta) = meta(&req.path, &body);
+    let more = match &body {
+        Body::Pages { pages, total } if (pages.len() as u32) < *total => Some(*total),
+        _ => None,
+    };
+    let tell = || _ = PostMessageW(Some(HWND(req.hwnd as _)), WM_PEEK_DONE, WPARAM(gen), LPARAM(0));
+    if peek_job().publish(gen, Peeked { body, icon, meta }) {
+        tell();
+        // the first page is up; the rest follow while this is still the item shown
+        if let (Some(total), Ok(doc)) = (more, pdf_open(&req.path)) {
+            for i in 1..total {
+                // Zoom wants every page at the new size; stop the fit-size pass and let render_zoom finish them.
+                if peek_job().zoom.as_ref().is_some_and(|z| z.gen == gen) {
+                    break;
+                }
+                let Some(p) = (peek_job().gen == gen).then(|| pdf_page(&doc, i, req.w, req.h)).flatten() else { break };
+                if !peek_job().add_page(gen, p) {
+                    break;
+                }
+                tell();
+            }
+        }
+    }
+}
+
+fn zoom_current(gen: usize, seq: u64) -> bool {
+    let j = peek_job();
+    j.gen == gen && j.zoom.as_ref().is_some_and(|z| z.seq == seq)
+}
+
+fn clear_zoom(gen: usize, seq: u64) {
+    let mut j = peek_job();
+    if j.zoom.as_ref().is_some_and(|z| z.gen == gen && z.seq == seq) {
+        j.zoom = None;
+    }
+}
+
+// Sharper PDF pages for the zoom already on screen. The fit-size `lay_*` is kept so paint
+// still scales from fit; until a page lands, paint stretches the bitmap it has (HALFTONE).
+unsafe fn render_zoom() {
+    let ready = {
+        let j = peek_job();
+        match (j.zoom.clone(), j.req.as_ref(), j.done.as_ref()) {
+            (Some(z), Some(req), Some(Peeked { body: Body::Pages { .. }, .. })) if z.gen == j.gen => Some((z, req.path.clone(), req.hwnd, req.w, req.h)),
+            _ => None,
+        }
+    };
+    let Some((z, path, hwnd, fit_w, fit_h)) = ready else { return };
+    let Ok(doc) = pdf_open(&path) else {
+        clear_zoom(z.gen, z.seq);
+        return;
+    };
+    let total = {
+        let j = peek_job();
+        match &j.done {
+            Some(Peeked { body: Body::Pages { total, .. }, .. }) if j.gen == z.gen => (*total).min(PDF_MAX),
+            _ => return,
+        }
+    };
+    for i in 0..total {
+        if !zoom_current(z.gen, z.seq) {
+            return;
+        }
+        let have = {
+            let j = peek_job();
+            match &j.done {
+                Some(Peeked { body: Body::Pages { pages, .. }, .. }) => pages.get(i as usize).map(|p| (p.lay(), p.w, p.h)),
+                _ => None,
+            }
+        };
+        let lay = if let Some((lay, _, _)) = have {
+            lay
+        } else {
+            let Ok(page) = doc.GetPage(i) else { break };
+            let Ok(size) = page.Size() else { break };
+            let fit = pdf_fit_px(size.Width, size.Height, fit_w, fit_h);
+            if fit.0 <= 0 || fit.1 <= 0 {
+                break;
+            }
+            fit
+        };
+        let (rw, rh) = zoom_render_px(lay.0, lay.1, z.stage_w, z.zoom);
+        // A bitmap already this large (the fit render is often the max stage) stays sharp when scaled down.
+        if let Some((_, bw, bh)) = have {
+            if bw + rw / 32 >= rw && bh + rh / 32 >= rh {
+                continue;
+            }
+        }
+        let Some(mut pix) = pdf_page(&doc, i, rw, rh) else { break };
+        (pix.lay_w, pix.lay_h) = lay;
+        if !peek_job().put_zoom_page(z.gen, z.seq, i as usize, pix) {
+            return;
+        }
+        _ = PostMessageW(Some(HWND(hwnd as _)), WM_PEEK_ZOOM, WPARAM(z.gen), LPARAM(0));
+    }
+    clear_zoom(z.gen, z.seq);
 }
 
 // Photos come back with every alpha byte 0: make them opaque. Icons come back with straight alpha (a colour
@@ -474,6 +612,10 @@ pub(crate) struct PeekView {
     drag_pt: Option<(i32, i32)>, // caption press, client px, before it becomes a drag
     suppress_up: bool, // the mouse-up after a double-click must not fire the button again
     tip_on: bool,
+    zoom: f64, // multiple of fit; 0 and 1 both mean fit. Header percent: see the zoom section.
+    zoom_seq: u64,                   // last PDF re-render asked for
+    pan_pt: Option<(i32, i32)>,      // client point while a content drag may become a pan
+    pan_drag: bool,
 }
 
 thread_local! {
@@ -488,7 +630,9 @@ fn view<R>(f: impl FnOnce(&mut PeekView) -> R) -> R {
 unsafe fn reset_scroll() {
     let captured = view(|v| {
         (v.y, v.x, v.layout, v.max_y, v.edge_at, v.wheel) = (0, 0, None, 0, None, 0);
-        let captured = v.bar_drag.take().is_some() || v.bar_down;
+        v.zoom = 1.0;
+        let captured = v.bar_drag.take().is_some() || v.bar_down || v.pan_pt.take().is_some() || v.pan_drag;
+        v.pan_drag = false;
         (v.page_h, v.bar_hot, v.bar_down) = (0, false, false);
         captured
     });
@@ -525,7 +669,16 @@ fn reset_frame() {
         v.drag_pt = None;
         v.suppress_up = false;
         v.tip_on = false;
+        v.zoom = 1.0;
+        v.pan_pt = None;
+        v.pan_drag = false;
     });
+}
+
+/// Drop a pending PDF re-render. The next file, and fit, must not apply it.
+unsafe fn drop_zoom(h: HWND) {
+    _ = KillTimer(Some(h), TIMER_PEEK_ZOOM);
+    peek_job().zoom = None;
 }
 
 struct Bounds {
@@ -770,6 +923,7 @@ unsafe fn show_path(path: &str, plain: bool) {
         return;
     }
     unload_handler();
+    drop_zoom(h);
     reset_scroll();
     let (w, ht) = request_stage(h);
     want_peek(Some(PeekReq { path: path.to_string(), w, h: ht, hwnd: h.0 as isize, plain }));
@@ -788,6 +942,7 @@ pub(crate) unsafe fn load_peek(plain: bool) {
     let (h, i) = app(|a| (a.peek, a.peek_pane));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     unload_handler();
+    drop_zoom(h);
     reset_scroll();
     let it = fv.GetItem::<IShellItem>(fv.GetFocusedItem().unwrap_or(-1)).ok();
     let shown = |kind| it.as_ref().and_then(|it| it.GetDisplayName(kind).ok()).map(|p| pwstr(p));
@@ -1434,6 +1589,423 @@ unsafe fn step_by_wheel(raw: i32) {
     }
 }
 
+// ---------- zoom (images and PDF pages) ----------
+// Stored as a multiple of the fit size: 1.0 draws what the preview drew before zoom existed
+// (an image letterboxed in the stage, never enlarged; a PDF page fitted to the stage width,
+// stacked from the top). The header shows that multiple — "150%" is 1.5× fit, and the wheel
+// range is 10%..800%. It is not a percent of the file's pixels: the bitmap is already a fitted
+// render, and a PDF re-render would make a bitmap-pixel percent jump.
+
+pub(crate) const ZOOM_MIN: f64 = 0.10;
+pub(crate) const ZOOM_MAX: f64 = 8.0;
+/// One notch (wheel delta 120).
+pub(crate) const ZOOM_STEP: f64 = 1.25;
+/// Longest side of a zoomed PDF render, in px.
+pub(crate) const ZOOM_RENDER_MAX: i32 = 8192;
+const ZOOM_WAIT_MS: u32 = 150;
+
+fn zoom_or_fit(z: f64) -> f64 {
+    if z == 0.0 { 1.0 } else { z.clamp(ZOOM_MIN, ZOOM_MAX) }
+}
+
+fn is_fit(z: f64) -> bool {
+    (zoom_or_fit(z) - 1.0).abs() < 1e-9
+}
+
+/// `delta` is the wheel delta, positive zooming in. 120 is one notch.
+pub(crate) fn zoom_factor(z: f64, delta: i32) -> f64 {
+    let z = zoom_or_fit(z);
+    if delta == 0 {
+        return z;
+    }
+    (z * ZOOM_STEP.powf(delta as f64 / 120.0)).clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+/// Header percent. 100 is fit.
+pub(crate) fn zoom_pct(z: f64) -> i32 {
+    (zoom_or_fit(z) * 100.0).round() as i32
+}
+
+/// `facts` plus the zoom percent. Empty facts are just the percent.
+pub(crate) fn zoom_label(facts: &str, pct: i32) -> String {
+    if facts.is_empty() { format!("{pct}%") } else { format!("{facts}  {pct}%") }
+}
+
+/// Where a content edge sits when that axis is smaller than the view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FitAlign {
+    Center,
+    Start,
+}
+
+fn scaled(n: i32, zoom: f64) -> i32 {
+    if n <= 0 {
+        return 0;
+    }
+    let z = zoom_or_fit(zoom);
+    if (z - 1.0).abs() < 1e-12 {
+        return n;
+    }
+    ((n as f64) * z).round().max(1.0) as i32
+}
+
+/// Fit an image into the stage the way paint used to: letterboxed, never enlarged.
+pub(crate) fn image_fit_px(nat_w: i32, nat_h: i32, stage_w: i32, stage_h: i32) -> (i32, i32) {
+    if nat_w <= 0 || nat_h <= 0 || stage_w <= 0 || stage_h <= 0 {
+        return (0, 0);
+    }
+    let k = (stage_w as f32 / nat_w as f32).min(stage_h as f32 / nat_h as f32).min(1.0);
+    ((nat_w as f32 * k) as i32, (nat_h as f32 * k) as i32)
+}
+
+/// Fit one PDF page to the stage width, but never wider than its fit-render. Zoom 1 matches paint_pages.
+pub(crate) fn page_fit_size(nat_w: i32, nat_h: i32, stage_w: i32) -> (i32, i32) {
+    if nat_w <= 0 || nat_h <= 0 || stage_w <= 0 {
+        return (0, 0);
+    }
+    let w = nat_w.min(stage_w);
+    let h = ((nat_h as i64 * w as i64) / nat_w as i64).max(1) as i32;
+    (w, h)
+}
+
+fn page_draw(nat_w: i32, nat_h: i32, stage_w: i32, zoom: f64) -> (i32, i32) {
+    let (fw, fh) = page_fit_size(nat_w, nat_h, stage_w);
+    (scaled(fw, zoom), scaled(fh, zoom))
+}
+
+/// Render size for one page at this zoom, capped so a deep zoom cannot allocate a huge bitmap.
+pub(crate) fn cap_render(w: i32, h: i32) -> (i32, i32) {
+    let w = w.max(1);
+    let h = h.max(1);
+    let m = w.max(h);
+    if m <= ZOOM_RENDER_MAX {
+        return (w, h);
+    }
+    let k = ZOOM_RENDER_MAX as f64 / m as f64;
+    ((w as f64 * k).round().max(1.0) as i32, (h as f64 * k).round().max(1.0) as i32)
+}
+
+pub(crate) fn zoom_render_px(lay_w: i32, lay_h: i32, stage_w: i32, zoom: f64) -> (i32, i32) {
+    let (fw, fh) = page_fit_size(lay_w, lay_h, stage_w.max(1));
+    cap_render(scaled(fw, zoom).max(16), scaled(fh, zoom).max(16))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PdfBox {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// Pages stacked in content coordinates at this zoom. `gap` and `footer` are the fit-size px (zoom 1).
+pub(crate) fn pdf_layout(pages: &[(i32, i32)], stage_w: i32, gap: i32, footer: i32, zoom: f64) -> (i32, i32, Vec<PdfBox>) {
+    let gap_z = scaled(gap, zoom);
+    let foot = scaled(footer, zoom);
+    let mut boxes = Vec::with_capacity(pages.len());
+    let mut max_w = 0i32;
+    let mut y = 0i32;
+    for (i, &(nw, nh)) in pages.iter().enumerate() {
+        let (w, h) = page_draw(nw, nh, stage_w, zoom);
+        max_w = max_w.max(w);
+        boxes.push(PdfBox { x: 0, y, w, h });
+        y = y.saturating_add(h);
+        if i + 1 != pages.len() {
+            y = y.saturating_add(gap_z);
+        }
+    }
+    y = y.saturating_add(foot);
+    for b in &mut boxes {
+        b.x = (max_w - b.w) / 2;
+    }
+    (max_w, y.max(0), boxes)
+}
+
+fn origin_axis(scroll: i32, content: i32, view: i32, align: FitAlign) -> i32 {
+    if content <= view {
+        match align {
+            FitAlign::Center => (view - content) / 2,
+            FitAlign::Start => 0,
+        }
+    } else {
+        -scroll.clamp(0, content - view)
+    }
+}
+
+fn clamp_origin(origin: f64, content: i32, view: i32, align: FitAlign) -> f64 {
+    if content <= view {
+        match align {
+            FitAlign::Center => (view - content) as f64 / 2.0,
+            FitAlign::Start => 0.0,
+        }
+    } else {
+        origin.clamp((view - content) as f64, 0.0)
+    }
+}
+
+fn origin_to_scroll(ox: f64, oy: f64, content: (i32, i32), view: (i32, i32), align: (FitAlign, FitAlign)) -> (i32, i32) {
+    let ox = clamp_origin(ox, content.0, view.0, align.0);
+    let oy = clamp_origin(oy, content.1, view.1, align.1);
+    let sx = if content.0 <= view.0 { 0 } else { (-ox).round().clamp(0.0, (content.0 - view.0) as f64) as i32 };
+    let sy = if content.1 <= view.1 { 0 } else { (-oy).round().clamp(0.0, (content.1 - view.1) as f64) as i32 };
+    (sx, sy)
+}
+
+/// Scroll after scaling about `cursor` (view px) by `factor` (`new_zoom / old_zoom`).
+/// Sizes are the content before and after. An axis smaller than the view goes to `align`.
+pub(crate) fn zoom_scroll(
+    scroll: (i32, i32),
+    cursor: (i32, i32),
+    old_size: (i32, i32),
+    new_size: (i32, i32),
+    view: (i32, i32),
+    factor: f64,
+    align: (FitAlign, FitAlign),
+) -> (i32, i32) {
+    let ox = origin_axis(scroll.0, old_size.0, view.0, align.0) as f64;
+    let oy = origin_axis(scroll.1, old_size.1, view.1, align.1) as f64;
+    let nx = cursor.0 as f64 - (cursor.0 as f64 - ox) * factor;
+    let ny = cursor.1 as f64 - (cursor.1 as f64 - oy) * factor;
+    origin_to_scroll(nx, ny, new_size, view, align)
+}
+
+/// Drag by `delta` px; the content follows the pointer. Clamped so it cannot leave a needless gap.
+pub(crate) fn pan_scroll(scroll: (i32, i32), delta: (i32, i32), content: (i32, i32), view: (i32, i32), align: (FitAlign, FitAlign)) -> (i32, i32) {
+    let ox = origin_axis(scroll.0, content.0, view.0, align.0) as f64 + delta.0 as f64;
+    let oy = origin_axis(scroll.1, content.1, view.1, align.1) as f64 + delta.1 as f64;
+    origin_to_scroll(ox, oy, content, view, align)
+}
+
+enum ZoomShape {
+    Image { nat_w: i32, nat_h: i32 },
+    Pages { nat: Vec<(i32, i32)>, more: bool },
+}
+
+fn shape_align(shape: &ZoomShape) -> (FitAlign, FitAlign) {
+    match shape {
+        // A short PDF stays top-aligned, as it does at fit. Horizontally it centers.
+        ZoomShape::Pages { .. } => (FitAlign::Center, FitAlign::Start),
+        ZoomShape::Image { .. } => (FitAlign::Center, FitAlign::Center),
+    }
+}
+
+fn shape_gap(shape: &ZoomShape, dpi: i32) -> (i32, i32) {
+    let s = |v: i32| v * dpi / 96;
+    match shape {
+        ZoomShape::Pages { more, .. } => (s(16), if *more { s(48) } else { 0 }),
+        ZoomShape::Image { .. } => (0, 0),
+    }
+}
+
+fn zoom_shape() -> Option<ZoomShape> {
+    let j = peek_job();
+    match j.done.as_ref().map(|p| &p.body) {
+        Some(Body::Pic(p)) => {
+            let (nat_w, nat_h) = p.lay();
+            Some(ZoomShape::Image { nat_w, nat_h })
+        }
+        Some(Body::Pages { pages, total }) => Some(ZoomShape::Pages {
+            nat: pages.iter().map(|p| p.lay()).collect(),
+            more: (pages.len() as u32) < *total,
+        }),
+        _ => None,
+    }
+}
+
+fn content_extent(shape: &ZoomShape, stage: (i32, i32), dpi: i32, zoom: f64) -> (i32, i32) {
+    let (gap, footer) = shape_gap(shape, dpi);
+    match shape {
+        ZoomShape::Image { nat_w, nat_h } => {
+            let (fw, fh) = image_fit_px(*nat_w, *nat_h, stage.0, stage.1);
+            (scaled(fw, zoom), scaled(fh, zoom))
+        }
+        ZoomShape::Pages { nat, .. } => {
+            let (w, h, _) = pdf_layout(nat, stage.0, gap, footer, zoom);
+            (w, h)
+        }
+    }
+}
+
+fn stage_of(h: HWND) -> (RECT, i32, i32) {
+    let st = unsafe { geo_of(h).stage };
+    let (w, ht) = ((st.right - st.left).max(0), (st.bottom - st.top).max(0));
+    (st, w, ht)
+}
+
+unsafe fn set_zoom(h: HWND, new_z: f64, at: Option<(i32, i32)>) {
+    let Some(shape) = zoom_shape() else { return };
+    let new_z = zoom_or_fit(new_z);
+    let old_z = view(|v| zoom_or_fit(v.zoom));
+    if (old_z - new_z).abs() < 1e-12 {
+        if is_fit(new_z) {
+            schedule_pdf_zoom(h);
+        }
+        return;
+    }
+    let dpi = app(|a| a.dpi);
+    let (_, vw, vh) = stage_of(h);
+    if vw < 2 || vh < 2 {
+        return;
+    }
+    let align = shape_align(&shape);
+    let old = content_extent(&shape, (vw, vh), dpi, old_z);
+    let new = content_extent(&shape, (vw, vh), dpi, new_z);
+    let (mx, my) = at.unwrap_or((vw / 2, vh / 2));
+    let factor = new_z / old_z;
+    view(|v| {
+        let (sx, sy) = zoom_scroll((v.x, v.y), (mx.clamp(0, vw), my.clamp(0, vh)), old, new, (vw, vh), factor, align);
+        v.zoom = new_z;
+        v.x = sx;
+        v.y = sy;
+        v.page_h = vh;
+        v.max_y = new.1.saturating_sub(vh).max(0);
+        v.edge_at = None;
+        v.wheel = 0;
+    });
+    _ = InvalidateRect(Some(h), None, false);
+    schedule_pdf_zoom(h);
+}
+
+unsafe fn schedule_pdf_zoom(h: HWND) {
+    let pdf = matches!(zoom_shape(), Some(ZoomShape::Pages { .. }));
+    if !pdf || is_fit(view(|v| v.zoom)) {
+        _ = KillTimer(Some(h), TIMER_PEEK_ZOOM);
+        peek_job().zoom = None;
+        return;
+    }
+    _ = SetTimer(Some(h), TIMER_PEEK_ZOOM, ZOOM_WAIT_MS, None);
+}
+
+unsafe fn request_pdf_zoom(h: HWND) {
+    let z = view(|v| zoom_or_fit(v.zoom));
+    if is_fit(z) {
+        peek_job().zoom = None;
+        return;
+    }
+    let (_, stage_w, _) = stage_of(h);
+    let stage_w = stage_w.max(1);
+    let mut j = peek_job();
+    let (incomplete, soft, gen) = match j.done.as_ref().map(|p| &p.body) {
+        Some(Body::Pages { pages, total }) => {
+            let incomplete = (pages.len() as u32) < *total;
+            let soft = pages.iter().any(|p| {
+                let (lw, lh) = p.lay();
+                let (rw, rh) = zoom_render_px(lw, lh, stage_w, z);
+                p.w + rw / 32 < rw || p.h + rh / 32 < rh
+            });
+            (incomplete, soft, j.gen)
+        }
+        _ => {
+            j.zoom = None;
+            return;
+        }
+    };
+    if !incomplete && !soft {
+        j.zoom = None;
+        return;
+    }
+    let seq = view(|v| {
+        v.zoom_seq = v.zoom_seq.wrapping_add(1);
+        v.zoom_seq
+    });
+    j.zoom = Some(ZoomReq { gen, seq, stage_w, zoom: z });
+    drop(j);
+    PEEK_WAKE.notify_one();
+}
+
+unsafe fn pan_by(h: HWND, dx: i32, dy: i32) {
+    let Some(shape) = zoom_shape() else { return };
+    let dpi = app(|a| a.dpi);
+    let (_, vw, vh) = stage_of(h);
+    let zoom = view(|v| zoom_or_fit(v.zoom));
+    let content = content_extent(&shape, (vw, vh), dpi, zoom);
+    let align = shape_align(&shape);
+    let moved = view(|v| {
+        let prev = v.y;
+        let next = pan_scroll((v.x, v.y), (dx, dy), content, (vw, vh), align);
+        let moved = next != (v.x, v.y);
+        (v.x, v.y) = next;
+        if moved {
+            note_scroll(v, prev);
+        }
+        moved
+    });
+    if moved {
+        _ = InvalidateRect(Some(h), None, false);
+    }
+}
+
+unsafe fn pan_ready(h: HWND) -> bool {
+    if is_fit(view(|v| v.zoom)) {
+        return false;
+    }
+    let Some(shape) = zoom_shape() else { return false };
+    let dpi = app(|a| a.dpi);
+    let (_, vw, vh) = stage_of(h);
+    let (cw, ch) = content_extent(&shape, (vw, vh), dpi, view(|v| zoom_or_fit(v.zoom)));
+    cw > vw || ch > vh
+}
+
+unsafe fn peek_cursor(drag: bool) -> HCURSOR {
+    let id = if drag { IDC_SIZEALL } else { IDC_HAND };
+    LoadCursorW(None, id).or_else(|_| LoadCursorW(None, IDC_ARROW)).unwrap_or_default()
+}
+
+fn clamp_plane(cw: i32, ch: i32, vw: i32, vh: i32, align: (FitAlign, FitAlign)) {
+    view(|v| {
+        let (sx, sy) = pan_scroll((v.x, v.y), (0, 0), (cw, ch), (vw, vh), align);
+        v.x = sx;
+        v.y = sy;
+        v.page_h = vh.max(0);
+        v.max_y = ch.saturating_sub(vh.max(0)).max(0);
+    });
+}
+
+// Opaque bitmaps scale with HALFTONE. A transparent PNG keeps AlphaBlend so the fringe stays clean.
+fn opaque_enough(px: &[u8]) -> bool {
+    let n = px.len() / 4;
+    if n == 0 {
+        return true;
+    }
+    let step = (n / 128).max(1);
+    px.chunks(4).step_by(step).take(128).all(|p| p.len() == 4 && p[3] == 255)
+}
+
+unsafe fn blit_scaled(dc: HDC, to: RECT, w: i32, h: i32, px: &[u8]) {
+    let (dw, dh) = (to.right - to.left, to.bottom - to.top);
+    if dw <= 0 || dh <= 0 || w <= 0 || h <= 0 || px.len() < (w as usize) * (h as usize) * 4 {
+        return;
+    }
+    if dw == w && dh == h || !opaque_enough(px) {
+        blit_bgra(dc, to, w, h, px);
+        return;
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let Ok(bmp) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else { return };
+    std::slice::from_raw_parts_mut(bits as *mut u8, (w as usize) * (h as usize) * 4).copy_from_slice(&px[..(w as usize) * (h as usize) * 4]);
+    let mem = CreateCompatibleDC(Some(dc));
+    let old = SelectObject(mem, bmp.into());
+    let prev = SetStretchBltMode(dc, HALFTONE);
+    _ = SetBrushOrgEx(dc, 0, 0, None);
+    _ = StretchBlt(dc, to.left, to.top, dw, dh, Some(mem), 0, 0, w, h, SRCCOPY);
+    _ = SetStretchBltMode(dc, STRETCH_BLT_MODE(prev));
+    SelectObject(mem, old);
+    _ = DeleteDC(mem);
+    _ = DeleteObject(bmp.into());
+}
+
 // DrawTextW without text()'s single-line, end-ellipsis defaults.
 pub(crate) unsafe fn text_flags(dc: HDC, mut r: RECT, s: &str, font: HFONT, rgb: u32, flags: DRAW_TEXT_FORMAT) {
     let mut w: Vec<u16> = s.encode_utf16().collect();
@@ -1613,27 +2185,30 @@ unsafe fn paint_card(dc: HDC, area: RECT, icon: Option<&Pix>, rows: &[(String, S
 }
 
 // PDF pages one under another, each its own sheet of paper on the stage.
+// Zoom scales every page (and the gap) from the fit size. A short stack stays top-aligned.
 unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFONT, dpi: i32) {
     let s = |v: i32| v * dpi / 96;
-    let gap = s(16);
+    let zoom = view(|v| zoom_or_fit(v.zoom));
+    let (vw, vh) = ((area.right - area.left).max(0), (area.bottom - area.top).max(0));
     let more = (pages.len() as u32) < total;
-    let height: i32 = pages.iter().map(|p| p.h + gap).sum::<i32>() - gap + if more { s(48) } else { 0 };
-    clamp_scroll(height, area.bottom - area.top);
-    let sy = view(|v| v.y);
+    let nat: Vec<(i32, i32)> = pages.iter().map(|p| p.lay()).collect();
+    let (gap, footer) = (s(16), if more { s(48) } else { 0 });
+    let (cw, ch, boxes) = pdf_layout(&nat, vw, gap, footer, zoom);
+    let align = (FitAlign::Center, FitAlign::Start);
+    clamp_plane(cw, ch, vw, vh, align);
+    let (sx, sy) = view(|v| (v.x, v.y));
+    let (ox, oy) = (origin_axis(sx, cw, vw, align.0), origin_axis(sy, ch, vh, align.1));
     clip(dc, area, || {
-        let mut y = area.top - sy;
-        for p in pages {
-            let (w, h) = (p.w.min(area.right - area.left), p.h * p.w.min(area.right - area.left) / p.w.max(1));
-            let x = (area.left + area.right - w) / 2;
-            if y + h > area.top && y < area.bottom {
-                let r = RECT { left: x, top: y, right: x + w, bottom: y + h };
-                blit_bgra(dc, r, p.w, p.h, &p.bgra);
+        for (p, b) in pages.iter().zip(boxes.iter()) {
+            let r = RECT { left: area.left + ox + b.x, top: area.top + oy + b.y, right: area.left + ox + b.x + b.w, bottom: area.top + oy + b.y + b.h };
+            if r.bottom > area.top && r.top < area.bottom && r.right > area.left && r.left < area.right {
+                blit_scaled(dc, r, p.w, p.h, &p.bgra);
                 frame(dc, RECT { left: r.left - 1, top: r.top - 1, right: r.right + 1, bottom: r.bottom + 1 }, 1, pal().line);
             }
-            y += h + gap;
         }
         if more {
-            let r = RECT { left: area.left, top: y, right: area.right, bottom: y + s(32) };
+            let top = area.top + oy + ch - scaled(footer, zoom);
+            let r = RECT { left: area.left, top, right: area.right, bottom: top + s(32) };
             let t = format!("{} {} / {}", tr("Rendering pages…", "페이지 그리는 중…", "ページを描いています…"), pages.len(), total);
             text(dc, r, &t, font, pal().sub, DT_CENTER);
         }
@@ -1642,7 +2217,7 @@ unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFON
 
 pub(crate) unsafe fn paint_peek(h: HWND) {
     let (dpi, font, icon_font, name, ilist, accent) = app(|a| (a.dpi, a.font, a.icon_font, a.peek_name.clone(), a.ilist.clone(), a.s.accent_now()));
-    let (hosted, hover, hot, maximized) = view(|v| (v.hosted, v.hover, v.hot, v.maximized));
+    let (hosted, hover, hot, maximized, zoom) = view(|v| (v.hosted, v.hover, v.hot, v.maximized, zoom_or_fit(v.zoom)));
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let g = peek_geo(rc, dpi);
@@ -1662,8 +2237,13 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
         let name_w = text_w(dc, &name, f[1]).min(room * 6 / 10);
         text(dc, RECT { right: g.title.left + name_w, ..g.title }, &name, f[1], pal().text, DT_LEFT);
         if let Some(p) = &j.done {
+            let joined = p.meta.join("   ·   ");
+            let shown = match &p.body {
+                Body::Pic(_) | Body::Pages { .. } => zoom_label(&joined, zoom_pct(zoom)),
+                _ => joined,
+            };
             let facts = RECT { left: g.title.left + name_w + s(16), ..g.title };
-            text(dc, facts, &p.meta.join("   ·   "), font, pal().sub, DT_LEFT);
+            text(dc, facts, &shown, font, pal().sub, DT_LEFT);
         }
         let glyph = if maximized { ICON_RESTORE } else { ICON_MAX };
         for (r, on, mark) in [(g.max, hot == Hot::Max, glyph), (g.close, hot == Hot::Close, ICON_CLOSE)] {
@@ -1679,13 +2259,26 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
         };
         match j.done.as_ref().map(|p| &p.body) {
             Some(Body::Pic(p)) => {
-                // shrunk to fit if the shell handed back something bigger, never enlarged
+                // Fit letterboxes and never enlarges. Zoom is a multiple of that; at 1.0 the rect matches the old one.
                 let st = g.stage;
-                let k = ((st.right - st.left) as f32 / p.w as f32).min((st.bottom - st.top) as f32 / p.h as f32).min(1.0);
-                let (dw, dh) = ((p.w as f32 * k) as i32, (p.h as f32 * k) as i32);
-                let (x, y) = ((st.left + st.right - dw) / 2, (st.top + st.bottom - dh) / 2);
-                blit_bgra(dc, RECT { left: x, top: y, right: x + dw, bottom: y + dh }, p.w, p.h, &p.bgra);
-                frame(dc, RECT { left: x - 1, top: y - 1, right: x + dw + 1, bottom: y + dh + 1 }, 1, pal().line);
+                let (vw, vh) = ((st.right - st.left).max(0), (st.bottom - st.top).max(0));
+                let (nw, nh) = p.lay();
+                let (fw, fh) = image_fit_px(nw, nh, vw, vh);
+                let (dw, dh) = (scaled(fw, zoom), scaled(fh, zoom));
+                let align = (FitAlign::Center, FitAlign::Center);
+                clamp_plane(dw, dh, vw, vh, align);
+                let (sx, sy) = view(|v| (v.x, v.y));
+                let (ox, oy) = (origin_axis(sx, dw, vw, align.0), origin_axis(sy, dh, vh, align.1));
+                let r = RECT { left: st.left + ox, top: st.top + oy, right: st.left + ox + dw, bottom: st.top + oy + dh };
+                let draw = || {
+                    blit_scaled(dc, r, p.w, p.h, &p.bgra);
+                    frame(dc, RECT { left: r.left - 1, top: r.top - 1, right: r.right + 1, bottom: r.bottom + 1 }, 1, pal().line);
+                };
+                if is_fit(zoom) {
+                    draw();
+                } else {
+                    clip(dc, st, draw);
+                }
             }
             Some(Body::Pages { pages, total }) => paint_pages(dc, g.stage, pages, *total, font, dpi),
             Some(Body::Text { text: t, kind, cut }) => {
@@ -2012,7 +2605,38 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 mm.ptMaxPosition = POINT { x: b.work.left, y: b.work.top };
                 return LRESULT(0);
             }
-            WM_SIZE => sync_host(h),
+            WM_SIZE => {
+                sync_host(h);
+                // Fit layout already follows the stage. Zoomed content changes size with it, so redraw
+                // the whole window; a PDF asks for sharper pages once the resize settles.
+                if !is_fit(view(|v| v.zoom)) {
+                    _ = InvalidateRect(Some(h), None, false);
+                    schedule_pdf_zoom(h);
+                }
+            }
+            WM_TIMER if wp.0 == TIMER_PEEK_ZOOM => {
+                _ = KillTimer(Some(h), TIMER_PEEK_ZOOM);
+                request_pdf_zoom(h);
+            }
+            WM_PEEK_ZOOM => {
+                // Pixels only. Fitting the window here would fight a size the user already set.
+                if peek_job().gen == wp.0 {
+                    _ = InvalidateRect(Some(h), None, false);
+                }
+            }
+            WM_SETCURSOR => {
+                let ht = (lp.0 & 0xffff) as u32;
+                if ht == HTCLIENT {
+                    let drag = view(|v| v.pan_drag);
+                    let mut pt = POINT::default();
+                    let over = GetCursorPos(&mut pt).is_ok() && ScreenToClient(h, &mut pt).as_bool() && inside(geo_of(h).stage, pt.x, pt.y);
+                    if drag || (over && pan_ready(h)) {
+                        SetCursor(Some(peek_cursor(drag)));
+                        return LRESULT(1);
+                    }
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
             WM_ENTERSIZEMOVE => {
                 let r = window_rect(h);
                 view(|v| v.grip = Some((r.right - r.left, r.bottom - r.top)));
@@ -2056,7 +2680,17 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_PEEK_HOSTED => handler_ready(h, wp.0, lp.0 != 0),
             WM_MOUSEMOVE => {
                 let (x, y) = lp_xy(lp);
-                if view(|v| v.bar_drag.is_some()) {
+                if let Some((px, py)) = view(|v| v.pan_pt) {
+                    let (dx, dy) = (x - px, y - py);
+                    if view(|v| v.pan_drag) || dx.abs() + dy.abs() >= 4 {
+                        view(|v| {
+                            v.pan_drag = true;
+                            v.pan_pt = Some((x, y));
+                        });
+                        pan_by(h, dx, dy);
+                        SetCursor(Some(peek_cursor(true)));
+                    }
+                } else if view(|v| v.bar_drag.is_some()) {
                     drag_bar(h, y);
                 } else if let Some((ox, oy)) = view(|v| v.drag_pt) {
                     if (x - ox).abs() + (y - oy).abs() >= 4 {
@@ -2104,6 +2738,14 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     if in_header(rc, &g, x, y, peek_grip(app(|a| a.dpi))) {
                         view(|v| v.drag_pt = Some((x, y)));
                         _ = SetCapture(h);
+                    } else if inside(g.stage, x, y) && pan_ready(h) {
+                        // Capture like the header drag. The up before WM_LBUTTONDBLCLK releases it,
+                        // so a double-click still resets zoom and does not also click ‹ › / ×.
+                        view(|v| {
+                            v.pan_pt = Some((x, y));
+                            v.pan_drag = false;
+                        });
+                        _ = SetCapture(h);
                     }
                 }
             }
@@ -2117,20 +2759,25 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     toggle_peek_max(h);
                 } else if matches!(hot, Hot::Max | Hot::Close | Hot::Prev | Hot::Next) {
                     view(|v| v.suppress_up = true);
+                } else if inside(g.stage, x, y) && zoom_shape().is_some() {
+                    view(|v| v.suppress_up = true);
+                    set_zoom(h, 1.0, Some((x - g.stage.left, y - g.stage.top)));
                 }
             }
             // ×, the maximise mark, and ‹ › act on a click; the content itself never closes the preview.
             // a press that started on the bar is a scroll, even if the pointer has slid onto ›
             WM_LBUTTONUP => {
-                let (suppress, on_bar, dragged) = view(|v| {
+                let (suppress, on_bar, dragged, panned) = view(|v| {
                     let suppress = std::mem::replace(&mut v.suppress_up, false);
                     let on = v.bar_down;
                     v.bar_down = false;
                     v.bar_drag = None;
                     let dragged = v.drag_pt.take().is_some();
-                    (suppress, on, dragged)
+                    let panned = v.pan_pt.take().is_some();
+                    v.pan_drag = false;
+                    (suppress, on, dragged, panned)
                 });
-                if on_bar || dragged {
+                if on_bar || dragged || panned {
                     _ = ReleaseCapture();
                     if on_bar {
                         _ = InvalidateRect(Some(h), None, false);
@@ -2146,7 +2793,22 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_CAPTURECHANGED => {
-                view(|v| (v.bar_drag, v.bar_down, v.drag_pt) = (None, false, None));
+                view(|v| {
+                    (v.bar_drag, v.bar_down, v.drag_pt) = (None, false, None);
+                    v.pan_pt = None;
+                    v.pan_drag = false;
+                });
+            }
+            // Ctrl zooms a picture or PDF about the cursor. Shift still scrolls sideways. Plain wheel is unchanged.
+            WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_CONTROL.0 != 0 => {
+                if zoom_shape().is_some() {
+                    let mut pt = POINT { x: (lp.0 & 0xffff) as i16 as i32, y: ((lp.0 >> 16) & 0xffff) as i16 as i32 };
+                    _ = ScreenToClient(h, &mut pt);
+                    let st = geo_of(h).stage;
+                    let delta = (wp.0 >> 16) as i16 as i32;
+                    let z = view(|v| zoom_factor(v.zoom, delta));
+                    set_zoom(h, z, Some((pt.x - st.left, pt.y - st.top)));
+                }
             }
             WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_SHIFT.0 != 0 => scroll_peek(h, 0, -notch(wp.0)),
             WM_MOUSEWHEEL => wheel_peek(h, (wp.0 >> 16) as i16 as i32),
@@ -2155,16 +2817,21 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_KEYDOWN => {
                 let k = VIRTUAL_KEY(wp.0 as u16);
                 let repeat = lp.0 & (1 << 30) != 0;
-                match k {
-                    // a held F3 only opens it; its repeats must not close it again
-                    VK_ESCAPE | VK_SPACE | VK_F3 if !repeat => close_peek(h),
-                    VK_LEFT | VK_RIGHT => step_peek(k == VK_LEFT),
-                    VK_UP | VK_DOWN => arrow_scroll(h, k == VK_DOWN, repeat),
-                    VK_NEXT => scroll_peek(h, page(), 0),
-                    VK_PRIOR => scroll_peek(h, -page(), 0),
-                    VK_HOME => scroll_peek(h, i32::MIN, i32::MIN),
-                    VK_END => scroll_peek(h, i32::MAX, 0),
-                    _ => {}
+                let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                if ctrl && matches!(k, VK_0 | VK_NUMPAD0) {
+                    set_zoom(h, 1.0, None);
+                } else {
+                    match k {
+                        // a held F3 only opens it; its repeats must not close it again
+                        VK_ESCAPE | VK_SPACE | VK_F3 if !repeat => close_peek(h),
+                        VK_LEFT | VK_RIGHT => step_peek(k == VK_LEFT),
+                        VK_UP | VK_DOWN => arrow_scroll(h, k == VK_DOWN, repeat),
+                        VK_NEXT => scroll_peek(h, page(), 0),
+                        VK_PRIOR => scroll_peek(h, -page(), 0),
+                        VK_HOME => scroll_peek(h, i32::MIN, i32::MIN),
+                        VK_END => scroll_peek(h, i32::MAX, 0),
+                        _ => {}
+                    }
                 }
             }
             // another app or a click behind closes it; stepping takes the activation away only for a moment
@@ -2173,6 +2840,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_DESTROY => {
                 let from_find = FROM_FIND.load(Ordering::SeqCst);
                 let i = app(|a| a.peek_pane);
+                drop_zoom(h);
                 drop_peek_tip(h);
                 mark_find_peek(None);
                 unload_handler();
@@ -2202,9 +2870,9 @@ mod tests {
     #[test]
     fn peek_newest_only() {
         let req = |p: &str| Some(PeekReq { path: p.into(), w: 10, h: 10, hwnd: 0, plain: false });
-        let pix = || Peeked { body: Body::Pic(Pix { w: 1, h: 1, bgra: vec![0; 4] }), icon: -1, meta: Vec::new() };
+        let pix = || Peeked { body: Body::Pic(Pix::new(1, 1, vec![0; 4])), icon: -1, meta: Vec::new() };
         let card = || Peeked { body: Body::Card { icon: None, rows: Vec::new() }, icon: -1, meta: Vec::new() };
-        let mut j = PeekJob { gen: 0, req: None, done: None };
+        let mut j = PeekJob { gen: 0, req: None, done: None, zoom: None };
         j.want(req("a"));
         let a = j.gen;
         j.want(req("b"));
@@ -2492,10 +3160,10 @@ mod tests {
         assert_eq!(pick_open_size(Some(kept), true, false, fitted), None);
         assert_eq!(pick_open_size(None, false, true, fitted), None);
 
-        let pic = Body::Pic(Pix { w: 640, h: 480, bgra: vec![] });
+        let pic = Body::Pic(Pix::new(640, 480, vec![]));
         assert_eq!(PeekKind::of(&pic), PeekKind::Image);
         assert_eq!(fit_source(&pic), FitSource::Aspect { w: 640, h: 480 });
-        let pages = Body::Pages { pages: vec![Pix { w: 400, h: 560, bgra: vec![] }], total: 3 };
+        let pages = Body::Pages { pages: vec![Pix::new(400, 560, vec![])], total: 3 };
         assert_eq!(PeekKind::of(&pages), PeekKind::Doc);
         assert_eq!(fit_source(&pages), FitSource::Aspect { w: 400, h: 560 });
         let code = Body::Text { text: "a\nb\nc".into(), kind: TextKind::Code, cut: false };
@@ -2527,6 +3195,89 @@ mod tests {
             assert!(!in_header(window, &g, g.max.left + 2, g.max.top + 2, peek_grip(dpi)));
             assert!(!in_header(window, &g, 2, g.title.top + 8, peek_grip(dpi)));
         }
+    }
+
+    #[test]
+    fn peek_zoom_steps_around_the_cursor_and_clamps_the_pan() {
+        let close = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} != {b}");
+        close(zoom_factor(1.0, 120), 1.25);
+        close(zoom_factor(1.0, -120), 0.8);
+        close(zoom_factor(1.0, 240), 1.5625);
+        close(zoom_factor(1.0, 0), 1.0);
+        // 0 is the unset Default and means fit, same as 1.
+        close(zoom_factor(0.0, 120), 1.25);
+        assert_eq!(zoom_factor(0.1, -1200), ZOOM_MIN);
+        assert_eq!(zoom_factor(ZOOM_MAX, 1200), ZOOM_MAX);
+        assert_eq!(zoom_factor(7.5, 120), ZOOM_MAX);
+        assert!((zoom_factor(ZOOM_MIN, 120) - 0.125).abs() < 1e-9);
+        let mut z = 1.0;
+        for _ in 0..4 {
+            z = zoom_factor(z, 120);
+        }
+        close(z, 1.25 * 1.25 * 1.25 * 1.25);
+        for _ in 0..4 {
+            z = zoom_factor(z, -120);
+        }
+        close(z, 1.0);
+        assert_eq!(zoom_pct(1.0), 100);
+        assert_eq!(zoom_pct(1.5), 150);
+        assert_eq!(zoom_pct(ZOOM_MIN), 10);
+        assert_eq!(zoom_pct(ZOOM_MAX), 800);
+        assert_eq!(zoom_pct(0.0), 100);
+        assert_eq!(zoom_label("JPEG   ·   1.2 MB", 150), "JPEG   ·   1.2 MB  150%");
+        assert_eq!(zoom_label("", 100), "100%");
+
+        // Fit never enlarges; a wide picture is width-bound.
+        assert_eq!(image_fit_px(100, 50, 400, 400), (100, 50));
+        assert_eq!(image_fit_px(1000, 500, 200, 200), (200, 100));
+        assert_eq!(page_fit_size(800, 1000, 400), (400, 500));
+        assert_eq!(page_fit_size(100, 50, 400), (100, 50));
+        assert_eq!(page_fit_size(0, 10, 100), (0, 0));
+        // One page, narrower than the stage: the old top-left stack, no vertical centering.
+        let (w, h, boxes) = pdf_layout(&[(400, 560)], 500, 16, 0, 1.0);
+        assert_eq!((w, h), (400, 560));
+        assert_eq!(boxes, vec![PdfBox { x: 0, y: 0, w: 400, h: 560 }]);
+        // Two pages fitted to the stage width, gap between, footer under them. Zoom 1 uses the integer fit.
+        let (w, h, boxes) = pdf_layout(&[(800, 1000), (800, 1000)], 400, 16, 48, 1.0);
+        assert_eq!((w, h), (400, 500 + 16 + 500 + 48));
+        assert_eq!(boxes[0], PdfBox { x: 0, y: 0, w: 400, h: 500 });
+        assert_eq!(boxes[1], PdfBox { x: 0, y: 516, w: 400, h: 500 });
+        assert_eq!(cap_render(100, 200), (100, 200));
+        assert_eq!(cap_render(8192, 100), (8192, 100));
+        assert_eq!(cap_render(16384, 8192), (8192, 4096));
+        assert_eq!(cap_render(0, 10), (1, 10));
+        let (rw, rh) = zoom_render_px(800, 1000, 400, 2.0);
+        assert_eq!((rw, rh), (800, 1000));
+        let (rw, rh) = zoom_render_px(8000, 8000, 8000, 8.0);
+        assert!(rw <= ZOOM_RENDER_MAX && rh <= ZOOM_RENDER_MAX);
+        assert_eq!(pdf_fit_px(800.0, 1100.0, 800, 1000).0, 727);
+
+        let center = (FitAlign::Center, FitAlign::Center);
+        let doc = (FitAlign::Center, FitAlign::Start);
+        // The point under the cursor stays under the cursor. Center of a fitted picture, doubled.
+        let view = (200, 100);
+        let scroll = zoom_scroll((0, 0), (100, 50), (200, 100), (400, 200), view, 2.0, center);
+        assert_eq!(scroll, (100, 50));
+        // Top-left stays put.
+        assert_eq!(zoom_scroll((0, 0), (0, 0), (200, 100), (400, 200), view, 2.0, center), (0, 0));
+        // A centered picture smaller than the stage: its centre stays under the cursor as it grows past the view.
+        assert_eq!(zoom_scroll((0, 0), (100, 100), (100, 100), (300, 300), (200, 200), 3.0, center), (50, 50));
+        // Zooming out until it fits centers it and clears the pan.
+        assert_eq!(zoom_scroll((40, 10), (50, 40), (200, 80), (100, 40), (200, 100), 0.5, center), (0, 0));
+        // A short PDF stays top-aligned (origin y = 0), matching fit, and still pans horizontally.
+        assert_eq!(zoom_scroll((0, 30), (10, 10), (100, 40), (50, 20), (200, 100), 0.5, doc), (0, 0));
+
+        // Drag follows the pointer and cannot open a gap on either side.
+        assert_eq!(pan_scroll((0, 0), (30, 0), (300, 100), (200, 100), center), (0, 0));
+        assert_eq!(pan_scroll((0, 0), (-30, 0), (300, 100), (200, 100), center), (30, 0));
+        assert_eq!(pan_scroll((0, 0), (-500, -80), (300, 180), (200, 100), center), (100, 80));
+        assert_eq!(pan_scroll((100, 80), (10_000, 10_000), (300, 180), (200, 100), center), (0, 0));
+        // Smaller than the stage: the pan is ignored and it stays centered (scroll 0).
+        assert_eq!(pan_scroll((0, 0), (40, -20), (50, 40), (200, 100), center), (0, 0));
+        assert_eq!(pan_scroll((12, 9), (40, -20), (50, 40), (200, 100), center), (0, 0));
+        // PDF: vertical start, so a short page does not slide down off the top.
+        assert_eq!(pan_scroll((0, 0), (0, 40), (300, 40), (200, 100), doc), (0, 0));
+        assert_eq!(pan_scroll((0, 0), (-40, 40), (300, 400), (200, 100), doc), (40, 0));
     }
 
     #[test]

@@ -152,7 +152,7 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
-            style: CS_DBLCLKS,
+            style: CS_DBLCLKS, // header maximises; a double-click on a picture or PDF resets zoom
             lpfnWndProc: Some(peek_proc),
             hInstance: hinst,
             hCursor: arrow,

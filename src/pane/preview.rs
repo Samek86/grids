@@ -215,7 +215,7 @@ pub(crate) unsafe fn bitmap_pix(bmp: HBITMAP) -> Option<Pix> {
         return None;
     }
     fix_alpha(&mut bgra);
-    Some(Pix { w, h, bgra })
+    Some(Pix::new(w, h, bgra))
 }
 
 /// Picture bytes (PNG, JPEG, GIF, BMP ...) decoded by WIC, shrunk to fit w x h.
@@ -241,7 +241,7 @@ pub(crate) unsafe fn decode_pic(bytes: &[u8], w: i32, h: i32) -> Option<Pix> {
     conv.Initialize(&src, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom).ok()?;
     let mut bgra = vec![0u8; (dw * dh * 4) as usize];
     conv.CopyPixels(std::ptr::null(), dw * 4, &mut bgra).ok()?;
-    Some(Pix { w: dw as i32, h: dh as i32, bgra })
+    Some(Pix::new(dw as i32, dh as i32, bgra))
 }
 
 // Photoshop keeps a small JPEG (image resource 1036) for file browsers.
@@ -276,13 +276,23 @@ pub(crate) fn pdf_open(path: &str) -> Result<PdfDocument> {
     PdfDocument::LoadFromFileAsync(&file)?.join()
 }
 
+/// Pixel size of a page fitted into `w`×`h`. Width is what `pdf_page` asks the renderer for.
+pub(crate) fn pdf_fit_px(page_w: f32, page_h: f32, w: i32, h: i32) -> (i32, i32) {
+    let page_h = if page_h.is_finite() && page_h > 0.0 { page_h } else { 1.0 };
+    let page_w = if page_w.is_finite() { page_w.max(0.0) } else { 0.0 };
+    let fit = (w.max(0) as f32).min(h.max(0) as f32 * page_w / page_h).max(16.0);
+    let dw = fit as i32;
+    let dh = (fit * page_h / page_w.max(1.0)).max(1.0) as i32;
+    (dw.max(1), dh.max(1))
+}
+
 /// Page i fitted whole into w x h (px), white paper as the reader would show it.
 pub(crate) unsafe fn pdf_page(doc: &PdfDocument, i: u32, w: i32, h: i32) -> Option<Pix> {
     let page = doc.GetPage(i).ok()?;
     let size = page.Size().ok()?;
-    let fit = (w as f32).min(h as f32 * size.Width / size.Height.max(1.0));
+    let dw = pdf_fit_px(size.Width, size.Height, w, h).0 as u32;
     let opts = PdfPageRenderOptions::new().ok()?;
-    opts.SetDestinationWidth((fit as u32).max(16)).ok()?;
+    opts.SetDestinationWidth(dw).ok()?;
     let st = InMemoryRandomAccessStream::new().ok()?;
     page.RenderWithOptionsToStreamAsync(&st, &opts).ok()?.join().ok()?;
     let n = st.Size().ok()? as u32;
