@@ -125,7 +125,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 |  | Num+ or Ctrl+Shift+A / Num− / Num* | 패턴으로 선택 / 해제 / 반전 |
 |  | Ctrl+Alt+N | 새 텍스트 문서 |
 |  | Ctrl+Shift+N, F7 | 새 폴더 |
-|  | F2, Del, Ctrl+C / V, F5 | 탐색기와 동일 |
+|  | F2, Del, Ctrl+C / V, F5 | 탐색기와 동일 (복사한 그림을 Ctrl+V 하면 이 폴더에 PNG로 저장) |
 | **기타** | Ctrl+B | 빠른 즐겨찾기 목록 |
 |  | Ctrl+S | 세션 저장 |
 |  | Ctrl+, | 설정 |
