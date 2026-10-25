@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/panegrid-lockup-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/panegrid-lockup-light.png">
+    <img alt="Panegrid" src="assets/panegrid-lockup-light.png" width="560">
+  </picture>
+</p>
+
 <h1 align="center">Panegrid</h1>
 
 <p align="center">Windows용 빠르고 가벼운 다중 패널 파일 관리자.</p>
@@ -84,7 +92,7 @@ Rust GNU 툴체인(`x86_64-pc-windows-gnu`)과 MSYS2의 MinGW 도구(`C:\msys64\
 build.cmd
 ```
 
-`target\release\panegrid.exe`를 빌드해 `build\panegrid.exe`로 복사합니다. 앱 아이콘(`app.ico`)은 `icon.py`로 다시 그립니다.
+`target\release\panegrid.exe`를 빌드해 `build\panegrid.exe`로 복사합니다. 앱 아이콘은 Panegrid 아이콘 키트의 `app.ico`입니다.
 
 ## 단축키
 

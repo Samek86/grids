@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/panegrid-lockup-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/panegrid-lockup-light.png">
+    <img alt="Panegrid" src="assets/panegrid-lockup-light.png" width="560">
+  </picture>
+</p>
+
 <h1 align="center">Panegrid</h1>
 
 <p align="center">A fast, lightweight multi-pane file manager for Windows.</p>
@@ -84,7 +92,7 @@ Needs the Rust GNU toolchain (`x86_64-pc-windows-gnu`) and MSYS2's MinGW tools (
 build.cmd
 ```
 
-This builds `target\release\panegrid.exe` and copies it to `build\panegrid.exe`. `icon.py` redraws the app icon (`app.ico`).
+This builds `target\release\panegrid.exe` and copies it to `build\panegrid.exe`. The app icon is `app.ico`, from the Panegrid icon kit.
 
 ## Keyboard shortcuts
 
