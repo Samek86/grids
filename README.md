@@ -1,55 +1,68 @@
-# Grids
+<h1 align="center">Grids</h1>
 
-A fast, lightweight multi-pane file manager for Windows. Up to 16 Explorer panes in one window, a folder tree on the left, and layouts you change with one drag. One small exe (about 450 KB), nothing to install.
+<p align="center">A fast, lightweight multi-pane file manager for Windows.</p>
 
-[한국어](README.ko.md)
+<p align="center">
+  <a href="https://github.com/Samek86/grids"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/Samek86/grids"><img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/Samek86/grids/commits"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/Samek86/grids"></a>
+</p>
 
-[![Grids in motion](docs/demo.gif)](docs/demo.mp4)
+<p align="center">
+  English | <a href="README.ko.md">한국어</a>
+</p>
 
-▶ [Watch the full launch video with sound](docs/demo.mp4) (35 s)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.png">
+    <img alt="Grids" src="docs/images/hero_light.png">
+  </picture>
+</p>
 
-![Grids, light theme](docs/screenshot-light.png)
-
-Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails, rename and copy progress all work exactly as they do in Explorer.
+Every pane is a real Windows Explorer view, so right-click menus, drag and drop, thumbnails, rename, and copy progress all work as they do in Explorer. Up to 16 panes in one window, a folder tree on the left, and layouts you change with one drag.
 
 ## Features
 
-- **Free layouts**: up to 4 columns, each with its own number of panes (1 to 4). Click the layout button for an even grid, or press and drag across it to set each column; six presets for common setups.
-- **Resizable everything**: drag any boundary between panes, the sidebar edge, or the divider between the folder tree and favourites; double-click a boundary to even it out.
-- **Left panel**: the folder tree on top and favourites below, split by a draggable divider. Each part keeps a minimum height. The split is saved as `side_split` in `grids.json` and restored on startup. Settings hides the whole panel.
-- **Folder tree** that follows the active pane and keeps the current folder's name in view, even in deep folders.
-- **Per-pane toolbar**: address bar, back / forward / up, name filter (`*.pdf;*.txt` or any part of a name), open the selected folder in another pane (its columns come along, so you can set one pane up and copy it around) or copy / move the selected files to another pane's folder (up to 10,000), favourite toggle; drag a folder onto a pane's top bar to open it there.
-- **Everything**: a subfolder search asks [voidtools Everything](https://www.voidtools.com/) when it is running, and walks the disk otherwise. Nothing from Everything is loaded until you search or open Settings, and `Everything64.dll` is not used. Settings → General shows Installed and running, Installed but not running, or Not installed, plus the version when Everything answers. Use Everything for search is on unless `"use_everything": false` is in `grids.json`. Start Everything launches the installed `Everything.exe`. Install runs `winget install --id voidtools.Everything -e` when winget is available, and otherwise opens the voidtools download page. The first subfolder search without Everything installed asks once whether to install it (`ev_asked` in `grids.json` remembers the answer).
-- **Drive buttons**: C: D: E: … on the tab row, to the left of Layout, open that drive in the active pane. The active pane's drive is underlined in the selection colour, and the buttons come and go as drives are plugged in or removed. A narrow window hides the last letters first. Settings → Appearance → Show drive buttons hides them and gives that space to the tabs (`drive_buttons` in `grids.json` is on when the key is missing).
-- **Tab row**: window tabs on the left, then +, and on the right the drive buttons, Layout, Save session, Load session and the gear. When the tabs do not fit, a chevron after them lists every tab.
-- **New tabs and the default layout**: a new window tab (+ or Ctrl+T) copies the current tab's layout, the arrangement and the split ratios. Settings → General → Default layout (two panes side by side, top and bottom, 2×2, or one pane; `layout_new` in `grids.json`) is used on a first start and for a new window. A path handed over by another launch opens as a one-pane tab.
-- **Bring to front**: Win+Alt+E brings Grids forward from any app; press it again to minimize. If a Grids dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. `hotkey` in `grids.json` is on when the line is missing.
-- **Sessions**: the layout, folders and each pane's columns (order, widths, sort) are saved automatically. A local folder that has been deleted opens the nearest folder that is still there, and the status line says which one was missing. Save named sessions and load them from cards that preview each layout. Hover a card for a ✕ that deletes it, or right-click it to rename it in place (a name that's taken is refused, never overwritten). A green dot on the save button shows unsaved layout changes.
-- **File extensions**: View → Show file extensions is Windows' own setting, the same one Explorer uses. It is also on the Settings page.
-- **Columns are a pane setting**: their order, widths and sort stay as the pane moves from folder to folder, and any column can be made narrower than Explorer allows (Size stops at 90 px there).
-- **Quick look (F3 or Space)**: laid out like the rest of Grids. A header shows the file's icon, a bold name and the facts (type, dimensions, pages or lines, size, date). Text, tables, lists, cards and Office or HTML handlers sit on a white plate. Pictures and PDF pages sit on the stage with a 1 px edge. ‹ › step while the pointer is over the window, and × closes; clicking the content does not. PDF pages come from Windows' own PDF engine, each page fitted whole, the first at once and the rest (up to 50) as you look, with no reader toolbars. Text and source code have line numbers, Markdown keeps headings, lists and code, CSV / TSV is a table, and ZIP and folder lists are zebra-striped. Office, HTML, Outlook mail and fonts use the same preview handlers as Explorer, on their own thread (UTF-8 HTML without a charset is given a BOM so it stays readable). Without a handler, Word / Excel / PowerPoint / OpenDocument files show their text or first sheet, HWP / HWPX their built-in preview, and .eml its headers and body. Anything else is a card: a large icon at its own size, plus the facts the header does not already show. Documents over 10 MB are skipped. Esc or Space closes at once, even while a preview is opening. None of this is loaded until F3 or Space is used, and it is dropped when the preview closes. Space in the file list opens it too. A space within a second of typing a name, or while Korean or Japanese IME text is being composed, stays part of that name; Ctrl+Space and Shift+Space are left alone. Settings → Panes & view → Preview with Space turns this off (`space_preview` in `grids.json` is on when the key is missing).
-- **Pane tabs**: folders inside one pane, separate from the window tabs along the top (Ctrl+T). One folder hides the strip and the list uses that space; a small add-tab icon sits just to the right of ⇄ (same as Ctrl+Alt+T). Two or more folders show the strip under the pane header and hide that button. Closing back to one folder hides the strip again. Ctrl+Alt+W, × or a middle click closes one (the last stays), and Ctrl+Alt+Page Down / Page Up or a click switches. Double-click the empty strip for a new pane tab. Those keys are in Settings → Shortcuts and run only while the focus is in that pane, so they never take Ctrl+T, Ctrl+W or Ctrl+Page Down from the window tabs and the panes. The folders are saved in `grids.json` (`folders` on each pane) and in named sessions. An older `pane_tabs` value is ignored.
-- **Favourites**: star a folder from its pane header, or right-click a file or folder and choose Add to favourites, directly above Properties. The bottom of the left panel is that tree: make groups, nest them, and drag items between groups. Double-click a folder to open it here, or a file to open it with its usual app. Ctrl+B lists the same tree. Saved as `favorites_tree` in `grids.json`. An older flat list is moved into the root.
-- **Folder sizes**: the status line also shows the total size of selected folders, summed in the background (F5 sums again; "partial" when some items couldn't be read).
-- **Light and dark themes** with six selection colours each; the active pane is outlined and its header tinted. In the dark theme, plain group titles such as "Devices and drives" are drawn in a light colour with a thin rule. New installs follow Windows. View → Follow Windows light / dark is the check. View → Dark theme or Light theme picks light or dark by hand and turns following off. The lists are recoloured in place, so history, the filter, the selection, the scroll position and an address being typed stay.
-- **Pane colour**: right-click the empty part of a pane header, or its number, and pick one of those six colours (or none). A thin strip sits in the gap above the buttons, and the number sits on a chip of that colour. Saved with the session, separate from the tab colour. The ⇄ menu shows the colour name.
-- **Windows**: Ctrl+N opens another window in the same process. Each window has its own tabs. Drag a tab off the strip to move it, or use the tab menu. Closing the last window saves every window for the next launch; closing any other window just closes that one. A second `grids.exe` opens a new window here instead of a second process. Settings → General → Single-window mode (`one_window` in `grids.json`, off when the line is missing) keeps a single window. Another launch restores it if it is minimized and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Alt+E while Grids is already in front open a tab here instead of a window.
-- **Portable**: settings live in `%APPDATA%\grids\grids.json`. Put a file named `portable.txt` next to `grids.exe` to keep `grids.json` beside the exe instead. An existing `grids.ini` is read once and renamed to `grids.ini.bak`. Named sessions stay `.grids` files in the `sessions` folder next to the exe. The file is replaced atomically, a failed write is tried again in 5 seconds, and a file that cannot be read is left alone (Retry or Cancel, never overwritten with defaults). Minimizing keeps a maximized window maximized. Unknown keys in the file are kept.
-- **Settings** is in the view menu, which the gear on the tab row opens. Language is Auto (Windows display language), English, 한국어, or 日本語, stored as `"lang": "auto"`, `"en"`, `"ko"`, or `"ja"`. An older `lang=ko` in `grids.ini` still loads as Korean. The Explorer parts inside each pane, such as column names and right-click menus, follow your Windows display language. Font defaults to the display language's face (Segoe UI, Malgun Gothic, Yu Gothic UI); a chosen face applies to the whole window at once (`font_face`). There is no font size setting, and an older `font` value is ignored.
+- 🪟 **Up to 16 panes.** Column order, widths, and sort stay with the pane from folder to folder, and any column can be narrower than Explorer allows (the Size column stops at 90 px there). The status line sums selected folders in the background. F5 sums again, and shows "partial" when some items could not be read.
+- 🧩 **Free layouts.** Up to 4 columns, each with 1 to 4 panes. Click Layout for an even grid, or press and drag across it to set each column. Six presets. A new tab copies the current tab's layout and split ratios.
+- ↔️ **Drag to resize.** Drag a boundary between panes, the sidebar edge, or the divider between the folder tree and favourites. Double-click a boundary to even it out. Each part of the left panel keeps a minimum height.
+- ⭐ **Tree and favourites.** The folder tree follows the active pane and keeps the current folder's name in view, even in a deep folder. Star a folder from the pane header, or right-click and choose Add to favourites, directly above Properties. Make groups, nest them, and drag items between them. Double-click a folder to open it here, or a file to open it with its usual app.
+- 🧭 **A toolbar on every pane.** Address bar, back / forward / up, and a name filter (`*.pdf;*.txt`, or any part of a name). The address bar also takes `..`, a subfolder, a file to open, or a command such as `cmd`, `wt`, or `powershell` in that pane's folder. Open the selected folder in another pane and its columns come along, or copy / move the selection (up to 10,000). Drop a folder on a pane's top bar to open it there.
+- 🔎 **Everything search.** A subfolder search asks [voidtools Everything](https://www.voidtools.com/) when it is running, and walks the disk otherwise. Nothing from Everything is loaded until you search or open Settings, and `Everything64.dll` is not used. The same box filters the current folder (`Ctrl+F`).
+- 🗂️ **Tabs, drives, and sessions.** The row has window tabs, drive buttons (C: D: E: …), Layout, Save session, and Load session. The active pane's drive is underlined, buttons come and go as drives are plugged in, and a chevron lists every tab when they do not fit. Sessions save the layout, folders, and each pane's columns. Cards preview a layout: hover for a ✕ that deletes it, or right-click to rename in place (a name that's taken is refused, never overwritten). A green dot on Save shows unsaved layout changes. A deleted local folder opens the nearest folder that is still there, and the status line says which one was missing. Pane tabs hold more folders inside one pane. One folder hides the strip; two or more show it under the header.
+- 👁️ **Quick look.** F3 or Space. A header shows the icon, a bold name, and the facts. Text, tables, and Office or HTML sit on a white plate. Pictures and PDF pages sit on the stage. PDF pages come from Windows' own engine, up to 50, with no reader toolbars. Text and source have line numbers, Markdown keeps its structure, CSV / TSV is a table, and ZIP and folder lists are zebra-striped. Office, HTML, Outlook mail, and fonts use Explorer's preview handlers. Without a handler, Word / Excel / PowerPoint / OpenDocument show their text or first sheet, HWP / HWPX their built-in preview, and .eml its headers and body. Anything else is a card. Documents over 10 MB are skipped. None of this loads until you open a preview, and Esc or Space closes it at once, even while it is opening.
+- 🎨 **Light, dark, and pane colour.** Six selection colours on each theme. The active pane is outlined and its header tinted. In the dark theme, group titles such as "Devices and drives" are drawn in a light colour with a thin rule. New installs follow Windows. Dark theme or Light theme picks one by hand and turns following off. Right-click the empty part of a pane header, or its number, and pick one of the six colours (or none). The colour is saved with the session, separate from the tab colour, and the ⇄ menu shows its name.
+- 📦 **One small exe.** About 450 KB, nothing to install. Ctrl+N opens another window in the same process, and running `grids.exe` again does too. Each window has its own tabs. Drag a tab off the strip to move it. Closing the last window saves every window for the next launch. Single-window mode keeps a single window. Win+Alt+E brings Grids forward from any app; press it again to minimize.
 
-| Layout picker | Sessions | Favourites |
+<p align="center">
+  <a href="docs/demo.mp4"><img alt="Grids in motion" src="docs/demo.gif"></a><br>
+  <a href="docs/demo.mp4">Watch the full launch video with sound</a> (35 s)
+</p>
+
+| Layout picker | Favourites | Sessions |
 | --- | --- | --- |
-| ![Layout picker](docs/layout-picker.png) | ![Sessions](docs/sessions.png) | ![Favourites](docs/favourites.png) |
+| ![Layout picker](docs/layout-picker.png) | ![Favourites](docs/favourites.png) | ![Sessions](docs/sessions.png) |
 
-![Grids, dark theme](docs/screenshot-dark.png)
+## Install
 
-## Download
+Download `grids.exe` from [https://github.com/Samek86/grids](https://github.com/Samek86/grids), put it in any folder, and run it. One portable exe, about 450 KB. Nothing to install.
 
-Get `grids.exe` from [Releases](https://github.com/efww/grids/releases), put it in any folder and run it.
+The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
-The exe is not code-signed, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**.
+**Requirements:** Windows 10 (1903 or later) or Windows 11, x64.
 
-**Requirements**: Windows 10 (1903 or later) or Windows 11, x64.
+Settings live in `%APPDATA%\grids\grids.json`. Put a file named `portable.txt` next to `grids.exe` to keep `grids.json` beside the exe instead. Named sessions stay `.grids` files in the `sessions` folder next to the exe.
+
+## Build from source
+
+Needs the Rust GNU toolchain (`x86_64-pc-windows-gnu`) and MSYS2's MinGW tools (`windres`, `dlltool`, `as` in `C:\msys64\mingw64\bin`).
+
+```
+build.cmd
+```
+
+This builds `target\release\grids.exe` and copies it to `build\grids.exe`. `icon.py` redraws the app icon (`app.ico`).
 
 ## Keyboard shortcuts
 
@@ -93,19 +106,44 @@ These are the defaults. Settings → Shortcuts can change any of them; the new k
 
 Double-clicking empty space in a pane goes up a folder (can be turned off in the view menu). A splitter under the pointer shows a thin line in the selection colour, including the left-panel edge and the divider between the folder tree and favourites.
 
-## Build
+## Settings
 
-Needs the Rust GNU toolchain (`x86_64-pc-windows-gnu`) and MSYS2's MinGW tools (`windres`, `dlltool`, `as` in `C:\msys64\mingw64\bin`).
+The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
 
-```
-build.cmd
-```
+Grids stores settings in `%APPDATA%\grids\grids.json`. A file named `portable.txt` next to `grids.exe` keeps `grids.json` beside the exe instead. Named sessions are `.grids` files in the `sessions` folder next to the exe. An existing `grids.ini` is read once and renamed to `grids.ini.bak`. An older `lang=ko` in `grids.ini` still loads as Korean.
 
-This builds `target\release\grids.exe` and copies it to `build\grids.exe`. `icon.py` redraws the app icon (`app.ico`).
+The file is replaced atomically. A failed write is tried again in 5 seconds. A file that cannot be read is left alone (Retry or Cancel, never overwritten with defaults). Unknown keys are kept. Minimizing keeps a maximized window maximized.
+
+Language is Auto (the Windows display language), English, 한국어, or 日本語, stored as `"lang": "auto"`, `"en"`, `"ko"`, or `"ja"`. Explorer parts inside each pane, such as column names and right-click menus, follow the Windows display language. The font defaults to that language's face (Segoe UI, Malgun Gothic, Yu Gothic UI). A chosen face applies to the whole window at once (`font_face`). There is no font size setting, and an older `font` value is ignored.
+
+View → Show file extensions is Windows' own setting, the same one Explorer uses, and it is on the Settings page too. View → Follow Windows light / dark is the check for a new install. View → Dark theme or Light theme picks light or dark by hand and turns following off. Lists are recoloured in place, so history, the filter, the selection, the scroll position, and an address being typed stay.
+
+| Key | Notes |
+| --- | --- |
+| `side_split` | Divider between the folder tree and favourites. Restored on startup. Settings can hide the whole left panel. |
+| `use_everything` | On unless `"use_everything": false`. Subfolder search then asks Everything when it is running. Settings → General shows Installed and running, Installed but not running, or Not installed, plus the version when Everything answers. Start Everything launches the installed `Everything.exe`. Install runs `winget install --id voidtools.Everything -e` when winget is available, and otherwise opens the voidtools download page. |
+| `ev_asked` | Remembers the answer to the one-time install prompt. The first subfolder search without Everything installed asks once. |
+| `drive_buttons` | On when the key is missing. Settings → Appearance → Show drive buttons hides them and gives that space to the tabs. A narrow window hides the last letters first. |
+| `layout_new` | Default layout for a first start and a new window: two panes side by side, top and bottom, 2×2, or one pane. A path handed over by another launch opens as a one-pane tab. A new window tab (+ or Ctrl+T) copies the current tab's layout instead. |
+| `hotkey` | On when the line is missing. Win+Alt+E brings Grids forward; press again to minimize. If a Grids dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. |
+| `space_preview` | On when the key is missing. Settings → Panes & view → Preview with Space turns this off. A space within a second of typing a name, or while Korean or Japanese IME text is being composed, stays part of that name. Ctrl+Space and Shift+Space are left alone. |
+| `folders` | Folders open as pane tabs, stored on each pane, and in named sessions. An older `pane_tabs` value is ignored. |
+| `favorites_tree` | The favourites tree. An older flat list is moved into the root. |
+| `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Alt+E while Grids is already in front open a tab here instead of a window. |
+| `lang` | `"auto"`, `"en"`, `"ko"`, or `"ja"`. |
+| `font_face` | Font for the whole window. No font size is stored. An older `font` value is ignored. |
+
+## Roadmap
+
+- [ ] Code-signed builds, so SmartScreen does not warn the first time you run `grids.exe`
+- [ ] A font size setting (only `font_face` is stored today)
+- [ ] Interface languages beyond English, 한국어, and 日本語
 
 ## Credits
 
-Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir). Grids is an independent project, not affiliated with Q-Dir or its author.
+Grids is a fork of [efww/grids](https://github.com/efww/grids) by efww.
+
+Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidtools Everything](https://www.voidtools.com/). Grids is an independent project, not affiliated with Q-Dir or its author.
 
 ## License
 
