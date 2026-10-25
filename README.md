@@ -44,6 +44,8 @@ Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any bou
 
 Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (path in the tooltip); double-click or right-click → Rename to pin your own name, and pick a tab colour.
 
+<p align="center"><img width="560" alt="tabs" src="docs/images/tabs.png"></p>
+
 ### ⭐ Favourites popup with Explorer pins
 
 Ctrl+B or the ★ opens a themed favourites popup: groups, nesting, drag to reorder, and your Explorer Quick-access pins right alongside.
@@ -65,6 +67,8 @@ Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Ev
 ### 🖱️ The real Explorer, everywhere
 
 The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
+
+<p align="center"><img width="760" alt="explorer" src="docs/images/explorer.png"></p>
 
 ### 🎨 Themes & accent
 
