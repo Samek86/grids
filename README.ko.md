@@ -48,7 +48,7 @@
 
 ### ⭐ 탐색기 고정 항목까지 담은 즐겨찾기 팝업
 
-Ctrl+B 또는 ★로 테마에 맞춘 즐겨찾기 팝업을 엽니다. 그룹, 중첩, 끌어서 순서 바꾸기, 그리고 탐색기 즐겨찾기 고정 항목까지 한곳에.
+툴바의 ★가 테마에 맞춘 즐겨찾기 팝업을 엽니다. 맨 위에 탐색기 즐겨찾기 고정 항목, 그 아래 내 그룹이 있고 중첩과 끌어서 순서 바꾸기를 지원합니다. Ctrl+B는 빠른 즐겨찾기 목록을 엽니다.
 
 <p align="center"><img width="760" alt="favorites" src="docs/images/favorites.ko.png"></p>
 
@@ -88,15 +88,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 설정은 `%APPDATA%\Panegrid\panegrid.json`에 있습니다. `panegrid.exe` 옆에 `portable.txt`라는 파일을 두면 `panegrid.json`을 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `panegrid-sessions` 폴더의 `.grids` 파일로 남고, 있던 `sessions` 폴더의 `.grids` 파일은 한 번 복사됩니다.
 
-## 소스에서 빌드
-
-Rust GNU 툴체인(`x86_64-pc-windows-gnu`)과 MSYS2의 MinGW 도구(`C:\msys64\mingw64\bin`의 `windres`, `dlltool`, `as`)가 필요합니다.
-
-```
-build.cmd
-```
-
-`target\release\panegrid.exe`를 빌드해 `build\panegrid.exe`로 복사합니다. 앱 아이콘은 Panegrid 아이콘 키트의 `app.ico`입니다.
+소스에서 빌드하는 방법은 [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md)에 있습니다.
 
 ## 단축키
 
@@ -108,7 +100,7 @@ build.cmd
 |  | Ctrl+W | 탭 닫기 |
 |  | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 |  | Ctrl+Shift+T | 닫은 탭 다시 열기 |
-|  | 탭 더블클릭, 또는 우클릭 → 이름 바꾸기 | 탭 이름 바꾸기 (우클릭에 탭 색도 있음) |
+|  | 탭 더블클릭 | 탭 이름 바꾸기 |
 | **패널** | Ctrl+PgDn / Ctrl+PgUp | 다음 / 이전 패널 |
 |  | Ctrl+1 … 9 | 1~9번 패널로 |
 |  | Alt+Shift+방향키 | 그 방향 패널로 이동 |
@@ -122,53 +114,29 @@ build.cmd
 | **보기** | Ctrl+F | 이 폴더 검색 (하위 폴더 → Everything) |
 |  | Space / F3 | 빠른 미리보기 |
 |  | F6 / Shift+F6 | 다음 / 이전 포커스 |
-|  | Ctrl+H | 숨김 파일 |
 |  | Ctrl+Shift+E | 왼쪽 패널 |
-|  | Ctrl+Shift+O | 열린 탐색기 폴더 가져오기 |
 | **미리보기** | Ctrl+휠 | 확대 10–800% |
 |  | Ctrl+0 | 확대 초기화 |
 |  | 끌기 | 확대한 사진 끌어서 이동 |
-|  | 휠, ↑ / ↓, PgUp / PgDn, Home / End | 스크롤 |
+|  | 휠, ↓, PgDn, Home / End | 스크롤 |
 |  | ← / → | 이전 / 다음 파일 |
 |  | Esc / Space / F3 | 닫기 |
 | **파일** | Ctrl+Shift+C | 전체 경로 복사 |
 |  | Num+ or Ctrl+Shift+A / Num− / Num* | 패턴으로 선택 / 해제 / 반전 |
 |  | Ctrl+Alt+N | 새 텍스트 문서 |
 |  | Ctrl+Shift+N, F7 | 새 폴더 |
-|  | F2, Del, Ctrl+C / X / V, F5 | 탐색기와 동일 (그림을 Ctrl+V 하면 PNG로 저장) |
-| **기타** | Ctrl+B | 즐겨찾기 팝업 |
+|  | F2, Del, Ctrl+C / V, F5 | 탐색기와 동일 |
+| **기타** | Ctrl+B | 빠른 즐겨찾기 목록 |
 |  | Ctrl+S | 세션 저장 |
 |  | Ctrl+, | 설정 |
 |  | F1 / Ctrl+/ | 단축키 도움말 / 목록 |
 |  | Ctrl+N | 새 창 |
-|  | Win+Shift+E | Panegrid 앞으로 가져오기 |
 
 ## 설정
 
 탭 줄의 톱니가 보기 메뉴를 엽니다. 설정은 그 메뉴에 있습니다(`Ctrl+,`).
 
-설정은 `%APPDATA%\Panegrid\panegrid.json`에 저장됩니다. `panegrid.exe` 옆에 `portable.txt`를 두면 `panegrid.json`도 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `panegrid-sessions` 폴더의 `.grids` 파일이고, 이미 `sessions` 폴더에 있던 `.grids` 파일은 한 번 복사됩니다. 처음 실행할 때 `panegrid.json`이 없으면 이전 Panegrid 또는 Samek86 Grids의 파일(`%APPDATA%\grids\grids.json`, 또는 exe 옆 `grids.json`)을 복사합니다. 그것도 없으면 `grids.ini` 또는 `qdir.ini`를 읽기 전용으로 가져옵니다. 원본 파일은 이름을 바꾸거나 수정하거나 지우지 않습니다(`.bak` 없음). 예전 `grids.ini`의 `lang=ko`도 한국어로 읽힙니다.
-
-파일은 원자적으로 바뀝니다. 저장이 실패하면 5초 뒤에 다시 시도합니다. 읽지 못하는 파일은 기본값으로 덮지 않고, 다시 시도하거나 종료합니다. 모르는 키는 그대로 둡니다. 최소화해도 최대화였으면 최대화로 기억합니다.
-
-기본값은 Windows 표시 언어(한국어, 일본어, 영어)를 따르고, 그 외에는 영어입니다. 자동, English, 한국어, 日本語를 고를 수 있고, `"lang": "auto"`, `"en"`, `"ko"`, `"ja"`로 저장됩니다. 패널 안의 탐색기 부분(열 이름, 우클릭 메뉴)은 Windows 표시 언어를 따릅니다. 글꼴은 그 언어의 기본 글꼴(Segoe UI, 맑은 고딕, Yu Gothic UI)에서 시작하고, 고르면 창 전체에 바로 적용됩니다(`font_face`). 글꼴 크기 설정은 없으며, 예전 `font` 값은 무시합니다.
-
-보기 메뉴의 파일 확장명 표시는 탐색기와 같은 Windows 설정이고, 설정 창에도 있습니다. 새로 설치하면 보기 메뉴의 Windows 라이트·다크 설정 따르기가 그 체크입니다. 다크 테마나 라이트 테마를 고르면 직접 바꾸고 따라가기를 끕니다. 목록은 그 자리에서 다시 칠하므로, 이동 기록, 필터, 선택, 스크롤, 입력 중인 주소가 남습니다.
-
-| 키 | 설명 |
-| --- | --- |
-| `side_split` | 폴더 트리와 즐겨찾기 사이 구분선. 다시 열 때 돌아옵니다. 왼쪽 패널 전체는 설정에서 숨길 수 있습니다. |
-| `use_everything` | `"use_everything": false`가 없으면 켜져 있습니다. 켜져 있으면 하위 폴더 검색이, Everything이 실행 중일 때 Everything에 묻습니다. 설정 → 일반에는 설치되어 실행 중, 설치되어 있지만 실행 중이 아님, 설치되어 있지 않음이 나오고, Everything이 버전을 알려 주면 함께 표시됩니다. Everything 시작은 설치된 `Everything.exe`를 실행합니다. 설치는 winget이 있으면 `winget install --id voidtools.Everything -e`를 실행하고, 없으면 voidtools 다운로드 페이지를 엽니다. |
-| `ev_asked` | Everything 설치를 한 번만 물은 답을 기억합니다. Everything이 없을 때 처음 하위 폴더 검색을 하면 설치할지 묻습니다. |
-| `drive_buttons` | 키가 없으면 켜짐. 설정 → 모양 → 드라이브 버튼 표시를 끄면 버튼이 숨고 그 자리를 탭이 씁니다. 창이 좁으면 뒤쪽 글자부터 숨깁니다. |
-| `layout_new` | 첫 실행과 새 창의 기본 레이아웃. 좌우 2개, 위아래 2개, 2×2, 1개 중 하나입니다. 다른 실행에서 넘겨받은 경로는 1패널 탭으로 열립니다. 창 탭을 새로 만들면(+ 또는 Ctrl+T) 기본 레이아웃 대신 지금 탭의 배치를 가져옵니다. |
-| `hotkey` | 줄이 없으면 켜짐. Win+Shift+E로 Panegrid를 앞으로 가져오고, 다시 누르면 최소화합니다. Panegrid 대화 상자가 열려 있으면 그 창이 앞으로 옵니다. 보기 메뉴의 체크는 키가 실제로 등록됐을 때만 켜지므로, 시작에 실패해도 한 번 누르면 다시 시도합니다. 단축키는 설정에서 바꿀 수 있습니다. |
-| `space_preview` | 키가 없으면 켜짐. 설정 → 패널·보기 → 스페이스로 미리보기를 끄면 스페이스로는 열리지 않습니다. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어갑니다. Ctrl+Space와 Shift+Space는 그대로 둡니다. |
-| `folders` | 패널 안의 탭으로 연 폴더. 패널마다 저장되고, 이름 붙인 세션에도 들어갑니다. 예전 `pane_tabs` 값은 무시됩니다. |
-| `favorites_tree` | 즐겨찾기 트리. 예전 목록은 맨 위로 옮겨집니다. |
-| `one_window` | 창 하나만 쓰기. 줄이 없으면 꺼져 있습니다. 켜면 다시 실행할 때 최소화된 창을 되돌리고, 경로 인자는 그 창의 탭으로 엽니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 새 창 대신 이 창의 탭을 엽니다. |
-| `lang` | `"auto"`, `"en"`, `"ko"`, `"ja"`. 키가 없거나 `"auto"`이면 Windows 표시 언어(한국어, 일본어, 영어)를 따르고, 그 외에는 영어입니다. |
-| `font_face` | 창 전체의 글꼴. 글꼴 크기는 저장하지 않습니다. 예전 `font` 값은 무시됩니다. |
+언어(자동, English, 한국어, 日本語), 글꼴, 라이트/다크 테마, 단축키는 설정에서 바꿉니다. 이전 Grids 설정 이전, 파일 저장 방식, `panegrid.json` 키 전체 표는 [docs/settings.ko.md](docs/settings.ko.md)에 있습니다.
 
 ## 로드맵
 
