@@ -490,16 +490,27 @@ pub(crate) unsafe fn create_text_file() {
     }
     let base = app(|a| if a.s.new_name.trim().is_empty() { default_new_name() } else { a.s.new_name.clone() });
     let dirp = PathBuf::from(&dir);
-    let mut path = dirp.join(&base);
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    let ext = path.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut n = 2u32;
-    while path.exists() && n < 1000 {
-        let name = if ext.is_empty() { format!("{stem} ({n})") } else { format!("{stem} ({n}).{ext}") };
-        path = dirp.join(name);
-        n += 1;
+    let first = dirp.join(&base);
+    let stem = first.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    let ext = first.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    // create_new: never truncate a file that is already there, even one created a moment ago.
+    let mut made = false;
+    for n in 1u32..1000 {
+        let path = match n {
+            1 => first.clone(),
+            _ if ext.is_empty() => dirp.join(format!("{stem} ({n})")),
+            _ => dirp.join(format!("{stem} ({n}).{ext}")),
+        };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => {
+                made = true;
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => break,
+        }
     }
-    if std::fs::write(&path, b"").is_err() {
+    if !made {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
