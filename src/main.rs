@@ -220,9 +220,9 @@ mod tests {
 
     #[test]
     fn lang_ini() {
-        assert_eq!(Session::default().lang, Lang::En);
-        assert_eq!(Session::parse("").lang, Lang::En);
-        assert_eq!(Session::parse("bar=0\n").lang, Lang::En);
+        assert_eq!(Session::default().lang, Lang::Auto);
+        assert_eq!(Session::parse("").lang, Lang::Auto);
+        assert_eq!(Session::parse("bar=0\n").lang, Lang::Auto);
         assert_eq!(Session::parse("lang=auto").lang, Lang::Auto);
         assert_eq!(Session::parse("lang=en").lang, Lang::En);
         assert_eq!(Session::parse("lang=ko").lang, Lang::Ko);

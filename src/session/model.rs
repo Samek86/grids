@@ -245,7 +245,7 @@ pub(crate) struct Session {
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
     pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
     pub(crate) recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
-    pub(crate) lang: Lang,             // UI language; a missing key means English. Auto follows Windows
+    pub(crate) lang: Lang,             // UI language; missing means Auto. Auto follows Windows (ko, ja, else English)
     pub(crate) single: bool,           // a second launch opens a new window in this process
     pub(crate) one_window: bool,       // one top-level window; a second launch and new-window actions open a tab
     /// Subfolder search asks Everything when it is running. Missing from the file means on.
@@ -311,7 +311,7 @@ impl Default for Session {
             favs: Vec::new(),
             tree: Vec::new(),
             recent: Vec::new(),
-            lang: Lang::En,
+            lang: Lang::Auto,
             single: true,
             one_window: true,
             use_everything: true,

@@ -59,8 +59,8 @@ fn accent_dark() -> String {
 fn theme_auto() -> String {
     "auto".into()
 }
-fn lang_en() -> String {
-    "en".into()
+fn lang_auto() -> String {
+    "auto".into()
 }
 fn view_details() -> i32 {
     4
@@ -233,8 +233,8 @@ struct SettingsFile {
     /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     hotkey: bool,
-    /// UI language. Missing means English. `"auto"` follows the Windows display language.
-    #[serde(default = "lang_en")]
+    /// UI language. Missing means `"auto"`: the Windows display language (Korean, Japanese, otherwise English).
+    #[serde(default = "lang_auto")]
     lang: String,
     #[serde(default = "yes")]
     single: bool,
@@ -319,7 +319,7 @@ impl SettingsFile {
             dot: true,
             dblup: true,
             hotkey: true,
-            lang: lang_en(),
+            lang: lang_auto(),
             single: true,
             one_window: true,
             use_everything: true,
@@ -1108,18 +1108,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_lang_is_english_and_a_saved_lang_stays() {
-        assert_eq!(Session::default().lang, Lang::En);
-        assert_eq!(adopt("{}").unwrap().lang, Lang::En);
-        assert_eq!(adopt(r#"{"version":1,"bar":true}"#).unwrap().lang, Lang::En);
+    fn missing_lang_is_auto_and_a_saved_lang_stays() {
+        assert_eq!(Session::default().lang, Lang::Auto);
+        assert_eq!(adopt("{}").unwrap().lang, Lang::Auto);
+        assert_eq!(adopt(r#"{"version":1,"bar":true}"#).unwrap().lang, Lang::Auto);
         assert_eq!(adopt(r#"{"lang":"auto"}"#).unwrap().lang, Lang::Auto);
         assert_eq!(adopt(r#"{"lang":"ko"}"#).unwrap().lang, Lang::Ko);
         assert_eq!(adopt(r#"{"lang":"en"}"#).unwrap().lang, Lang::En);
         assert_eq!(adopt(r#"{"lang":"ja"}"#).unwrap().lang, Lang::Ja);
-        assert!(pretty(&SettingsFile::from_session(&Session::default())).contains("\"lang\": \"en\""));
+        assert!(pretty(&SettingsFile::from_session(&Session::default())).contains("\"lang\": \"auto\""));
         let mut auto = Session::default();
         auto.lang = Lang::Auto;
         assert_eq!(adopt(&pretty(&SettingsFile::from_session(&auto))).unwrap().lang, Lang::Auto);
+        let mut en = Session::default();
+        en.lang = Lang::En;
+        assert_eq!(adopt(&pretty(&SettingsFile::from_session(&en))).unwrap().lang, Lang::En);
 
         let lang_json = |name: &str, body: &str| {
             let root = scratch(name);
@@ -1130,8 +1133,9 @@ mod tests {
             std::fs::write(cfg.join("grids.json"), body).unwrap();
             load_at(&exe, &cfg).lang
         };
-        assert_eq!(lang_json("lang-json-missing", "{\"version\":1,\"bar\":true}\n"), Lang::En);
+        assert_eq!(lang_json("lang-json-missing", "{\"version\":1,\"bar\":true}\n"), Lang::Auto);
         assert_eq!(lang_json("lang-json-auto", "{\"lang\":\"auto\"}\n"), Lang::Auto);
+        assert_eq!(lang_json("lang-json-en", "{\"lang\":\"en\"}\n"), Lang::En);
         assert_eq!(lang_json("lang-json-ko", "{\"lang\":\"ko\"}\n"), Lang::Ko);
 
         let lang_ini = |name: &str, body: &str| {
@@ -1146,16 +1150,19 @@ mod tests {
             (s.lang, written)
         };
         let (missing, written) = lang_ini("lang-ini-missing", "bar=0\n");
-        assert_eq!(missing, Lang::En);
-        assert!(written.contains("\"lang\": \"en\""), "{written}");
+        assert_eq!(missing, Lang::Auto);
+        assert!(written.contains("\"lang\": \"auto\""), "{written}");
         assert_eq!(lang_ini("lang-ini-auto", "lang=auto\n").0, Lang::Auto);
+        let (en, en_written) = lang_ini("lang-ini-en", "lang=en\n");
+        assert_eq!(en, Lang::En);
+        assert!(en_written.contains("\"lang\": \"en\""), "{en_written}");
         assert_eq!(lang_ini("lang-ini-ko", "lang=ko\n").0, Lang::Ko);
 
         let root = scratch("lang-fresh");
         let exe = root.join("exe");
         let cfg = root.join("cfg");
         std::fs::create_dir_all(&exe).unwrap();
-        assert_eq!(load_at(&exe, &cfg).lang, Lang::En);
+        assert_eq!(load_at(&exe, &cfg).lang, Lang::Auto);
 
         let root_exe = scratch("lang-exe-ini");
         let exe_ini = root_exe.join("exe");
@@ -1163,7 +1170,7 @@ mod tests {
         std::fs::create_dir_all(&exe_ini).unwrap();
         std::fs::create_dir_all(&cfg_ini).unwrap();
         std::fs::write(exe_ini.join("grids.ini"), "single=0\n").unwrap();
-        assert_eq!(load_at(&exe_ini, &cfg_ini).lang, Lang::En);
+        assert_eq!(load_at(&exe_ini, &cfg_ini).lang, Lang::Auto);
     }
 
     #[test]
