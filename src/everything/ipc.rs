@@ -178,6 +178,7 @@ fn counted_utf16(bytes: &[u8], off: usize) -> Option<(String, usize)> {
         u.push(u16::from_le_bytes([bytes[o], bytes[o + 1]]));
     }
     let next = end.saturating_add(2);
+    trim_nuls(&mut u);
     Some((String::from_utf16_lossy(&u), next))
 }
 
@@ -198,7 +199,59 @@ fn utf16z(bytes: &[u8], off: usize) -> Option<String> {
             break;
         }
     }
+    trim_nuls(&mut u);
     Some(String::from_utf16_lossy(&u))
+}
+
+fn trim_nuls(u: &mut Vec<u16>) {
+    while u.last() == Some(&0) {
+        u.pop();
+    }
+}
+
+/// A drive or UNC path. One code unit and no directory is a misread of the other list shape.
+fn path_ok(p: &str) -> bool {
+    let p = p.trim_end_matches('\0');
+    let b = p.as_bytes();
+    (b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) || p.starts_with(r"\\") || p.starts_with("//")
+}
+
+fn hit_ok(h: &IpcHit) -> bool {
+    let name_ok = !h.name.is_empty() && h.name.chars().all(|c| !c.is_control());
+    name_ok && (path_ok(&h.path) || (h.name.chars().count() >= 2 && h.path.is_empty()))
+}
+
+/// Empty is a real answer only when Everything reported no hits.
+pub(crate) fn list_ok(list: &IpcList) -> bool {
+    if list.hits.is_empty() {
+        return list.total == 0;
+    }
+    list.hits.iter().all(hit_ok) && list.hits.iter().any(|h| path_ok(&h.path) || h.name.chars().count() >= 2)
+}
+
+fn list_score(list: &IpcList) -> usize {
+    list.hits.iter().filter(|h| path_ok(&h.path)).count()
+}
+
+/// Query2 is answered with LIST2 and Query W with LISTW. The wrong shape still parses as a
+/// short list of junk names. Keep the list that actually contains paths.
+pub(crate) fn best_list(bytes: &[u8], cap: usize) -> Option<IpcList> {
+    let raw2 = parse_list2(bytes, cap);
+    let raww = parse_list_w(bytes, cap);
+    let junk = |list: &Option<IpcList>| list.as_ref().is_some_and(|l| !l.hits.is_empty() && !list_ok(l));
+    let junk = junk(&raw2) || junk(&raww);
+    let a = raw2.filter(list_ok);
+    let b = raww.filter(list_ok);
+    let good = match (a, b) {
+        (Some(a), Some(b)) => if list_score(&a) >= list_score(&b) { a } else { b },
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    if good.hits.is_empty() && junk {
+        return None;
+    }
+    Some(good)
 }
 
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
@@ -261,6 +314,8 @@ mod tests {
         bytes.extend_from_slice(&name);
         bytes.extend_from_slice(&path);
         let list = parse_list2(&bytes, 10).unwrap();
+        assert!(list_ok(&list));
+        assert_eq!(best_list(&bytes, 10).unwrap().hits[0].path, r"C:\d\Sub");
         assert!(list.more);
         assert_eq!(list.total, 3);
         assert_eq!(list.hits.len(), 1);
@@ -307,5 +362,73 @@ mod tests {
             v.extend_from_slice(&u.to_le_bytes());
         }
         v
+    }
+
+    fn list2_one_glyph() -> Vec<u8> {
+        let name = counted("\u{3131}");
+        let path = counted("");
+        let data_off = 20 + 8;
+        let mut bytes = Vec::new();
+        for n in [1u32, 1, 0, REQUEST_NAME | REQUEST_PATH, SORT_NAME_ASCENDING] {
+            bytes.extend_from_slice(&n.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(data_off as u32).to_le_bytes());
+        bytes.extend_from_slice(&name);
+        bytes.extend_from_slice(&path);
+        bytes
+    }
+
+    fn list_w_findme() -> Vec<u8> {
+        let rows = [
+            (FOLDER, "findme_dir", r"C:\Users\Jun\dev\grids-test\search"),
+            (0, "findme_deep.txt", r"C:\Users\Jun\dev\grids-test\search\findme_dir"),
+            (0, "findme_note.txt", r"C:\Users\Jun\dev\grids-test\search"),
+        ];
+        let mut strings = Vec::new();
+        let mut items = Vec::new();
+        let base = 28 + rows.len() * 12;
+        for (flags, name, path) in rows {
+            let name_off = base + strings.len();
+            for u in name.encode_utf16().chain(std::iter::once(0)) {
+                strings.extend_from_slice(&u.to_le_bytes());
+            }
+            let path_off = base + strings.len();
+            for u in path.encode_utf16().chain(std::iter::once(0)) {
+                strings.extend_from_slice(&u.to_le_bytes());
+            }
+            items.extend_from_slice(&flags.to_le_bytes());
+            items.extend_from_slice(&(name_off as u32).to_le_bytes());
+            items.extend_from_slice(&(path_off as u32).to_le_bytes());
+        }
+        let mut bytes = Vec::new();
+        for n in [1u32, 2, 3, 1, 2, 3, 0] {
+            bytes.extend_from_slice(&n.to_le_bytes());
+        }
+        bytes.extend_from_slice(&items);
+        bytes.extend_from_slice(&strings);
+        bytes
+    }
+
+    #[test]
+    fn a_single_glyph_is_not_an_everything_result_and_listw_paths_win() {
+        let odd = list2_one_glyph();
+        let parsed = parse_list2(&odd, 10).unwrap();
+        assert_eq!(parsed.hits.len(), 1);
+        assert_eq!(parsed.hits[0].name, "\u{3131}");
+        assert!(!list_ok(&parsed));
+        assert!(best_list(&odd, 10).is_none());
+        let mut empty = vec![0u8; 20];
+        empty[12..16].copy_from_slice(&REQUEST_NAME.to_le_bytes());
+        let none = best_list(&empty, 10).unwrap();
+        assert!(none.hits.is_empty() && none.total == 0);
+        let wide = list_w_findme();
+        if let Some(as_list2) = parse_list2(&wide, 10) {
+            assert!(!list_ok(&as_list2), "{as_list2:?}");
+        }
+        let best = best_list(&wide, 10).unwrap();
+        let names: Vec<_> = best.hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["findme_dir", "findme_deep.txt", "findme_note.txt"]);
+        assert_eq!(best.hits[2].path, r"C:\Users\Jun\dev\grids-test\search\findme_note.txt");
     }
 }

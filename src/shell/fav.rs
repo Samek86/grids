@@ -409,7 +409,8 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let pidls = selection_pidls(i);
     let refs: Vec<*const ITEMIDLIST> = pidls.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
-    let cm = if refs.is_empty() {
+    let background = refs.is_empty();
+    let cm = if background {
         sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND).ok()
     } else if let Some(folder) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellFolder>().ok()) {
         folder.GetUIObjectOf::<IContextMenu>(owner, &refs, None).ok().or_else(|| sv.GetItemObject::<IContextMenu>(SVGIO_SELECTION).ok())
@@ -420,9 +421,53 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         CoTaskMemFree(Some(p as _));
     }
     let Some(cm) = cm else { return false };
+    let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
+    popup_ctx(owner, cm, &paths, &items, background, &props, pt)
+}
+
+/// Explorer menu for files that are not the pane's current selection (search results, by full path).
+/// The favourites item is inserted the same way as a click in the file list.
+pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POINT) -> bool {
+    if items.is_empty() {
+        return false;
+    }
+    if CTX_OPEN.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+    let _open = ClearBridge;
+    let Some(sv) = view_of::<IShellView>(i) else { return false };
+    let owner = sv.GetWindow().unwrap_or_else(|_| app(|a| a.main));
+    if owner.0.is_null() {
+        return false;
+    }
+    let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
+    let Some(cm) = menu_for_paths(&paths) else { return false };
+    popup_ctx(owner, cm, &paths, items, false, "", pt)
+}
+
+unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
+    let mut pidls: Vec<*mut ITEMIDLIST> = Vec::new();
+    for p in paths {
+        let mut pidl = std::ptr::null_mut();
+        if SHParseDisplayName(&HSTRING::from(p), None, &mut pidl, 0, None).is_ok() && !pidl.is_null() {
+            pidls.push(pidl);
+        }
+    }
+    if pidls.is_empty() {
+        return None;
+    }
+    let refs: Vec<*const ITEMIDLIST> = pidls.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
+    let menu = SHCreateShellItemArrayFromIDLists(&refs).ok().and_then(|arr| arr.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject).ok());
+    for p in pidls {
+        CoTaskMemFree(Some(p as _));
+    }
+    menu
+}
+
+unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, props_folder: &str, pt: POINT) -> bool {
     let Ok(menu) = CreatePopupMenu() else { return false };
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
-    if !refs.is_empty() {
+    if !background {
         flags |= CMF_ITEMMENU;
     }
     if GetKeyState(VK_SHIFT.0 as i32) < 0 {
@@ -435,7 +480,7 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     }
     // The background menu of some views (Windows 10) comes without Properties. Add the folder's own.
     let mut add_props = false;
-    if refs.is_empty() {
+    if background {
         let n = GetMenuItemCount(Some(menu)).max(0) as u32;
         let has = (0..n).any(|i| {
             if menu_sep(menu, i) {
@@ -464,11 +509,10 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
     if cmd == ID_CTX_FAV as i32 {
         let remove = app(|a| paths.iter().all(|p| a.s.is_fav(p)));
-        set_entries(&items, !remove);
+        set_entries(items, !remove);
     } else if add_props && cmd == ID_CTX_PROPS as i32 {
-        let folder = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
-        if !folder.is_empty() {
-            _ = SHObjectProperties(Some(owner), SHOP_FILEPATH, &HSTRING::from(folder.as_str()), None);
+        if !props_folder.is_empty() {
+            _ = SHObjectProperties(Some(owner), SHOP_FILEPATH, &HSTRING::from(props_folder), None);
         }
     } else if cmd > 0 {
         let mut ici = CMINVOKECOMMANDINFO {
