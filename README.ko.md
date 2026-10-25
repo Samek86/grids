@@ -62,11 +62,11 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 <p align="center"><img width="760" alt="settings" src="docs/images/settings.ko.png"></p>
 
-📦 **설치 없는 exe 하나, 약 1.3 MB.**
+📦 **설치 없는 exe 하나, 약 1.2 MB.**
 
 ## 설치
 
-[https://github.com/Samek86/grids](https://github.com/Samek86/grids)에서 `grids.exe`를 받아 아무 폴더에 두고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.3 MB입니다.
+[Releases](https://github.com/Samek86/grids/releases/latest)에서 최신 zip을 받아 `grids.exe`를 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
 
 코드 서명이 없는 exe라 처음 실행할 때 Windows SmartScreen 경고가 뜰 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
