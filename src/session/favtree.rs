@@ -274,6 +274,36 @@ fn home_leaf(i: usize, p: &Pinned, file: bool, kind: RowKind) -> FavRow {
     }
 }
 
+/// Explorer pins, then favourite files when that list is not empty.
+/// `force_children` lists the leaves of a collapsed section (a search still has to see them).
+/// The header keeps the real open flag either way. The files group is omitted when it has nothing.
+pub(crate) fn home_rows(
+    pins_open: bool,
+    pins: &[Pinned],
+    pins_label: &str,
+    files_open: bool,
+    files: &[Pinned],
+    files_label: &str,
+    force_children: bool,
+) -> Vec<FavRow> {
+    let mut out = Vec::new();
+    out.push(home_header(pins_label, pins_open, RowKind::Pins));
+    if pins_open || force_children {
+        for (i, p) in pins.iter().enumerate() {
+            out.push(home_leaf(i, p, false, RowKind::Pins));
+        }
+    }
+    if file_group_visible(files) {
+        out.push(home_header(files_label, files_open, RowKind::Files));
+        if files_open || force_children {
+            for (i, p) in files.iter().enumerate() {
+                out.push(home_leaf(i, p, true, RowKind::Files));
+            }
+        }
+    }
+    out
+}
+
 /// Pins, then favourite files when that list is not empty, then the favourites tree.
 /// The files group is omitted entirely when there is nothing to show. Favourite ids are unchanged.
 pub(crate) fn compose_side(
@@ -285,21 +315,7 @@ pub(crate) fn compose_side(
     files: &[Pinned],
     files_label: &str,
 ) -> Vec<FavRow> {
-    let mut out = Vec::new();
-    out.push(home_header(pins_label, pins_open, RowKind::Pins));
-    if pins_open {
-        for (i, p) in pins.iter().enumerate() {
-            out.push(home_leaf(i, p, false, RowKind::Pins));
-        }
-    }
-    if file_group_visible(files) {
-        out.push(home_header(files_label, files_open, RowKind::Files));
-        if files_open {
-            for (i, p) in files.iter().enumerate() {
-                out.push(home_leaf(i, p, true, RowKind::Files));
-            }
-        }
-    }
+    let mut out = home_rows(pins_open, pins, pins_label, files_open, files, files_label, false);
     out.extend(visible_rows(tree));
     out
 }

@@ -1,10 +1,11 @@
 // Favourites list shared by the settings page and the favourites window.
 // Filtering and row geometry are pure. Painting matches the settings table:
 // indented name, shell icon, path, rename and delete.
+// The favourites window also shows Explorer pins above the tree.
 
 use crate::imports::*;
 use crate::i18n::tr;
-use crate::session::{short_name, tree_rows, visible_rows, FavNode, FavRow};
+use crate::session::{home_rows, short_name, tree_rows, visible_rows, FavNode, FavRow, Pinned, RowKind};
 
 use super::{draw_fav_icon, fill, pal, shell_icon, text};
 
@@ -53,6 +54,84 @@ pub(crate) fn rows_for_query(tree: &[FavNode], q: &str) -> Vec<FavRow> {
     }
     let all = tree_rows(tree);
     filter_fav_rows(&all, q).into_iter().filter_map(|i| all.get(i).cloned()).collect()
+}
+
+pub(crate) fn pins_section_label() -> &'static str {
+    tr("Explorer pins", "탐색기 고정", "エクスプローラーのピン留め")
+}
+
+pub(crate) fn files_section_label() -> &'static str {
+    tr("Explorer favourite files", "탐색기 즐겨찾기 파일", "エクスプローラーのお気に入りファイル")
+}
+
+/// Rename, delete, and drag apply to grids favourites. Explorer rows are display and navigate.
+pub(crate) fn fav_row_editable(row: &FavRow) -> bool {
+    row.in_tree()
+}
+
+/// Indices of grids-favourite rows, in list order. Explorer rows are left out.
+pub(crate) fn fav_editable_indices(rows: &[FavRow]) -> Vec<usize> {
+    rows.iter().enumerate().filter(|(_, r)| fav_row_editable(r)).map(|(i, _)| i).collect()
+}
+
+/// A grids favourite may land on another grids favourite. Explorer rows are neither source nor target.
+/// `src_id` is the tree id being dragged. A node cannot be dropped onto itself or into its own subtree.
+pub(crate) fn fav_popup_can_drop(src_in_tree: bool, src_id: &[usize], dst: &FavRow) -> bool {
+    src_in_tree && dst.in_tree() && !src_id.is_empty() && src_id != dst.id.as_slice() && !dst.id.starts_with(src_id)
+}
+
+/// Favourites window rows: Explorer pins, then favourite files, then grids favourites.
+/// An empty query follows collapsed sections. A query searches every list, including a collapsed
+/// section, and keeps the section header (or the tree ancestors and descendants) of each hit.
+pub(crate) fn popup_rows(
+    tree: &[FavNode],
+    pins_open: bool,
+    pins: &[Pinned],
+    pins_label: &str,
+    files_open: bool,
+    files: &[Pinned],
+    files_label: &str,
+    q: &str,
+) -> Vec<FavRow> {
+    let q = q.trim();
+    let searching = !q.is_empty();
+    let mut rows = home_rows(pins_open, pins, pins_label, files_open, files, files_label, searching);
+    if searching {
+        rows = filter_popup_rows(&rows, q);
+        rows.extend(rows_for_query(tree, q));
+        rows
+    } else {
+        rows.extend(visible_rows(tree));
+        rows
+    }
+}
+
+/// Kind-aware filter. Pin and tree rows share index ids, so a hit must not cross lists.
+fn filter_popup_rows(rows: &[FavRow], q: &str) -> Vec<FavRow> {
+    let mut on = vec![false; rows.len()];
+    for (i, row) in rows.iter().enumerate() {
+        if !fav_row_matches(row, q) {
+            continue;
+        }
+        on[i] = true;
+        match row.kind {
+            RowKind::Tree => {
+                for (j, other) in rows.iter().enumerate() {
+                    if other.kind == RowKind::Tree && (other.id.starts_with(&row.id) || row.id.starts_with(&other.id)) {
+                        on[j] = true;
+                    }
+                }
+            }
+            RowKind::Pins | RowKind::Files => {
+                for (j, other) in rows.iter().enumerate() {
+                    if other.kind == row.kind && (row.group || other.group) {
+                        on[j] = true;
+                    }
+                }
+            }
+        }
+    }
+    rows.iter().zip(on).filter(|(_, keep)| *keep).map(|(row, _)| row.clone()).collect()
 }
 
 pub(crate) fn fav_head_h(dpi: i32) -> i32 {
@@ -220,8 +299,16 @@ pub(crate) unsafe fn paint_fav_row(dc: HDC, row: Option<&FavRow>, r: RECT, dpi: 
     }
     let name_r = RECT { left: icon.right + s(4), right: name_right.max(icon.right + s(4)), ..r };
     text(dc, name_r, &row.name, font, pal().text, DT_LEFT);
-    let path_r = RECT { left: name_right + s(8), right: r.right - s(180), ..r };
-    let path = if row.group { tr("Group", "그룹", "グループ").to_string() } else { row.path.clone() };
+    // Explorer rows have no rename or delete button, so the path can use that space.
+    let reserve = if row.in_tree() { s(180) } else { s(12) };
+    let path_r = RECT { left: name_right + s(8), right: r.right - reserve, ..r };
+    let path = if !row.group {
+        row.path.clone()
+    } else if row.in_tree() {
+        tr("Group", "그룹", "グループ").to_string()
+    } else {
+        String::new()
+    };
     if path_r.right > path_r.left {
         text(dc, path_r, &path, small, pal().sub, DT_LEFT);
     }
@@ -231,7 +318,7 @@ pub(crate) unsafe fn paint_fav_row(dc: HDC, row: Option<&FavRow>, r: RECT, dpi: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::RowKind;
+    use crate::session::{compose_side, RowKind};
 
     fn row(id: &[usize], name: &str, path: &str, group: bool) -> FavRow {
         FavRow {
@@ -327,5 +414,122 @@ mod tests {
         assert!(found[1].file);
         let none = rows_for_query(&tree, "없는");
         assert!(none.is_empty());
+    }
+
+    fn pin(path: &str, name: &str) -> Pinned {
+        Pinned { path: path.into(), name: name.into() }
+    }
+
+    fn names(rows: &[FavRow]) -> Vec<&str> {
+        rows.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    /// Collapsed Work group, a root folder, two pins, and one favourite file.
+    fn popup_sample() -> (Vec<FavNode>, Vec<Pinned>, Vec<Pinned>) {
+        let mut tree = vec![FavNode::group("Work")];
+        tree[0].open = false;
+        tree[0].children.push(FavNode::leaf(r"C:\work\notes.txt", "notes", true));
+        tree.push(FavNode::leaf(r"C:\home", "Home", false));
+        let pins = vec![pin(r"D:\z", "Zed"), pin(r"E:\c", "Cee"), pin(r"D:\사진", "사진")];
+        let files = vec![pin(r"C:\file.txt", "note")];
+        (tree, pins, files)
+    }
+
+    fn listed(tree: &[FavNode], pins: &[Pinned], files: &[Pinned], pins_open: bool, files_open: bool, q: &str) -> Vec<FavRow> {
+        popup_rows(tree, pins_open, pins, "Explorer pins", files_open, files, "Explorer favourite files", q)
+    }
+
+    #[test]
+    fn popup_rows_match_the_side_panel() {
+        let (tree, pins, files) = popup_sample();
+        for (pins_open, files_open) in [(true, true), (false, true), (true, false), (false, false)] {
+            assert_eq!(
+                listed(&tree, &pins, &files, pins_open, files_open, "  "),
+                compose_side(&tree, pins_open, &pins, "Explorer pins", files_open, &files, "Explorer favourite files"),
+                "open pins={pins_open} files={files_open}"
+            );
+        }
+        let no_files = listed(&tree, &pins, &[], true, true, "");
+        assert!(no_files.iter().all(|r| r.kind != RowKind::Files));
+        assert_eq!(names(&no_files), vec!["Explorer pins", "Zed", "Cee", "사진", "Work", "Home"]);
+
+        let open = listed(&tree, &pins, &files, true, true, "");
+        assert_eq!(names(&open), vec!["Explorer pins", "Zed", "Cee", "사진", "Explorer favourite files", "note", "Work", "Home"]);
+        assert!(open[0].kind == RowKind::Pins && open[0].group && open[0].open && open[0].id.is_empty() && open[0].depth == 0);
+        assert_eq!((open[1].path.as_str(), open[1].depth, open[1].file, open[1].kind, open[1].id.as_slice()), (r"D:\z", 1, false, RowKind::Pins, &[0][..]));
+        assert_eq!((open[2].id.as_slice(), open[2].kind), (&[1][..], RowKind::Pins));
+        let files_header = open.iter().find(|r| r.kind == RowKind::Files && r.group).unwrap();
+        assert!(files_header.open && files_header.id.is_empty() && files_header.depth == 0);
+        let note = open.iter().find(|r| r.name == "note").unwrap();
+        assert!(note.kind == RowKind::Files && note.file && note.depth == 1 && note.path == r"C:\file.txt");
+        let work = open.iter().find(|r| r.name == "Work").unwrap();
+        assert!(work.in_tree() && work.group && !work.open && work.id == vec![0] && work.depth == 0);
+        let home = open.iter().find(|r| r.name == "Home").unwrap();
+        assert!(home.in_tree() && !home.group && home.id == vec![1] && home.path == r"C:\home");
+        assert!(open.iter().all(|r| r.name != "notes"), "a collapsed grids group hides its child");
+
+        let closed = listed(&tree, &pins, &files, false, false, "");
+        assert_eq!(names(&closed), vec!["Explorer pins", "Explorer favourite files", "Work", "Home"]);
+        assert!(closed[0].kind == RowKind::Pins && !closed[0].open);
+        assert!(closed[1].kind == RowKind::Files && !closed[1].open);
+
+        let edit = fav_editable_indices(&open);
+        assert_eq!(edit, open.iter().enumerate().filter(|(_, r)| r.in_tree()).map(|(i, _)| i).collect::<Vec<_>>());
+        assert!(edit.iter().all(|&i| fav_row_editable(&open[i])));
+        assert!(open.iter().filter(|r| !r.in_tree()).all(|r| !fav_row_editable(r)));
+        let zed = open.iter().find(|r| r.name == "Zed").unwrap();
+        assert!(!fav_popup_can_drop(zed.in_tree(), &zed.id, home));
+        assert!(!fav_popup_can_drop(home.in_tree(), &home.id, zed));
+        assert!(!fav_popup_can_drop(home.in_tree(), &home.id, &open[0]));
+        assert!(!fav_popup_can_drop(work.in_tree(), &work.id, work));
+        assert!(fav_popup_can_drop(home.in_tree(), &home.id, work));
+        assert!(!fav_popup_can_drop(true, &[0], &FavRow {
+            id: vec![0, 0],
+            depth: 1,
+            group: false,
+            file: true,
+            open: false,
+            name: "notes".into(),
+            path: r"C:\work\notes.txt".into(),
+            kind: RowKind::Tree,
+        }));
+    }
+
+    #[test]
+    fn popup_search_filters_pins_and_favourites() {
+        let (tree, pins, files) = popup_sample();
+        // A pin name hit keeps its section header and drops the other pin, the files, and the tree.
+        // The pin's id [0] is also Work's id; the tree row must not come along.
+        let zed = listed(&tree, &pins, &files, false, false, " ZED ");
+        assert_eq!(names(&zed), vec!["Explorer pins", "Zed"]);
+        assert!(zed[0].kind == RowKind::Pins && !zed[0].open, "the header keeps its collapsed flag");
+        assert!(zed.iter().all(|r| r.kind == RowKind::Pins));
+
+        let by_path = listed(&tree, &pins, &files, true, true, r"e:\c");
+        assert_eq!(names(&by_path), vec!["Explorer pins", "Cee"]);
+        let by_tail = listed(&tree, &pins, &files, true, true, "FILE.TXT");
+        assert_eq!(names(&by_tail), vec!["Explorer favourite files", "note"]);
+        assert!(by_tail[1].file);
+
+        let ko = listed(&tree, &pins, &files, true, true, "사");
+        assert_eq!(names(&ko), vec!["Explorer pins", "사진"]);
+        assert!(listed(&tree, &pins, &files, true, true, "없는").is_empty());
+
+        // The section title is a group hit: every pin stays, grids favourites stay out.
+        let section = listed(&tree, &pins, &files, false, true, "explorer pins");
+        assert_eq!(names(&section), vec!["Explorer pins", "Zed", "Cee", "사진"]);
+
+        // A collapsed grids child is found, with its group, and a matching pin path does not pull the tree.
+        let notes = listed(&tree, &pins, &files, true, true, "notes.txt");
+        assert_eq!(names(&notes), vec!["Work", "notes"]);
+        assert!(notes[0].group && !notes[0].open && notes[1].file && notes[1].in_tree());
+        let both = listed(&tree, &pins, &files, false, false, "work");
+        assert_eq!(names(&both), vec!["Work", "notes"]);
+        assert!(!fav_popup_can_drop(both[0].in_tree(), &both[0].id, &both[1]));
+        assert!(fav_popup_can_drop(both[1].in_tree(), &both[1].id, &both[0]));
+
+        let home = listed(&tree, &pins, &files, true, true, "HOME");
+        assert_eq!(names(&home), vec!["Home"]);
+        assert!(home[0].in_tree() && home[0].id == vec![1]);
     }
 }
