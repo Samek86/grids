@@ -230,6 +230,10 @@ pub(crate) struct Session {
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
     /// Space in a file list opens quick look. Missing from the file means on.
     pub(crate) space_preview: bool,
+    /// Quick look size in DIP after the user resizes, per kind. Empty means fit the file.
+    /// The maximized rect is not stored. `peek_doc` is text and PDF together.
+    pub(crate) peek_image: Option<(i32, i32)>,
+    pub(crate) peek_doc: Option<(i32, i32)>,
     /// Per pane, for the window tab on screen: its pane tabs' folders. The current entry is stale; `paths[i]` is the truth.
     /// A pane tab is one folder inside one pane, not a window tab (`tabs` / `tab`). The strip shows from the second folder on.
     pub(crate) pane_folders: Vec<Vec<String>>,
@@ -295,6 +299,8 @@ impl Default for Session {
             dark: false,
             dblup: true,
             space_preview: true,
+            peek_image: None,
+            peek_doc: None,
             pane_folders: vec![Vec::new(); MAXP],
             pane_cur: vec![0; MAXP],
             hotkey: true,
@@ -358,6 +364,8 @@ impl PartialEq for Session {
             && self.dark == o.dark
             && self.dblup == o.dblup
             && self.space_preview == o.space_preview
+            && self.peek_image == o.peek_image
+            && self.peek_doc == o.peek_doc
             && self.hotkey == o.hotkey
             && self.file == o.file
             && self.favs == o.favs
