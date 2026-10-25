@@ -137,7 +137,7 @@ Grids stores settings in `%APPDATA%\grids\grids.json`. A file named `portable.tx
 
 The file is replaced atomically. A failed write is tried again in 5 seconds. A file that cannot be read is left alone (Retry or Cancel, never overwritten with defaults). Unknown keys are kept. Minimizing keeps a maximized window maximized.
 
-Language is Auto (the Windows display language), English, 한국어, or 日本語, stored as `"lang": "auto"`, `"en"`, `"ko"`, or `"ja"`. Explorer parts inside each pane, such as column names and right-click menus, follow the Windows display language. The font defaults to that language's face (Segoe UI, Malgun Gothic, Yu Gothic UI). A chosen face applies to the whole window at once (`font_face`). There is no font size setting, and an older `font` value is ignored.
+The default language is English. Auto follows the Windows display language, and 한국어 or 日本語 can be chosen too, stored as `"lang": "en"`, `"auto"`, `"ko"`, or `"ja"`. Explorer parts inside each pane, such as column names and right-click menus, follow the Windows display language. The font defaults to that language's face (Segoe UI, Malgun Gothic, Yu Gothic UI). A chosen face applies to the whole window at once (`font_face`). There is no font size setting, and an older `font` value is ignored.
 
 View → Show file extensions is Windows' own setting, the same one Explorer uses, and it is on the Settings page too. View → Follow Windows light / dark is the check for a new install. View → Dark theme or Light theme picks light or dark by hand and turns following off. Lists are recoloured in place, so history, the filter, the selection, the scroll position, and an address being typed stay.
 
@@ -153,7 +153,7 @@ View → Show file extensions is Windows' own setting, the same one Explorer use
 | `folders` | Folders open as pane tabs, stored on each pane, and in named sessions. An older `pane_tabs` value is ignored. |
 | `favorites_tree` | The favourites tree. An older flat list is moved into the root. |
 | `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Alt+E while Grids is already in front open a tab here instead of a window. |
-| `lang` | `"auto"`, `"en"`, `"ko"`, or `"ja"`. |
+| `lang` | `"en"`, `"auto"`, `"ko"`, or `"ja"`. Missing means English. `"auto"` follows the Windows display language. |
 | `font_face` | Font for the whole window. No font size is stored. An older `font` value is ignored. |
 
 ## Roadmap
