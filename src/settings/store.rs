@@ -246,6 +246,10 @@ struct SettingsFile {
     /// Space in a file list opens quick look. Missing means on. Omitted while on, so an older file stays unchanged.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     space_preview: bool,
+    /// Wheel in quick look steps to the next or previous file past the content end.
+    /// Missing means on. Omitted while on, so an older file stays unchanged.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    peek_wheel_nav: bool,
     /// Quick look window size in DIP, per kind. Omitted until the user resizes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peek: Option<PeekJson>,
@@ -319,6 +323,7 @@ impl SettingsFile {
             one_window: true,
             use_everything: true,
             space_preview: true,
+            peek_wheel_nav: true,
             peek: None,
             ev_asked: false,
             session: String::new(),
@@ -402,6 +407,7 @@ impl SettingsFile {
             one_window: s.one_window,
             use_everything: s.use_everything,
             space_preview: s.space_preview,
+            peek_wheel_nav: s.peek_wheel_nav,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
             session: s.file.clone(),
@@ -444,6 +450,7 @@ impl SettingsFile {
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
         self.extra.remove("space_preview");
+        self.extra.remove("peek_wheel_nav");
         self.extra.remove("layout_new");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
@@ -532,6 +539,7 @@ impl SettingsFile {
         s.one_window = self.one_window;
         s.use_everything = self.use_everything;
         s.space_preview = self.space_preview;
+        s.peek_wheel_nav = self.peek_wheel_nav;
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
@@ -1338,6 +1346,29 @@ mod tests {
         file.merge_forward(&file.clone());
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["space_preview"], false);
+        assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn peek_wheel_nav_defaults_on_when_the_key_is_missing() {
+        assert!(Session::default().peek_wheel_nav);
+        assert!(adopt("{}").unwrap().peek_wheel_nav);
+        assert!(adopt(r#"{"version":1}"#).unwrap().peek_wheel_nav);
+        assert!(Session::parse("side=1\n").peek_wheel_nav);
+        let mut s = Session::default();
+        s.peek_wheel_nav = false;
+        assert!(!Session::parse(&s.to_ini()).peek_wheel_nav);
+        assert!(Session::parse("peekwheelnav=1").peek_wheel_nav);
+        assert!(!Session::parse("peekwheelnav=0").peek_wheel_nav);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"peek_wheel_nav\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().peek_wheel_nav);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("peek_wheel_nav"));
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("peek_wheel_nav".into(), serde_json::json!(true));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["peek_wheel_nav"], false);
         assert!(saved.get("extra").is_none());
     }
 
