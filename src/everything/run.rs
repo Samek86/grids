@@ -9,6 +9,10 @@ use crate::CopyData;
 
 use super::ipc::*;
 
+/// The worker has no message loop. Take a reply that arrived during the wait, otherwise pump
+/// once so Everything is not left blocked in SendMessage (the next click would then see nothing).
+const QUERY_MS: u32 = 8000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Found {
     pub(crate) name: String,
@@ -46,7 +50,8 @@ pub(crate) fn ipc_hwnd() -> Option<HWND> {
     None
 }
 
-/// Query2 first (Everything 1.4.1 and later, including 1.5 on the same window class). Query W if that is refused.
+/// Query2 first (Everything 1.4.1 and later, including 1.5). Query W when that reply is missing
+/// or is not a list of real paths. A junk parse used to count as success, so Query W never ran.
 /// `None` is a transport failure. An empty hit list is a real answer.
 pub(crate) fn search(text: &str, max: u32) -> Option<FoundList> {
     let ipc = ipc_hwnd()?;
@@ -55,13 +60,13 @@ pub(crate) fn search(text: &str, max: u32) -> Option<FoundList> {
     let cap = max as usize;
     let q2 = query2(bits, REPLY_ID, max, text);
     if let Some(bytes) = send(ipc, reply, &q2) {
-        if let Some(list) = parse_list2(&bytes, cap) {
+        if let Some(list) = best_list(&bytes, cap) {
             return Some(found(list));
         }
     }
     let qw = query_w(bits, REPLY_ID, max, text);
     let bytes = send(ipc, reply, &qw)?;
-    parse_list_w(&bytes, cap).map(found)
+    best_list(&bytes, cap).map(found)
 }
 
 fn found(list: IpcList) -> FoundList {
@@ -74,13 +79,31 @@ fn found(list: IpcList) -> FoundList {
 fn send(ipc: HWND, reply: HWND, q: &IpcQuery) -> Option<Vec<u8>> {
     REPLY.with(|r| *r.borrow_mut() = None);
     let cd = CopyData { dw: q.copy_data, cb: q.bytes.len() as u32, lp: q.bytes.as_ptr() as _ };
-    let sent = unsafe {
-        SendMessageTimeoutW(ipc, WM_COPYDATA, WPARAM(reply.0 as usize), LPARAM(&cd as *const CopyData as isize), SMTO_ABORTIFHUNG, 2500, None)
+    let _sent = unsafe {
+        SendMessageTimeoutW(ipc, WM_COPYDATA, WPARAM(reply.0 as usize), LPARAM(&cd as *const CopyData as isize), SMTO_ABORTIFHUNG, QUERY_MS, None)
     };
-    if sent.0 == 0 {
-        return None;
+    if let Some(bytes) = take_reply() {
+        return Some(bytes);
     }
-    REPLY.with(|r| r.borrow_mut().take())
+    pump_reply();
+    take_reply()
+}
+
+fn take_reply() -> Option<Vec<u8>> {
+    REPLY.with(|r| r.borrow_mut().take()).filter(|b| !b.is_empty())
+}
+
+fn pump_reply() {
+    unsafe {
+        let mut m = MSG::default();
+        for _ in 0..16 {
+            if !PeekMessageW(&mut m, None, 0, 0, PM_REMOVE).as_bool() {
+                break;
+            }
+            _ = TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }
 }
 
 thread_local! {

@@ -421,6 +421,11 @@ pub(crate) unsafe fn find_retarget(i: usize) {
 }
 
 pub(crate) unsafe fn refresh_find(i: usize) {
+    refresh_find_in(i, false);
+}
+
+/// `force` is a scope or subfolder click. The words and folder can be unchanged; the click still runs.
+unsafe fn refresh_find_in(i: usize, force: bool) {
     let Some(hwnd) = pane_hwnd(i) else { return };
     let (text, root) = (pane_ctl(i, ID_FILTER).map(|e| text_of(e)).unwrap_or_default(), app(|a| a.s.paths.get(i).cloned().unwrap_or_default()));
     let query = text.trim().to_string();
@@ -449,7 +454,7 @@ pub(crate) unsafe fn refresh_find(i: usize) {
             show: false,
         });
         let all = u.everywhere || forces_everywhere(&query);
-        if same_find(&query, &u.query, &root, &u.root, u.recursive, u.searched_sub, all, u.searched_all, u.running, u.hits.len()) {
+        if !force && same_find(&query, &u.query, &root, &u.root, u.recursive, u.searched_sub, all, u.searched_all, u.running, u.hits.len()) {
             u.show = true;
             true
         } else {
@@ -477,7 +482,9 @@ pub(crate) unsafe fn refresh_find(i: usize) {
         u.scroll = 0;
         u.show = true;
         let up = u.recursive && enabled && everything::running();
-        let use_ev = find_engine(u.recursive, enabled, up) == FindEngine::Everything;
+        // All drives has nowhere to walk. Try Everything even when the probe raced.
+        let all = u.recursive && (u.everywhere || forces_everywhere(&query));
+        let use_ev = all || find_engine(u.recursive, enabled, up) == FindEngine::Everything;
         u.engine = if use_ev { FindEngine::Everything } else { FindEngine::Walk };
         u.searched_sub = u.recursive;
         u.searched_all = u.everywhere || forces_everywhere(&query);
@@ -522,6 +529,30 @@ pub(crate) fn same_find(query: &str, prev_query: &str, root: &str, prev_root: &s
     query == prev_query && root.eq_ignore_ascii_case(prev_root) && sub == searched_sub && all == searched_all && (running || hits > 0)
 }
 
+/// All drives is Everything or an empty Everything answer. A folder walk must not fill that pill.
+pub(crate) fn should_walk(asked_everything: bool, everywhere: bool, everything_answered: bool) -> bool {
+    if everywhere {
+        return false;
+    }
+    !(asked_everything && everything_answered)
+}
+
+/// A folder-walk batch is stale once this search is all drives, even when the generation still matches.
+pub(crate) fn keep_batch(searched_all: bool, engine: FindEngine) -> bool {
+    !(searched_all && engine == FindEngine::Walk)
+}
+
+/// Everything sends one full snapshot. A walk streams deltas, including a final empty one.
+pub(crate) fn merge_hits(prev: &[FindHit], batch: Vec<FindHit>, engine: FindEngine, cap: usize) -> Vec<FindHit> {
+    if engine == FindEngine::Everything {
+        return batch.into_iter().take(cap).collect();
+    }
+    let mut v = prev.to_vec();
+    let room = cap.saturating_sub(v.len());
+    v.extend(batch.into_iter().take(room));
+    v
+}
+
 pub(crate) unsafe fn toggle_find_scope(i: usize) {
     let Some(hwnd) = pane_hwnd(i) else { return };
     let Some(edit) = pane_ctl(i, ID_FILTER) else { return };
@@ -535,12 +566,13 @@ pub(crate) unsafe fn toggle_find_scope(i: usize) {
             u.query.clear();
         }
     }
+    _ = KillTimer(Some(hwnd), TIMER_FILTER);
     if let Some(rest) = replace {
         // EN_CHANGE cancels the running search and arms the filter timer. Killed below.
         _ = SetWindowTextW(edit, &HSTRING::from(rest));
     }
     _ = KillTimer(Some(hwnd), TIMER_FILTER);
-    refresh_find(i);
+    refresh_find_in(i, true);
     repaint_find(hwnd);
 }
 
@@ -553,7 +585,7 @@ pub(crate) unsafe fn toggle_find_sub(i: usize) {
             u.query.clear(); // force refresh_find to see a change
         }
     }
-    refresh_find(i);
+    refresh_find_in(i, true);
     repaint_find(hwnd);
 }
 
@@ -639,15 +671,12 @@ pub(crate) unsafe fn on_find_msg(pane: HWND) {
         let mut map = find_map();
         let Some(u) = map.get_mut(&key) else { return };
         for b in batches {
-            if b.gen != u.gen {
+            if b.gen != u.gen || !keep_batch(u.searched_all, b.engine) {
                 continue;
             }
+            let cap = if b.engine == FindEngine::Everything { MAX_RESULTS as usize } else { FIND_CAP };
+            u.hits = merge_hits(&u.hits, b.hits, b.engine, cap);
             u.engine = b.engine;
-            let cap = if u.engine == FindEngine::Everything { MAX_RESULTS as usize } else { FIND_CAP };
-            if !b.hits.is_empty() && u.hits.len() < cap {
-                let room = cap - u.hits.len();
-                u.hits.extend(b.hits.into_iter().take(room));
-            }
             u.more = b.more || u.hits.len() >= cap;
             if b.done {
                 u.running = false;
@@ -803,17 +832,26 @@ fn find_worker() {
         if stop() {
             continue;
         }
-        if job.everything {
-            if let Some(plan) = search_text(&job.root, &job.query, job.everywhere, job.hidden) {
+        let all = job.recursive && (job.everywhere || forces_everywhere(&job.query));
+        if job.everything || all {
+            let mut answered = false;
+            if let Some(plan) = search_text(&job.root, &job.query, all, job.hidden) {
                 if !stop() {
                     if let Some(list) = everything::search(&plan.text, MAX_RESULTS) {
+                        answered = true;
                         if !stop() {
                             let hits = list.hits.into_iter().map(|h| FindHit { name: h.name, path: h.path, dir: h.dir }).collect();
                             publish(job.hwnd, job.gen, hits, list.more, true, FindEngine::Everything);
-                            continue;
                         }
                     }
                 }
+            }
+            // A failed all-drives query must not publish the folder walk under the new pill.
+            if !should_walk(true, all, answered) {
+                if !answered && !stop() {
+                    publish(job.hwnd, job.gen, Vec::new(), false, true, FindEngine::Everything);
+                }
+                continue;
             }
         }
         let root = PathBuf::from(&job.root);
@@ -1269,6 +1307,28 @@ mod tests {
         assert!(!same_find("report", "other", r"C:\Work", r"C:\Work", true, true, false, false, true, 4));
         assert!(!same_find("report", "report", r"C:\Work", r"D:\", true, true, false, false, true, 4));
         assert!(!same_find("report", "report", r"C:\Work", r"C:\Work", true, true, false, false, false, 0));
+        let (to_all, _) = scope_after_click(false, "findme");
+        assert!(to_all);
+        assert!(!same_find("findme", "findme", r"C:\Work", r"C:\Work", true, true, true, false, false, 3));
+        let (to_folder, _) = scope_after_click(true, "findme");
+        assert!(!to_folder);
+        assert!(!same_find("findme", "findme", r"C:\Work", r"C:\Work", true, true, false, true, false, 1));
+        assert!(!should_walk(true, true, true) && !should_walk(true, true, false) && !should_walk(false, true, false));
+        assert!(!should_walk(true, false, true));
+        assert!(should_walk(true, false, false) && should_walk(false, false, false));
+        assert!(!keep_batch(true, FindEngine::Walk));
+        assert!(keep_batch(true, FindEngine::Everything) && keep_batch(false, FindEngine::Walk));
+        let folder = vec![FindHit { name: "findme_note.txt".into(), path: r"C:\t\findme_note.txt".into(), dir: false }];
+        let glyph = vec![FindHit { name: "\u{3131}".into(), path: "\u{3131}".into(), dir: false }];
+        let real = vec![
+            FindHit { name: "findme_dir".into(), path: r"C:\Users\Jun\dev\grids-test\search\findme_dir".into(), dir: true },
+            FindHit { name: "findme_note.txt".into(), path: r"C:\Users\Jun\dev\grids-test\search\findme_note.txt".into(), dir: false },
+        ];
+        assert_eq!(merge_hits(&folder, glyph.clone(), FindEngine::Everything, 10), glyph);
+        assert_eq!(merge_hits(&folder, real.clone(), FindEngine::Everything, 10), real);
+        let walked = merge_hits(&folder, vec![FindHit { name: "findme_deep.txt".into(), path: r"C:\t\findme_dir\findme_deep.txt".into(), dir: false }], FindEngine::Walk, 10);
+        assert_eq!(walked.len(), 2);
+        assert_eq!(merge_hits(&folder, Vec::new(), FindEngine::Walk, 10).len(), 1);
     }
 
     #[test]
