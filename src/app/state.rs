@@ -473,6 +473,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.dot = src.dot;
     dst.dblup = src.dblup;
     dst.space_preview = src.space_preview;
+    dst.peek_wheel_nav = src.peek_wheel_nav;
     dst.peek_image = src.peek_image;
     dst.peek_doc = src.peek_doc;
     dst.hotkey = src.hotkey;
