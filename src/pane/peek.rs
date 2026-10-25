@@ -6,7 +6,10 @@ use crate::ui::*;
 use crate::i18n::*;
 use super::preview::*;
 use super::{focus_find_list, focus_view, step_find_sel};
+use windows::Win32::Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Controls::ILD_NORMAL;
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
 
 /// Quick look was opened on a search result, so arrows walk that list and closing it returns there.
@@ -33,9 +36,18 @@ fn mark_find_peek(i: Option<usize>) {
 pub(crate) const WM_PEEK_DONE: u32 = WM_APP + 45; // wParam = generation; the pixels stay in PEEK
 pub(crate) const WM_PEEK_LOST: u32 = WM_APP + 51; // the preview went inactive: close it unless it is active again
 pub(crate) const WM_PEEK_HOSTED: u32 = WM_APP + 52; // wParam = generation, lParam = 1 shown / 0 failed
+const WM_PEEK_HOST_SIZE: u32 = WM_APP + 53; // thread message: the host window changed size
 
 const ICON_PREV: &str = "";
 const ICON_NEXT: &str = "";
+const ICON_MAX: &str = "\u{E922}";
+const ICON_RESTORE: &str = "\u{E923}";
+
+/// Readable text width, in characters of the peek font.
+pub(crate) const PEEK_TEXT_COLS: i32 = 100;
+/// A short note still gets a few lines; a long file stops at this and then at the window limit.
+pub(crate) const PEEK_TEXT_MIN_LINES: i32 = 8;
+pub(crate) const PEEK_TEXT_MAX_LINES: i32 = 10_000;
 
 // ---------- F3 quick preview ----------
 
@@ -176,6 +188,7 @@ fn peek_edge(dpi: i32) -> i32 {
 pub(crate) struct PeekGeo {
     pub(crate) icon: RECT,  // file icon in the header
     pub(crate) title: RECT, // name, then the facts
+    pub(crate) max: RECT,   // maximise / restore
     pub(crate) close: RECT,
     pub(crate) stage: RECT, // pictures and pages sit here; everything else on a plate filling it
     pub(crate) inner: RECT, // the plate's content box
@@ -189,13 +202,14 @@ pub(crate) fn peek_geo(rc: RECT, dpi: i32) -> PeekGeo {
     let rc = RECT { left: rc.left + e, top: rc.top + e, right: rc.right - e, bottom: rc.bottom - e };
     let (head, side, b, ic, pad) = (s(48), s(56), s(32), s(16), s(20));
     let close = RECT { left: rc.right - s(12) - b, top: rc.top + (head - b) / 2, right: rc.right - s(12), bottom: rc.top + (head + b) / 2 };
+    let max = RECT { left: close.left - s(4) - b, top: close.top, right: close.left - s(4), bottom: close.bottom };
     let icon = RECT { left: rc.left + side, top: rc.top + (head - ic) / 2, right: rc.left + side + ic, bottom: rc.top + (head + ic) / 2 };
-    let title = RECT { left: icon.right + s(10), top: rc.top, right: close.left - s(12), bottom: rc.top + head };
+    let title = RECT { left: icon.right + s(10), top: rc.top, right: max.left - s(8), bottom: rc.top + head };
     let stage = RECT { left: rc.left + side, top: rc.top + head, right: rc.right - side, bottom: rc.bottom - s(24) };
     let inner = RECT { left: stage.left + pad, top: stage.top + pad, right: stage.right - pad, bottom: stage.bottom - pad };
     let mid = (stage.top + stage.bottom) / 2;
     let arrow = |x: i32| RECT { left: x, top: mid - b / 2, right: x + b, bottom: mid + b / 2 };
-    PeekGeo { icon, title, close, stage, inner, prev: arrow(rc.left + (side - b) / 2), next: arrow(rc.right - side + (side - b) / 2) }
+    PeekGeo { icon, title, max, close, stage, inner, prev: arrow(rc.left + (side - b) / 2), next: arrow(rc.right - side + (side - b) / 2) }
 }
 
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -204,16 +218,225 @@ pub(crate) enum Hot {
     None,
     Prev,
     Next,
+    Max,
     Close,
 }
 
 pub(crate) fn peek_hit(g: &PeekGeo, x: i32, y: i32) -> Hot {
     match () {
         _ if inside(g.close, x, y) => Hot::Close,
+        _ if inside(g.max, x, y) => Hot::Max,
         _ if inside(g.prev, x, y) => Hot::Prev,
         _ if inside(g.next, x, y) => Hot::Next,
         _ => Hot::None,
     }
+}
+
+// ---------- window size ----------
+// Pure geometry. The window procedure only measures the font, the parent, and the work area.
+
+/// Width and height in one unit: screen pixels, or DIP. Callers do not mix them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PeekSize {
+    pub w: i32,
+    pub h: i32,
+}
+
+/// Pixels the frame, header, and margins add around the content box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PeekChrome {
+    pub w: i32,
+    pub h: i32,
+}
+
+/// What the file wants the content box to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FitContent {
+    /// One image or one PDF page. The box keeps this aspect and does not grow past these pixels.
+    Aspect { w: i32, h: i32 },
+    /// Text or code. `char_px` / `line_px` are the peek font. `lines` is the file's line count.
+    /// `gutter` is extra width (the code gutter, a little padding), in the same unit.
+    Text { char_px: i32, line_px: i32, lines: i32, gutter: i32 },
+}
+
+/// Pictures remember one size. Text and PDF share the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeekKind {
+    Image,
+    Doc,
+}
+
+impl PeekKind {
+    pub(crate) fn of(body: &Body) -> Self {
+        match body {
+            Body::Pic(_) => PeekKind::Image,
+            _ => PeekKind::Doc,
+        }
+    }
+}
+
+/// Aspect, or a line count, taken from a loaded preview. Font metrics stay with the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FitSource {
+    Aspect { w: i32, h: i32 },
+    Lines { lines: i32, code: bool },
+}
+
+pub(crate) fn fit_source(body: &Body) -> FitSource {
+    match body {
+        Body::Pic(p) => FitSource::Aspect { w: p.w, h: p.h },
+        Body::Pages { pages, .. } => match pages.first() {
+            Some(p) if p.w > 0 && p.h > 0 => FitSource::Aspect { w: p.w, h: p.h },
+            _ => FitSource::Lines { lines: 40, code: false },
+        },
+        Body::Text { text, kind, .. } => FitSource::Lines { lines: text.lines().count() as i32, code: *kind == TextKind::Code },
+        Body::Table { rows, .. } => FitSource::Lines { lines: rows.len() as i32, code: false },
+        Body::List { rows, .. } => FitSource::Lines { lines: rows.len() as i32, code: false },
+        Body::Card { rows, .. } => FitSource::Lines { lines: (rows.len() as i32).max(12), code: false },
+        Body::Handler(_) => FitSource::Lines { lines: 40, code: false },
+    }
+}
+
+/// `None` keeps the window where it is: maximized, or the user already resized this kind.
+/// A remembered size wins over fitting the file.
+pub(crate) fn pick_open_size(remembered: Option<PeekSize>, user_resized: bool, maximized: bool, fitted: PeekSize) -> Option<PeekSize> {
+    if maximized || user_resized {
+        None
+    } else if let Some(size) = remembered {
+        Some(size)
+    } else {
+        Some(fitted)
+    }
+}
+
+fn fit_aspect(src_w: i32, src_h: i32, limit: PeekSize) -> PeekSize {
+    if src_w <= 0 || src_h <= 0 || limit.w <= 0 || limit.h <= 0 {
+        return PeekSize { w: 0, h: 0 };
+    }
+    let (sw, sh) = (src_w as i64, src_h as i64);
+    let (lim_w, lim_h) = (limit.w as i64, limit.h as i64);
+    // Width-bound when the source is at least as wide, relative to the limit, as it is tall.
+    if sw * lim_h >= lim_w * sh {
+        let w = lim_w.min(sw);
+        PeekSize { w: w as i32, h: ((w * sh) / sw).max(1) as i32 }
+    } else {
+        let h = lim_h.min(sh);
+        PeekSize { w: ((h * sw) / sh).max(1) as i32, h: h as i32 }
+    }
+}
+
+fn fit_text(char_px: i32, line_px: i32, lines: i32, gutter: i32, limit: PeekSize) -> PeekSize {
+    let char_px = char_px.max(1);
+    let line_px = line_px.max(1);
+    let lines = lines.clamp(PEEK_TEXT_MIN_LINES, PEEK_TEXT_MAX_LINES);
+    let want_w = char_px.saturating_mul(PEEK_TEXT_COLS).saturating_add(gutter.max(0));
+    let want_h = line_px.saturating_mul(lines);
+    PeekSize { w: want_w.min(limit.w.max(0)), h: want_h.min(limit.h.max(0)) }
+}
+
+/// Window size that wraps `content` in `chrome` and stays inside `limit`.
+/// Images and PDF pages keep their aspect ratio. Text is about 100 characters wide.
+pub(crate) fn fit_size(content: FitContent, chrome: PeekChrome, limit: PeekSize) -> PeekSize {
+    let limit = PeekSize { w: limit.w.max(0), h: limit.h.max(0) };
+    let chrome = PeekChrome { w: chrome.w.max(0), h: chrome.h.max(0) };
+    let inner_lim = PeekSize { w: (limit.w - chrome.w).max(0), h: (limit.h - chrome.h).max(0) };
+    let inner = match content {
+        FitContent::Aspect { w, h } => fit_aspect(w, h, inner_lim),
+        FitContent::Text { char_px, line_px, lines, gutter } => fit_text(char_px, line_px, lines, gutter, inner_lim),
+    };
+    PeekSize { w: inner.w.saturating_add(chrome.w).min(limit.w), h: inner.h.saturating_add(chrome.h).min(limit.h) }
+}
+
+/// Shrink `size` so it is no larger than the main window or the monitor work area.
+pub(crate) fn clamp_to_parent_and_work(size: PeekSize, parent: PeekSize, work: PeekSize) -> PeekSize {
+    let max_w = parent.w.min(work.w).max(0);
+    let max_h = parent.h.min(work.h).max(0);
+    PeekSize { w: size.w.clamp(0, max_w), h: size.h.clamp(0, max_h) }
+}
+
+/// Slide `r` so it lies fully inside `work`. A window larger than the work area pins to its origin.
+fn slide_inside(r: RECT, work: RECT) -> RECT {
+    let w = (r.right - r.left).max(0).min((work.right - work.left).max(0));
+    let h = (r.bottom - r.top).max(0).min((work.bottom - work.top).max(0));
+    let left = if work.right - work.left <= w { work.left } else { r.left.clamp(work.left, work.right - w) };
+    let top = if work.bottom - work.top <= h { work.top } else { r.top.clamp(work.top, work.bottom - h) };
+    RECT { left, top, right: left + w, bottom: top + h }
+}
+
+/// Center a window of `size` on `parent`, then keep it inside `work`.
+pub(crate) fn center_in(size: PeekSize, parent: RECT, work: RECT) -> RECT {
+    let w = size.w.max(0);
+    let h = size.h.max(0);
+    let left = parent.left + (parent.right - parent.left - w) / 2;
+    let top = parent.top + (parent.bottom - parent.top - h) / 2;
+    slide_inside(RECT { left, top, right: left + w, bottom: top + h }, work)
+}
+
+fn rect_size(r: RECT) -> PeekSize {
+    PeekSize { w: (r.right - r.left).max(0), h: (r.bottom - r.top).max(0) }
+}
+
+fn px_to_dip(px: i32, dpi: i32) -> i32 {
+    let dpi = dpi.max(1) as i64;
+    ((px.max(0) as i64 * 96 + dpi / 2) / dpi) as i32
+}
+
+fn dip_to_px(dip: i32, dpi: i32) -> i32 {
+    (dip.max(0) as i64 * dpi.max(1) as i64 / 96) as i32
+}
+
+/// Frame around the stage (`inner` false) or around the plate's content box.
+pub(crate) fn peek_chrome(dpi: i32, inner: bool) -> PeekChrome {
+    let s = |v: i32| v * dpi / 96;
+    let e = peek_edge(dpi);
+    let (head, side, bottom, pad) = (s(48), s(56), s(24), s(20));
+    let mut w = e + side + side + e;
+    let mut h = e + head + bottom + e;
+    if inner {
+        w += pad * 2;
+        h += pad * 2;
+    }
+    PeekChrome { w, h }
+}
+
+/// Smallest window the user can drag to, at this DPI. The parent can force it smaller.
+fn min_peek(dpi: i32) -> PeekSize {
+    let s = |v: i32| v * dpi / 96;
+    PeekSize { w: s(360), h: s(240) }
+}
+
+/// Resize grip, in px. Wider than the painted accent line so the edge is grabbable.
+fn peek_grip(dpi: i32) -> i32 {
+    (6 * dpi / 96).max(4)
+}
+
+/// Hit test for the sizing border. The header drag is a client click, not a caption hit,
+/// so a double-click there still reaches the window procedure.
+pub(crate) fn peek_nc_hit(rc: RECT, x: i32, y: i32, grip: i32) -> u32 {
+    let grip = grip.max(1);
+    if x < rc.left || y < rc.top || x >= rc.right || y >= rc.bottom {
+        return HTNOWHERE;
+    }
+    let left = x < rc.left + grip;
+    let right = x >= rc.right - grip;
+    let top = y < rc.top + grip;
+    let bottom = y >= rc.bottom - grip;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => HTTOPLEFT,
+        (_, true, true, _) => HTTOPRIGHT,
+        (true, _, _, true) => HTBOTTOMLEFT,
+        (_, true, _, true) => HTBOTTOMRIGHT,
+        (true, _, _, _) => HTLEFT,
+        (_, true, _, _) => HTRIGHT,
+        (_, _, true, _) => HTTOP,
+        (_, _, _, true) => HTBOTTOM,
+        _ => HTCLIENT,
+    }
+}
+
+/// The header strip, inside the grip, and not on a button. Dragging it moves the window.
+pub(crate) fn in_header(rc: RECT, g: &PeekGeo, x: i32, y: i32, grip: i32) -> bool {
+    x >= rc.left + grip && x < rc.right - grip && y >= rc.top + grip && y < g.stage.top && peek_hit(g, x, y) == Hot::None
 }
 
 unsafe fn geo_of(h: HWND) -> PeekGeo {
@@ -240,6 +463,17 @@ pub(crate) struct PeekView {
     pub(crate) bar_hot: bool,        // pointer over the scrollbar thumb
     pub(crate) bar_drag: Option<i32>, // mouse y minus thumb top, while that thumb is dragged
     pub(crate) bar_down: bool,        // mouse-down hit the bar, so mouse-up is not ‹ › / ×
+    restore: Option<RECT>,            // normal rect, in screen px, to return to from maximise
+    maximized: bool,
+    sized_image: bool, // the user resized this kind while this preview is open
+    sized_doc: bool,
+    sized_pending: bool, // resized before the file's kind was known
+    kind: Option<PeekKind>,
+    fit_gen: usize, // generation that already received a window size; later PDF pages do not resize
+    grip: Option<(i32, i32)>, // window size when a move or resize started
+    drag_pt: Option<(i32, i32)>, // caption press, client px, before it becomes a drag
+    suppress_up: bool, // the mouse-up after a double-click must not fire the button again
+    tip_on: bool,
 }
 
 thread_local! {
@@ -278,24 +512,220 @@ pub(crate) unsafe fn drop_peek_fonts() {
     }
 }
 
+fn reset_frame() {
+    view(|v| {
+        v.restore = None;
+        v.maximized = false;
+        v.sized_image = false;
+        v.sized_doc = false;
+        v.sized_pending = false;
+        v.kind = None;
+        v.fit_gen = 0;
+        v.grip = None;
+        v.drag_pt = None;
+        v.suppress_up = false;
+        v.tip_on = false;
+    });
+}
+
+struct Bounds {
+    parent: RECT,
+    work: RECT,
+}
+
+unsafe fn main_bounds() -> Bounds {
+    let main = app(|a| a.main);
+    let mut parent = RECT::default();
+    _ = GetWindowRect(main, &mut parent);
+    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    let ok = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool();
+    let work = if ok && mi.rcWork.right > mi.rcWork.left && mi.rcWork.bottom > mi.rcWork.top { mi.rcWork } else { parent };
+    Bounds { parent, work }
+}
+
+fn open_limit(b: &Bounds) -> PeekSize {
+    clamp_to_parent_and_work(PeekSize { w: i32::MAX / 8, h: i32::MAX / 8 }, rect_size(b.parent), rect_size(b.work))
+}
+
+unsafe fn window_rect(h: HWND) -> RECT {
+    let mut r = RECT::default();
+    _ = GetWindowRect(h, &mut r);
+    r
+}
+
+unsafe fn peek_font_px(font: HFONT) -> (i32, i32) {
+    if font.is_invalid() {
+        return (8, 16);
+    }
+    let dc = GetDC(None);
+    let old = SelectObject(dc, font.into());
+    let mut tm = TEXTMETRICW::default();
+    _ = GetTextMetricsW(dc, &mut tm);
+    let sample: Vec<u16> = "0000000000".encode_utf16().collect();
+    let mut sz = SIZE::default();
+    _ = GetTextExtentPoint32W(dc, &sample, &mut sz);
+    SelectObject(dc, old);
+    _ = ReleaseDC(None, dc);
+    ((sz.cx / 10).max(1), (tm.tmHeight + tm.tmExternalLeading).max(1))
+}
+
+unsafe fn fitted_px(source: FitSource, dpi: i32, limit: PeekSize) -> PeekSize {
+    let (char_px, line_px) = peek_font_px(app(|a| a.font));
+    let s = |v: i32| v * dpi / 96;
+    let (content, inner) = match source {
+        FitSource::Aspect { w, h } => (FitContent::Aspect { w, h }, false),
+        FitSource::Lines { lines, code } => {
+            let gutter = if code { s(44) + s(8) } else { s(8) };
+            (FitContent::Text { char_px, line_px, lines, gutter }, true)
+        }
+    };
+    let fitted = fit_size(content, peek_chrome(dpi, inner), limit);
+    let min = min_peek(dpi);
+    PeekSize { w: fitted.w.max(min.w), h: fitted.h.max(min.h) }
+}
+
+unsafe fn default_peek_size(dpi: i32, limit: PeekSize) -> PeekSize {
+    let (char_px, line_px) = peek_font_px(app(|a| a.font));
+    let s = |v: i32| v * dpi / 96;
+    let fitted = fit_size(FitContent::Text { char_px, line_px, lines: 32, gutter: s(8) }, peek_chrome(dpi, true), limit);
+    let min = min_peek(dpi);
+    PeekSize { w: fitted.w.max(min.w).min(limit.w), h: fitted.h.max(min.h).min(limit.h) }
+}
+
+unsafe fn place_peek(h: HWND, size: PeekSize) {
+    let b = main_bounds();
+    let size = clamp_to_parent_and_work(size, rect_size(b.parent), rect_size(b.work));
+    let cur = window_rect(h);
+    let cur_size = rect_size(cur);
+    // Same size: keep a window the user has dragged. A new size is centered on the parent.
+    let rect = if (cur_size.w - size.w).abs() <= 1 && (cur_size.h - size.h).abs() <= 1 {
+        slide_inside(RECT { left: cur.left, top: cur.top, right: cur.left + size.w, bottom: cur.top + size.h }, b.work)
+    } else {
+        center_in(size, b.parent, b.work)
+    };
+    if cur != rect {
+        _ = SetWindowPos(h, None, rect.left, rect.top, (rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    view(|v| {
+        if !v.maximized {
+            v.restore = Some(rect);
+        }
+    });
+}
+
+fn remembered_dip(kind: PeekKind) -> Option<(i32, i32)> {
+    app(|a| match kind {
+        PeekKind::Image => a.s.peek_image,
+        PeekKind::Doc => a.s.peek_doc,
+    })
+}
+
+unsafe fn remember_peek(h: HWND, kind: PeekKind) {
+    if view(|v| v.maximized) {
+        return;
+    }
+    let r = window_rect(h);
+    let dpi = app(|a| a.dpi.max(1));
+    let pair = (px_to_dip(r.right - r.left, dpi), px_to_dip(r.bottom - r.top, dpi));
+    if pair.0 < 1 || pair.1 < 1 {
+        return;
+    }
+    app(|a| match kind {
+        PeekKind::Image => a.s.peek_image = Some(pair),
+        PeekKind::Doc => a.s.peek_doc = Some(pair),
+    });
+    // Same path as the other grids.json settings. The maximized rect is never written.
+    crate::save_session();
+}
+
+/// First result for this file: fit, or take the remembered size. Later pages, a maximize,
+/// and a size the user already set for this kind leave the window alone.
+unsafe fn fit_on_result(h: HWND, gen: usize) {
+    let (kind, source) = {
+        let j = peek_job();
+        if j.gen != gen {
+            return;
+        }
+        let Some(done) = j.done.as_ref() else { return };
+        (PeekKind::of(&done.body), fit_source(&done.body))
+    };
+    let first = view(|v| {
+        if v.fit_gen == gen {
+            return false;
+        }
+        v.fit_gen = gen;
+        v.kind = Some(kind);
+        true
+    });
+    if !first {
+        return;
+    }
+    if view(|v| v.sized_pending) {
+        view(|v| {
+            v.sized_pending = false;
+            match kind {
+                PeekKind::Image => v.sized_image = true,
+                PeekKind::Doc => v.sized_doc = true,
+            }
+        });
+        remember_peek(h, kind);
+        return;
+    }
+    let (user_resized, maximized) = view(|v| {
+        let user = match kind {
+            PeekKind::Image => v.sized_image,
+            PeekKind::Doc => v.sized_doc,
+        };
+        (user, v.maximized)
+    });
+    let dpi = app(|a| a.dpi);
+    let b = main_bounds();
+    let limit = open_limit(&b);
+    let remembered = remembered_dip(kind).map(|(w, h)| PeekSize { w: dip_to_px(w, dpi), h: dip_to_px(h, dpi) });
+    let fitted = fitted_px(source, dpi, limit);
+    let Some(size) = pick_open_size(remembered, user_resized, maximized, fitted) else { return };
+    place_peek(h, size);
+}
+
+/// Stage size the worker should render into. Pictures and PDF pages are drawn at the largest
+/// stage the parent and the work area allow, so fitting the window to that bitmap does not
+/// have to scale it up. A maximized preview renders at the plate it is actually showing.
+unsafe fn request_stage(h: HWND) -> (i32, i32) {
+    if view(|v| v.maximized) {
+        let st = geo_of(h).stage;
+        return ((st.right - st.left).max(16), (st.bottom - st.top).max(16));
+    }
+    let dpi = app(|a| a.dpi);
+    let limit = open_limit(&main_bounds());
+    let chrome = peek_chrome(dpi, false);
+    ((limit.w - chrome.w).max(16), (limit.h - chrome.h).max(16))
+}
+
 unsafe fn create_peek(i: usize) -> bool {
     let (main, dpi, open) = app(|a| (a.main, a.dpi, a.peek));
-    if !open.0.is_null() {
+    if !open.0.is_null() || main.0.is_null() {
         return false;
     }
-    let s = |v: i32| v * dpi / 96;
-    let mut rc = RECT::default();
-    _ = GetClientRect(main, &mut rc);
-    let (w, h) = ((rc.right * 86 / 100).min(s(1120)), (rc.bottom * 88 / 100).min(s(860)));
-    let mut pt = POINT { x: (rc.right - w) / 2, y: (rc.bottom - h) / 2 };
-    _ = ClientToScreen(main, &mut pt);
-    let style = WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN;
-    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsPeek"), w!(""), style, pt.x, pt.y, w, h, Some(main), None, None, None) else {
+    reset_frame();
+    // Used to be 86% × 88% of the main client, capped at 1120×860 DIP, and not resizable.
+    // The placeholder is a readable text size; the first result refits before its paint.
+    let b = main_bounds();
+    let limit = open_limit(&b);
+    let size = default_peek_size(dpi, limit);
+    let rect = center_in(clamp_to_parent_and_work(size, rect_size(b.parent), rect_size(b.work)), b.parent, b.work);
+    let (w, h) = ((rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1));
+    let style = WS_POPUP | WS_THICKFRAME | WS_VISIBLE | WS_CLIPCHILDREN;
+    let Ok(hw) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsPeek"), w!(""), style, rect.left, rect.top, w, h, Some(main), None, None, None) else {
         return false;
     };
     let square = DWMWCP_DONOTROUND;
-    _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
-    app(|a| (a.peek, a.peek_pane) = (h, i));
+    _ = DwmSetWindowAttribute(hw, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
+    let policy = DWMNCRP_DISABLED;
+    _ = DwmSetWindowAttribute(hw, DWMWA_NCRENDERING_POLICY, &policy as *const _ as _, 4);
+    let none = DWMWA_COLOR_NONE;
+    _ = DwmSetWindowAttribute(hw, DWMWA_BORDER_COLOR, &none as *const _ as _, 4);
+    view(|v| v.restore = Some(rect));
+    app(|a| (a.peek, a.peek_pane) = (hw, i));
     true
 }
 
@@ -335,16 +765,14 @@ pub(crate) unsafe fn open_peek_path(i: usize, path: &str, name: &str) {
 }
 
 unsafe fn show_path(path: &str, plain: bool) {
-    let (h, dpi) = app(|a| (a.peek, a.dpi));
+    let h = app(|a| a.peek);
     if h.0.is_null() {
         return;
     }
     unload_handler();
     reset_scroll();
-    let mut rc = RECT::default();
-    _ = GetClientRect(h, &mut rc);
-    let st = peek_geo(rc, dpi).stage;
-    want_peek(Some(PeekReq { path: path.to_string(), w: st.right - st.left, h: st.bottom - st.top, hwnd: h.0 as isize, plain }));
+    let (w, ht) = request_stage(h);
+    want_peek(Some(PeekReq { path: path.to_string(), w, h: ht, hwnd: h.0 as isize, plain }));
     _ = InvalidateRect(Some(h), None, false);
 }
 
@@ -357,22 +785,24 @@ pub(crate) unsafe fn load_peek(plain: bool) {
             return;
         }
     }
-    let (h, i, dpi) = app(|a| (a.peek, a.peek_pane, a.dpi));
+    let (h, i) = app(|a| (a.peek, a.peek_pane));
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     unload_handler();
     reset_scroll();
     let it = fv.GetItem::<IShellItem>(fv.GetFocusedItem().unwrap_or(-1)).ok();
     let shown = |kind| it.as_ref().and_then(|it| it.GetDisplayName(kind).ok()).map(|p| pwstr(p));
     app(|a| a.peek_name = shown(SIGDN_NORMALDISPLAY).unwrap_or_default());
-    let mut rc = RECT::default();
-    _ = GetClientRect(h, &mut rc);
-    let st = peek_geo(rc, dpi).stage;
+    let (w, ht) = request_stage(h);
     match shown(SIGDN_FILESYSPATH).or_else(|| shown(SIGDN_DESKTOPABSOLUTEPARSING)) {
-        Some(path) => want_peek(Some(PeekReq { path, w: st.right - st.left, h: st.bottom - st.top, hwnd: h.0 as isize, plain })),
+        Some(path) => want_peek(Some(PeekReq { path, w, h: ht, hwnd: h.0 as isize, plain })),
         None => {
-            let mut j = peek_job();
-            j.want(None);
-            j.done = Some(Peeked { body: Body::Card { icon: None, rows: Vec::new() }, icon: -1, meta: Vec::new() });
+            let gen = {
+                let mut j = peek_job();
+                j.want(None);
+                j.done = Some(Peeked { body: Body::Card { icon: None, rows: Vec::new() }, icon: -1, meta: Vec::new() });
+                j.gen
+            };
+            fit_on_result(h, gen);
         }
     }
     _ = InvalidateRect(Some(h), None, false);
@@ -420,6 +850,64 @@ pub(crate) unsafe fn close_peek(h: HWND) {
 // The handler wanted now (its preview generation), 0 = none. A host thread whose generation is no longer
 // this one unloads and quits, so Esc or an arrow never waits for a slow handler.
 pub(crate) static HOST_GEN: AtomicUsize = AtomicUsize::new(0);
+
+struct HostBox {
+    gen: usize,
+    w: i32,
+    h: i32,
+    seq: u64,
+}
+
+static HOST_BOX: Mutex<HostBox> = Mutex::new(HostBox { gen: 0, w: 0, h: 0, seq: 0 });
+static HOST_TID: AtomicUsize = AtomicUsize::new(0);
+
+fn host_lock() -> std::sync::MutexGuard<'static, HostBox> {
+    HOST_BOX.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn publish_host(gen: usize, w: i32, h: i32) {
+    let mut b = host_lock();
+    b.gen = gen;
+    b.w = w.max(1);
+    b.h = h.max(1);
+    b.seq += 1;
+}
+
+fn host_area(gen: usize) -> Option<(u64, RECT)> {
+    let b = host_lock();
+    (b.gen == gen && b.w > 0 && b.h > 0).then_some((b.seq, RECT { left: 0, top: 0, right: b.w, bottom: b.h }))
+}
+
+unsafe fn apply_host_rect(ph: &IPreviewHandler, gen: usize, seen: &mut u64) {
+    let Some((seq, area)) = host_area(gen) else { return };
+    if seq == *seen {
+        return;
+    }
+    *seen = seq;
+    _ = ph.SetRect(&area);
+}
+
+/// Move the handler's child to the plate. The host thread applies the same rect via SetRect.
+unsafe fn sync_host(h: HWND) {
+    let Some(win) = view(|v| v.host_win) else { return };
+    if !IsWindow(Some(win)).as_bool() {
+        return;
+    }
+    let st = geo_of(h).stage;
+    let line = 1;
+    let w = (st.right - st.left - line * 2).max(1);
+    let ht = (st.bottom - st.top - line * 2).max(1);
+    _ = SetWindowPos(win, None, st.left + line, st.top + line, w, ht, SWP_NOZORDER | SWP_NOACTIVATE);
+    let gen = HOST_GEN.load(Ordering::SeqCst);
+    if gen == 0 {
+        return;
+    }
+    publish_host(gen, w, ht);
+    let tid = HOST_TID.load(Ordering::SeqCst) as u32;
+    if tid != 0 {
+        _ = PostThreadMessageW(tid, WM_PEEK_HOST_SIZE, WPARAM(gen), LPARAM(0));
+    }
+}
 
 pub(crate) unsafe fn unload_handler() {
     HOST_GEN.store(0, Ordering::SeqCst);
@@ -472,8 +960,14 @@ unsafe fn host_handler(h: HWND, clsid: &GUID, path: &str, area: RECT) -> Result<
 // keeps it while it is the one wanted, then unloads it on its own apartment.
 fn host_thread(gen: usize, clsid: GUID, path: String, hwnd: isize, popup: isize, area: RECT) {
     unsafe {
+        let tid = GetCurrentThreadId() as usize;
+        HOST_TID.store(tid, Ordering::SeqCst);
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let h = HWND(hwnd as _);
+        let (mut seen, area) = match host_area(gen) {
+            Some((seq, area)) => (seq, area),
+            None => (0, area),
+        };
         let ph = host_handler(h, &clsid, &path, area);
         let wanted = || HOST_GEN.load(Ordering::SeqCst) == gen;
         if wanted() {
@@ -483,12 +977,20 @@ fn host_thread(gen: usize, clsid: GUID, path: String, hwnd: isize, popup: isize,
             let mut msg = MSG::default();
             while wanted() && IsWindow(Some(h)).as_bool() {
                 while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                    _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+                    if msg.message == WM_PEEK_HOST_SIZE {
+                        apply_host_rect(&ph, gen, &mut seen);
+                    } else {
+                        _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
                 }
+                apply_host_rect(&ph, gen, &mut seen);
                 _ = MsgWaitForMultipleObjects(None, false, 100, QS_ALLINPUT);
             }
             _ = ph.Unload();
+        }
+        if HOST_TID.load(Ordering::SeqCst) == tid {
+            HOST_TID.store(0, Ordering::SeqCst);
         }
         if com {
             CoUninitialize();
@@ -512,12 +1014,13 @@ unsafe fn start_handler(h: HWND, gen: usize) {
     // pixel keeps the child off the plate's own line, which WS_CLIPCHILDREN would otherwise clip.
     let st = geo_of(h).stage;
     let line = 1;
-    let (w, ht) = (st.right - st.left - line * 2, st.bottom - st.top - line * 2);
+    let (w, ht) = ((st.right - st.left - line * 2).max(1), (st.bottom - st.top - line * 2).max(1));
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
     let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPeekHost"), w!(""), style, st.left + line, st.top + line, w, ht, Some(h), None, None, None) else {
         return load_peek(true);
     };
     view(|v| v.host_win = Some(win));
+    publish_host(gen, w, ht);
     let (hwnd, popup, area) = (win.0 as isize, h.0 as isize, RECT { left: 0, top: 0, right: w, bottom: ht });
     if std::thread::Builder::new().spawn(move || host_thread(gen, clsid, path, hwnd, popup, area)).is_err() {
         load_peek(true);
@@ -1139,7 +1642,7 @@ unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFON
 
 pub(crate) unsafe fn paint_peek(h: HWND) {
     let (dpi, font, icon_font, name, ilist, accent) = app(|a| (a.dpi, a.font, a.icon_font, a.peek_name.clone(), a.ilist.clone(), a.s.accent_now()));
-    let (hosted, hover, hot) = view(|v| (v.hosted, v.hover, v.hot));
+    let (hosted, hover, hot, maximized) = view(|v| (v.hosted, v.hover, v.hot, v.maximized));
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let g = peek_geo(rc, dpi);
@@ -1162,10 +1665,13 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
             let facts = RECT { left: g.title.left + name_w + s(16), ..g.title };
             text(dc, facts, &p.meta.join("   ·   "), font, pal().sub, DT_LEFT);
         }
-        if hot == Hot::Close {
-            fill(dc, g.close, blend(pal().bg, pal().text, 0.08));
+        let glyph = if maximized { ICON_RESTORE } else { ICON_MAX };
+        for (r, on, mark) in [(g.max, hot == Hot::Max, glyph), (g.close, hot == Hot::Close, ICON_CLOSE)] {
+            if on {
+                fill(dc, r, blend(pal().bg, pal().text, 0.08));
+            }
+            text(dc, r, mark, icon_font, if on { pal().text } else { pal().sub }, DT_CENTER);
         }
-        text(dc, g.close, ICON_CLOSE, icon_font, if hot == Hot::Close { pal().text } else { pal().sub }, DT_CENTER);
         // content: pictures and pages on the stage; everything else on a plate, as panes are
         let plate = || {
             fill(dc, g.stage, pal().card);
@@ -1348,6 +1854,130 @@ unsafe fn arrow_scroll(h: HWND, down: bool, repeat: bool) {
     }
 }
 
+const PEEK_TIP: usize = 61;
+
+fn peek_tip_info(h: HWND, label: &HSTRING) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE,
+        hwnd: h,
+        uId: PEEK_TIP,
+        lpszText: PWSTR(label.as_ptr() as *mut u16),
+        ..Default::default()
+    }
+}
+
+unsafe fn peek_tip(h: HWND, hot: Hot) {
+    let tip = app(|a| a.tip);
+    if tip.0.is_null() || h.0.is_null() {
+        return;
+    }
+    let text = match hot {
+        Hot::Max if view(|v| v.maximized) => Some(tr("Restore", "복원", "元に戻す")),
+        Hot::Max => Some(tr("Maximise", "최대화", "最大化")),
+        Hot::Close => Some(tr("Close", "닫기", "閉じる")),
+        _ => None,
+    };
+    let Some(text) = text else {
+        if view(|v| v.tip_on) {
+            let empty = HSTRING::from("");
+            let ti = peek_tip_info(h, &empty);
+            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
+        }
+        return;
+    };
+    let label = HSTRING::from(text);
+    let ti = peek_tip_info(h, &label);
+    let lp = LPARAM(&ti as *const _ as isize);
+    if !view(|v| v.tip_on) {
+        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
+        view(|v| v.tip_on = true);
+    }
+    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return;
+    }
+    let below = pt.y + 22 * app(|a| a.dpi) / 96;
+    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
+    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+}
+
+unsafe fn drop_peek_tip(h: HWND) {
+    let tip = app(|a| a.tip);
+    if tip.0.is_null() || !view(|v| v.tip_on) {
+        return;
+    }
+    let label = HSTRING::from("");
+    let ti = peek_tip_info(h, &label);
+    let lp = LPARAM(&ti as *const _ as isize);
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
+    SendMessageW(tip, TTM_DELTOOLW, None, Some(lp));
+    view(|v| v.tip_on = false);
+}
+
+unsafe fn maximize_peek(h: HWND) {
+    let cur = window_rect(h);
+    view(|v| {
+        if !v.maximized {
+            v.restore = Some(cur);
+        }
+        v.maximized = true;
+    });
+    let work = main_bounds().work;
+    _ = SetWindowPos(h, None, work.left, work.top, (work.right - work.left).max(1), (work.bottom - work.top).max(1), SWP_NOZORDER);
+}
+
+unsafe fn restore_peek(h: HWND) {
+    let saved = view(|v| {
+        v.maximized = false;
+        v.restore
+    });
+    let Some(saved) = saved else { return };
+    let b = main_bounds();
+    let want = rect_size(saved);
+    let size = clamp_to_parent_and_work(want, rect_size(b.parent), rect_size(b.work));
+    let rect = if size == want { slide_inside(saved, b.work) } else { center_in(size, b.parent, b.work) };
+    _ = SetWindowPos(h, None, rect.left, rect.top, (rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1), SWP_NOZORDER);
+    view(|v| v.restore = Some(rect));
+}
+
+unsafe fn toggle_peek_max(h: HWND) {
+    if view(|v| v.maximized) {
+        restore_peek(h);
+    } else {
+        maximize_peek(h);
+    }
+    _ = InvalidateRect(Some(h), None, false);
+    peek_tip(h, view(|v| v.hot));
+}
+
+/// A drag on a maximized header restores first, with the pointer kept in the title strip.
+unsafe fn restore_under_cursor(h: HWND) {
+    let cur = window_rect(h);
+    let saved = view(|v| v.restore).unwrap_or(cur);
+    let b = main_bounds();
+    let size = clamp_to_parent_and_work(rect_size(saved), rect_size(b.parent), rect_size(b.work));
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        view(|v| v.maximized = false);
+        place_peek(h, size);
+        return;
+    }
+    let cur_w = (cur.right - cur.left).max(1) as i64;
+    let rel = (pt.x - cur.left).clamp(0, cur_w as i32) as i64;
+    let left = pt.x - (rel * size.w as i64 / cur_w) as i32;
+    let head = (48 * app(|a| a.dpi) / 96).max(1);
+    let top = pt.y - (pt.y - cur.top).clamp(0, head);
+    let rect = slide_inside(RECT { left, top, right: left + size.w, bottom: top + size.h }, b.work);
+    view(|v| {
+        v.maximized = false;
+        v.restore = Some(rect);
+    });
+    _ = SetWindowPos(h, None, rect.left, rect.top, (rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1), SWP_NOZORDER);
+}
+
 pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let page = || {
@@ -1358,7 +1988,68 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
         match msg {
             WM_PAINT => paint_peek(h),
             WM_ERASEBKGND => return LRESULT(1),
+            // The thick frame is only there so the sizing hits work. The client fills the window;
+            // the accent line is painted, not a system border.
+            WM_NCCALCSIZE if wp.0 != 0 => return LRESULT(0),
+            WM_NCHITTEST => {
+                let mut pt = POINT { x: (lp.0 & 0xffff) as i16 as i32, y: ((lp.0 >> 16) & 0xffff) as i16 as i32 };
+                _ = ScreenToClient(h, &mut pt);
+                let mut rc = RECT::default();
+                _ = GetClientRect(h, &mut rc);
+                return LRESULT(peek_nc_hit(rc, pt.x, pt.y, peek_grip(app(|a| a.dpi))) as isize);
+            }
+            WM_GETMINMAXINFO => {
+                let mm = &mut *(lp.0 as *mut MINMAXINFO);
+                let dpi = app(|a| a.dpi);
+                let b = main_bounds();
+                let cap = open_limit(&b);
+                let min = min_peek(dpi);
+                let track = if view(|v| v.maximized) { rect_size(b.work) } else { cap };
+                mm.ptMinTrackSize = POINT { x: min.w.min(cap.w).max(1), y: min.h.min(cap.h).max(1) };
+                mm.ptMaxTrackSize = POINT { x: track.w.max(mm.ptMinTrackSize.x), y: track.h.max(mm.ptMinTrackSize.y) };
+                let work = rect_size(b.work);
+                mm.ptMaxSize = POINT { x: work.w.max(1), y: work.h.max(1) };
+                mm.ptMaxPosition = POINT { x: b.work.left, y: b.work.top };
+                return LRESULT(0);
+            }
+            WM_SIZE => sync_host(h),
+            WM_ENTERSIZEMOVE => {
+                let r = window_rect(h);
+                view(|v| v.grip = Some((r.right - r.left, r.bottom - r.top)));
+            }
+            WM_EXITSIZEMOVE => {
+                let rect = window_rect(h);
+                let (w, ht) = (rect.right - rect.left, rect.bottom - rect.top);
+                let changed = view(|v| v.grip.take().is_some_and(|(pw, ph)| (w - pw).abs() > 1 || (ht - ph).abs() > 1));
+                if changed {
+                    let kind = view(|v| {
+                        v.maximized = false;
+                        v.restore = Some(rect);
+                        match v.kind {
+                            Some(PeekKind::Image) => {
+                                v.sized_image = true;
+                                Some(PeekKind::Image)
+                            }
+                            Some(PeekKind::Doc) => {
+                                v.sized_doc = true;
+                                Some(PeekKind::Doc)
+                            }
+                            None => {
+                                v.sized_pending = true;
+                                None
+                            }
+                        }
+                    });
+                    if let Some(kind) = kind {
+                        remember_peek(h, kind);
+                    }
+                } else if !view(|v| v.maximized) {
+                    view(|v| v.restore = Some(rect));
+                }
+            }
             WM_PEEK_DONE => {
+                // Size before the content paints, so the first frame is already the fitted window.
+                fit_on_result(h, wp.0);
                 start_handler(h, wp.0);
                 _ = InvalidateRect(Some(h), None, false);
             }
@@ -1367,6 +2058,15 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let (x, y) = lp_xy(lp);
                 if view(|v| v.bar_drag.is_some()) {
                     drag_bar(h, y);
+                } else if let Some((ox, oy)) = view(|v| v.drag_pt) {
+                    if (x - ox).abs() + (y - oy).abs() >= 4 {
+                        view(|v| v.drag_pt = None);
+                        if view(|v| v.maximized) {
+                            restore_under_cursor(h);
+                        }
+                        _ = ReleaseCapture();
+                        _ = SendMessageW(h, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
+                    }
                 } else {
                     let hot = peek_hit(&geo_of(h), x, y);
                     let over = thumb_hot(h, x, y);
@@ -1382,10 +2082,14 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     if changed {
                         _ = InvalidateRect(Some(h), None, false);
                     }
+                    if changed || matches!(hot, Hot::Max | Hot::Close) {
+                        peek_tip(h, hot);
+                    }
                 }
             }
             WM_MOUSELEAVE => {
                 view(|v| (v.hover, v.hot, v.bar_hot) = (false, Hot::None, false));
+                peek_tip(h, Hot::None);
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_LBUTTONDOWN => {
@@ -1393,23 +2097,48 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 if press_bar(h, x, y) {
                     view(|v| v.bar_down = true);
                     _ = SetCapture(h);
+                } else {
+                    let g = geo_of(h);
+                    let mut rc = RECT::default();
+                    _ = GetClientRect(h, &mut rc);
+                    if in_header(rc, &g, x, y, peek_grip(app(|a| a.dpi))) {
+                        view(|v| v.drag_pt = Some((x, y)));
+                        _ = SetCapture(h);
+                    }
                 }
             }
-            // only × and ‹ › act on a click; the content itself never closes the preview.
+            WM_LBUTTONDBLCLK => {
+                let (x, y) = lp_xy(lp);
+                let g = geo_of(h);
+                let mut rc = RECT::default();
+                _ = GetClientRect(h, &mut rc);
+                let hot = peek_hit(&g, x, y);
+                if in_header(rc, &g, x, y, peek_grip(app(|a| a.dpi))) {
+                    toggle_peek_max(h);
+                } else if matches!(hot, Hot::Max | Hot::Close | Hot::Prev | Hot::Next) {
+                    view(|v| v.suppress_up = true);
+                }
+            }
+            // ×, the maximise mark, and ‹ › act on a click; the content itself never closes the preview.
             // a press that started on the bar is a scroll, even if the pointer has slid onto ›
             WM_LBUTTONUP => {
-                let on_bar = view(|v| {
+                let (suppress, on_bar, dragged) = view(|v| {
+                    let suppress = std::mem::replace(&mut v.suppress_up, false);
                     let on = v.bar_down;
                     v.bar_down = false;
                     v.bar_drag = None;
-                    on
+                    let dragged = v.drag_pt.take().is_some();
+                    (suppress, on, dragged)
                 });
-                if on_bar {
+                if on_bar || dragged {
                     _ = ReleaseCapture();
-                    _ = InvalidateRect(Some(h), None, false);
-                } else {
+                    if on_bar {
+                        _ = InvalidateRect(Some(h), None, false);
+                    }
+                } else if !suppress {
                     match view(|v| v.hot) {
                         Hot::Close => close_peek(h),
+                        Hot::Max => toggle_peek_max(h),
                         Hot::Prev => step_peek(true),
                         Hot::Next => step_peek(false),
                         Hot::None => {}
@@ -1417,7 +2146,7 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             WM_CAPTURECHANGED => {
-                view(|v| (v.bar_drag, v.bar_down) = (None, false));
+                view(|v| (v.bar_drag, v.bar_down, v.drag_pt) = (None, false, None));
             }
             WM_MOUSEWHEEL if (wp.0 & 0xffff) as u32 & MK_SHIFT.0 != 0 => scroll_peek(h, 0, -notch(wp.0)),
             WM_MOUSEWHEEL => wheel_peek(h, (wp.0 >> 16) as i16 as i32),
@@ -1444,10 +2173,12 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_DESTROY => {
                 let from_find = FROM_FIND.load(Ordering::SeqCst);
                 let i = app(|a| a.peek_pane);
+                drop_peek_tip(h);
                 mark_find_peek(None);
                 unload_handler();
                 want_peek(None);
                 reset_scroll();
+                reset_frame();
                 app(|a| a.peek = HWND::default());
                 // Focus has left the result list. Ask the pane to hide those rows unless
                 // close puts the keyboard back on them (or the search box still has it).
@@ -1542,6 +2273,8 @@ mod tests {
         assert_eq!(peek_hit(&g, g.next.left + 4, g.next.top + 4), Hot::Next);
         assert_eq!(peek_hit(&g, g.prev.left + 4, g.prev.top + 4), Hot::Prev);
         assert_eq!(peek_hit(&g, g.close.left + 4, g.close.top + 4), Hot::Close);
+        assert_eq!(peek_hit(&g, g.max.left + 4, g.max.top + 4), Hot::Max);
+        assert!(g.max.right <= g.close.left && g.title.right <= g.max.left);
         assert_eq!(peek_hit(&g, 500, 400), Hot::None);
     }
 
@@ -1559,7 +2292,7 @@ mod tests {
             assert_eq!(g.stage.right, rc.right - e - s(56));
             assert_eq!(g.stage.bottom, rc.bottom - e - s(24));
             assert_eq!((g.inner.left, g.inner.top, g.inner.right, g.inner.bottom), (g.stage.left + s(20), g.stage.top + s(20), g.stage.right - s(20), g.stage.bottom - s(20)));
-            for r in [g.icon, g.title, g.close, g.stage, g.inner, g.prev, g.next] {
+            for r in [g.icon, g.title, g.max, g.close, g.stage, g.inner, g.prev, g.next] {
                 assert!(r.left >= e && r.top >= e && r.right <= rc.right - e && r.bottom <= rc.bottom - e);
             }
         }
@@ -1710,6 +2443,89 @@ mod tests {
             assert!(b.paint.right > b.paint.left && b.paint.bottom > b.paint.top, "dpi {dpi}");
             // ›'s own pixel is not part of the bar
             assert_eq!(bar_hit(b.hit, b.paint, g.next.left, g.next.top + 1), BarHit::None);
+        }
+    }
+
+    #[test]
+    fn peek_window_fits_clamps_and_centers() {
+        let chrome = PeekChrome { w: 100, h: 80 };
+        let limit = PeekSize { w: 1000, h: 800 };
+        // 2:1 picture, larger than the content box: width-bound, then the frame is added back.
+        let wide = fit_size(FitContent::Aspect { w: 1800, h: 900 }, chrome, limit);
+        assert_eq!(wide, PeekSize { w: 1000, h: 530 });
+        // A picture that already fits is not enlarged.
+        let small = fit_size(FitContent::Aspect { w: 200, h: 100 }, chrome, limit);
+        assert_eq!(small, PeekSize { w: 300, h: 180 });
+        // Portrait page: height-bound.
+        let page = fit_size(FitContent::Aspect { w: 1000, h: 4000 }, PeekChrome { w: 0, h: 0 }, PeekSize { w: 800, h: 600 });
+        assert_eq!(page, PeekSize { w: 150, h: 600 });
+        // 100 characters, clamped into the limit. One line still opens at the minimum line count.
+        let text = fit_size(FitContent::Text { char_px: 10, line_px: 20, lines: 1, gutter: 0 }, PeekChrome { w: 0, h: 0 }, PeekSize { w: 2000, h: 2000 });
+        assert_eq!(text, PeekSize { w: PEEK_TEXT_COLS * 10, h: PEEK_TEXT_MIN_LINES * 20 });
+        let clamped = fit_size(FitContent::Text { char_px: 10, line_px: 20, lines: 10_000, gutter: 40 }, PeekChrome { w: 50, h: 40 }, PeekSize { w: 800, h: 600 });
+        assert_eq!(clamped, PeekSize { w: 800, h: 600 });
+        assert_eq!(fit_size(FitContent::Aspect { w: 0, h: 10 }, chrome, limit), PeekSize { w: 100, h: 80 });
+
+        assert_eq!(
+            clamp_to_parent_and_work(PeekSize { w: 2000, h: 100 }, PeekSize { w: 800, h: 600 }, PeekSize { w: 1000, h: 50 }),
+            PeekSize { w: 800, h: 50 }
+        );
+        assert_eq!(
+            clamp_to_parent_and_work(PeekSize { w: -5, h: 40 }, PeekSize { w: 100, h: 100 }, PeekSize { w: 90, h: 80 }),
+            PeekSize { w: 0, h: 40 }
+        );
+
+        let parent = RECT { left: 2000, top: 100, right: 2800, bottom: 800 };
+        let work = RECT { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let placed = center_in(PeekSize { w: 400, h: 300 }, parent, work);
+        assert_eq!(placed, RECT { left: 2200, top: 300, right: 2600, bottom: 600 });
+        // Centered on a parent that hangs off the work area, then slid fully inside.
+        let edge = center_in(PeekSize { w: 400, h: 300 }, RECT { left: 1900, top: -100, right: 2100, bottom: 200 }, work);
+        assert_eq!(edge.left, 1920);
+        assert_eq!(edge.top, 0);
+        assert_eq!((edge.right - edge.left, edge.bottom - edge.top), (400, 300));
+
+        let fitted = PeekSize { w: 10, h: 10 };
+        let kept = PeekSize { w: 3, h: 4 };
+        assert_eq!(pick_open_size(None, false, false, fitted), Some(fitted));
+        assert_eq!(pick_open_size(Some(kept), false, false, fitted), Some(kept));
+        assert_eq!(pick_open_size(Some(kept), true, false, fitted), None);
+        assert_eq!(pick_open_size(None, false, true, fitted), None);
+
+        let pic = Body::Pic(Pix { w: 640, h: 480, bgra: vec![] });
+        assert_eq!(PeekKind::of(&pic), PeekKind::Image);
+        assert_eq!(fit_source(&pic), FitSource::Aspect { w: 640, h: 480 });
+        let pages = Body::Pages { pages: vec![Pix { w: 400, h: 560, bgra: vec![] }], total: 3 };
+        assert_eq!(PeekKind::of(&pages), PeekKind::Doc);
+        assert_eq!(fit_source(&pages), FitSource::Aspect { w: 400, h: 560 });
+        let code = Body::Text { text: "a\nb\nc".into(), kind: TextKind::Code, cut: false };
+        assert_eq!(PeekKind::of(&code), PeekKind::Doc);
+        assert_eq!(fit_source(&code), FitSource::Lines { lines: 3, code: true });
+
+        let rc = RECT { left: 0, top: 0, right: 400, bottom: 300 };
+        assert_eq!(peek_nc_hit(rc, 1, 40, 6), HTLEFT);
+        assert_eq!(peek_nc_hit(rc, 398, 40, 6), HTRIGHT);
+        assert_eq!(peek_nc_hit(rc, 50, 1, 6), HTTOP);
+        assert_eq!(peek_nc_hit(rc, 50, 298, 6), HTBOTTOM);
+        assert_eq!(peek_nc_hit(rc, 1, 1, 6), HTTOPLEFT);
+        assert_eq!(peek_nc_hit(rc, 398, 1, 6), HTTOPRIGHT);
+        assert_eq!(peek_nc_hit(rc, 1, 298, 6), HTBOTTOMLEFT);
+        assert_eq!(peek_nc_hit(rc, 398, 298, 6), HTBOTTOMRIGHT);
+        assert_eq!(peek_nc_hit(rc, 20, 20, 6), HTCLIENT);
+        assert_eq!(peek_nc_hit(rc, -1, 10, 6), HTNOWHERE);
+
+        for dpi in [96, 144, 192] {
+            let window = RECT { left: 0, top: 0, right: 900, bottom: 700 };
+            let g = peek_geo(window, dpi);
+            let stage = peek_chrome(dpi, false);
+            let inner = peek_chrome(dpi, true);
+            assert_eq!(stage.w, window.right - (g.stage.right - g.stage.left), "{dpi}");
+            assert_eq!(stage.h, window.bottom - (g.stage.bottom - g.stage.top), "{dpi}");
+            assert_eq!(inner.w, window.right - (g.inner.right - g.inner.left), "{dpi}");
+            assert_eq!(inner.h, window.bottom - (g.inner.bottom - g.inner.top), "{dpi}");
+            assert!(in_header(window, &g, g.title.left + 4, g.title.top + peek_grip(dpi) + 2, peek_grip(dpi)));
+            assert!(!in_header(window, &g, g.max.left + 2, g.max.top + 2, peek_grip(dpi)));
+            assert!(!in_header(window, &g, 2, g.title.top + 8, peek_grip(dpi)));
         }
     }
 
