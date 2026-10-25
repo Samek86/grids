@@ -15,7 +15,7 @@ thread_local! {
     static PENDING: RefCell<Vec<Value>> = RefCell::new(Vec::new());
 }
 
-/// What a second `grids.exe` does. Single-window mode hands off even when single-instance is off,
+/// What a second `panegrid.exe` does. Single-window mode hands off even when single-instance is off,
 /// so a second process cannot open a second window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchPlan {
@@ -67,7 +67,7 @@ pub(crate) fn allows_another_window(one_window: bool) -> bool {
     spawn_kind(one_window) == Spawn::Window
 }
 
-/// Win+Alt+E while this window is already in front.
+/// Win+Shift+E while this window is already in front.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HotkeyWhenFront {
     Minimize,
@@ -261,8 +261,8 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     let hinst: HINSTANCE = GetModuleHandleW(None)?.into();
     let main = match CreateWindowExW(
         WINDOW_EX_STYLE(0),
-        w!("GridsMain"),
-        w!("Grids"),
+        w!("PanegridMain"),
+        w!("Panegrid"),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -307,14 +307,14 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         let seeded = app(|a| crate::store::sync_text(&a.s));
         LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
     }
-    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
+    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
     let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
     _ = ShowWindow(tab_edit, SW_HIDE);
     app(|a| (a.tabs_hwnd, a.tab_edit) = (tabs_hwnd, tab_edit));
     let bar_ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     let mut bars = [HWND::default(); 2];
     for b in &mut bars {
-        *b = CreateWindowExW(bar_ex, w!("GridsBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None)?;
+        *b = CreateWindowExW(bar_ex, w!("PanegridBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None)?;
         _ = SetLayeredWindowAttributes(*b, COLORREF(0), 170, LWA_ALPHA);
     }
     app(|a| a.bars = bars);
@@ -324,7 +324,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     if let Ok((t, th)) = create_tree(main) {
         app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
     }
-    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
+    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     app(|a| a.side_hwnd = side);
     register_side_drop(side);
     prime_theme(app(|a| a.s.dark));

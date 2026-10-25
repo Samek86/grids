@@ -4,7 +4,7 @@ use crate::app::*;
 use crate::i18n::*;
 use crate::store;
 
-// ---------- session (settings live in grids.json; named sessions stay .grids files in the ini shape) ----------
+// ---------- session (settings live in panegrid.json; named sessions stay .grids files in the ini shape) ----------
 
 /// One tab: a whole pane grid (layout, folders, view, columns, filter). The active tab's grid
 /// also lives on the session fields the rest of the window already reads.
@@ -240,7 +240,7 @@ pub(crate) struct Session {
     /// A pane tab is one folder inside one pane, not a window tab (`tabs` / `tab`). The strip shows from the second folder on.
     pub(crate) pane_folders: Vec<Vec<String>>,
     pub(crate) pane_cur: Vec<usize>,
-    pub(crate) hotkey: bool,           // global hotkey brings Grids forward; the chord is in the keymap
+    pub(crate) hotkey: bool,           // global hotkey brings Panegrid forward; the chord is in the keymap
     pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
     pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
@@ -1396,7 +1396,28 @@ pub(crate) fn apply_args(s: &mut Session, args: Vec<String>) {
 }
 
 pub(crate) fn sessions_dir() -> PathBuf {
-    store::exe_dir().join("sessions")
+    let exe = store::exe_dir();
+    let dir = exe.join("panegrid-sessions");
+    let old = exe.join("sessions");
+    if !dir.exists() && old.exists() && std::fs::create_dir_all(&dir).is_ok() {
+        copy_old_sessions(&old, &dir);
+    }
+    dir
+}
+
+// Copy top-level .grids and .qdr files. Sources stay put.
+fn copy_old_sessions(old: &Path, new: &Path) {
+    let Ok(rd) = std::fs::read_dir(old) else { return };
+    for ent in rd.flatten() {
+        let src = ent.path();
+        if !src.is_file() || !is_session_file(&src) {
+            continue;
+        }
+        let dst = new.join(ent.file_name());
+        if !dst.exists() {
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
 }
 
 pub(crate) fn human(b: u64) -> String {
@@ -1785,6 +1806,37 @@ mod face_tests {
         assert!(s.font_face.is_empty());
         assert_eq!(crate::default_face(1), "Malgun Gothic");
         assert_eq!(crate::default_face(0), "Segoe UI");
+    }
+}
+
+#[cfg(test)]
+mod session_copy_tests {
+    use super::copy_old_sessions;
+
+    #[test]
+    fn copy_old_sessions_leaves_the_source_files() {
+        let root = std::env::temp_dir().join(format!("panegrid-sessions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let old = root.join("sessions");
+        let new = root.join("panegrid-sessions");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("work.grids"), b"one").unwrap();
+        std::fs::write(old.join("old.qdr"), b"two").unwrap();
+        std::fs::write(old.join("notes.txt"), b"skip").unwrap();
+        let grids_mtime = std::fs::metadata(old.join("work.grids")).unwrap().modified().unwrap();
+        let qdr_mtime = std::fs::metadata(old.join("old.qdr")).unwrap().modified().unwrap();
+        copy_old_sessions(&old, &new);
+        assert_eq!(std::fs::read(old.join("work.grids")).unwrap(), b"one");
+        assert_eq!(std::fs::read(old.join("old.qdr")).unwrap(), b"two");
+        assert_eq!(std::fs::metadata(old.join("work.grids")).unwrap().modified().unwrap(), grids_mtime);
+        assert_eq!(std::fs::metadata(old.join("old.qdr")).unwrap().modified().unwrap(), qdr_mtime);
+        assert_eq!(std::fs::read(new.join("work.grids")).unwrap(), b"one");
+        assert_eq!(std::fs::read(new.join("old.qdr")).unwrap(), b"two");
+        assert!(!new.join("notes.txt").exists());
+        assert!(old.join("work.grids").is_file());
+        assert!(old.join("old.qdr").is_file());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

@@ -1,5 +1,5 @@
-// Settings file: %APPDATA%\grids\grids.json, or next to the exe when portable.txt is there.
-// Named .grids sessions stay in the ini shape. A leftover grids.ini is read once and renamed to grids.ini.bak.
+// Settings file: %APPDATA%\Panegrid\panegrid.json, or next to the exe when portable.txt is there.
+// Named .grids sessions stay in the ini shape. Missing panegrid.json is copied from grids.json, else read once from grids.ini or qdir.ini; the source file is left untouched.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -230,7 +230,7 @@ struct SettingsFile {
     dot: bool,
     #[serde(default = "yes")]
     dblup: bool,
-    /// Global hotkey. Missing means on, so an older grids.json keeps trying Win+Alt+E.
+    /// Global hotkey. Missing means on, so an older settings file keeps the hotkey on.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     hotkey: bool,
     /// UI language. Missing means `"auto"`: the Windows display language (Korean, Japanese, otherwise English).
@@ -444,7 +444,7 @@ impl SettingsFile {
         }
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
-        // Retired UI scale. An older grids.json still loads; the key is not written back.
+        // Retired UI scale. An older panegrid.json still loads; the key is not written back.
         self.extra.remove("font");
         self.extra.remove("one_window");
         self.extra.remove("drive_buttons");
@@ -673,35 +673,30 @@ fn roaming_appdata() -> Option<PathBuf> {
     }
 }
 
+pub(crate) const SETTINGS_FILE: &str = "panegrid.json";
+
+fn appdata_dir(base: &Path) -> PathBuf {
+    base.join("Panegrid")
+}
+
 pub(crate) fn config_dir() -> PathBuf {
     if portable_mode() {
         return exe_dir();
     }
     match roaming_appdata() {
-        Some(p) => p.join("grids"),
-        None => std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(exe_dir).join("grids"),
+        Some(p) => appdata_dir(&p),
+        None => {
+            let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(exe_dir);
+            appdata_dir(&base)
+        }
     }
 }
 
 pub(crate) fn settings_path() -> PathBuf {
-    config_dir().join("grids.json")
+    config_dir().join(SETTINGS_FILE)
 }
 
-fn legacy_candidates(exe: &Path, cfg: &Path) -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    for p in [exe.join("grids.ini"), cfg.join("grids.ini"), exe.join("qdir.ini")] {
-        if !v.iter().any(|e| e == &p) {
-            v.push(p);
-        }
-    }
-    v
-}
-
-fn bak_path(ini: &Path) -> PathBuf {
-    ini.with_extension("ini.bak")
-}
-
-/// grids.json bytes. Missing is `Ok(None)`. A locked or unreadable file is an error, never defaults.
+/// panegrid.json bytes. Missing is `Ok(None)`. A locked or unreadable file is an error, never defaults.
 pub(crate) fn read_settings_file(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read(path) {
         Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
@@ -710,16 +705,16 @@ pub(crate) fn read_settings_file(path: &Path) -> Result<Option<String>, String> 
     }
 }
 
-/// Load grids.json, or migrate a legacy ini. An existing file that cannot be read or parsed is an error,
+/// Load panegrid.json, copy a fork grids.json, or import a legacy ini. An existing file that cannot be read or parsed is an error,
 /// so a later save does not replace it with defaults.
-pub(crate) fn try_load_at(exe: &Path, cfg: &Path) -> Result<Session, String> {
+pub(crate) fn try_load_at(exe: &Path, cfg: &Path, old_cfg: &Path) -> Result<Session, String> {
     let _ = std::fs::create_dir_all(cfg);
-    let json_path = cfg.join("grids.json");
+    let json_path = cfg.join(SETTINGS_FILE);
     match read_settings_file(&json_path)? {
         Some(raw) => {
             let text = strip_bom(&raw);
             let Some(mut s) = adopt(text) else {
-                return Err("grids.json is not valid settings".into());
+                return Err("panegrid.json is not valid settings".into());
             };
             // A name that is not installed falls back to the language default. Empty skips the lookup.
             forget_missing_face(&mut s);
@@ -733,23 +728,27 @@ pub(crate) fn try_load_at(exe: &Path, cfg: &Path) -> Result<Session, String> {
             }
             Ok(s)
         }
-        None => Ok(load_legacy(exe, cfg)),
+        None => Ok(load_legacy(exe, cfg, old_cfg)),
     }
 }
 
-fn load_legacy(exe: &Path, cfg: &Path) -> Session {
-    let json_path = cfg.join("grids.json");
-    for cand in legacy_candidates(exe, cfg) {
+/// Copy a fork `grids.json`, else import ini. Never renames, moves, deletes, or writes a source file.
+fn load_legacy(exe: &Path, cfg: &Path, old_cfg: &Path) -> Session {
+    let json_path = cfg.join(SETTINGS_FILE);
+    for cand in [exe.join("grids.json"), old_cfg.join("grids.json")] {
+        let Ok(Some(text)) = read_settings_file(&cand) else { continue };
+        let Some(mut s) = adopt(&text) else { continue };
+        if write_atomic(&json_path, text.as_bytes()).is_ok() {
+            forget_missing_face(&mut s);
+            return s;
+        }
+    }
+    for cand in [exe.join("grids.ini"), old_cfg.join("grids.ini"), exe.join("qdir.ini")] {
         let Ok(text) = std::fs::read_to_string(&cand) else { continue };
         let s = Session::parse(&text);
         let file = SettingsFile::from_session(&s);
         if write_atomic(&json_path, pretty(&file).as_bytes()).is_ok() {
             remember(file);
-            let bak = bak_path(&cand);
-            if bak.exists() {
-                let _ = std::fs::remove_file(&bak);
-            }
-            let _ = std::fs::rename(&cand, bak);
             return s;
         }
     }
@@ -760,8 +759,8 @@ fn load_legacy(exe: &Path, cfg: &Path) -> Session {
 
 /// Same as `try_load_at` for tests that only see a readable file.
 #[cfg(test)]
-pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
-    try_load_at(exe, cfg).unwrap_or_else(|_| {
+pub(crate) fn load_at(exe: &Path, cfg: &Path, old_cfg: &Path) -> Session {
+    try_load_at(exe, cfg, old_cfg).unwrap_or_else(|_| {
         remember(SettingsFile::default());
         Session::default()
     })
@@ -770,7 +769,8 @@ pub(crate) fn load_at(exe: &Path, cfg: &Path) -> Session {
 pub(crate) fn load() -> Result<Session, String> {
     let cfg = config_dir();
     let _ = std::fs::create_dir_all(&cfg);
-    try_load_at(&exe_dir(), &cfg)
+    let old_base = roaming_appdata().or_else(|| std::env::var_os("APPDATA").map(PathBuf::from)).unwrap_or_else(exe_dir);
+    try_load_at(&exe_dir(), &cfg, &old_base.join("grids"))
 }
 
 pub(crate) fn write_settings(text: &str) -> std::io::Result<()> {
@@ -789,7 +789,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
     }
     let mut tmp = path.to_path_buf();
-    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "grids.json".into());
+    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| SETTINGS_FILE.into());
     tmp.set_file_name(format!("{name}.tmp"));
     {
         let mut f = std::fs::File::create(&tmp)?;
@@ -1049,62 +1049,78 @@ mod tests {
     }
 
     #[test]
-    fn ini_migrates_to_json_and_is_renamed() {
+    fn ini_imports_to_json_and_the_source_stays() {
         let root = scratch("migrate");
         let exe = root.join("exe");
-        let cfg = root.join("appdata").join("grids");
+        let cfg = root.join("appdata").join("Panegrid");
+        let old = root.join("old");
         std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
         let parsed = Session::parse(&sample().to_ini());
-        std::fs::write(exe.join("grids.ini"), parsed.to_ini()).unwrap();
+        let ini_body = parsed.to_ini();
+        let ini = exe.join("grids.ini");
+        std::fs::write(&ini, &ini_body).unwrap();
         std::fs::create_dir_all(exe.join("sessions")).unwrap();
         std::fs::write(exe.join("sessions").join("work.grids"), parsed.snapshot()).unwrap();
 
-        let loaded = load_at(&exe, &cfg);
+        let loaded = load_at(&exe, &cfg, &old);
         assert_eq!(loaded, parsed);
-        assert!(!exe.join("grids.ini").exists());
-        assert!(exe.join("grids.ini.bak").is_file());
-        let json = std::fs::read_to_string(cfg.join("grids.json")).unwrap();
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), ini_body);
+        assert!(ini.is_file());
+        assert!(!exe.join("grids.ini.bak").exists());
+        let json = std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap();
         assert!(json.contains("\"version\": 1"));
         assert_eq!(adopt(&json).unwrap(), parsed);
         assert_eq!(std::fs::read_to_string(exe.join("sessions").join("work.grids")).unwrap(), parsed.snapshot());
 
-        // A second launch reads the json and leaves the backup alone.
-        let again = load_at(&exe, &cfg);
+        // A second launch reads panegrid.json and leaves the ini alone.
+        let again = load_at(&exe, &cfg, &old);
         assert_eq!(again, parsed);
-        assert!(exe.join("grids.ini.bak").is_file());
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), ini_body);
+        assert!(!exe.join("grids.ini.bak").exists());
 
-        // An ini that only exists in the config dir is the one that moves.
+        // An ini that only exists in the old config dir is imported from there.
         let root2 = scratch("appdata-ini");
         let exe2 = root2.join("exe");
         let cfg2 = root2.join("cfg");
+        let old2 = root2.join("old");
         std::fs::create_dir_all(&exe2).unwrap();
-        std::fs::create_dir_all(&cfg2).unwrap();
-        std::fs::write(cfg2.join("grids.ini"), "lang=ja\n").unwrap();
-        assert_eq!(load_at(&exe2, &cfg2).lang, Lang::Ja);
-        assert!(cfg2.join("grids.json").is_file());
-        assert!(cfg2.join("grids.ini.bak").is_file());
-        assert!(!cfg2.join("grids.ini").exists());
+        std::fs::create_dir_all(&old2).unwrap();
+        let ini2 = old2.join("grids.ini");
+        std::fs::write(&ini2, "lang=ja\n").unwrap();
+        assert_eq!(load_at(&exe2, &cfg2, &old2).lang, Lang::Ja);
+        assert!(cfg2.join(SETTINGS_FILE).is_file());
+        assert_eq!(std::fs::read_to_string(&ini2).unwrap(), "lang=ja\n");
+        assert!(ini2.is_file());
+        assert!(!old2.join("grids.ini.bak").exists());
 
-        // The exe ini wins when both exist, and an existing json is not replaced.
+        // An existing panegrid.json is not replaced.
         let root3 = scratch("keep-json");
         let exe3 = root3.join("exe");
         let cfg3 = root3.join("cfg");
+        let old3 = root3.join("old");
         std::fs::create_dir_all(&exe3).unwrap();
         std::fs::create_dir_all(&cfg3).unwrap();
         std::fs::write(exe3.join("grids.ini"), "lang=en\n").unwrap();
-        std::fs::write(cfg3.join("grids.json"), pretty(&SettingsFile::from_session(&Session { lang: Lang::Ko, ..Session::default() }))).unwrap();
-        assert_eq!(load_at(&exe3, &cfg3).lang, Lang::Ko);
+        std::fs::write(cfg3.join(SETTINGS_FILE), pretty(&SettingsFile::from_session(&Session { lang: Lang::Ko, ..Session::default() }))).unwrap();
+        assert_eq!(load_at(&exe3, &cfg3, &old3).lang, Lang::Ko);
+        assert_eq!(std::fs::read_to_string(exe3.join("grids.ini")).unwrap(), "lang=en\n");
         assert!(exe3.join("grids.ini").is_file());
+        assert!(!exe3.join("grids.ini.bak").exists());
 
         // qdir.ini is the older name, used when grids.ini is absent.
         let root4 = scratch("qdir");
         let exe4 = root4.join("exe");
         let cfg4 = root4.join("cfg");
+        let old4 = root4.join("old");
         std::fs::create_dir_all(&exe4).unwrap();
-        std::fs::write(exe4.join("qdir.ini"), "lang=en\nsingle=0\n").unwrap();
-        let q = load_at(&exe4, &cfg4);
+        let qdir = exe4.join("qdir.ini");
+        std::fs::write(&qdir, "lang=en\nsingle=0\n").unwrap();
+        let q = load_at(&exe4, &cfg4, &old4);
         assert_eq!((q.lang, q.single), (Lang::En, false));
-        assert!(exe4.join("qdir.ini.bak").is_file());
+        assert_eq!(std::fs::read_to_string(&qdir).unwrap(), "lang=en\nsingle=0\n");
+        assert!(qdir.is_file());
+        assert!(!exe4.join("qdir.ini.bak").exists());
     }
 
     #[test]
@@ -1130,8 +1146,8 @@ mod tests {
             let cfg = root.join("cfg");
             std::fs::create_dir_all(&exe).unwrap();
             std::fs::create_dir_all(&cfg).unwrap();
-            std::fs::write(cfg.join("grids.json"), body).unwrap();
-            load_at(&exe, &cfg).lang
+            std::fs::write(cfg.join(SETTINGS_FILE), body).unwrap();
+            load_at(&exe, &cfg, &cfg).lang
         };
         assert_eq!(lang_json("lang-json-missing", "{\"version\":1,\"bar\":true}\n"), Lang::Auto);
         assert_eq!(lang_json("lang-json-auto", "{\"lang\":\"auto\"}\n"), Lang::Auto);
@@ -1145,8 +1161,8 @@ mod tests {
             std::fs::create_dir_all(&exe).unwrap();
             std::fs::create_dir_all(&cfg).unwrap();
             std::fs::write(cfg.join("grids.ini"), body).unwrap();
-            let s = load_at(&exe, &cfg);
-            let written = std::fs::read_to_string(cfg.join("grids.json")).unwrap();
+            let s = load_at(&exe, &cfg, &cfg);
+            let written = std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap();
             (s.lang, written)
         };
         let (missing, written) = lang_ini("lang-ini-missing", "bar=0\n");
@@ -1162,7 +1178,7 @@ mod tests {
         let exe = root.join("exe");
         let cfg = root.join("cfg");
         std::fs::create_dir_all(&exe).unwrap();
-        assert_eq!(load_at(&exe, &cfg).lang, Lang::Auto);
+        assert_eq!(load_at(&exe, &cfg, &cfg).lang, Lang::Auto);
 
         let root_exe = scratch("lang-exe-ini");
         let exe_ini = root_exe.join("exe");
@@ -1170,19 +1186,23 @@ mod tests {
         std::fs::create_dir_all(&exe_ini).unwrap();
         std::fs::create_dir_all(&cfg_ini).unwrap();
         std::fs::write(exe_ini.join("grids.ini"), "single=0\n").unwrap();
-        assert_eq!(load_at(&exe_ini, &cfg_ini).lang, Lang::Auto);
+        assert_eq!(load_at(&exe_ini, &cfg_ini, &cfg_ini).lang, Lang::Auto);
     }
 
     #[test]
     fn portable_json_sits_beside_the_exe() {
         let dir = scratch("portable");
+        let ini = dir.join("grids.ini");
+        let body = sample().to_ini();
         std::fs::write(dir.join("portable.txt"), b"").unwrap();
-        std::fs::write(dir.join("grids.ini"), sample().to_ini()).unwrap();
-        let loaded = load_at(&dir, &dir);
-        assert_eq!(loaded, Session::parse(&sample().to_ini()));
-        assert!(dir.join("grids.json").is_file());
-        assert!(dir.join("grids.ini.bak").is_file());
-        assert!(!dir.join("grids.json.tmp").exists());
+        std::fs::write(&ini, &body).unwrap();
+        let loaded = load_at(&dir, &dir, &dir);
+        assert_eq!(loaded, Session::parse(&body));
+        assert!(dir.join(SETTINGS_FILE).is_file());
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), body);
+        assert!(ini.is_file());
+        assert!(!dir.join("grids.ini.bak").exists());
+        assert!(!dir.join("panegrid.json.tmp").exists());
     }
 
     #[test]
@@ -1213,11 +1233,11 @@ mod tests {
     #[test]
     fn atomic_write_replaces_the_file() {
         let dir = scratch("atomic");
-        let path = dir.join("grids.json");
+        let path = dir.join(SETTINGS_FILE);
         write_atomic(&path, b"{\"version\":1}\n").unwrap();
         write_atomic(&path, b"{\"version\":1,\"lang\":\"ja\"}\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"version\":1,\"lang\":\"ja\"}\n");
-        assert!(!dir.join("grids.json.tmp").exists());
+        assert!(!dir.join("panegrid.json.tmp").exists());
         let blocked = dir.join("blocked.json");
         std::fs::create_dir(&blocked).unwrap();
         assert!(write_atomic(&blocked, b"{\"version\":1}\n").is_err());
@@ -1229,17 +1249,17 @@ mod tests {
     fn unreadable_settings_are_not_defaults() {
         let dir = scratch("unread");
         assert!(read_settings_file(&dir.join("missing.json")).unwrap().is_none());
-        std::fs::write(dir.join("grids.json"), "{\"lang\":\"ko\"}").unwrap();
-        assert!(try_load_at(&dir, &dir).is_ok());
+        std::fs::write(dir.join(SETTINGS_FILE), "{\"lang\":\"ko\"}").unwrap();
+        assert!(try_load_at(&dir, &dir, &dir).is_ok());
         let locked = scratch("locked");
-        std::fs::create_dir(locked.join("grids.json")).unwrap();
-        assert!(read_settings_file(&locked.join("grids.json")).is_err());
-        assert!(try_load_at(&locked, &locked).is_err());
-        assert!(locked.join("grids.json").is_dir());
+        std::fs::create_dir(locked.join(SETTINGS_FILE)).unwrap();
+        assert!(read_settings_file(&locked.join(SETTINGS_FILE)).is_err());
+        assert!(try_load_at(&locked, &locked, &locked).is_err());
+        assert!(locked.join(SETTINGS_FILE).is_dir());
         let bad = scratch("badjson");
-        std::fs::write(bad.join("grids.json"), "{").unwrap();
-        assert!(try_load_at(&bad, &bad).is_err());
-        assert_eq!(std::fs::read_to_string(bad.join("grids.json")).unwrap(), "{");
+        std::fs::write(bad.join(SETTINGS_FILE), "{").unwrap();
+        assert!(try_load_at(&bad, &bad, &bad).is_err());
+        assert_eq!(std::fs::read_to_string(bad.join(SETTINGS_FILE)).unwrap(), "{");
     }
 
     #[test]
@@ -1304,15 +1324,15 @@ mod tests {
         let cfg = root.join("cfg");
         std::fs::create_dir_all(&exe).unwrap();
         std::fs::create_dir_all(&cfg).unwrap();
-        std::fs::write(cfg.join("grids.json"), "{\"version\":1,\"panel\":\"fav\",\"side_split\":0.25,\"lang\":\"en\"}\n").unwrap();
-        let s = load_at(&exe, &cfg);
+        std::fs::write(cfg.join(SETTINGS_FILE), "{\"version\":1,\"panel\":\"fav\",\"side_split\":0.25,\"lang\":\"en\"}\n").unwrap();
+        let s = load_at(&exe, &cfg, &cfg);
         assert!((s.side_split - 0.25).abs() < 1e-9);
-        let json = std::fs::read_to_string(cfg.join("grids.json")).unwrap();
+        let json = std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap();
         assert!(!json.contains("\"panel\""));
         assert!(json.contains("0.25"));
-        let again = load_at(&exe, &cfg);
+        let again = load_at(&exe, &cfg, &cfg);
         assert!((again.side_split - 0.25).abs() < 1e-9);
-        assert_eq!(std::fs::read_to_string(cfg.join("grids.json")).unwrap(), json);
+        assert_eq!(std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap(), json);
     }
 
     #[test]
@@ -1470,8 +1490,8 @@ mod tests {
         std::fs::create_dir_all(&cfg).unwrap();
         let mut raw = vec![0xEF, 0xBB, 0xBF];
         raw.extend(br#"{"version":1,"favorites_tree":[{"name":"Jobs","children":[{"name":"note","path":"C:\\a\\note.txt","file":true}]}]}"#);
-        std::fs::write(cfg.join("grids.json"), raw).unwrap();
-        let s = load_at(&exe, &cfg);
+        std::fs::write(cfg.join(SETTINGS_FILE), raw).unwrap();
+        let s = load_at(&exe, &cfg, &cfg);
         assert_eq!(s.tree.len(), 1);
         assert_eq!(s.tree[0].name, "Jobs");
         assert!(s.tree[0].is_group());
@@ -1539,13 +1559,91 @@ mod tests {
         let cfg = root.join("cfg");
         std::fs::create_dir_all(&exe).unwrap();
         std::fs::create_dir_all(&cfg).unwrap();
-        std::fs::write(cfg.join("grids.json"), "{\"version\":1,\"lang\":\"ja\",\"font_face\":\"Not A Real Font Zzz\",\"future\":1}\n").unwrap();
-        let s = load_at(&exe, &cfg);
+        std::fs::write(cfg.join(SETTINGS_FILE), "{\"version\":1,\"lang\":\"ja\",\"font_face\":\"Not A Real Font Zzz\",\"future\":1}\n").unwrap();
+        let s = load_at(&exe, &cfg, &cfg);
         assert!(s.font_face.is_empty(), "missing face should fall back");
         assert_eq!(s.lang, Lang::Ja);
         let kept: Value = serde_json::from_str(&current_text()).unwrap();
         assert!(kept.get("font_face").is_none());
         assert_eq!(kept["future"], 1);
         assert_eq!(kept["lang"], "ja");
+    }
+
+    #[test]
+    fn config_paths_use_panegrid_names() {
+        assert_eq!(SETTINGS_FILE, "panegrid.json");
+        assert_eq!(settings_path().file_name().and_then(|s| s.to_str()), Some("panegrid.json"));
+        let base = Path::new(r"C:\Users\me\AppData\Roaming");
+        assert_eq!(appdata_dir(base), base.join("Panegrid"));
+        assert!(appdata_dir(base).ends_with("Panegrid"));
+    }
+
+    #[test]
+    fn fork_grids_json_is_copied_and_the_source_stays() {
+        let root = scratch("fork-json");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        let old = root.join("old");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let body = "{\"version\":1,\"lang\":\"ko\"}\n";
+        let src = old.join("grids.json");
+        std::fs::write(&src, body).unwrap();
+        let bytes = std::fs::read(&src).unwrap();
+        let mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
+        assert_eq!(load_at(&exe, &cfg, &old).lang, Lang::Ko);
+        assert_eq!(std::fs::read(cfg.join(SETTINGS_FILE)).unwrap(), bytes);
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+        assert_eq!(std::fs::metadata(&src).unwrap().modified().unwrap(), mtime);
+        assert!(src.is_file());
+        assert!(!old.join("grids.json.bak").exists());
+
+        // grids.json beside the exe is the portable fork build and wins over the old appdata file.
+        let root2 = scratch("fork-json-exe");
+        let exe2 = root2.join("exe");
+        let cfg2 = root2.join("cfg");
+        let old2 = root2.join("old");
+        std::fs::create_dir_all(&exe2).unwrap();
+        std::fs::create_dir_all(&old2).unwrap();
+        let exe_body = "{\"version\":1,\"lang\":\"ja\"}\n";
+        let exe_src = exe2.join("grids.json");
+        std::fs::write(&exe_src, exe_body).unwrap();
+        std::fs::write(old2.join("grids.json"), body).unwrap();
+        let exe_bytes = std::fs::read(&exe_src).unwrap();
+        let exe_mtime = std::fs::metadata(&exe_src).unwrap().modified().unwrap();
+        let old_bytes = std::fs::read(old2.join("grids.json")).unwrap();
+        let old_mtime = std::fs::metadata(old2.join("grids.json")).unwrap().modified().unwrap();
+        assert_eq!(load_at(&exe2, &cfg2, &old2).lang, Lang::Ja);
+        assert_eq!(std::fs::read(cfg2.join(SETTINGS_FILE)).unwrap(), exe_bytes);
+        assert_eq!(std::fs::read(&exe_src).unwrap(), exe_bytes);
+        assert_eq!(std::fs::metadata(&exe_src).unwrap().modified().unwrap(), exe_mtime);
+        assert_eq!(std::fs::read(old2.join("grids.json")).unwrap(), old_bytes);
+        assert_eq!(std::fs::metadata(old2.join("grids.json")).unwrap().modified().unwrap(), old_mtime);
+    }
+
+    #[test]
+    fn grids_ini_import_leaves_the_source_and_does_not_run_twice() {
+        let root = scratch("ini-once");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        let old = root.join("old");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let ini = exe.join("grids.ini");
+        let body = "lang=ko\n";
+        std::fs::write(&ini, body).unwrap();
+        let bytes = std::fs::read(&ini).unwrap();
+        let mtime = std::fs::metadata(&ini).unwrap().modified().unwrap();
+        assert_eq!(load_at(&exe, &cfg, &old).lang, Lang::Ko);
+        assert_eq!(std::fs::read(&ini).unwrap(), bytes);
+        assert_eq!(std::fs::metadata(&ini).unwrap().modified().unwrap(), mtime);
+        assert!(ini.is_file());
+        assert!(!exe.join("grids.ini.bak").exists());
+        assert!(!old.join("grids.ini.bak").exists());
+        let saved = std::fs::read(cfg.join(SETTINGS_FILE)).unwrap();
+        assert!(!saved.is_empty());
+        std::fs::write(&ini, "lang=ja\n").unwrap();
+        assert_eq!(load_at(&exe, &cfg, &old).lang, Lang::Ko);
+        assert_eq!(std::fs::read(cfg.join(SETTINGS_FILE)).unwrap(), saved);
     }
 }

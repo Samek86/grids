@@ -32,7 +32,7 @@ pub(crate) unsafe fn save_session() {
             a.save_after = None;
         });
     } else {
-        // The old grids.json stays. Try again in 5 seconds, unless a drag or resize is in progress.
+        // The old panegrid.json stays. Try again in 5 seconds, unless a drag or resize is in progress.
         app(|a| a.save_after = Some(Instant::now() + std::time::Duration::from_secs(5)));
     }
 }
@@ -103,7 +103,7 @@ pub(crate) unsafe fn ask_session_path(title: &str) -> Result<String> {
     let dir = sessions_dir();
     _ = std::fs::create_dir_all(&dir);
     let dlg: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
-    let kind = HSTRING::from(tr("Grids session (*.grids)", "Grids 세션 (*.grids)", "Grids セッション (*.grids)"));
+    let kind = HSTRING::from(tr("Panegrid session (*.grids)", "Panegrid 세션 (*.grids)", "Panegrid セッション (*.grids)"));
     dlg.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(kind.as_ptr()), pszSpec: w!("*.grids") }])?;
     dlg.SetDefaultExtension(w!("grids"))?;
     dlg.SetTitle(&HSTRING::from(title))?;
@@ -148,12 +148,12 @@ pub(crate) unsafe fn load_session_file(path: &Path) {
     focus_view(active_pane());
 }
 
-// Window of a running copy of this same exe. A portable.txt copy keeps its own grids.json.
+// Window of a running copy of this same exe. A portable.txt copy keeps its own panegrid.json.
 pub(crate) unsafe fn running_instance() -> Option<HWND> {
     let me = std::env::current_exe().ok()?.to_string_lossy().to_lowercase();
     let mut h = None;
     loop {
-        let w = FindWindowExW(None, h, w!("GridsMain"), PCWSTR::null()).ok()?;
+        let w = FindWindowExW(None, h, w!("PanegridMain"), PCWSTR::null()).ok()?;
         h = Some(w);
         let mut pid = 0;
         GetWindowThreadProcessId(w, Some(&mut pid));

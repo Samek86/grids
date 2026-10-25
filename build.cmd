@@ -2,4 +2,4 @@
 @set PATH=%USERPROFILE%\.cargo\bin;C:\msys64\mingw64\bin;%PATH%
 @cd /d "%~dp0"
 @if not exist build mkdir build
-cargo build --release && copy /y target\release\grids.exe build\grids.exe
+cargo build --release && copy /y target\release\panegrid.exe build\panegrid.exe

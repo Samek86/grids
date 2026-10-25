@@ -47,7 +47,7 @@ pub(crate) const TIMER_STATUS: usize = 1;
 pub(crate) const TIMER_FILTER: usize = 2;
 pub(crate) const TIMER_REVEAL: usize = 3;
 pub(crate) const TIMER_SETTLE: usize = 4; // on a pane: narrow column widths going back on after a folder change
-pub(crate) const TIMER_SAVE: usize = 5; // debounced grids.json write
+pub(crate) const TIMER_SAVE: usize = 5; // debounced panegrid.json write
 pub(crate) const SAVE_SOON_MS: u32 = 1500;
 pub(crate) const SAVE_LATEST_MS: u128 = 30_000;
 /// Hidden tabs that still hold Explorer windows. Older hidden tabs keep only their saved grid.
@@ -85,7 +85,7 @@ pub(crate) const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 pub(crate) const LVM_SETSELECTEDCOLUMN: u32 = 0x108C;
 pub(crate) const LVM_GETSELECTEDCOLUMN: u32 = 0x10AE;
 pub(crate) const TVM_SETTEXTCOLOR: u32 = 0x111E;
-pub(crate) const COPY_ID: usize = 0x4752_4944; // "GRID": WM_COPYDATA from a second instance
+pub(crate) const COPY_ID: usize = 0x504E_4752; // "PNGR": WM_COPYDATA from a second instance
 // Move without copying old pixels: copied bits are what left ghost borders/buttons while resizing.
 pub(crate) const MOVE: SET_WINDOW_POS_FLAGS = SET_WINDOW_POS_FLAGS(SWP_NOZORDER.0 | SWP_NOACTIVATE.0 | SWP_NOCOPYBITS.0);
 

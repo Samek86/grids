@@ -24,7 +24,7 @@ const BTN_MAX: i32 = 512;
 const DRAG_SLOP: i32 = 4;
 
 /// Which row the keyboard and the highlight are on. Kind is part of the identity:
-/// a pin and a grids favourite can share the same index.
+/// a pin and a Panegrid favourite can share the same index.
 #[derive(Clone, Debug, PartialEq)]
 struct Sel {
     kind: RowKind,
@@ -149,7 +149,7 @@ pub(crate) unsafe fn open_fav_manager(owner: HWND) {
     let y = orc.top + (orc.bottom - orc.top - hh) / 2;
     PENDING_OWNER.with(|c| c.set(owner));
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL;
-    let created = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsFavMgr"), w!(""), style, x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
+    let created = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridFavMgr"), w!(""), style, x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
     if created.0.is_null() {
         return;
     }
@@ -252,7 +252,7 @@ fn ensure_class() {
             hInstance: hinst,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
-            lpszClassName: w!("GridsFavMgr"),
+            lpszClassName: w!("PanegridFavMgr"),
             ..Default::default()
         });
     });

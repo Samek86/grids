@@ -398,7 +398,7 @@ pub(crate) unsafe fn open_grid() {
     app(|a| (a.grid_preview, a.grid_drag, a.grid_preset) = (cur, None, None));
     let style = WS_POPUP | WS_VISIBLE;
     let y = rc.bottom + 6 * dpi / 96;
-    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsPicker"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
+    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridPicker"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
         return;
     };
     let square = DWMWCP_DONOTROUND;
