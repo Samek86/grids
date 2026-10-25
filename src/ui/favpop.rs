@@ -1,5 +1,6 @@
 // Favourites window opened from the star on the tab row.
 // One window at a time. It edits the same tree as Settings and the left panel.
+// Explorer pins and favourite files lead the list, with the same labels and collapse as the left panel.
 
 use crate::app::{app, bind_hwnd};
 use crate::open_fav_target;
@@ -9,8 +10,8 @@ use crate::session::*;
 use crate::settings;
 
 use super::{
-    blend, buffered, clear_icon_refresh, drop_side, fav_head_h, fav_row_h, fill, hit_fav_board, layout_fav_board, note_side, paint_fav_head, paint_fav_row, pal, place_edit,
-    rows_for_query, text, FavBoard, FavHit,
+    blend, buffered, clear_icon_refresh, drop_side, fav_chevron_rect, fav_editable_indices, fav_head_h, fav_popup_can_drop, fav_row_editable, fav_row_h, files_section_label, fill,
+    hit_fav_board, layout_fav_board, note_side, paint_fav_head, paint_fav_row, pal, pins_section_label, place_edit, popup_rows, text, FavBoard, FavHit,
 };
 
 const ID_SEARCH: i32 = 1;
@@ -19,6 +20,16 @@ const ID_FOLDER: i32 = 3;
 const ID_REN: i32 = 1000;
 const ID_DEL: i32 = 2000;
 const BTN_MAX: i32 = 512;
+/// Movement before a press becomes a reorder. A click must not move the row.
+const DRAG_SLOP: i32 = 4;
+
+/// Which row the keyboard and the highlight are on. Kind is part of the identity:
+/// a pin and a grids favourite can share the same index.
+#[derive(Clone, Debug, PartialEq)]
+struct Sel {
+    kind: RowKind,
+    id: Vec<usize>,
+}
 
 struct St {
     hwnd: HWND,
@@ -26,8 +37,10 @@ struct St {
     dpi: i32,
     query: String,
     scroll: i32,
-    sel: Vec<usize>,
+    sel: Option<Sel>,
     drag: Option<Vec<usize>>,
+    drag_at: (i32, i32),
+    drag_ready: bool,
     drag_moved: bool,
     font: HFONT,
     small: HFONT,
@@ -42,8 +55,10 @@ impl Default for St {
             dpi: 96,
             query: String::new(),
             scroll: 0,
-            sel: Vec::new(),
+            sel: None,
             drag: None,
+            drag_at: (0, 0),
+            drag_ready: false,
             drag_moved: false,
             font: HFONT::default(),
             small: HFONT::default(),
@@ -354,18 +369,39 @@ unsafe fn cue(edit: HWND, text: &str) {
 
 fn shown() -> Vec<FavRow> {
     let q = ST.with(|s| s.borrow().query.clone());
+    let pins_label = pins_section_label();
+    let files_label = files_section_label();
     app(|a| {
         a.s.ensure_fav_tree();
-        rows_for_query(&a.s.tree, &q)
+        let pins = crate::pin_list();
+        let files = crate::pin_files();
+        popup_rows(&a.s.tree, a.s.pins_open, &pins, pins_label, a.s.files_open, &files, files_label, &q)
     })
 }
 
+fn sel_from(row: &FavRow) -> Sel {
+    Sel { kind: row.kind, id: row.id.clone() }
+}
+
 fn sel_index(rows: &[FavRow]) -> Option<usize> {
-    let sel = ST.with(|s| s.borrow().sel.clone());
-    if sel.is_empty() {
-        return None;
+    let sel = ST.with(|s| s.borrow().sel.clone())?;
+    rows.iter().position(|r| r.kind == sel.kind && r.id == sel.id)
+}
+
+fn show_fav_hint(rows: &[FavRow], query: &str) -> bool {
+    query.trim().is_empty() && !rows.iter().any(|r| r.in_tree())
+}
+
+fn empty_msg(query: &str) -> &'static str {
+    if query.trim().is_empty() {
+        tr(
+            "No favourites yet · add one with ☆+ in a pane header",
+            "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가",
+            "お気に入りはまだありません · ペインヘッダーの ☆+ で追加",
+        )
+    } else {
+        tr("No matches", "결과 없음", "一致なし")
     }
-    rows.iter().position(|r| r.id == sel)
 }
 
 unsafe fn search_focused(h: HWND) -> bool {
@@ -413,7 +449,7 @@ unsafe fn fav_manager_move(down: bool, step: usize) {
         Some(i) if down => (i + step).min(rows.len() - 1),
         Some(i) => i.saturating_sub(step),
     };
-    ST.with(|s| s.borrow_mut().sel = rows[next].id.clone());
+    ST.with(|s| s.borrow_mut().sel = Some(sel_from(&rows[next])));
     reveal(h, next);
     layout(h);
     let _ = InvalidateRect(Some(h), None, false);
@@ -430,7 +466,7 @@ unsafe fn fav_manager_edge(last: bool) {
         return;
     }
     let next = if last { rows.len() - 1 } else { 0 };
-    ST.with(|s| s.borrow_mut().sel = rows[next].id.clone());
+    ST.with(|s| s.borrow_mut().sel = Some(sel_from(&rows[next])));
     reveal(h, next);
     layout(h);
     let _ = InvalidateRect(Some(h), None, false);
@@ -463,11 +499,27 @@ unsafe fn fav_manager_activate() {
     let rows = shown();
     let row = sel_index(&rows).and_then(|i| rows.get(i)).cloned().or_else(|| rows.first().cloned());
     let Some(row) = row else { return };
+    activate_row(&row);
+}
+
+/// A group toggles. A leaf navigates the active pane, or launches a file, and the window closes.
+unsafe fn activate_row(row: &FavRow) {
     if row.group {
-        toggle_id(&row.id);
+        finish_drag();
+        let _ = ReleaseCapture();
+        if row.in_tree() {
+            toggle_id(&row.id);
+        } else {
+            toggle_home(row.kind);
+        }
         return;
     }
     let (path, file) = (row.path.clone(), row.file);
+    let moved = finish_drag();
+    let _ = ReleaseCapture();
+    if moved {
+        commit();
+    }
     close_fav_manager();
     open_fav_target(&path, file);
 }
@@ -475,7 +527,7 @@ unsafe fn fav_manager_activate() {
 unsafe fn fav_manager_delete_sel() {
     bind_owner();
     let rows = shown();
-    let Some(row) = sel_index(&rows).and_then(|i| rows.get(i)).cloned() else { return };
+    let Some(row) = sel_index(&rows).and_then(|i| rows.get(i)).filter(|r| fav_row_editable(r)).cloned() else { return };
     delete_id(&row.id);
 }
 
@@ -483,13 +535,16 @@ unsafe fn fav_manager_rename_sel() {
     let h = hwnd();
     bind_owner();
     let rows = shown();
-    let Some(row) = sel_index(&rows).and_then(|i| rows.get(i)).cloned() else { return };
+    let Some(row) = sel_index(&rows).and_then(|i| rows.get(i)).filter(|r| fav_row_editable(r)).cloned() else { return };
     rename_id(h, &row);
 }
 
 fn group_parent(rows: &[FavRow]) -> Vec<usize> {
     let Some(i) = sel_index(rows) else { return Vec::new() };
     let row = &rows[i];
+    if !row.in_tree() {
+        return Vec::new();
+    }
     if row.group {
         row.id.clone()
     } else if row.id.len() <= 1 {
@@ -508,6 +563,25 @@ unsafe fn toggle_id(id: &[usize]) {
     commit();
 }
 
+/// Collapse state is the same flag the left panel uses, so both lists open and close together.
+unsafe fn toggle_home(kind: RowKind) {
+    let open = app(|a| match kind {
+        RowKind::Pins => {
+            a.s.pins_open = !a.s.pins_open;
+            a.s.pins_open
+        }
+        RowKind::Files => {
+            a.s.files_open = !a.s.files_open;
+            a.s.files_open
+        }
+        RowKind::Tree => false,
+    });
+    if open {
+        crate::request_pins(false);
+    }
+    commit();
+}
+
 unsafe fn delete_id(id: &[usize]) {
     app(|a| {
         a.s.ensure_fav_tree();
@@ -517,8 +591,8 @@ unsafe fn delete_id(id: &[usize]) {
     });
     ST.with(|s| {
         let mut st = s.borrow_mut();
-        if st.sel.starts_with(id) {
-            st.sel.clear();
+        if st.sel.as_ref().is_some_and(|s| s.kind == RowKind::Tree && s.id.starts_with(id)) {
+            st.sel = None;
         }
         if st.drag.as_ref().is_some_and(|d| d.starts_with(id)) {
             st.drag = None;
@@ -564,11 +638,11 @@ unsafe fn on_add_group(owner: HWND) {
     ST.with(|s| {
         let mut st = s.borrow_mut();
         st.query.clear();
-        st.sel = id.clone();
+        st.sel = Some(Sel { kind: RowKind::Tree, id: id.clone() });
         st.scroll = 0;
     });
     let _ = SetWindowTextW(ctl(owner, ID_SEARCH), w!(""));
-    if let Some(i) = shown().iter().position(|r| r.id == id) {
+    if let Some(i) = shown().iter().position(|r| r.in_tree() && r.id == id) {
         reveal(owner, i);
     }
     layout(owner);
@@ -604,11 +678,11 @@ unsafe fn add_folder(owner: HWND) {
     ST.with(|s| {
         let mut st = s.borrow_mut();
         st.query.clear();
-        st.sel = id.clone();
+        st.sel = Some(Sel { kind: RowKind::Tree, id: id.clone() });
         st.scroll = 0;
     });
     let _ = SetWindowTextW(ctl(owner, ID_SEARCH), w!(""));
-    if let Some(i) = shown().iter().position(|r| r.id == id) {
+    if let Some(i) = shown().iter().position(|r| r.in_tree() && r.id == id) {
         reveal(owner, i);
     }
     layout(owner);
@@ -654,8 +728,11 @@ unsafe fn layout(h: HWND) {
 unsafe fn place(h: HWND, rc: RECT) {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let lay = pop_lay(rc.right, rc.bottom, dpi);
-    let n = shown().len();
-    let content = layout_fav_board(&(0..n).collect::<Vec<_>>(), lay.list.left, lay.list.right, 0, dpi).bottom;
+    let q = ST.with(|s| s.borrow().query.clone());
+    let rows = shown();
+    let n = rows.len();
+    let hint = if show_fav_hint(&rows, &q) { fav_row_h(dpi) } else { 0 };
+    let content = layout_fav_board(&(0..n).collect::<Vec<_>>(), lay.list.left, lay.list.right, 0, dpi).bottom + hint;
     let view = (lay.list.bottom - lay.list.top).max(1);
     let max_scroll = (content - view).max(0);
     let scroll = ST.with(|s| {
@@ -681,32 +758,36 @@ unsafe fn place(h: HWND, rc: RECT) {
     move_to(ctl(h, ID_FOLDER), lay.folder, true);
     let rename = tr("Rename", "이름 변경", "名前の変更");
     let delete = tr("Delete", "삭제", "削除");
-    for (i, slot) in board.slots.iter().enumerate() {
-        if i as i32 >= BTN_MAX {
+    let edit = fav_editable_indices(&rows);
+    let mut placed = 0i32;
+    for (n, &row_i) in edit.iter().enumerate() {
+        if n as i32 >= BTN_MAX {
             break;
         }
+        let Some(slot) = board.slots.get(row_i) else { continue };
         let show_r = intersects(slot.rename, lay.list);
         let show_d = intersects(slot.delete, lay.list);
-        let mut rb = ctl(h, ID_REN + i as i32);
+        let mut rb = ctl(h, ID_REN + n as i32);
         if rb.0.is_null() && show_r {
-            rb = make_btn(h, ID_REN + i as i32, rename, font);
+            rb = make_btn(h, ID_REN + n as i32, rename, font);
             theme_ctl(rb);
         }
         if !rb.0.is_null() {
             let _ = SetWindowTextW(rb, &HSTRING::from(rename));
             move_to(rb, slot.rename, show_r);
         }
-        let mut db = ctl(h, ID_DEL + i as i32);
+        let mut db = ctl(h, ID_DEL + n as i32);
         if db.0.is_null() && show_d {
-            db = make_btn(h, ID_DEL + i as i32, delete, font);
+            db = make_btn(h, ID_DEL + n as i32, delete, font);
             theme_ctl(db);
         }
         if !db.0.is_null() {
             let _ = SetWindowTextW(db, &HSTRING::from(delete));
             move_to(db, slot.delete, show_d);
         }
+        placed = n as i32 + 1;
     }
-    for i in board.slots.len() as i32..BTN_MAX {
+    for i in placed..BTN_MAX {
         let r = ctl(h, ID_REN + i);
         let d = ctl(h, ID_DEL + i);
         if r.0.is_null() && d.0.is_null() {
@@ -722,15 +803,14 @@ unsafe fn place(h: HWND, rc: RECT) {
 }
 
 unsafe fn paint(h: HWND) {
+    crate::note_pins_hwnd(h);
+    crate::pins_on_paint();
     let (dpi, scroll, query, sel, font, small, icon) = ST.with(|s| {
         let st = s.borrow();
         (st.dpi.max(96), st.scroll, st.query.clone(), st.sel.clone(), st.font, st.small, st.icon)
     });
     bind_owner();
-    let rows = app(|a| {
-        a.s.ensure_fav_tree();
-        rows_for_query(&a.s.tree, &query)
-    });
+    let rows = shown();
     buffered(h, |dc, rc| {
         let lay = pop_lay(rc.right, rc.bottom, dpi);
         let accent = settings::chrome_color();
@@ -743,20 +823,14 @@ unsafe fn paint(h: HWND) {
         let _ = IntersectClipRect(dc, lay.list.left, lay.list.top, lay.list.right, lay.list.bottom);
         paint_fav_head(dc, board.head, dpi, small);
         if let Some(r) = board.empty {
-            let msg = if query.trim().is_empty() {
-                tr(
-                    "No favourites yet · add one with ☆+ in a pane header",
-                    "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가",
-                    "お気に入りはまだありません · ペインヘッダーの ☆+ で追加",
-                )
-            } else {
-                tr("No matches", "결과 없음", "一致なし")
-            };
-            text(dc, r, msg, small, pal().sub, DT_CENTER);
+            text(dc, r, empty_msg(&query), small, pal().sub, DT_CENTER);
+        } else if show_fav_hint(&rows, &query) {
+            let r = RECT { left: board.table.left, top: board.bottom, right: board.table.right, bottom: board.bottom + fav_row_h(dpi) };
+            text(dc, r, empty_msg(""), small, pal().sub, DT_CENTER);
         }
         for slot in &board.slots {
             let row = rows.get(slot.index);
-            let on = row.is_some_and(|r| r.id == sel);
+            let on = row.is_some_and(|r| sel.as_ref().is_some_and(|s| r.kind == s.kind && r.id == s.id));
             if on {
                 fill(dc, slot.rect, blend(pal().card, accent, 0.16));
                 let bar = RECT {
@@ -815,8 +889,16 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     text(d.hDC, d.rcItem, &crate::text_of(d.hwndItem), font, ink, DT_CENTER);
 }
 
-fn row_at(x: i32, y: i32) -> Option<FavRow> {
-    let h = hwnd();
+struct HitRow {
+    row: FavRow,
+    rect: RECT,
+}
+
+fn inside(r: RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+fn hit_row(h: HWND, x: i32, y: i32) -> Option<HitRow> {
     let (dpi, scroll) = ST.with(|s| (s.borrow().dpi.max(96), s.borrow().scroll));
     let mut rc = RECT::default();
     unsafe { let _ = GetClientRect(h, &mut rc); }
@@ -826,10 +908,12 @@ fn row_at(x: i32, y: i32) -> Option<FavRow> {
     }
     let rows = shown();
     let board = board_at(rows.len(), &lay, scroll, dpi);
-    match hit_fav_board(&board, x, y) {
-        Some(FavHit::Row(i) | FavHit::Rename(i) | FavHit::Delete(i)) => rows.get(i).cloned(),
-        None => None,
-    }
+    let index = match hit_fav_board(&board, x, y)? {
+        FavHit::Row(i) | FavHit::Rename(i) | FavHit::Delete(i) => i,
+    };
+    let rect = board.slots.iter().find(|s| s.index == index)?.rect;
+    let row = rows.get(index).cloned()?;
+    Some(HitRow { row, rect })
 }
 
 unsafe fn on_command(h: HWND, id: i32, code: u32) {
@@ -861,15 +945,20 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         return;
     }
     let rows = shown();
+    let edit = fav_editable_indices(&rows);
     if (ID_REN..ID_REN + BTN_MAX).contains(&id) {
-        if let Some(row) = rows.get((id - ID_REN) as usize).cloned() {
-            rename_id(h, &row);
+        if let Some(&row_i) = edit.get((id - ID_REN) as usize) {
+            if let Some(row) = rows.get(row_i).filter(|r| fav_row_editable(r)).cloned() {
+                rename_id(h, &row);
+            }
         }
         return;
     }
     if (ID_DEL..ID_DEL + BTN_MAX).contains(&id) {
-        if let Some(row) = rows.get((id - ID_DEL) as usize).cloned() {
-            delete_id(&row.id);
+        if let Some(&row_i) = edit.get((id - ID_DEL) as usize) {
+            if let Some(row) = rows.get(row_i).filter(|r| fav_row_editable(r)).cloned() {
+                delete_id(&row.id);
+            }
         }
     }
 }
@@ -880,6 +969,7 @@ unsafe fn finish_drag() -> bool {
         let had = st.drag.take().is_some();
         let moved = st.drag_moved;
         st.drag_moved = false;
+        st.drag_ready = false;
         had && moved
     })
 }
@@ -913,6 +1003,7 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 theme_ctl(ctl(h, ID_GROUP));
                 theme_ctl(ctl(h, ID_FOLDER));
                 note_side(h);
+                crate::note_pins_hwnd(h);
                 retitle(h);
                 layout(h);
                 return LRESULT(0);
@@ -954,45 +1045,70 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
                 let _ = SetFocus(Some(h));
-                if let Some(row) = row_at(x, y) {
+                if let Some(hit) = hit_row(h, x, y) {
+                    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+                    let chevron = hit.row.group && inside(fav_chevron_rect(hit.rect, hit.row.depth, dpi), x, y);
+                    let editable = hit.row.in_tree();
                     ST.with(|s| {
                         let mut st = s.borrow_mut();
-                        st.sel = row.id.clone();
-                        st.drag = Some(row.id);
+                        st.sel = Some(sel_from(&hit.row));
+                        st.drag = None;
+                        st.drag_ready = false;
                         st.drag_moved = false;
+                        if !chevron && editable {
+                            st.drag = Some(hit.row.id.clone());
+                            st.drag_at = (x, y);
+                        }
                     });
-                    let _ = SetCapture(h);
-                    let _ = InvalidateRect(Some(h), None, false);
+                    if chevron {
+                        if editable {
+                            toggle_id(&hit.row.id);
+                        } else {
+                            toggle_home(hit.row.kind);
+                        }
+                    } else if editable {
+                        let _ = SetCapture(h);
+                        let _ = InvalidateRect(Some(h), None, false);
+                    } else {
+                        let _ = InvalidateRect(Some(h), None, false);
+                    }
                 } else {
-                    ST.with(|s| s.borrow_mut().sel.clear());
+                    ST.with(|s| s.borrow_mut().sel = None);
                     let _ = InvalidateRect(Some(h), None, false);
                 }
             }
             WM_LBUTTONDBLCLK => {
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
-                let Some(row) = row_at(x, y) else { return LRESULT(0) };
-                if row.group {
-                    toggle_id(&row.id);
-                } else {
-                    let (path, file) = (row.path.clone(), row.file);
-                    close_fav_manager();
-                    open_fav_target(&path, file);
-                }
+                let Some(hit) = hit_row(h, x, y) else { return LRESULT(0) };
+                activate_row(&hit.row);
             }
             WM_MOUSEMOVE => {
+                let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
-                let from = ST.with(|s| s.borrow().drag.clone());
+                let (from, ready, at) = ST.with(|s| {
+                    let st = s.borrow();
+                    (st.drag.clone(), st.drag_ready, st.drag_at)
+                });
                 let Some(from) = from else { return LRESULT(0) };
+                if !ready {
+                    if (x - at.0).abs() + (y - at.1).abs() <= DRAG_SLOP {
+                        return LRESULT(0);
+                    }
+                    ST.with(|s| s.borrow_mut().drag_ready = true);
+                }
                 let (dpi, scroll) = ST.with(|s| (s.borrow().dpi.max(96), s.borrow().scroll));
                 let mut rc = RECT::default();
                 let _ = GetClientRect(h, &mut rc);
                 let lay = pop_lay(rc.right, rc.bottom, dpi);
                 let rows = shown();
                 let board = board_at(rows.len(), &lay, scroll, dpi);
-                let hit = board.slots.iter().find(|s| y >= s.rect.top && y < s.rect.bottom).and_then(|s| rows.get(s.index).map(|r| (r.clone(), s.rect)));
+                let in_list = x >= lay.list.left && x < lay.list.right && y >= lay.list.top && y < lay.list.bottom;
+                let hit = in_list.then(|| {
+                    board.slots.iter().find(|s| y >= s.rect.top && y < s.rect.bottom).and_then(|s| rows.get(s.index).map(|r| (r.clone(), s.rect)))
+                }).flatten();
                 if let Some((target, rect)) = hit {
-                    if target.id != from {
+                    if fav_popup_can_drop(true, &from, &target) {
                         let zone = drop_zone(target.group, y - rect.top, (rect.bottom - rect.top).max(1));
                         let moved = app(|a| {
                             a.s.ensure_fav_tree();
@@ -1000,6 +1116,7 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                             if new_id == from {
                                 return None;
                             }
+                            reveal_drop(&mut a.s.tree, &from, &target.id, zone);
                             a.s.sync_favs();
                             Some(new_id)
                         });
@@ -1007,7 +1124,7 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                             ST.with(|s| {
                                 let mut st = s.borrow_mut();
                                 st.drag = Some(new_id.clone());
-                                st.sel = new_id;
+                                st.sel = Some(Sel { kind: RowKind::Tree, id: new_id });
                                 st.drag_moved = true;
                             });
                             layout(h);
@@ -1064,11 +1181,24 @@ extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
                 clear_icon_refresh();
                 let _ = InvalidateRect(Some(h), None, false);
             }
+            WM_TIMER if wp.0 == crate::TIMER_PINS => {
+                let _ = KillTimer(Some(h), crate::TIMER_PINS);
+                crate::request_pins(true);
+            }
+            crate::WM_PINS => {
+                layout(h);
+                let _ = InvalidateRect(Some(h), None, false);
+                if !crate::pins_loaded() {
+                    let _ = SetTimer(Some(h), crate::TIMER_PINS, 700, None);
+                }
+            }
             WM_CLOSE => {
                 let _ = DestroyWindow(h);
             }
             WM_DESTROY => {
                 drop_side(h);
+                crate::drop_pins_hwnd(h);
+                let _ = KillTimer(Some(h), crate::TIMER_PINS);
                 app(|a| {
                     if a.fav_mgr == h {
                         a.fav_mgr = HWND::default();
