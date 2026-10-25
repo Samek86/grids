@@ -1,6 +1,8 @@
-<h1 align="center">Grids</h1>
+<h1 align="center">Panegrid</h1>
 
 <p align="center">A fast, lightweight multi-pane file manager for Windows.</p>
+
+> **Panegrid is a fork of [efww/grids](https://github.com/efww/grids)** by efww. It uses its own exe name (`panegrid.exe`), window class, settings folder and hotkey (Win+Shift+E), so it can run next to the original Grids without touching its settings.
 
 <p align="center">
   <a href="https://github.com/Samek86/grids"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
@@ -16,7 +18,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.png">
-    <img alt="Grids" src="docs/images/hero_light.png">
+    <img alt="Panegrid" src="docs/images/hero_light.png">
   </picture>
 </p>
 
@@ -66,13 +68,13 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 ## Install
 
-Download the latest zip from [Releases](https://github.com/Samek86/grids/releases/latest), unzip `grids.exe` into any folder, and run it. One portable exe, about 1.2 MB. Nothing to install.
+Download the latest release zip, `panegrid-<version>-x64.zip`, from [Releases](https://github.com/Samek86/grids/releases/latest). It contains `panegrid.exe`. Unzip it into any folder and run it. One portable exe, about 1.2 MB. Nothing to install.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
 **Requirements:** Windows 10 (1903 or later) or Windows 11, x64.
 
-Settings live in `%APPDATA%\grids\grids.json`. Put a file named `portable.txt` next to `grids.exe` to keep `grids.json` beside the exe instead. Named sessions stay `.grids` files in the `sessions` folder next to the exe.
+Settings live in `%APPDATA%\Panegrid\panegrid.json`. Put a file named `portable.txt` next to `panegrid.exe` to keep `panegrid.json` beside the exe instead. Named sessions stay `.grids` files in the `panegrid-sessions` folder next to the exe (existing `sessions` `.grids` files are copied once).
 
 ## Build from source
 
@@ -82,7 +84,7 @@ Needs the Rust GNU toolchain (`x86_64-pc-windows-gnu`) and MSYS2's MinGW tools (
 build.cmd
 ```
 
-This builds `target\release\grids.exe` and copies it to `build\grids.exe`. `icon.py` redraws the app icon (`app.ico`).
+This builds `target\release\panegrid.exe` and copies it to `build\panegrid.exe`. `icon.py` redraws the app icon (`app.ico`).
 
 ## Keyboard shortcuts
 
@@ -127,13 +129,13 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+, | Settings |
 |  | F1 / Ctrl+/ | Shortcut help / list |
 |  | Ctrl+N | New window |
-|  | Win+Alt+E | Bring Grids to front |
+|  | Win+Shift+E | Bring Panegrid to front |
 
 ## Settings
 
 The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
 
-Grids stores settings in `%APPDATA%\grids\grids.json`. A file named `portable.txt` next to `grids.exe` keeps `grids.json` beside the exe instead. Named sessions are `.grids` files in the `sessions` folder next to the exe. An existing `grids.ini` is read once and renamed to `grids.ini.bak`. An older `lang=ko` in `grids.ini` still loads as Korean.
+Panegrid stores settings in `%APPDATA%\Panegrid\panegrid.json`. A file named `portable.txt` next to `panegrid.exe` keeps `panegrid.json` beside the exe instead. Named sessions are `.grids` files in the `panegrid-sessions` folder next to the exe; `.grids` files already in a `sessions` folder are copied once. On first run, if `panegrid.json` is missing, it is copied from a previous Panegrid or Samek86 Grids file (`%APPDATA%\grids\grids.json`, or `grids.json` next to the exe). Otherwise `grids.ini` or `qdir.ini` is imported read-only. Source files are never renamed, modified, or deleted (no `.bak`). An older `lang=ko` in `grids.ini` still loads as Korean.
 
 The file is replaced atomically. A failed write is tried again in 5 seconds. A file that cannot be read is left alone (Retry or Cancel, never overwritten with defaults). Unknown keys are kept. Minimizing keeps a maximized window maximized.
 
@@ -148,24 +150,24 @@ View → Show file extensions is Windows' own setting, the same one Explorer use
 | `ev_asked` | Remembers the answer to the one-time install prompt. The first subfolder search without Everything installed asks once. |
 | `drive_buttons` | On when the key is missing. Settings → Appearance → Show drive buttons hides them and gives that space to the tabs. A narrow window hides the last letters first. |
 | `layout_new` | Default layout for a first start and a new window: two panes side by side, top and bottom, 2×2, or one pane. A path handed over by another launch opens as a one-pane tab. A new window tab (+ or Ctrl+T) copies the current tab's layout instead. |
-| `hotkey` | On when the line is missing. Win+Alt+E brings Grids forward; press again to minimize. If a Grids dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. |
+| `hotkey` | On when the line is missing. Win+Shift+E brings Panegrid forward; press again to minimize. If a Panegrid dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. |
 | `space_preview` | On when the key is missing. Settings → Panes & view → Preview with Space turns this off. A space within a second of typing a name, or while Korean or Japanese IME text is being composed, stays part of that name. Ctrl+Space and Shift+Space are left alone. |
 | `folders` | Folders open as pane tabs, stored on each pane, and in named sessions. An older `pane_tabs` value is ignored. |
 | `favorites_tree` | The favourites tree. An older flat list is moved into the root. |
-| `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Alt+E while Grids is already in front open a tab here instead of a window. |
+| `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Shift+E while Panegrid is already in front open a tab here instead of a window. |
 | `lang` | `"auto"`, `"en"`, `"ko"`, or `"ja"`. A missing key, like `"auto"`, follows the Windows display language (Korean, Japanese, or English); otherwise English. |
 | `font_face` | Font for the whole window. No font size is stored. An older `font` value is ignored. |
 
 ## Roadmap
 
-- [ ] Code-signed builds, so SmartScreen does not warn the first time you run `grids.exe`
+- [ ] Code-signed builds, so SmartScreen does not warn the first time you run `panegrid.exe`
 - [ ] Interface languages beyond English, 한국어, and 日本語
 
 ## Credits
 
-Grids is a fork of [efww/grids](https://github.com/efww/grids) by efww.
+Panegrid is a fork of [efww/grids](https://github.com/efww/grids) by efww.
 
-Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidtools Everything](https://www.voidtools.com/). Grids is an independent project, not affiliated with Q-Dir or its author.
+Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidtools Everything](https://www.voidtools.com/). Panegrid is an independent project, not affiliated with Q-Dir or its author.
 
 ## License
 

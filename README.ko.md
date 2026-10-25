@@ -1,6 +1,8 @@
-<h1 align="center">Grids</h1>
+<h1 align="center">Panegrid</h1>
 
 <p align="center">Windows용 빠르고 가벼운 다중 패널 파일 관리자.</p>
+
+> **Panegrid는 efww의 [efww/grids](https://github.com/efww/grids) 포크입니다.** 실행 파일 이름(`panegrid.exe`), 창 클래스, 설정 폴더, 단축키(Win+Shift+E)를 따로 쓰므로, 원래 Grids의 설정을 건드리지 않고 나란히 실행할 수 있습니다.
 
 <p align="center">
   <a href="https://github.com/Samek86/grids"><img alt="플랫폼: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
@@ -16,7 +18,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.ko.png">
-    <img alt="Grids" src="docs/images/hero_light.ko.png">
+    <img alt="Panegrid" src="docs/images/hero_light.ko.png">
   </picture>
 </p>
 
@@ -66,13 +68,13 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 ## 설치
 
-[Releases](https://github.com/Samek86/grids/releases/latest)에서 최신 zip을 받아 `grids.exe`를 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
+[Releases](https://github.com/Samek86/grids/releases/latest)에서 최신 zip `panegrid-<version>-x64.zip`을 받습니다. 안에 `panegrid.exe`가 들어 있습니다. 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
 
 코드 서명이 없는 exe라 처음 실행할 때 Windows SmartScreen 경고가 뜰 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
 **요구 사항:** Windows 10(1903 이상) 또는 Windows 11, x64.
 
-설정은 `%APPDATA%\grids\grids.json`에 있습니다. `grids.exe` 옆에 `portable.txt`라는 파일을 두면 `grids.json`을 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `sessions` 폴더의 `.grids` 파일로 남습니다.
+설정은 `%APPDATA%\Panegrid\panegrid.json`에 있습니다. `panegrid.exe` 옆에 `portable.txt`라는 파일을 두면 `panegrid.json`을 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `panegrid-sessions` 폴더의 `.grids` 파일로 남고, 있던 `sessions` 폴더의 `.grids` 파일은 한 번 복사됩니다.
 
 ## 소스에서 빌드
 
@@ -82,7 +84,7 @@ Rust GNU 툴체인(`x86_64-pc-windows-gnu`)과 MSYS2의 MinGW 도구(`C:\msys64\
 build.cmd
 ```
 
-`target\release\grids.exe`를 빌드해 `build\grids.exe`로 복사합니다. 앱 아이콘(`app.ico`)은 `icon.py`로 다시 그립니다.
+`target\release\panegrid.exe`를 빌드해 `build\panegrid.exe`로 복사합니다. 앱 아이콘(`app.ico`)은 `icon.py`로 다시 그립니다.
 
 ## 단축키
 
@@ -127,13 +129,13 @@ build.cmd
 |  | Ctrl+, | 설정 |
 |  | F1 / Ctrl+/ | 단축키 도움말 / 목록 |
 |  | Ctrl+N | 새 창 |
-|  | Win+Alt+E | Grids 앞으로 가져오기 |
+|  | Win+Shift+E | Panegrid 앞으로 가져오기 |
 
 ## 설정
 
 탭 줄의 톱니가 보기 메뉴를 엽니다. 설정은 그 메뉴에 있습니다(`Ctrl+,`).
 
-설정은 `%APPDATA%\grids\grids.json`에 저장됩니다. `grids.exe` 옆에 `portable.txt`를 두면 `grids.json`도 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `sessions` 폴더의 `.grids` 파일입니다. 기존 `grids.ini`는 한 번 읽은 뒤 `grids.ini.bak`으로 바꿉니다. 예전 `grids.ini`의 `lang=ko`도 한국어로 읽힙니다.
+설정은 `%APPDATA%\Panegrid\panegrid.json`에 저장됩니다. `panegrid.exe` 옆에 `portable.txt`를 두면 `panegrid.json`도 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `panegrid-sessions` 폴더의 `.grids` 파일이고, 이미 `sessions` 폴더에 있던 `.grids` 파일은 한 번 복사됩니다. 처음 실행할 때 `panegrid.json`이 없으면 이전 Panegrid 또는 Samek86 Grids의 파일(`%APPDATA%\grids\grids.json`, 또는 exe 옆 `grids.json`)을 복사합니다. 그것도 없으면 `grids.ini` 또는 `qdir.ini`를 읽기 전용으로 가져옵니다. 원본 파일은 이름을 바꾸거나 수정하거나 지우지 않습니다(`.bak` 없음). 예전 `grids.ini`의 `lang=ko`도 한국어로 읽힙니다.
 
 파일은 원자적으로 바뀝니다. 저장이 실패하면 5초 뒤에 다시 시도합니다. 읽지 못하는 파일은 기본값으로 덮지 않고, 다시 시도하거나 종료합니다. 모르는 키는 그대로 둡니다. 최소화해도 최대화였으면 최대화로 기억합니다.
 
@@ -148,24 +150,24 @@ build.cmd
 | `ev_asked` | Everything 설치를 한 번만 물은 답을 기억합니다. Everything이 없을 때 처음 하위 폴더 검색을 하면 설치할지 묻습니다. |
 | `drive_buttons` | 키가 없으면 켜짐. 설정 → 모양 → 드라이브 버튼 표시를 끄면 버튼이 숨고 그 자리를 탭이 씁니다. 창이 좁으면 뒤쪽 글자부터 숨깁니다. |
 | `layout_new` | 첫 실행과 새 창의 기본 레이아웃. 좌우 2개, 위아래 2개, 2×2, 1개 중 하나입니다. 다른 실행에서 넘겨받은 경로는 1패널 탭으로 열립니다. 창 탭을 새로 만들면(+ 또는 Ctrl+T) 기본 레이아웃 대신 지금 탭의 배치를 가져옵니다. |
-| `hotkey` | 줄이 없으면 켜짐. Win+Alt+E로 Grids를 앞으로 가져오고, 다시 누르면 최소화합니다. Grids 대화 상자가 열려 있으면 그 창이 앞으로 옵니다. 보기 메뉴의 체크는 키가 실제로 등록됐을 때만 켜지므로, 시작에 실패해도 한 번 누르면 다시 시도합니다. 단축키는 설정에서 바꿀 수 있습니다. |
+| `hotkey` | 줄이 없으면 켜짐. Win+Shift+E로 Panegrid를 앞으로 가져오고, 다시 누르면 최소화합니다. Panegrid 대화 상자가 열려 있으면 그 창이 앞으로 옵니다. 보기 메뉴의 체크는 키가 실제로 등록됐을 때만 켜지므로, 시작에 실패해도 한 번 누르면 다시 시도합니다. 단축키는 설정에서 바꿀 수 있습니다. |
 | `space_preview` | 키가 없으면 켜짐. 설정 → 패널·보기 → 스페이스로 미리보기를 끄면 스페이스로는 열리지 않습니다. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어갑니다. Ctrl+Space와 Shift+Space는 그대로 둡니다. |
 | `folders` | 패널 안의 탭으로 연 폴더. 패널마다 저장되고, 이름 붙인 세션에도 들어갑니다. 예전 `pane_tabs` 값은 무시됩니다. |
 | `favorites_tree` | 즐겨찾기 트리. 예전 목록은 맨 위로 옮겨집니다. |
-| `one_window` | 창 하나만 쓰기. 줄이 없으면 꺼져 있습니다. 켜면 다시 실행할 때 최소화된 창을 되돌리고, 경로 인자는 그 창의 탭으로 엽니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 새 창 대신 이 창의 탭을 엽니다. |
+| `one_window` | 창 하나만 쓰기. 줄이 없으면 꺼져 있습니다. 켜면 다시 실행할 때 최소화된 창을 되돌리고, 경로 인자는 그 창의 탭으로 엽니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 새 창 대신 이 창의 탭을 엽니다. |
 | `lang` | `"auto"`, `"en"`, `"ko"`, `"ja"`. 키가 없거나 `"auto"`이면 Windows 표시 언어(한국어, 일본어, 영어)를 따르고, 그 외에는 영어입니다. |
 | `font_face` | 창 전체의 글꼴. 글꼴 크기는 저장하지 않습니다. 예전 `font` 값은 무시됩니다. |
 
 ## 로드맵
 
-- [ ] `grids.exe`에 코드 서명을 넣어, 처음 실행할 때 SmartScreen 경고가 나오지 않게 합니다
+- [ ] `panegrid.exe`에 코드 서명을 넣어, 처음 실행할 때 SmartScreen 경고가 나오지 않게 합니다
 - [ ] English, 한국어, 日本語 이외의 표시 언어
 
 ## 감사
 
-Grids는 efww의 [grids](https://github.com/efww/grids)를 포크한 프로그램입니다.
+Panegrid는 efww의 [grids](https://github.com/efww/grids)를 포크한 프로그램입니다.
 
-[Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)와 [voidtools Everything](https://www.voidtools.com/)에서 영감을 받았습니다. Grids는 Q-Dir 및 그 제작자와 관계없는 독립 프로젝트입니다.
+[Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)와 [voidtools Everything](https://www.voidtools.com/)에서 영감을 받았습니다. Panegrid는 Q-Dir 및 그 제작자와 관계없는 독립 프로젝트입니다.
 
 ## 라이선스
 
