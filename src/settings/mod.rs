@@ -104,7 +104,7 @@ const fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static st
     [en, ko, ja]
 }
 
-const TITLE: [&str; 3] = s("grids settings", "grids 설정", "grids 設定");
+const TITLE: [&str; 3] = s("Panegrid settings", "Panegrid 설정", "Panegrid 設定");
 const FOOT: [&str; 3] = s("Changes apply right away", "변경은 바로 적용돼요", "変更はすぐに適用されます");
 const CLOSE_L: [&str; 3] = s("Close", "닫기", "閉じる");
 const FIND: [&str; 3] = s("Find a setting", "설정 검색", "設定を検索");
@@ -160,7 +160,7 @@ const GEN: &[Spec] = &[
     Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), live: true, ctl: Ctl::Start },
     Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
-    Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Alt+E when Grids is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Alt+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Alt+E は、このウィンドウのタブを開きます。"), live: true, ctl: Ctl::Toggle(TG_ONE) },
+    Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Shift+E when Panegrid is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Shift+E は、このウィンドウのタブを開きます。"), live: true, ctl: Ctl::Toggle(TG_ONE) },
     Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("In a file list, a double-click on empty space opens the parent folder.", "파일 목록의 빈 곳을 더블클릭하면 상위 폴더를 열어요.", "ファイル一覧の空白をダブルクリックすると、上のフォルダーを開きます。"), live: true, ctl: Ctl::Toggle(TG_DBLUP) },
     Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), live: true, ctl: Ctl::EvStatus },
     Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), live: true, ctl: Ctl::Toggle(TG_EV) },
@@ -194,7 +194,7 @@ const FILE: &[Spec] = &[
     Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[
-    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The sessions folder next to the exe.", "exe 옆 sessions 폴더예요.", "exe の隣にある sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
+    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The panegrid-sessions folder next to the exe.", "exe 옆 panegrid-sessions 폴더예요.", "exe の隣にある panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
     Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
@@ -210,8 +210,12 @@ const KEY_NOTE: [&str; 3] = s(
 );
 const LIST_H: [&str; 3] = s("List", "목록", "一覧");
 const ABOUT: &[Spec] = &[Spec {
-    title: s("grids", "grids", "grids"),
-    desc: s("Upstream efww/grids · fork Samek86/grids", "원본 efww/grids · 포크 Samek86/grids", "上流 efww/grids · フォーク Samek86/grids"),
+    title: s("Panegrid", "Panegrid", "Panegrid"),
+    desc: s(
+        "Panegrid is a fork of efww/grids by efww · fork Samek86/grids",
+        "Panegrid는 efww의 efww/grids 포크입니다 · 포크 Samek86/grids",
+        "Panegrid は efww による efww/grids のフォークです · フォーク Samek86/grids",
+    ),
     live: true,
     ctl: Ctl::About,
 }];

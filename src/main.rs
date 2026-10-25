@@ -1,4 +1,4 @@
-// Grids: multi-pane file manager. Shell tree on the left, up to 4 columns of up to 4 Explorer views on the right.
+// Panegrid: multi-pane file manager. Shell tree on the left, up to 4 columns of up to 4 Explorer views on the right.
 // Each pane hosts the real Explorer control (IExplorerBrowser), so context menus, drag & drop, rename,
 // thumbnails, columns etc. come from Windows itself.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
@@ -29,18 +29,19 @@ fn main() -> Result<()> {
         let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
         // one_window still hands off: the running window comes forward and opens paths as tabs.
-        // grids.json is the store. A leftover grids.ini (or qdir.ini) is migrated once.
+        // panegrid.json is the store. If it is missing, a previous grids.json is copied;
+        // otherwise grids.ini or qdir.ini is imported read-only. Those sources stay untouched.
         // A file that is there but unreadable must not be overwritten with defaults.
         let mut s = loop {
             match store::load() {
                 Ok(s) => break s,
                 Err(e) => {
                     let text = HSTRING::from(format!(
-                        "Grids could not read its settings file (grids.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
-                         Grids 설정 파일(grids.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
-                         Grids の設定ファイル (grids.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
+                        "Panegrid could not read its settings file (panegrid.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
+                         Panegrid 설정 파일(panegrid.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
+                         Panegrid の設定ファイル (panegrid.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
                     ));
-                    if MessageBoxW(None, &text, w!("Grids"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
+                    if MessageBoxW(None, &text, w!("Panegrid"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
                         return Ok(());
                     }
                 }
@@ -88,7 +89,7 @@ fn main() -> Result<()> {
             hInstance: hinst,
             hCursor: arrow,
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(), // app.ico, group id 1
-            lpszClassName: w!("GridsMain"),
+            lpszClassName: w!("PanegridMain"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -96,13 +97,13 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(pane_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsPane"),
+            lpszClassName: w!("PanegridPane"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(bar_proc),
             hInstance: hinst,
-            lpszClassName: w!("GridsBar"),
+            lpszClassName: w!("PanegridBar"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -110,7 +111,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(fav_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsFav"),
+            lpszClassName: w!("PanegridFav"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -118,7 +119,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(load_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsLoad"),
+            lpszClassName: w!("PanegridLoad"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -126,7 +127,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(grid_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsPicker"),
+            lpszClassName: w!("PanegridPicker"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -134,21 +135,21 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(side_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsSide"),
+            lpszClassName: w!("PanegridSide"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(match_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsMatch"),
+            lpszClassName: w!("PanegridMatch"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(keys_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsKeys"),
+            lpszClassName: w!("PanegridKeys"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -156,14 +157,14 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(peek_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsPeek"),
+            lpszClassName: w!("PanegridPeek"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(peek_host_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsPeekHost"),
+            lpszClassName: w!("PanegridPeekHost"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -171,7 +172,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(tabs_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("GridsTabs"),
+            lpszClassName: w!("PanegridTabs"),
             ..Default::default()
         });
         UI.store(s.lang.resolve(), Ordering::Relaxed);
@@ -313,7 +314,7 @@ mod tests {
         assert!(layout_differs(&cur, &base));
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
         let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
-        assert_eq!(titles, ["Downloads - Grids", "Grids", "C: - Grids"]);
+        assert_eq!(titles, ["Downloads - Panegrid", "Panegrid", "C: - Panegrid"]);
     }
 
     #[test]

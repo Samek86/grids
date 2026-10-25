@@ -27,7 +27,7 @@ pub(crate) unsafe fn child(parent: HWND, class: PCWSTR, text: PCWSTR, style: u32
 pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let (main, font) = app(|a| (a.main, a.font));
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
-    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
+    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
         (ID_BACK, tr("Back", "뒤로", "戻る"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더", "戻る  (Alt+←) · 右クリック: 最近のフォルダー")),

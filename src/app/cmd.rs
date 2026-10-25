@@ -159,7 +159,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         return true;
     }
     if crate::keys::capturing() {
-        // The Windows key is a modifier, so a chord such as Win+Alt+E can be recorded.
+        // The Windows key is a modifier, so a chord such as Win+Shift+E can be recorded.
         if matches!(vk, 0x5B | 0x5C) || m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
@@ -557,7 +557,7 @@ pub(crate) fn focus_ring(pos: usize, back: bool, panel: bool) -> usize {
     (pos.min(n - 1) + if back { n - 1 } else { 1 }) % n
 }
 
-/// A key Grids handled (Ctrl+Tab, F6, …) must not count as input in the tree.
+/// A key Panegrid handled (Ctrl+Tab, F6, …) must not count as input in the tree.
 /// An unhandled key in the tree still does, so the arrows navigate the pane.
 pub(crate) fn tree_input_after(prev: bool, in_tree: bool, used: bool) -> bool {
     !used && (prev || in_tree)

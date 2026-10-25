@@ -151,7 +151,7 @@ pub(crate) struct SideDrag {
 pub(crate) struct App {
     pub(crate) desks: Vec<Desk>,
     pub(crate) cur: usize,
-    /// A failed grids.json write is tried again after this instant. Not mid-drag.
+    /// A failed panegrid.json write is tried again after this instant. Not mid-drag.
     pub(crate) save_after: Option<Instant>,
     pub(crate) hot_on: bool,    // the global hotkey is really registered (s.hotkey is only the wish)
     pub(crate) hot_hwnd: HWND,  // the window that owns that registration

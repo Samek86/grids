@@ -1,4 +1,4 @@
-# Grids Nightly AI 업데이트 인덱스
+# Panegrid Nightly AI 업데이트 인덱스
 
 Claude가 제안하고 gpt-6.1-sol이 동의한 개선을 사람 확인 없이 구현해, 몇 개씩 묶어 공개한 기록입니다. 번호는 계속 이어집니다.
 정식 릴리즈와 별개이며, 최신 exe는 [nightly-ai 릴리즈](https://github.com/efww/grids/releases/tag/nightly-ai)에 있습니다.
@@ -13,8 +13,8 @@ Claude가 제안하고 gpt-6.1-sol이 동의한 개선을 사람 확인 없이 �
 
 | # | 구현 시각(KST) | 분류 | 업데이트 | 사용자에게 달라지는 것 | 변경 |
 |---|---|---|---|---|---|
-| #12 | 2026-10-21 11:44 | 기능 | Ctrl+V 파일 복사를 백그라운드 스레드에서 실행 | 파일을 Ctrl+C 후 Ctrl+V로 대량으로 붙여넣으면 Windows 복사 진행 창만 따로 돌고, 그동안 Grids의 다른 창 탐색, 트리, 레이아웃 조작이 계속 된다. 하단 상태줄에는 '복사 중…'이 표시되고, 복사 중에 Grids를 닫아도 복사는 끝까지 진행된다. | 2 files changed, 168 insertions(+), 10 deletions(-) |
-| #20 | 2026-10-21 11:47 | UX | Show the active pane's folder in the window title | The title bar, taskbar button and Alt+Tab now show the active pane's folder, such as "Downloads - Grids", and update when you switch panes or folders. | 1 file changed, 11 insertions(+) |
+| #12 | 2026-10-21 11:44 | 기능 | Ctrl+V 파일 복사를 백그라운드 스레드에서 실행 | 파일을 Ctrl+C 후 Ctrl+V로 대량으로 붙여넣으면 Windows 복사 진행 창만 따로 돌고, 그동안 Panegrid의 다른 창 탐색, 트리, 레이아웃 조작이 계속 된다. 하단 상태줄에는 '복사 중…'이 표시되고, 복사 중에 Panegrid를 닫아도 복사는 끝까지 진행된다. | 2 files changed, 168 insertions(+), 10 deletions(-) |
+| #20 | 2026-10-21 11:47 | UX | Show the active pane's folder in the window title | The title bar, taskbar button and Alt+Tab now show the active pane's folder, such as "Downloads - Panegrid", and update when you switch panes or folders. | 1 file changed, 11 insertions(+) |
 | #18 | 2026-10-21 11:48 | 디자인 | 필터가 적용된 패널의 필터 칸에 선택 색 배지 표시 | 필터가 걸린 패널은 필터 칸 왼쪽 돋보기가 선택 색 배지와 필터 아이콘으로 바뀐다. 그래서 활성 패널이 아니어도 어느 패널에서 파일이 가려져 있는지 한눈에 보인다. 필터를 지우면 바로 돋보기로 돌아가고, 선택 색을 바꾸면 모든 패널의 배지가 함께 바뀐다. | 1 file changed, 23 insertions(+), 8 deletions(-) |
 
 ## 릴리즈 R3 · 2026-10-21 12:00 KST · 업데이트 3개
@@ -36,8 +36,8 @@ Claude가 제안하고 gpt-6.1-sol이 동의한 개선을 사람 확인 없이 �
 | # | 구현 시각(KST) | 분류 | 업데이트 | 사용자에게 달라지는 것 | 변경 |
 |---|---|---|---|---|---|
 | #28 | 2026-10-21 12:22 | 기능 | 활성 패널 잠깐 크게 보기 토글 (Ctrl+Shift+M / 패널 머리줄 더블클릭) | Ctrl+Shift+M을 누르거나 패널 머리줄의 빈 곳을 더블클릭하면, 지금 쓰는 패널이 그리드 전체를 차지하도록 커집니다. 한 번 더 누르거나 다른 패널로 옮기면(Ctrl+Tab, Ctrl+1~9, ⇄, 다른 곳에서 폴더 열기) 맞춰 둔 칸 비율 그대로 원래 배치로 돌아옵니다. 크게 보는 동안에는 상태줄에 복원 방법이 표시됩니다. | 3 files changed, 66 insertions(+), 7 deletions(-) |
-| #30 | 2026-10-21 12:26 | 기능 | ⇄ 메뉴에서 선택한 파일을 다른 패널로 복사·이동 (Total Commander F5/F6식, 선택 전체가 아니면 보내지 않음) | 파일을 고른 뒤 ⇄ 버튼을 누르면 '선택한 3개 복사 ▸ / 이동 ▸' 아래에 다른 패널들이 나오고, 하나를 고르면 그 패널 폴더로 바로 복사되거나 옮겨진다. 복사하는 동안에도 Grids를 계속 쓸 수 있다. 보낼 수 없는 선택이면 메뉴에 회색 글씨로 이유가 나온다(너무 많음, 일반 파일 아님). | 3 files changed, 115 insertions(+), 14 deletions(-) |
-| #27 | 2026-10-21 12:29 | 기능 | 최근 폴더 목록: Alt+↓ 또는 뒤로/앞으로 버튼 오른쪽 클릭 (모든 패널 공통, 재시작·테마·언어 변경에도 순서 유지) | 패널의 ← 또는 → 버튼을 오른쪽 클릭하거나 Alt+↓를 누르면, 모든 패널에서 최근에 드나든 폴더가 최신 순으로 메뉴에 나온다. 하나를 고르면 지금 패널이 그 폴더로 간다. Grids를 다시 켜거나 테마·언어를 바꿔도 목록과 순서가 그대로다. | 3 files changed, 121 insertions(+), 5 deletions(-) |
+| #30 | 2026-10-21 12:26 | 기능 | ⇄ 메뉴에서 선택한 파일을 다른 패널로 복사·이동 (Total Commander F5/F6식, 선택 전체가 아니면 보내지 않음) | 파일을 고른 뒤 ⇄ 버튼을 누르면 '선택한 3개 복사 ▸ / 이동 ▸' 아래에 다른 패널들이 나오고, 하나를 고르면 그 패널 폴더로 바로 복사되거나 옮겨진다. 복사하는 동안에도 Panegrid를 계속 쓸 수 있다. 보낼 수 없는 선택이면 메뉴에 회색 글씨로 이유가 나온다(너무 많음, 일반 파일 아님). | 3 files changed, 115 insertions(+), 14 deletions(-) |
+| #27 | 2026-10-21 12:29 | 기능 | 최근 폴더 목록: Alt+↓ 또는 뒤로/앞으로 버튼 오른쪽 클릭 (모든 패널 공통, 재시작·테마·언어 변경에도 순서 유지) | 패널의 ← 또는 → 버튼을 오른쪽 클릭하거나 Alt+↓를 누르면, 모든 패널에서 최근에 드나든 폴더가 최신 순으로 메뉴에 나온다. 하나를 고르면 지금 패널이 그 폴더로 간다. Panegrid를 다시 켜거나 테마·언어를 바꿔도 목록과 순서가 그대로다. | 3 files changed, 121 insertions(+), 5 deletions(-) |
 
 ## 릴리즈 R6 · 2026-10-21 12:44 KST · 업데이트 2개
 

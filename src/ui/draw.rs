@@ -639,7 +639,7 @@ pub(crate) fn kids_job() -> std::sync::MutexGuard<'static, KidsJob> {
 pub(crate) fn want_kids(h: HWND, dir: &str, hidden: bool) -> usize {
     let id = kids_job().ask(h.0 as isize, dir, hidden);
     static WORKER: Once = Once::new();
-    WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-kids".into()).spawn(kids_worker));
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-kids".into()).spawn(kids_worker));
     KIDS_WAKE.notify_one();
     id
 }
@@ -696,7 +696,7 @@ pub(crate) unsafe fn kids_cancel() {
 }
 
 /// `WM_KIDS`: the list is in. Shown only while it is still this request, the pane still shows
-/// the same folder, nothing is being resized, Grids is in front, and the `›` is still laid out
+/// the same folder, nothing is being resized, Panegrid is in front, and the `›` is still laid out
 /// where it is now.
 pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
     if !app(|a| a.kids.as_ref().is_some_and(|k| k.owns(id, h))) {

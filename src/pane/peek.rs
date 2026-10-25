@@ -164,7 +164,7 @@ pub(crate) fn want_peek(req: Option<PeekReq>) {
     peek_job().want(req);
     if wake {
         static WORKER: Once = Once::new();
-        WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-peek".into()).spawn(peek_worker));
+        WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-peek".into()).spawn(peek_worker));
         PEEK_WAKE.notify_one();
     }
 }
@@ -791,7 +791,7 @@ unsafe fn remember_peek(h: HWND, kind: PeekKind) {
         PeekKind::Image => a.s.peek_image = Some(pair),
         PeekKind::Doc => a.s.peek_doc = Some(pair),
     });
-    // Same path as the other grids.json settings. The maximized rect is never written.
+    // Same path as the other panegrid.json settings. The maximized rect is never written.
     crate::save_session();
 }
 
@@ -872,7 +872,7 @@ unsafe fn create_peek(i: usize) -> bool {
     let rect = center_in(clamp_to_parent_and_work(size, rect_size(b.parent), rect_size(b.work)), b.parent, b.work);
     let (w, h) = ((rect.right - rect.left).max(1), (rect.bottom - rect.top).max(1));
     let style = WS_POPUP | WS_THICKFRAME | WS_VISIBLE | WS_CLIPCHILDREN;
-    let Ok(hw) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("GridsPeek"), w!(""), style, rect.left, rect.top, w, h, Some(main), None, None, None) else {
+    let Ok(hw) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridPeek"), w!(""), style, rect.left, rect.top, w, h, Some(main), None, None, None) else {
         return false;
     };
     let square = DWMWCP_DONOTROUND;
@@ -1175,7 +1175,7 @@ unsafe fn start_handler(h: HWND, gen: usize) {
     let line = 1;
     let (w, ht) = ((st.right - st.left - line * 2).max(1), (st.bottom - st.top - line * 2).max(1));
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
-    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsPeekHost"), w!(""), style, st.left + line, st.top + line, w, ht, Some(h), None, None, None) else {
+    let Ok(win) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridPeekHost"), w!(""), style, st.left + line, st.top + line, w, ht, Some(h), None, None, None) else {
         return load_peek(true);
     };
     view(|v| v.host_win = Some(win));

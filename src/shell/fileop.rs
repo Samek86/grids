@@ -36,7 +36,7 @@ impl Drop for Busy {
 }
 
 thread_local! {
-    // joined after the message loop so closing Grids doesn't cut a copy short
+    // joined after the message loop so closing Panegrid doesn't cut a copy short
     pub(crate) static JOBS: RefCell<Vec<std::thread::JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -133,7 +133,7 @@ pub(crate) unsafe fn copy_paths(a: usize) {
     update_status();
 }
 
-// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Grids stays usable.
+// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Panegrid stays usable.
 // Cut, links, virtual items and anything else stay with the shell.
 pub(crate) unsafe fn try_paste(a: usize) -> bool {
     let (dst, main) = app(|x| (x.s.paths[a].clone(), x.main));
@@ -269,7 +269,7 @@ pub(crate) static SAVED: Mutex<Option<String>> = Mutex::new(None);
 /// Encodes and saves on a worker. The pane's selection, focus and folder stay as they are.
 pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
     let lang = ui();
-    let job = std::thread::Builder::new().name("grids-image".into()).spawn(move || {
+    let job = std::thread::Builder::new().name("panegrid-image".into()).spawn(move || {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         let png = match pic {
             Pic::Png(b) => Ok(b),
@@ -297,7 +297,7 @@ pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
                     2 => "クリップボードの画像を保存できませんでした: ",
                     _ => "Couldn't save the clipboard picture: ",
                 };
-                MessageBoxW(None, &HSTRING::from(format!("{what}{e}")), w!("Grids"), MB_ICONWARNING);
+                MessageBoxW(None, &HSTRING::from(format!("{what}{e}")), w!("Panegrid"), MB_ICONWARNING);
             }
         }
         if com {
@@ -385,7 +385,7 @@ pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ", "移動できませんでした: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ", "コピーできませんでした: ") };
                 let text = HSTRING::from(format!("{what}{}", e.message()));
-                MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+                MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
             }
         }
         if com {
@@ -434,7 +434,7 @@ pub(crate) unsafe fn delete_selection(i: usize, shift: bool) {
         };
         let text = HSTRING::from(format!("{verb} ({n})"));
         let owner = app(|a| a.main);
-        if MessageBoxW(Some(owner), &text, w!("Grids"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+        if MessageBoxW(Some(owner), &text, w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
             return;
         }
     }
@@ -449,7 +449,7 @@ pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool) -> bool {
         if let Err(e) = run_delete(&srcs, permanent) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let text = HSTRING::from(format!("{}{}", tr("Delete failed: ", "삭제하지 못했습니다: ", "削除できませんでした: "), e.message()));
-                _ = MessageBoxW(None, &text, w!("Grids"), MB_ICONWARNING);
+                _ = MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
             }
         }
         if com {
@@ -556,12 +556,12 @@ pub(crate) fn settings_filter() -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-/// Export / import picker. Save defaults to grids.json. Open accepts JSON and a legacy ini.
+/// Export / import picker. Save defaults to panegrid.json. Open accepts JSON and a legacy ini.
 pub(crate) unsafe fn pick_settings(owner: HWND, save: bool) -> Option<String> {
     use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
     let mut buf = [0u16; 520];
     if save {
-        for (d, c) in buf.iter_mut().zip("grids.json".encode_utf16()) {
+        for (d, c) in buf.iter_mut().zip("panegrid.json".encode_utf16()) {
             *d = c;
         }
     }
@@ -676,7 +676,7 @@ pub(crate) fn apply_boot(s: &mut Session) {
                 s.file = file;
             }
         }
-        // 0, the default: every tab loaded from grids.json stays. Only the active one is shown.
+        // 0, the default: every tab loaded from panegrid.json stays. Only the active one is shown.
         _ => {
             if s.tabs.is_empty() {
                 s.anchor();
