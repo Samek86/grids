@@ -1588,23 +1588,24 @@ pub(crate) enum Wheel {
     Hold, // at the end, but only just: a fling to the bottom doesn't also jump to the next file
 }
 
-// A wheel turn scrolls while there is room that way; past the end it moves to the previous / next file,
-// at once when nothing scrolls, else once the view has rested at that end for a moment.
-pub(crate) fn wheel_action(y: i32, max_y: i32, down: bool, rested: bool) -> Wheel {
+// A wheel turn scrolls while there is room that way. Past the end, when `nav` is on, it moves
+// to the previous / next file: at once when nothing scrolls, else once the view has rested
+// at that end for a moment. Off, it never steps — a fitted picture's wheel does nothing.
+pub(crate) fn wheel_action(y: i32, max_y: i32, down: bool, rested: bool, nav: bool) -> Wheel {
     let room = if down { y < max_y } else { y > 0 };
     match () {
         _ if room => Wheel::Scroll,
-        _ if max_y == 0 || rested => Wheel::Step,
+        _ if nav && (max_y == 0 || rested) => Wheel::Step,
         _ => Wheel::Hold,
     }
 }
 
 unsafe fn wheel_peek(h: HWND, raw: i32) {
     let down = raw < 0;
-    let px = -raw * app(|a| a.fh) * 3 / 120;
+    let (px, nav) = app(|a| (-raw * a.fh * 3 / 120, a.s.peek_wheel_nav));
     let act = view(|v| {
         let rested = v.edge_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(350));
-        let act = wheel_action(v.y, v.max_y, down, rested);
+        let act = wheel_action(v.y, v.max_y, down, rested, nav);
         match act {
             Wheel::Scroll => {
                 v.y = (v.y + px).clamp(0, v.max_y);
@@ -3072,14 +3073,41 @@ mod tests {
     #[test]
     fn peek_wheel() {
         use Wheel::*;
-        assert_eq!(wheel_action(0, 0, true, false), Step);
-        assert_eq!(wheel_action(0, 0, false, false), Step);
-        assert_eq!(wheel_action(0, 500, true, false), Scroll);
-        assert_eq!(wheel_action(0, 500, false, false), Hold);
-        assert_eq!(wheel_action(0, 500, false, true), Step);
-        assert_eq!(wheel_action(500, 500, true, false), Hold);
-        assert_eq!(wheel_action(500, 500, true, true), Step);
-        assert_eq!(wheel_action(500, 500, false, true), Scroll);
+        assert_eq!(wheel_action(0, 0, true, false, true), Step);
+        assert_eq!(wheel_action(0, 0, false, false, true), Step);
+        assert_eq!(wheel_action(0, 500, true, false, true), Scroll);
+        assert_eq!(wheel_action(0, 500, false, false, true), Hold);
+        assert_eq!(wheel_action(0, 500, false, true, true), Step);
+        assert_eq!(wheel_action(500, 500, true, false, true), Hold);
+        assert_eq!(wheel_action(500, 500, true, true, true), Step);
+        assert_eq!(wheel_action(500, 500, false, true, true), Scroll);
+    }
+
+    #[test]
+    fn peek_wheel_off_never_steps() {
+        use Wheel::*;
+        let cases = [
+            (0, 0, true, false),
+            (0, 0, false, false),
+            (0, 0, true, true),
+            (0, 0, false, true),
+            (0, 500, true, false),
+            (0, 500, false, false),
+            (0, 500, false, true),
+            (0, 500, true, true),
+            (500, 500, true, false),
+            (500, 500, true, true),
+            (500, 500, false, true),
+            (500, 500, false, false),
+            (250, 500, true, true),
+            (250, 500, false, false),
+        ];
+        for (y, max_y, down, rested) in cases {
+            let act = wheel_action(y, max_y, down, rested, false);
+            assert_ne!(act, Step, "y={y} max={max_y} down={down} rested={rested}");
+            let room = if down { y < max_y } else { y > 0 };
+            assert_eq!(act, if room { Scroll } else { Hold }, "y={y} max={max_y} down={down} rested={rested}");
+        }
     }
 
     #[test]

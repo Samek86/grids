@@ -46,6 +46,7 @@ const TG_ONE: u8 = 13;
 const TG_EV: u8 = 15;
 const TG_DRIVES: u8 = 16;
 const TG_SPACE: u8 = 17;
+const TG_WHEEL: u8 = 18;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -167,6 +168,7 @@ const GEN: &[Spec] = &[
 ];
 
 const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
+const PREVIEW_HEAD: [&str; 3] = s("Preview", "미리보기", "プレビュー");
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), live: true, ctl: Ctl::Theme },
     Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own colour.", "라이트와 다크에 색을 따로 정할 수 있어요.", "ライトとダークで色を別々に選べます。"), live: true, ctl: Ctl::Accent },
@@ -182,6 +184,7 @@ const VIEW: &[Spec] = &[
     Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The folder tree is on top and favourites are below. Drag the divider between them. This hides both.", "위는 폴더 트리, 아래는 즐겨찾기예요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "上はフォルダー ツリー、下はお気に入りです。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
     Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_EDGE) },
     Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On by default.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. 기본값은 켜짐.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_SPACE) },
+    Spec { title: s("Wheel moves to next/previous file", "휠로 다음/이전 파일로 넘기기", "ホイールで次/前のファイルへ"), desc: s("Scrolling past the end of the content moves to the next or previous file.", "내용 끝에서 마우스 휠을 더 돌리면 다음·이전 파일로 넘어가요.", "内容の端でさらにホイールを回すと次・前のファイルに移ります。"), live: true, ctl: Ctl::Toggle(TG_WHEEL) },
 ];
 const FILE: &[Spec] = &[
     Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), live: true, ctl: Ctl::CopyEng },
@@ -533,6 +536,7 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     let rq = row_q(&sn.query, page);
     let gap = sc(dpi, 4);
     let mut ev_head = false;
+    let mut preview_head = false;
     for spec in page_cards(page) {
         if !rq.is_empty() && !card_hit(spec, rq) {
             continue;
@@ -542,6 +546,13 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
                 g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, EV_HEAD));
                 y += sc(dpi, 28);
                 ev_head = true;
+            }
+        }
+        if is_preview_card(spec) {
+            if !preview_head {
+                g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, PREVIEW_HEAD));
+                y += sc(dpi, 28);
+                preview_head = true;
             }
         }
         let h = card_h(spec, dpi);
@@ -686,6 +697,10 @@ fn is_ev_card(spec: &Spec) -> bool {
     matches!(spec.ctl, Ctl::EvStatus | Ctl::EvAct | Ctl::Toggle(TG_EV))
 }
 
+fn is_preview_card(spec: &Spec) -> bool {
+    matches!(spec.ctl, Ctl::Toggle(TG_SPACE) | Ctl::Toggle(TG_WHEEL))
+}
+
 fn toggle_on(id: u8) -> bool {
     match id {
         TG_SINGLE => app(|a| a.s.single),
@@ -703,6 +718,7 @@ fn toggle_on(id: u8) -> bool {
         TG_DOT => app(|a| a.s.dot),
         TG_EV => app(|a| a.s.use_everything),
         TG_SPACE => app(|a| a.s.space_preview),
+        TG_WHEEL => app(|a| a.s.peek_wheel_nav),
         _ => false,
     }
 }
@@ -837,6 +853,31 @@ mod tests {
         assert_eq!(pick_search(2, 5, "단축키"), 5);
         assert!(!search_miss("단축키"));
         assert!(!search_miss(""));
+    }
+
+    #[test]
+    fn wheel_file_step_is_found_from_the_search_box() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let hit = |g: &Geo| g.items.iter().any(|it| matches!(it, Item::Card(c) if c.spec.ctl == Ctl::Toggle(TG_WHEEL)));
+        let (anchor, page) = commit_search(0, 0, "Wheel moves to next");
+        assert_eq!((anchor, page), (0, 2));
+        let g = geo(client(), &shot(page, "Wheel moves to next"));
+        assert!(g.show[2] && hit(&g));
+        let g = geo(client(), &shot(2, "Scrolling past the end"));
+        assert!(hit(&g));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "휠로 다음/이전");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "휠로 다음/이전"))));
+        assert!(hit(&geo(client(), &shot(2, "내용 끝에서 마우스 휠"))));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "ホイールで次");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "ホイールで次"))));
+        assert!(hit(&geo(client(), &shot(2, "内容の端でさらにホイール"))));
     }
 
     #[test]

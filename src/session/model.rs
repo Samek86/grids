@@ -230,6 +230,8 @@ pub(crate) struct Session {
     pub(crate) dblup: bool,            // double-click on empty space goes to the parent folder
     /// Space in a file list opens quick look. Missing from the file means on.
     pub(crate) space_preview: bool,
+    /// Wheel in quick look steps to the next or previous file at the content's end. Missing means on.
+    pub(crate) peek_wheel_nav: bool,
     /// Quick look size in DIP after the user resizes, per kind. Empty means fit the file.
     /// The maximized rect is not stored. `peek_doc` is text and PDF together.
     pub(crate) peek_image: Option<(i32, i32)>,
@@ -299,6 +301,7 @@ impl Default for Session {
             dark: false,
             dblup: true,
             space_preview: true,
+            peek_wheel_nav: true,
             peek_image: None,
             peek_doc: None,
             pane_folders: vec![Vec::new(); MAXP],
@@ -364,6 +367,7 @@ impl PartialEq for Session {
             && self.dark == o.dark
             && self.dblup == o.dblup
             && self.space_preview == o.space_preview
+            && self.peek_wheel_nav == o.peek_wheel_nav
             && self.peek_image == o.peek_image
             && self.peek_doc == o.peek_doc
             && self.hotkey == o.hotkey
@@ -637,6 +641,7 @@ impl Session {
                 "dblup" => s.dblup = v.trim() != "0",
                 "panetabs" => {} // older files; pane tabs are always on
                 "spacepreview" => s.space_preview = v.trim() != "0",
+                "peekwheelnav" => s.peek_wheel_nav = v.trim() != "0",
                 "hotkey" => s.hotkey = v.trim() != "0",
                 "lang" => s.lang = Lang::from_ini(v),
                 "single" => s.single = v.trim() != "0",
@@ -735,7 +740,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
-        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\npeekwheelnav={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8, self.peek_wheel_nav as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }
