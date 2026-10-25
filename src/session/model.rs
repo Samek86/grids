@@ -460,10 +460,11 @@ pub(crate) fn join<T: Display>(v: &[T]) -> String {
 
 // Ratios from a hand-edited ini can be anything: wrong length, zero, negative -> fall back to equal.
 pub(crate) fn fix(r: Vec<f64>, n: usize) -> Vec<f64> {
-    if r.len() != n || r.iter().any(|x| !(*x > 0.0)) {
+    // NaN, infinity, and ratios whose sum overflows all fall back to an even split.
+    let sum: f64 = r.iter().sum();
+    if r.len() != n || r.iter().any(|x| !(*x > 0.0 && x.is_finite())) || !sum.is_finite() {
         return even(n);
     }
-    let sum: f64 = r.iter().sum();
     r.iter().map(|x| x / sum).collect()
 }
 
@@ -1840,3 +1841,15 @@ mod session_copy_tests {
     }
 }
 
+
+#[cfg(test)]
+mod ratio_tests {
+    use super::fix;
+
+    #[test]
+    fn non_finite_ratios_fall_back_to_even() {
+        assert_eq!(fix(vec![f64::INFINITY, 1.0], 2), vec![0.5, 0.5]);
+        assert_eq!(fix(vec![1e308, 1e308], 2), vec![0.5, 0.5]);
+        assert_eq!(fix(vec![1.0, 3.0], 2), vec![0.25, 0.75]);
+    }
+}
