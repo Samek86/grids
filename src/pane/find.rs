@@ -507,7 +507,7 @@ unsafe fn refresh_find_in(i: usize, force: bool) {
         *slot = Some(job);
     }
     static WORKER: Once = Once::new();
-    WORKER.call_once(|| _ = std::thread::Builder::new().name("grids-find".into()).spawn(find_worker));
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-find".into()).spawn(find_worker));
     WAKE.notify_one();
 }
 
@@ -730,11 +730,11 @@ unsafe fn ensure_list(pane: HWND) -> HWND {
             lpfnWndProc: Some(find_proc),
             hInstance: hinst.into(),
             hCursor: arrow,
-            lpszClassName: w!("GridsFind"),
+            lpszClassName: w!("PanegridFind"),
             ..Default::default()
         });
     });
-    CreateWindowExW(WINDOW_EX_STYLE(0), w!("GridsFind"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(pane), None, None, None).unwrap_or_default()
+    CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridFind"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(pane), None, None, None).unwrap_or_default()
 }
 
 /// Enter. A folder is browsed to in this pane. A file is launched and the pane moves to its folder.
@@ -1414,7 +1414,7 @@ unsafe fn ask_install_everything_once(owner: HWND) {
         "Everything을 설치하면 하위 폴더 검색이 훨씬 빨라져요. 설치할까요?\n\n이 질문은 한 번만 합니다. 나중에 설정 화면에서 설치할 수 있어요.",
         "Everything をインストールすると、サブフォルダー検索がずっと速くなります。インストールしますか？\n\nこの質問は一度だけです。あとで設定画面からインストールできます。",
     );
-    if MessageBoxW(Some(owner), &HSTRING::from(q), w!("grids"), MB_YESNO | MB_ICONQUESTION) == IDYES {
+    if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
         everything::install_async();
     }
 }

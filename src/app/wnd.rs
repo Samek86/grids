@@ -82,7 +82,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
                 return LRESULT(1);
             }
-            // A network drive or subst sends no device message. Look again when Grids comes forward.
+            // A network drive or subst sends no device message. Look again when Panegrid comes forward.
             WM_ACTIVATEAPP => {
                 if wp.0 != 0 {
                     _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
@@ -264,7 +264,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = ModifyMenuW(menu, ID_THEME as u32, MF_BYCOMMAND | MF_STRING, ID_THEME as usize, &HSTRING::from(theme_action_label()));
                 check(ID_HOTKEY, hot);
                 if let Some(i) = crate::keys::index("app.front") {
-                    let label = format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(i));
+                    let label = format!("{}\t{}", tr("Bring Panegrid to front from anywhere", "어디서나 Panegrid 불러오기", "どこからでも Panegrid を前面に"), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_HOTKEY as u32, MF_BYCOMMAND | MF_STRING, ID_HOTKEY as usize, &HSTRING::from(label));
                 }
                 if let Some(i) = crate::keys::index("view.panel") {
@@ -698,7 +698,7 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
     }
 }
 
-// ---------- Win+Alt+E, or whatever chord the keymap now has ----------
+// ---------- Win+Shift+E, or whatever chord the keymap now has ----------
 
 pub(crate) const HOTKEY_ID: i32 = 1;
 
@@ -800,7 +800,7 @@ pub(crate) unsafe fn toggle_hotkey() {
     save_session();
 }
 
-/// Front, with the file list ready. Pressed again while Grids is in front: minimize.
+/// Front, with the file list ready. Pressed again while Panegrid is in front: minimize.
 /// A dialog that has disabled its owner comes forward instead.
 pub(crate) unsafe fn hotkey_pressed() {
     let mains = app(|a| a.desks.iter().map(|d| d.main).filter(|h| !h.0.is_null()).collect::<Vec<_>>());
@@ -851,13 +851,18 @@ pub(crate) unsafe fn open_help() {
 
 pub(crate) unsafe fn about(owner: HWND) {
     let text = format!(
-        "Grids {}\n{}\n\n{}\n{HOME}\n\n{}",
+        "Panegrid {}\n{}\n\n{}\n{}\n{HOME}\n\n{}",
         env!("CARGO_PKG_VERSION"),
         tr("Fast multi-pane file manager for Windows", "Windows용 빠른 다중 패널 파일 관리자", "Windows 向けの高速マルチペイン ファイル マネージャー"),
+        tr(
+            "Panegrid is a fork of efww/grids by efww\nfork Samek86/grids",
+            "Panegrid는 efww의 efww/grids 포크입니다\n포크 Samek86/grids",
+            "Panegrid は efww による efww/grids のフォークです\nフォーク Samek86/grids",
+        ),
         tr("MIT License · © 2026 efww", "MIT 라이선스 · © 2026 efww", "MIT ライセンス · © 2026 efww"),
         tr("Open the project page?", "프로젝트 페이지를 열까요?", "プロジェクト ページを開きますか?"),
     );
-    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr("About Grids", "Grids 정보", "Grids のバージョン情報")), MB_YESNO | MB_ICONINFORMATION) == IDYES {
+    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr("About Panegrid", "Panegrid 정보", "Panegrid のバージョン情報")), MB_YESNO | MB_ICONINFORMATION) == IDYES {
         ShellExecuteW(None, w!("open"), &HSTRING::from(HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
     }
 }
@@ -936,7 +941,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
     item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
     item(view, MF_STRING, ID_THEME, theme_action_label())?;
-    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Grids to front from anywhere", "어디서나 Grids 불러오기", "どこからでも Grids を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
+    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Panegrid to front from anywhere", "어디서나 Panegrid 불러오기", "どこからでも Panegrid を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
     item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
@@ -957,7 +962,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
     item(view, MF_STRING, ID_KEYS, tr("Keyboard shortcuts...", "단축키...", "ショートカット キー..."))?;
     item(view, MF_STRING, ID_HELP, tr("Help (online)\tF1", "도움말 (온라인)\tF1", "ヘルプ (オンライン)\tF1"))?;
-    item(view, MF_STRING, ID_ABOUT, tr("About Grids", "Grids 정보", "Grids のバージョン情報"))?;
+    item(view, MF_STRING, ID_ABOUT, tr("About Panegrid", "Panegrid 정보", "Panegrid のバージョン情報"))?;
     Ok(view)
 }
 
