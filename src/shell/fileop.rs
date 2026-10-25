@@ -162,7 +162,7 @@ pub(crate) unsafe fn try_paste(a: usize) -> bool {
         !srcs.is_empty(),
         has(w!("Shell IDList Array")),
         has(w!("FileGroupDescriptorW")) || has(w!("FileGroupDescriptor")),
-        IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_ok(),
+        has(w!("PNG")) || IsClipboardFormatAvailable(CF_DIB.0 as u32).is_ok() || IsClipboardFormatAvailable(CF_DIBV5.0 as u32).is_ok(),
     )
     .then(|| clip_picture())
     .flatten();
@@ -175,9 +175,10 @@ pub(crate) unsafe fn try_paste(a: usize) -> bool {
     start_copy(srcs, dst, rename, false)
 }
 
-/// Only a bare picture. Files, virtual files and text stay with the shell paste.
-pub(crate) fn picture_only(has_hdrop_items: bool, has_idlist: bool, has_fgd: bool, has_text: bool) -> bool {
-    !(has_hdrop_items || has_idlist || has_fgd || has_text)
+/// A picture with no real files. Text or HTML beside it (a browser's Copy image) does not matter.
+/// Files, virtual files, and text without a picture stay with the shell paste.
+pub(crate) fn picture_only(has_hdrop_items: bool, has_idlist: bool, has_fgd: bool, has_picture: bool) -> bool {
+    has_picture && !(has_hdrop_items || has_idlist || has_fgd)
 }
 
 pub(crate) enum Pic {
@@ -185,7 +186,7 @@ pub(crate) enum Pic {
     Dib(Vec<u8>),
 }
 
-/// The clipboard's PNG bytes, else CF_DIB. The clipboard is already open.
+/// The clipboard's PNG bytes, else CF_DIB, else CF_DIBV5. The clipboard is already open.
 unsafe fn clip_picture() -> Option<Pic> {
     let bytes = |fmt: u32| {
         let h = HGLOBAL(GetClipboardData(fmt).ok()?.0);
@@ -203,7 +204,7 @@ unsafe fn clip_picture() -> Option<Pic> {
         }
         return Some(Pic::Png(png));
     }
-    bytes(CF_DIB.0 as u32).map(Pic::Dib)
+    bytes(CF_DIB.0 as u32).or_else(|| bytes(CF_DIBV5.0 as u32)).map(Pic::Dib)
 }
 
 /// A CF_DIB as a .bmp file. None when the header or the palette is cut short.
@@ -335,7 +336,8 @@ unsafe fn wic_frame(enc: &IWICBitmapEncoder) -> Result<IWICBitmapFrameEncode> {
     let mut bag = std::ptr::null_mut();
     (vt.create_frame)(Interface::as_raw(enc), &mut raw, &mut bag).ok()?;
     if !bag.is_null() {
-        let release = *(bag as *const () as *const *const usize).add(2);
+        // bag points at the object; its first field is the vtable, and Release is slot 2.
+        let release = *(*(bag as *const *const usize)).add(2);
         let release: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32 = std::mem::transmute(release);
         release(bag);
     }
@@ -711,9 +713,11 @@ mod tests {
         assert_eq!(dib_to_bmp(&dib(40, 24, 0, 0, 0)), None);
         assert_eq!(dib_to_bmp(&dib(40, 24, 0, 0, 4)[..20]), None);
         assert_eq!(dib_to_bmp(&[]), None);
-        assert!(picture_only(false, false, false, false));
-        for k in 0..4 {
-            assert!(!picture_only(k == 0, k == 1, k == 2, k == 3));
+        // A picture with text or HTML beside it (browser Copy image) still saves.
+        assert!(picture_only(false, false, false, true));
+        assert!(!picture_only(false, false, false, false));
+        for k in 0..3 {
+            assert!(!picture_only(k == 0, k == 1, k == 2, true));
         }
         let t = SYSTEMTIME { wYear: 2026, wMonth: 10, wDay: 21, wHour: 15, wMinute: 30, wSecond: 2, ..Default::default() };
         assert_eq!(image_name(0, &t, 1), "Clipboard image 2026-10-21 153002.png");
@@ -730,4 +734,5 @@ mod tests {
         _ = std::fs::remove_dir_all(&dir);
     }
 }
+
 
