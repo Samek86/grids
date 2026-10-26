@@ -20,7 +20,9 @@ fn main() {
         res.extend(data);
         res.resize(res.len().next_multiple_of(4), 0);
     };
-    add(24, 1, &std::fs::read("app.manifest").unwrap()); // RT_MANIFEST
+    let v = file_version();
+    let manifest = std::fs::read_to_string("app.manifest").unwrap().replace("@VERSION@", &format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3]));
+    add(24, 1, manifest.as_bytes()); // RT_MANIFEST, assembly version follows Cargo.toml
 
     // app.ico -> one RT_ICON per image + an RT_GROUP_ICON (id 1) that lists them
     let ico = std::fs::read("app.ico").unwrap();
