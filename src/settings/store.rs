@@ -192,6 +192,9 @@ struct SettingsFile {
     stat: bool,
     #[serde(default = "view_details")]
     view_new: i32,
+    /// Icon size for `view_new`. Missing or 0 is that mode's usual size (large icons stay 96).
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    view_icon: i32,
     #[serde(default)]
     start: u8,
     #[serde(default)]
@@ -317,6 +320,7 @@ impl SettingsFile {
             drive_buttons: true,
             stat: true,
             view_new: 4,
+            view_icon: 0,
             start: 0,
             start_path: String::new(),
             ext: true,
@@ -405,6 +409,7 @@ impl SettingsFile {
             drive_buttons: s.drive_buttons,
             stat: s.stat,
             view_new: s.view_new,
+            view_icon: s.view_icon,
             start: s.start_new.min(2),
             start_path: s.start_path.clone(),
             ext: s.ext,
@@ -539,11 +544,9 @@ impl SettingsFile {
         s.bar = self.bar;
         s.drive_buttons = self.drive_buttons;
         s.stat = self.stat;
-        s.view_new = match self.view_new {
-            3 => 3,
-            1 => 1,
-            _ => 4,
-        };
+        let mode = crate::known_view_mode(self.view_new);
+        s.view_icon = if mode == self.view_new { self.view_icon.max(0) } else { 0 };
+        s.view_new = mode;
         s.start_new = self.start.min(2);
         s.start_path = self.start_path.clone();
         s.ext = self.ext;
@@ -1725,5 +1728,29 @@ mod tests {
         std::fs::write(&ini, "lang=ja\n").unwrap();
         assert_eq!(load_at(&exe, &cfg, &old).lang, Lang::Ko);
         assert_eq!(std::fs::read(cfg.join(SETTINGS_FILE)).unwrap(), saved);
+    }
+
+    #[test]
+    fn default_view_for_a_new_pane_roundtrips_in_json_and_leaves_grids_ini_alone() {
+        let mut s = Session::default();
+        s.view_new = 1;
+        s.view_icon = 48;
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"view_new\": 1"), "{text}");
+        assert!(text.contains("\"view_icon\": 48"), "{text}");
+        assert!(!text.contains("grids.ini"));
+        let back = adopt(&text).unwrap();
+        assert_eq!((back.view_new, back.view_icon), (1, 48));
+        assert_eq!(back.default_view(), (1, 48));
+        s.view_new = 6;
+        s.view_icon = 0;
+        let tiles = pretty(&SettingsFile::from_session(&s));
+        assert!(tiles.contains("\"view_new\": 6"), "{tiles}");
+        assert!(!tiles.contains("view_icon"), "{tiles}");
+        assert_eq!(adopt(&tiles).unwrap().default_view(), (6, 48));
+        assert_eq!(adopt(r#"{"view_new":1}"#).unwrap().default_view(), (1, 96));
+        assert_eq!(adopt(r#"{"view_new":8}"#).unwrap().default_view(), (8, 32));
+        assert_eq!(adopt(r#"{"view_new":9,"view_icon":48}"#).unwrap().default_view(), (4, 16));
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("view_icon"));
     }
 }

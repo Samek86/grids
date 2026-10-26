@@ -412,10 +412,24 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     }
 }
 
-/// Right-click on a pane header: a colour label from the selection-colour presets, saved with the session.
+/// Right-click on a pane header: this pane's Explorer view, then a colour label.
+const VIEW_CMD: usize = 210;
+const SAVE_VIEW_CMD: usize = 218;
+
 pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
     let cur = app(|a| a.s.tints.get(i).copied().unwrap_or(0));
+    let live = pane_mode_icon(i);
+    let checked = live.and_then(|(m, z)| explorer_view_index(m, z));
     let Ok(menu) = CreatePopupMenu() else { return };
+    for (k, &(_, _, en, ko, ja)) in EXPLORER_VIEWS.iter().enumerate() {
+        _ = AppendMenuW(menu, MF_STRING, VIEW_CMD + k, &HSTRING::from(tr(en, ko, ja)));
+    }
+    if let Some(k) = checked {
+        _ = CheckMenuRadioItem(menu, VIEW_CMD as u32, (VIEW_CMD + EXPLORER_VIEWS.len() - 1) as u32, (VIEW_CMD + k) as u32, MF_BYCOMMAND.0);
+    }
+    let save_flags = if checked.is_some() { MF_STRING } else { MF_STRING | MF_GRAYED };
+    _ = AppendMenuW(menu, save_flags, SAVE_VIEW_CMD, &HSTRING::from(tr("Save as default view", "기본 보기 방식으로 저장", "既定の表示として保存")));
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Pane colour", "패널 색", "ペインの色")));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     for k in 0..=6u8 {
@@ -423,9 +437,18 @@ pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
         let name = if k == 0 { tr("None", "없음", "なし") } else { tint_name(k) };
         _ = AppendMenuW(menu, flags, k as usize + 1, &HSTRING::from(name));
     }
-    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0;
+    let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
     _ = DestroyMenu(menu);
-    if pick > 0 && (i as usize) < MAXP {
+    if (VIEW_CMD..VIEW_CMD + EXPLORER_VIEWS.len()).contains(&pick) {
+        let (mode, icon, ..) = EXPLORER_VIEWS[pick - VIEW_CMD];
+        commit_pane_view(i, mode, icon);
+        return;
+    }
+    if pick == SAVE_VIEW_CMD {
+        save_pane_default_view(i);
+        return;
+    }
+    if pick > 0 && pick <= 7 && i < MAXP {
         app(|a| {
             if i < a.s.tints.len() {
                 a.s.tints[i] = pick as u8 - 1;
@@ -435,6 +458,87 @@ pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
         check_dirty();
         note_save();
     }
+}
+
+unsafe fn pane_mode_icon(i: usize) -> Option<(i32, i32)> {
+    let fv = view_of::<IFolderView2>(i)?;
+    let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
+    fv.GetViewModeAndIconSize(&mut m, &mut z).ok()?;
+    (m.0 != 0).then_some((m.0, z))
+}
+
+/// The menu's view. With per-folder memory on, the folder keeps this mode and size
+/// (columns and grouping already stored for it stay). With memory off, the pane keeps it.
+pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
+    let Some(fv) = view_of::<IFolderView2>(i) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    if fv.SetViewModeAndIconSize(FOLDERVIEWMODE(mode), icon).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let (remember, path) = app(|a| (a.s.remember_views, a.s.paths.get(i).cloned().unwrap_or_default()));
+    let key = remember.then(|| crate::folderview::normalize_folder_key(&path)).flatten();
+    let Some(key) = key else {
+        app(|a| {
+            if i < a.s.views.len() {
+                a.s.views[i] = (mode, icon);
+            }
+        });
+        check_dirty();
+        note_save();
+        return;
+    };
+    let mut snap = app(|a| {
+        a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.view_watch.as_ref()).filter(|w| w.key == key).map(|w| w.applied.clone())
+    })
+    .unwrap_or(crate::folderview::ViewSnap { mode, icon, columns: String::new(), group: None });
+    snap.mode = mode;
+    snap.icon = icon;
+    if snap.columns.is_empty() || snap.group.is_none() {
+        if let Some(live) = read_snap(i) {
+            if snap.columns.is_empty() {
+                snap.columns = live.columns;
+            }
+            if snap.group.is_none() {
+                snap.group = live.group;
+            }
+        }
+    }
+    if crate::folderview::remember(&key, snap.clone()) {
+        note_folder_views();
+    }
+    app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return };
+        match p.view_watch.as_mut().filter(|w| w.key == key) {
+            Some(w) => {
+                w.applied = snap.clone();
+                if let Some(b) = w.baseline.as_mut() {
+                    b.mode = mode;
+                    b.icon = icon;
+                }
+                w.quiet = 2;
+            }
+            None => {
+                p.view_watch = Some(crate::folderview::ViewWatch { key, applied: snap, baseline: None, quiet: 2 });
+            }
+        }
+    });
+}
+
+/// The pane's current view becomes "Default view for a new pane", saved the same way the settings window saves it.
+pub(crate) unsafe fn save_pane_default_view(i: usize) {
+    let Some((mode, icon)) = pane_mode_icon(i).and_then(|(m, z)| explorer_view_index(m, z).map(|k| (EXPLORER_VIEWS[k].0, EXPLORER_VIEWS[k].1))) else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    app(|a| {
+        a.s.view_new = mode;
+        a.s.view_icon = stored_view_icon(mode, icon);
+    });
+    save_session();
+    crate::settings::refresh();
 }
 
 // Alt+↓ or right-click on ← / →: folders recently visited in any pane, opened in this one.
