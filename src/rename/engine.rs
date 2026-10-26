@@ -2,7 +2,10 @@
 
 use std::collections::HashSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use regex::RegexBuilder;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum CaseMode {
     Lower,
     Upper,
@@ -11,7 +14,7 @@ pub(crate) enum CaseMode {
 }
 
 /// Where a generated piece is written. `At` is a character index in the stem.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum NumPos {
     Prefix,
     Suffix,
@@ -19,14 +22,14 @@ pub(crate) enum NumPos {
     At(i32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DateSrc {
     Modified,
     Created,
     Accessed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DatePos {
     Prefix,
     Suffix,
@@ -34,7 +37,7 @@ pub(crate) enum DatePos {
     Replace,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum TrimEdge {
     Both,
     Left,
@@ -42,7 +45,7 @@ pub(crate) enum TrimEdge {
 }
 
 /// One step in the stack. Later phases add variants; existing ones stay in this order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Rule {
     Replace { find: String, replace: String, case_sensitive: bool, include_ext: bool },
     Prefix { text: String },
@@ -57,6 +60,23 @@ pub(crate) enum Rule {
     Delete { at: i32, len: usize },
     /// Empty `chars` trims whitespace. Otherwise those characters.
     Trim { chars: String, edge: TrimEdge },
+    /// Rust regex. `$1` is the first capture. An empty pattern does nothing.
+    Regex { pattern: String, replace: String, case_sensitive: bool, include_ext: bool },
+}
+
+/// Which selected items a rule stack applies to. Extension lists ignore folders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Filter {
+    pub files: bool,
+    pub folders: bool,
+    /// Lowercase extensions without a leading dot. Empty means every file.
+    pub extensions: Vec<String>,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self { files: true, folders: true, extensions: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +105,7 @@ pub(crate) enum Issue {
     TooLong,
     Duplicate,
     Exists,
+    BadPattern,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,6 +116,8 @@ pub(crate) struct PreviewRow {
     /// Char indexes `[start, end)` of the part that differs. Empty when that side did not change.
     pub old_span: Option<(usize, usize)>,
     pub new_span: Option<(usize, usize)>,
+    /// Filtered out. Shown, not renamed, and not part of the sequence counter.
+    pub skipped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,19 +164,49 @@ fn join_name(stem: &str, ext: &str) -> String {
     }
 }
 
-pub(crate) fn apply_name(item: &BatchItem, rules: &[Rule], index: usize, tz_offset_secs: i32) -> String {
+struct Ready {
+    rules: Vec<Rule>,
+    /// Parallel to `rules`. Set only for a regex rule that compiled.
+    regexes: Vec<Option<regex::Regex>>,
+    bad_regex: bool,
+}
+
+fn ready(rules: &[Rule]) -> Ready {
+    let mut bad_regex = false;
+    let regexes = rules
+        .iter()
+        .map(|rule| match rule {
+            Rule::Regex { pattern, case_sensitive, .. } if !pattern.is_empty() => match compile_regex(pattern, *case_sensitive) {
+                Ok(re) => Some(re),
+                Err(_) => {
+                    bad_regex = true;
+                    None
+                }
+            },
+            _ => None,
+        })
+        .collect();
+    Ready { rules: rules.to_vec(), regexes, bad_regex }
+}
+
+fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<regex::Regex, regex::Error> {
+    RegexBuilder::new(pattern).case_insensitive(!case_sensitive).build()
+}
+
+#[cfg(test)]
+fn apply_name(item: &BatchItem, rules: &[Rule], index: usize, tz_offset_secs: i32) -> String {
+    apply_ready(&ready(rules), item, index, tz_offset_secs)
+}
+
+fn apply_ready(ready: &Ready, item: &BatchItem, index: usize, tz: i32) -> String {
     let mut name = item.name.clone();
-    for rule in rules {
-        name = apply_one(&name, item, is_dir_of(item), rule, index, tz_offset_secs);
+    for (rule, re) in ready.rules.iter().zip(ready.regexes.iter()) {
+        name = apply_one(&name, item, item.is_dir, rule, re.as_ref(), index, tz);
     }
     name
 }
 
-fn is_dir_of(item: &BatchItem) -> bool {
-    item.is_dir
-}
-
-fn apply_one(name: &str, item: &BatchItem, is_dir: bool, rule: &Rule, index: usize, tz: i32) -> String {
+fn apply_one(name: &str, item: &BatchItem, is_dir: bool, rule: &Rule, re: Option<&regex::Regex>, index: usize, tz: i32) -> String {
     let (stem, ext) = split_name(name, is_dir);
     match rule {
         Rule::Replace { find, replace, case_sensitive, include_ext } => {
@@ -235,7 +288,37 @@ fn apply_one(name: &str, item: &BatchItem, is_dir: bool, rule: &Rule, index: usi
             }
         }
         Rule::Trim { chars, edge } => join_name(&trim_stem(stem, chars, *edge), ext),
+        Rule::Regex { pattern, replace, include_ext, .. } => {
+            if pattern.is_empty() {
+                return name.to_string();
+            }
+            let Some(re) = re else { return name.to_string() };
+            let swap = |s: &str| re.replace_all(s, replace.as_str()).into_owned();
+            if *include_ext { swap(name) } else { join_name(&swap(stem), ext) }
+        }
     }
+}
+
+/// Comma, semicolon, or whitespace. A leading `*` or `.` is ignored.
+pub(crate) fn parse_extensions(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .map(|s| s.trim().trim_start_matches(['*', '.']).to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+pub(crate) fn included(item: &BatchItem, filter: &Filter) -> bool {
+    if item.is_dir {
+        return filter.folders;
+    }
+    if !filter.files {
+        return false;
+    }
+    if filter.extensions.is_empty() {
+        return true;
+    }
+    let (_, ext) = split_name(&item.name, false);
+    !ext.is_empty() && filter.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
 fn format_num(n: i64, pad: u8) -> String {
@@ -506,19 +589,41 @@ fn name_issues(dir: &str, name: &str) -> Vec<Issue> {
 
 /// `existing` holds every name currently in those folders, including the items being renamed.
 /// Keys are `(dir_key, name_key)`.
-pub(crate) fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(String, String)>, tz_offset_secs: i32) -> Vec<PreviewRow> {
-    let tz = tz_offset_secs;
-    let planned: Vec<(String, String)> = items
-        .iter()
-        .enumerate()
-        .map(|(i, it)| (it.name.clone(), apply_name(it, rules, i, tz)))
-        .collect();
-    let mut occ = existing.clone();
+#[cfg(test)]
+fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(String, String)>, tz_offset_secs: i32) -> Vec<PreviewRow> {
+    preview_filtered(items, rules, existing, tz_offset_secs, &Filter::default())
+}
+
+pub(crate) fn preview_filtered(
+    items: &[BatchItem],
+    rules: &[Rule],
+    existing: &HashSet<(String, String)>,
+    tz_offset_secs: i32,
+    filter: &Filter,
+) -> Vec<PreviewRow> {
+    let ready = ready(rules);
+    let mut seq = 0usize;
+    let mut planned = Vec::with_capacity(items.len());
     for it in items {
-        occ.remove(&(dir_key(&it.dir), name_key(&it.name)));
+        if !included(it, filter) {
+            planned.push((it.name.clone(), it.name.clone(), false));
+            continue;
+        }
+        let new = apply_ready(&ready, it, seq, tz_offset_secs);
+        seq += 1;
+        planned.push((it.name.clone(), new, true));
+    }
+    let mut occ = existing.clone();
+    for (it, (_, _, on)) in items.iter().zip(planned.iter()) {
+        if *on {
+            occ.remove(&(dir_key(&it.dir), name_key(&it.name)));
+        }
     }
     let mut final_count: Vec<((String, String), usize)> = Vec::new();
-    for (it, (_, new)) in items.iter().zip(planned.iter()) {
+    for (it, (_, new, on)) in items.iter().zip(planned.iter()) {
+        if !*on {
+            continue;
+        }
         let k = (dir_key(&it.dir), name_key(new));
         if let Some(slot) = final_count.iter_mut().find(|(key, _)| key == &k) {
             slot.1 += 1;
@@ -529,7 +634,17 @@ pub(crate) fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(S
     items
         .iter()
         .zip(planned.iter())
-        .map(|(it, (old, new))| {
+        .map(|(it, (old, new, on))| {
+            if !*on {
+                return PreviewRow {
+                    old_name: old.clone(),
+                    new_name: new.clone(),
+                    issues: Vec::new(),
+                    old_span: None,
+                    new_span: None,
+                    skipped: true,
+                };
+            }
             let mut issues = name_issues(&it.dir, new);
             let k = (dir_key(&it.dir), name_key(new));
             let dup = final_count.iter().find(|(key, _)| key == &k).map(|(_, n)| *n).unwrap_or(1) > 1;
@@ -538,12 +653,19 @@ pub(crate) fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(S
             } else if occ.contains(&k) {
                 issues.push(Issue::Exists);
             }
+            if ready.bad_regex {
+                issues.push(Issue::BadPattern);
+            }
             issues.sort();
             issues.dedup();
             let (old_span, new_span) = change_span(old, new);
-            PreviewRow { old_name: old.clone(), new_name: new.clone(), issues, old_span, new_span }
+            PreviewRow { old_name: old.clone(), new_name: new.clone(), issues, old_span, new_span, skipped: false }
         })
         .collect()
+}
+
+pub(crate) fn skipped_count(rows: &[PreviewRow]) -> usize {
+    rows.iter().filter(|r| r.skipped).count()
 }
 
 pub(crate) fn error_count(rows: &[PreviewRow]) -> usize {
@@ -1006,6 +1128,64 @@ mod tests {
         assert_eq!(only(&[Rule::Trim { chars: "x".into(), edge: TrimEdge::Left }], "xxax.jpg"), "ax.jpg");
         assert_eq!(only(&[Rule::Trim { chars: "x".into(), edge: TrimEdge::Right }], "xxax.jpg"), "xxa.jpg");
         assert_eq!(only(&[Rule::Trim { chars: String::new(), edge: TrimEdge::Right }], "ab.jpg"), "ab.jpg");
+    }
+
+    #[test]
+    fn regex_uses_captures_and_rejects_a_bad_pattern() {
+        let cap = Rule::Regex { pattern: r"(\w+)_(\d+)".into(), replace: "$2-$1".into(), case_sensitive: true, include_ext: false };
+        assert_eq!(only(&[cap], "img_01.jpg"), "01-img.jpg");
+        let ext = Rule::Regex { pattern: r"\.jpg$".into(), replace: ".png".into(), case_sensitive: false, include_ext: true };
+        assert_eq!(only(&[ext], "a.JPG"), "a.png");
+        let stem = Rule::Regex { pattern: "jpg".into(), replace: "png".into(), case_sensitive: false, include_ext: false };
+        assert_eq!(only(&[stem], "a.JPG"), "a.JPG");
+        let loose = Rule::Regex { pattern: "img".into(), replace: "pic".into(), case_sensitive: false, include_ext: false };
+        assert_eq!(only(&[loose], "IMG_01.jpg"), "pic_01.jpg");
+        let empty = Rule::Regex { pattern: String::new(), replace: "x".into(), case_sensitive: true, include_ext: true };
+        assert_eq!(only(&[empty], "a.jpg"), "a.jpg");
+        let bad = preview(
+            &[item("a.jpg")],
+            &[Rule::Regex { pattern: "(".into(), replace: "x".into(), case_sensitive: true, include_ext: false }],
+            &keys(&["a.jpg"]),
+            0,
+        );
+        assert_eq!(bad[0].new_name, "a.jpg");
+        assert!(bad[0].issues.contains(&Issue::BadPattern));
+        assert!(!bad[0].skipped);
+    }
+
+    #[test]
+    fn filters_skip_rows_and_number_only_what_remains() {
+        let files = Filter { files: true, folders: false, extensions: Vec::new() };
+        let items = vec![item("a.txt"), dir_item("pics"), item("b.txt")];
+        let rows = preview_filtered(&items, &[Rule::Prefix { text: "n_".into() }], &keys(&["a.txt", "pics", "b.txt"]), 0, &files);
+        assert_eq!(rows[0].new_name, "n_a.txt");
+        assert!(rows[1].skipped && rows[1].new_name == "pics");
+        assert_eq!(rows[2].new_name, "n_b.txt");
+
+        let jpg = Filter { files: true, folders: true, extensions: parse_extensions("*.JPG, png") };
+        let batch = vec![item("a.jpg"), item("b.png"), item("c.txt"), dir_item("album")];
+        let rows = preview_filtered(
+            &batch,
+            &[Rule::Number { start: 1, step: 1, pad: 2, pos: NumPos::Suffix }],
+            &keys(&["a.jpg", "b.png", "c.txt", "album"]),
+            0,
+            &jpg,
+        );
+        assert_eq!(rows[0].new_name, "a01.jpg");
+        assert_eq!(rows[1].new_name, "b02.png");
+        assert!(rows[2].skipped && rows[2].new_name == "c.txt");
+        assert_eq!(rows[3].new_name, "album03");
+
+        let held = preview_filtered(
+            &[item("new.txt"), dir_item("pics")],
+            &[Rule::Replace { find: "new.txt".into(), replace: "pics".into(), case_sensitive: true, include_ext: true }],
+            &keys(&["new.txt", "pics"]),
+            0,
+            &files,
+        );
+        assert!(held[1].skipped);
+        assert_eq!(held[0].new_name, "pics");
+        assert!(held[0].issues.contains(&Issue::Exists));
     }
 
 }
