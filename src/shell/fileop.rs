@@ -615,7 +615,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.view_new = fresh.view_new;
         a.s.start_new = fresh.start_new;
         a.s.start_path.clear();
-        a.s.ext = fresh.ext;
+        // `ext` mirrors Explorer's system-wide HideFileExt; resetting app settings must not change it.
         a.s.tree_on = fresh.tree_on;
         a.s.edge = fresh.edge;
         a.s.confirm = fresh.confirm;
@@ -639,7 +639,6 @@ pub(crate) unsafe fn reset_prefs() {
     });
     set_language(fresh.lang);
     crate::keys::reset_all();
-    apply_ext(true);
     relayout();
     save_session();
     settings::refresh();
