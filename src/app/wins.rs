@@ -466,6 +466,12 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
 /// A second launch, with or without paths. Empty args are a blank window,
 /// unless single-window mode is on: then the existing window comes forward.
 pub(crate) unsafe fn open_in_new_window(args: Vec<String>) -> HWND {
+    let had = !args.is_empty();
+    let args = crate::folderapp::take_launch_args(args);
+    // Only virtual paths: Explorer already has them. Do not open a blank window or steal focus.
+    if args.is_empty() && had {
+        return app(|a| a.main);
+    }
     match inbound(app(|a| a.s.one_window), !args.is_empty()) {
         Inbound::Focus => {
             let h = app(|a| a.main);

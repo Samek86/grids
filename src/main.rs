@@ -16,6 +16,7 @@ mod folderview;
 mod everything;
 mod rename;
 mod winmerge;
+mod folderapp;
 
 use imports::*;
 
@@ -29,9 +30,18 @@ pub(crate) use settings::store;
 
 fn main() -> Result<()> {
     unsafe {
+        // A moved exe keeps the folder registration pointed at the binary that is running.
+        folderapp::repair_moved_exe();
         let mut raw: Vec<String> = std::env::args().skip(1).collect();
         wait_for_previous(&mut raw);
         let args: Vec<String> = raw.into_iter().map(resolve).collect();
+        // shell: and CLSID paths are not filesystem folders. Explorer opens those; this process
+        // does not start a window just to hold them.
+        let had_args = !args.is_empty();
+        let args = folderapp::take_launch_args(args);
+        if args.is_empty() && had_args {
+            return Ok(());
+        }
         // Read first so single=0 can opt out of handing arguments to the running window.
         // one_window still hands off: the running window comes forward and opens paths as tabs.
         // panegrid.json is the store. If it is missing, a previous grids.json is copied;
