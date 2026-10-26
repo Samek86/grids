@@ -258,8 +258,46 @@ pub(crate) fn shell_home_verb(path: &str, pin: bool) -> bool {
     if path.is_empty() {
         return false;
     }
-    let verb = if pin { "pintohome" } else { "unpinfromhome" };
-    unsafe { invoke_verb(&path, verb) }
+    if pin {
+        return unsafe { invoke_verb(&path, "pintohome") };
+    }
+    // A filesystem item only offers "Pin to Quick access": `unpinfromhome` lives on the Quick Access child.
+    // Invoking it on the plain path did nothing, so the row came back once the 3s hide ran out.
+    unsafe { quick_access_child(&path).is_some_and(|item| item_verb(&item, "unpinfromhome")) }
+}
+
+/// The Quick Access child whose filesystem path is `path`.
+unsafe fn quick_access_child(path: &str) -> Option<IShellItem> {
+    let root = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(QUICK_ACCESS), None).ok()?;
+    let items = root.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems).ok()?;
+    for _ in 0..PIN_CAP {
+        let mut slot = [None];
+        _ = items.Next(&mut slot, None);
+        let child = slot[0].take()?;
+        let p = child.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).unwrap_or_default();
+        if !p.is_empty() && tidy_path(&p).eq_ignore_ascii_case(path) {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// Run a canonical verb from the item's own context menu. QueryContextMenu first, as the contract requires.
+unsafe fn item_verb(item: &IShellItem, verb: &str) -> bool {
+    let Ok(cm) = item.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject) else { return false };
+    let Ok(menu) = CreatePopupMenu() else { return false };
+    let queried = cm.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL).is_ok();
+    let ansi = format!("{verb}\0");
+    let ici = CMINVOKECOMMANDINFO {
+        cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+        fMask: 0x400, // CMIC_MASK_FLAG_NO_UI
+        lpVerb: PCSTR(ansi.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    let ok = queried && cm.InvokeCommand(&ici).is_ok();
+    _ = DestroyMenu(menu);
+    ok
 }
 
 fn pin_worker() {
@@ -607,15 +645,7 @@ unsafe fn invoke_verb(path: &str, verb: &str) -> bool {
         return true;
     }
     let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&file, None) else { return false };
-    let Ok(cm) = item.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject) else { return false };
-    let ansi = format!("{verb}\0");
-    let ici = CMINVOKECOMMANDINFO {
-        cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
-        lpVerb: PCSTR(ansi.as_ptr()),
-        nShow: SW_HIDE.0 as i32,
-        ..Default::default()
-    };
-    cm.InvokeCommand(&ici).is_ok()
+    item_verb(&item, verb)
 }
 
 #[cfg(test)]
