@@ -54,7 +54,8 @@ pub(crate) fn search_text(folder: &str, raw: &str, scope_all: bool, show_hidden:
 fn strip_scope_prefix(raw: &str) -> (bool, &str) {
     let t = raw.trim_start();
     for p in ["all:", "everywhere:"] {
-        if t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p) {
+        // get(): a byte cut inside a non-ASCII character (Korean, Japanese) is None, not a panic.
+        if t.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)) {
             return (true, &t[p.len()..]);
         }
     }
@@ -106,6 +107,10 @@ mod tests {
         assert_eq!(all.scope, Scope::Everywhere);
         assert_eq!(all.text, "*.dll");
         assert!(forces_everywhere("  Everywhere: report"));
+        assert!(!forces_everywhere("가나다라 보고서"));
+        assert!(!forces_everywhere("日本語のファイル名を探す"));
+        assert!(forces_everywhere("all:日本"));
+        assert!(search_text(r"C:\Work", "회의록", false, true).is_some());
         assert_eq!(without_scope_prefix("all: report").as_deref(), Some("report"));
         assert!(without_scope_prefix("report").is_none());
         let pill = search_text(r"C:\Work", "*.pdf;*.txt", true, true).unwrap();
