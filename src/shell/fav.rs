@@ -210,16 +210,28 @@ pub(crate) unsafe fn tidy_fav_item(menu: HMENU, id: usize) {
     }
     loop {
         let Some(fav) = menu_index(menu, id) else { return };
-        if fav < 2 || !menu_sep(menu, fav - 1) || !menu_sep(menu, fav - 2) {
+        let anchor = pair_top(menu, fav);
+        if anchor < 2 || !menu_sep(menu, anchor - 1) || !menu_sep(menu, anchor - 2) {
             break;
         }
-        if DeleteMenu(menu, fav - 1, MF_BYPOSITION).is_err() {
+        if DeleteMenu(menu, anchor - 1, MF_BYPOSITION).is_err() {
             break;
         }
     }
     let Some(fav) = menu_index(menu, id) else { return };
-    if fav > 0 && !menu_sep(menu, fav - 1) {
-        _ = InsertMenuW(menu, fav, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+    // Batch rename is the row directly above favourites. The separator stays above that pair.
+    let anchor = pair_top(menu, fav);
+    if anchor > 0 && !menu_sep(menu, anchor - 1) {
+        _ = InsertMenuW(menu, anchor, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+    }
+}
+
+/// Favourites, or the batch-rename row sitting directly above it.
+unsafe fn pair_top(menu: HMENU, fav: u32) -> u32 {
+    if fav > 0 && GetMenuItemID(menu, (fav - 1) as i32) as u32 == ID_CTX_BATCH {
+        fav - 1
+    } else {
+        fav
     }
 }
 
@@ -393,8 +405,8 @@ pub(crate) unsafe fn forward_menu(msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LR
     })
 }
 
-// Shell menu for the pane. Add/Remove favourites sits directly above Properties when the selection has a folder.
-// Returns false when the shell menu could not be built, so the view shows its own.
+// Shell menu for the pane. Favourites sits directly above Properties. Batch rename sits
+// directly above favourites. Returns false when the shell menu could not be built.
 pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     if CTX_OPEN.swap(true, Ordering::AcqRel) {
         return true;
@@ -413,23 +425,15 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     let background = refs.is_empty();
     let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
     let targets = super::ctxmenu::click_targets(background, &items);
-    // Nothing disabled: the shell menu, unchanged. A filter builds a menu that never loads the off handlers.
-    if super::ctxmenu::needs_filter(targets) {
-        let t0 = std::time::Instant::now();
-        let composed = view_of::<IFolderView2>(i)
-            .and_then(|fv| fv.GetFolder::<IShellFolder>().ok())
-            .and_then(|folder| super::ctxmenu::compose(owner, &folder, &refs, targets, &paths));
-        super::ctxmenu::log_phase("build", t0);
-        if let Some(cm) = composed {
-            if popup_ctx(owner, cm, &paths, &items, background, true, &props, pt, i) {
-                for p in &pidls {
-                    CoTaskMemFree(Some(*p as _));
-                }
-                return true;
-            }
-        }
+    // Same shell menu as an unfiltered click. Disabled commands are removed afterwards.
+    let _probe = if super::ctxmenu::needs_filter(targets) {
         super::ctxmenu::arm_strip(targets);
-    }
+        view_of::<IFolderView2>(i)
+            .and_then(|fv| fv.GetFolder::<IShellFolder>().ok())
+            .map(|folder| super::ctxmenu::arm_probe(owner, &folder, &refs))
+    } else {
+        None
+    };
     let cm = if background {
         sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND).ok()
     } else if let Some(folder) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellFolder>().ok()) {
@@ -440,7 +444,10 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     for p in pidls {
         CoTaskMemFree(Some(p as _));
     }
-    let Some(cm) = cm else { return false };
+    let Some(cm) = cm else {
+        let _ = super::ctxmenu::take_strip();
+        return false;
+    };
     popup_ctx(owner, cm, &paths, &items, background, true, &props, pt, i)
 }
 
@@ -461,18 +468,16 @@ pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POIN
     }
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let targets = super::ctxmenu::click_targets(false, items);
-    if super::ctxmenu::needs_filter(targets) {
-        let t0 = std::time::Instant::now();
-        let composed = super::ctxmenu::compose_paths(owner, items, targets);
-        super::ctxmenu::log_phase("build", t0);
-        if let Some(cm) = composed {
-            if popup_ctx(owner, cm, &paths, items, false, false, "", pt, i) {
-                return true;
-            }
-        }
+    let _probe = if super::ctxmenu::needs_filter(targets) {
         super::ctxmenu::arm_strip(targets);
-    }
-    let Some(cm) = menu_for_paths(&paths) else { return false };
+        super::ctxmenu::arm_probe_paths(owner, items)
+    } else {
+        None
+    };
+    let Some(cm) = menu_for_paths(&paths) else {
+        let _ = super::ctxmenu::take_strip();
+        return false;
+    };
     popup_ctx(owner, cm, &paths, items, false, false, "", pt, i)
 }
 
@@ -541,11 +546,13 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
         insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&paths));
     }
-    // Above the shell items, so it stays visible on a long menu. Background clicks have nothing to rename.
+    // Directly above favourites, in the normal menu and after a filtered shell menu.
+    // Background clicks have nothing to rename.
     if !background && !paths.is_empty() {
-        let label = HSTRING::from(crate::rename::menu_label());
-        _ = InsertMenuW(menu, 0, MF_STRING | MF_BYPOSITION, ID_CTX_BATCH as usize, &label);
-        _ = InsertMenuW(menu, 1, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+        if let Some(fav_at) = menu_index(menu, ID_CTX_FAV as usize) {
+            let label = HSTRING::from(crate::rename::menu_label());
+            _ = InsertMenuW(menu, fav_at, MF_STRING | MF_BYPOSITION, ID_CTX_BATCH as usize, &label);
+        }
     }
     // Next to Favourites (or above Properties on a background click). Only commands that fit this click.
     if !paths.is_empty() {
