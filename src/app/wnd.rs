@@ -500,14 +500,20 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_SIZE => layout_pane(h),
             WM_MOUSEMOVE => {
                 let (x, y) = xy(lp);
-                let at = pane_of(h).and_then(|i| crumb_at(h, i, x, y)).and_then(|hit| hit.map(|(k, ..)| k));
-                crumb_hover(h, at);
+                pane_drag_move(h, x, y);
+                if app(|a| a.pane_press.is_none() && a.pane_drag.is_none()) {
+                    let at = pane_of(h).and_then(|i| crumb_at(h, i, x, y)).and_then(|hit| hit.map(|(k, ..)| k));
+                    crumb_hover(h, at);
+                }
             }
             WM_MOUSELEAVE => crumb_hover(h, None),
             WM_KIDS => kids_show(h, wp.0),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
+                    if pane_drag_down(h, i, x, y) {
+                        return LRESULT(0);
+                    }
                     if pane_tab_mouse(h, i, x, y, false) {
                         return LRESULT(0);
                     }
@@ -528,6 +534,16 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 }
             }
+            WM_LBUTTONUP => {
+                if pane_drag_up(h) {
+                    return LRESULT(0);
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_RBUTTONDOWN | WM_MBUTTONDOWN if app(|a| a.pane_drag.is_some() || a.pane_press.is_some()) => {
+                cancel_pane_drag();
+                return LRESULT(0);
+            }
             WM_MBUTTONUP => {
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
@@ -536,6 +552,21 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     }
                 }
                 return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_SETCURSOR if app(|a| a.pane_drag.is_some()) => {
+                if let Ok(c) = LoadCursorW(None, IDC_SIZEALL) {
+                    SetCursor(Some(c));
+                }
+                return LRESULT(1);
+            }
+            WM_CANCELMODE => {
+                cancel_pane_drag();
+                return DefWindowProcW(h, msg, wp, lp);
+            }
+            WM_CAPTURECHANGED => {
+                if app(|a| a.pane_drag.is_some() || a.pane_press.is_some()) {
+                    cancel_pane_drag();
+                }
             }
             WM_LBUTTONDBLCLK => {
                 let (x, y) = xy(lp);

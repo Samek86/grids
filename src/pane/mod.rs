@@ -9,6 +9,7 @@ mod select;
 mod status;
 mod tree;
 mod view;
+mod drag;
 
 pub(crate) use docparse::{zip_entries, zip_read};
 pub(crate) use find::*;
@@ -20,3 +21,4 @@ pub(crate) use select::*;
 pub(crate) use status::*;
 pub(crate) use tree::*;
 pub(crate) use view::*;
+pub(crate) use drag::*;
