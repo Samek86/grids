@@ -1176,10 +1176,10 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
         }
         S_START => {
             if sel == 1 {
-                match unsafe { crate::pick_open(h) } {
+                match unsafe { crate::pick_session(h, crate::tr("Session to open on startup", "시작할 때 열 세션", "起動時に開くセッション")) } {
                     Some(p) => app(|a| {
                         a.s.boot = 1;
-                        a.s.boot_file = p;
+                        a.s.boot_file = p.to_string_lossy().into_owned();
                     }),
                     None => {
                         unsafe { refresh() };

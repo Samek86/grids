@@ -190,7 +190,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_COMMAND => match wp.0 & 0xffff {
                 id if id == ID_TB_LAYOUT as usize => open_grid(),
                 id if id == ID_TB_SAVE as usize => save_current(),
-                id if id == ID_TB_LOAD as usize => open_load(),
+                id if id == ID_TB_LOAD as usize => open_session_list(),
                 ID_NEWFILE => create_text_file(),
                 id if id == ID_TB_FAV as usize => open_fav_manager(h),
                 id if id == ID_TB_SET as usize => popup_menu(app(|a| a.view_menu), ID_TB_SET),
