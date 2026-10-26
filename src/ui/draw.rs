@@ -316,16 +316,11 @@ pub(crate) unsafe fn check_dirty() {
         save_view(i);
     }
     let changed = app(|a| {
-        let (n, cols) = (a.s.panes(), a.s.cols.clone());
-        if let Some(b) = a.base.as_mut() {
-            for i in 0..n {
-                if b.cols[i].is_empty() {
-                    b.cols[i] = cols[i].clone();
-                }
-            }
+        let (n, cols, tab) = (a.s.panes(), a.s.cols.clone(), a.s.tab);
+        if let Some(b) = a.tab_base.get_mut(tab) {
+            absorb_cols(&mut b.grid, &cols, n);
         }
-        let d = a.s.dot && session_dirty(&a.s, a.base.as_ref());
-        std::mem::replace(&mut a.dirty, d) != d
+        pull_dirty(a)
     });
     if changed {
         refresh_save_button();

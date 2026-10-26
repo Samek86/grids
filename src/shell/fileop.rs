@@ -695,7 +695,7 @@ pub(crate) fn apply_boot(s: &mut Session) {
             if let Ok(t) = std::fs::read_to_string(&s.boot_file) {
                 let file = s.boot_file.clone();
                 s.take_layout(&Session::parse(&t));
-                s.file = file;
+                link_loaded_window(s, &file);
             }
         }
         // 0, the default: every tab loaded from panegrid.json stays. Only the active one is shown.
