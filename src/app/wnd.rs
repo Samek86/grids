@@ -382,9 +382,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
-                if app(|a| a.s.autosave && !a.s.file.is_empty()) {
-                    let path = app(|a| a.s.file.clone());
-                    write_session(Path::new(&path));
+                if app(|a| a.s.autosave) {
+                    autosave_associated_tabs();
                 }
                 publish_shared();
                 let last = window_count() <= 1;

@@ -73,28 +73,120 @@ pub(crate) unsafe fn note_save() {
     }
 }
 
-// Save button / Ctrl+S: overwrite the current session file; the first time, ask for a name.
+// Save button / Ctrl+S: overwrite the active tab's session file. A tab with none asks for a name.
 pub(crate) unsafe fn save_current() {
-    let file = app(|a| a.s.file.clone());
-    if file.is_empty() {
-        _ = save_session_as();
-    } else {
-        write_session(Path::new(&file));
+    remember_tabs();
+    let (i, path) = app(|a| {
+        let i = a.s.tab;
+        let path = match save_choice(&a.s.tabs, i) {
+            SaveChoice::Overwrite(p) => Some(p.to_string()),
+            SaveChoice::AskName => None,
+        };
+        (i, path)
+    });
+    match path {
+        Some(file) => write_tab_session(i, Path::new(&file)),
+        None => _ = save_session_as(),
     }
 }
 
-pub(crate) unsafe fn write_session(path: &Path) {
+/// Write tab `i` into `path` and link that tab only. Other tabs keep their files.
+pub(crate) unsafe fn write_tab_session(i: usize, path: &Path) {
     remember_tabs();
-    if crate::settings::store::write_atomic(path, app(|a| a.s.snapshot()).as_bytes()).is_err() {
+    let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
+    if crate::settings::store::write_atomic(path, text.as_bytes()).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
+    let path_s = path.to_string_lossy().into_owned();
     app(|a| {
-        a.s.file = path.to_string_lossy().into_owned();
-        a.s.order.clear();
-        (a.base, a.dirty) = (Some(a.s.clone()), false);
+        if bind_tab_session(&mut a.s, i, &path_s) {
+            mark_tab_clean(a, i);
+            let _ = pull_dirty(a);
+        }
     });
     refresh_save_button();
+}
+
+pub(crate) unsafe fn write_session(path: &Path) {
+    let i = app(|a| a.s.tab);
+    write_tab_session(i, path);
+}
+
+/// Each tab that already has a session file. Tabs without one are left for Save to name.
+pub(crate) unsafe fn autosave_associated_tabs() {
+    if !app(|a| a.s.autosave) {
+        return;
+    }
+    remember_tabs();
+    let jobs = app(|a| {
+        a.s.tabs.iter().enumerate().filter(|(_, t)| !t.session.is_empty()).map(|(i, t)| (i, t.session.clone())).collect::<Vec<_>>()
+    });
+    for (i, path) in jobs {
+        let Some(text) = app(|a| tab_session_text(&a.s, i)) else { continue };
+        if crate::settings::store::write_atomic(Path::new(&path), text.as_bytes()).is_err() {
+            _ = MessageBeep(MB_ICONWARNING);
+            continue;
+        }
+        app(|a| mark_tab_clean(a, i));
+    }
+    app(|a| { let _ = pull_dirty(a); });
+    refresh_save_button();
+}
+
+pub(crate) fn pull_dirty(a: &mut crate::Desk) -> bool {
+    heal_tab_base(a);
+    let tab = a.s.tab;
+    let dirty = a.s.dot && active_tab_dirty(&a.s, a.tab_base.get(tab).map(|b| &b.grid), &a.s.order);
+    std::mem::replace(&mut a.dirty, dirty) != dirty
+}
+
+fn heal_tab_base(a: &mut crate::Desk) {
+    let n = a.s.tabs.len();
+    if a.tab_base.len() < n {
+        for i in a.tab_base.len()..n {
+            let grid = a.s.tabs.get(i).cloned().unwrap_or_else(|| Tab::from_live(&a.s, String::new(), false, vec![String::new(); crate::MAXP]));
+            a.tab_base.push(TabBase { grid, order: Vec::new() });
+        }
+    } else if a.tab_base.len() > n {
+        a.tab_base.truncate(n);
+    }
+}
+
+pub(crate) fn stash_tab_order(a: &mut crate::Desk, i: usize) {
+    heal_tab_base(a);
+    if let Some(b) = a.tab_base.get_mut(i) {
+        b.order = a.s.order.clone();
+    }
+}
+
+pub(crate) fn restore_tab_order(a: &mut crate::Desk, i: usize) {
+    heal_tab_base(a);
+    a.s.order = a.tab_base.get(i).map(|b| b.order.clone()).unwrap_or_default();
+}
+
+pub(crate) fn mark_tab_clean(a: &mut crate::Desk, i: usize) {
+    heal_tab_base(a);
+    let Some(grid) = a.s.tabs.get(i).cloned() else { return };
+    if let Some(b) = a.tab_base.get_mut(i) {
+        b.grid = grid;
+        b.order.clear();
+    }
+    if a.s.tab == i {
+        a.s.order.clear();
+        a.dirty = false;
+    }
+}
+
+pub(crate) fn insert_tab_base(a: &mut crate::Desk, at: usize, tab: &Tab) {
+    let at = at.min(a.tab_base.len());
+    a.tab_base.insert(at, TabBase { grid: tab.clone(), order: Vec::new() });
+}
+
+pub(crate) fn remove_tab_base(a: &mut crate::Desk, i: usize) {
+    if i < a.tab_base.len() {
+        a.tab_base.remove(i);
+    }
 }
 
 /// Why a typed session name was refused.
@@ -170,14 +262,14 @@ pub(crate) unsafe fn save_session_as() -> Result<()> {
     Ok(())
 }
 
-/// Writes one tab's grid to a named session. The window's own session file stays as it is.
+/// Writes one tab's grid to a named session and links that tab. Other tabs keep their files.
 pub(crate) unsafe fn save_tab_as_session(i: usize) {
     remember_tabs();
-    let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
-    let Some(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
-    if crate::settings::store::write_atomic(&path, text.as_bytes()).is_err() {
-        _ = MessageBeep(MB_ICONWARNING);
+    if app(|a| i >= a.s.tabs.len()) {
+        return;
     }
+    let Some(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
+    write_tab_session(i, &path);
 }
 
 pub(crate) unsafe fn load_session_file(path: &Path) {
@@ -186,11 +278,27 @@ pub(crate) unsafe fn load_session_file(path: &Path) {
         return;
     };
     let other = Session::parse(&text);
-    let mut s = app(|a| a.s.clone());
-    s.take_layout(&other);
-    s.file = path.to_string_lossy().into_owned();
-    install_grids(s);
-    app(|a| (a.base, a.dirty) = (Some(a.s.clone()), false));
+    let tabs = other.view_tabs();
+    let Some(incoming) = tabs.get(other.tab.min(tabs.len().saturating_sub(1))).cloned() else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    remember_tabs();
+    let path_s = path.to_string_lossy().into_owned();
+    let i = app(|a| a.s.tab);
+    app(|a| {
+        load_into_tab(&mut a.s, i, &incoming, &path_s);
+        a.s.order.clear();
+        mark_tab_clean(a, i);
+        a.base = Some(a.s.clone());
+        let _ = pull_dirty(a);
+    });
+    // Panes on screen follow the loaded grid. Parked panes of other tabs stay.
+    for k in 0..crate::MAXP {
+        destroy_pane(k);
+    }
+    let filters = app(|a| a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default());
+    put_filters(&filters);
     refresh_save_button();
     relayout();
     sync_filter_edits();
