@@ -10,6 +10,7 @@ mod status;
 mod tree;
 mod view;
 
+pub(crate) use docparse::{zip_entries, zip_read};
 pub(crate) use find::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;

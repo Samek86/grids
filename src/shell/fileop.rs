@@ -629,6 +629,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.boot_file.clear();
         a.s.autosave = fresh.autosave;
         a.s.dot = fresh.dot;
+        a.s.update_check = fresh.update_check;
         a.s.single = fresh.single;
         a.s.one_window = fresh.one_window;
         a.s.dblup = fresh.dblup;

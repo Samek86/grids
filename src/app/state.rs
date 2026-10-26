@@ -477,6 +477,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.boot_file = src.boot_file.clone();
     dst.autosave = src.autosave;
     dst.dot = src.dot;
+    dst.update_check = src.update_check;
     dst.dblup = src.dblup;
     dst.space_preview = src.space_preview;
     dst.peek_wheel_nav = src.peek_wheel_nav;

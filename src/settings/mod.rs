@@ -52,6 +52,7 @@ const TG_EV: u8 = 15;
 const TG_DRIVES: u8 = 16;
 const TG_SPACE: u8 = 17;
 const TG_WHEEL: u8 = 18;
+const TG_UPDATE: u8 = 19;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -204,6 +205,7 @@ const SESS: &[Spec] = &[
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
+    Spec { title: s("Check for updates on startup", "시작할 때 업데이트 확인", "起動時に更新を確認"), desc: s("Asks GitHub for a newer Panegrid release and offers to install it.", "GitHub에서 새 Panegrid 릴리스를 확인하고 설치를 제안해요.", "GitHub で新しい Panegrid リリースを確認し、インストールを提案します。"), live: true, ctl: Ctl::Toggle(TG_UPDATE) },
     Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("portable.txt next to the exe keeps this file there.", "exe 옆 portable.txt가 있으면 이 파일을 그 옆에 둬요.", "exe の隣の portable.txt があると、このファイルをそこに置きます。"), live: true, ctl: Ctl::Adv },
     Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), live: true, ctl: Ctl::AdvReset },
 ];
@@ -725,6 +727,7 @@ fn toggle_on(id: u8) -> bool {
         TG_CONFIRM => app(|a| a.s.confirm),
         TG_AUTOSAVE => app(|a| a.s.autosave),
         TG_DOT => app(|a| a.s.dot),
+        TG_UPDATE => app(|a| a.s.update_check),
         TG_EV => app(|a| a.s.use_everything),
         TG_SPACE => app(|a| a.s.space_preview),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav),

@@ -280,6 +280,7 @@ pub(crate) struct Session {
     pub(crate) layout_new: u8,         // 0 side by side, 1 top/bottom, 2 is 2×2, 3 one pane (missing = 0)
     pub(crate) boot: u8,               // 0 restore last layout, 1 open boot_file, 2 the default layout
     pub(crate) boot_file: String,
+    pub(crate) update_check: bool,     // ask GitHub for a newer release at startup
     pub(crate) autosave: bool,         // write the named session on exit
     pub(crate) dot: bool,              // green unsaved mark on the save button
     pub(crate) tabs: Vec<Tab>,         // every tab's grid; the active one's grid is also the fields above
@@ -344,6 +345,7 @@ impl Default for Session {
             boot_file: String::new(),
             autosave: false,
             dot: true,
+            update_check: true,
             tabs: Vec::new(),
             tab: 0,
         };
@@ -407,6 +409,7 @@ impl PartialEq for Session {
             && self.boot_file == o.boot_file
             && self.autosave == o.autosave
             && self.dot == o.dot
+            && self.update_check == o.update_check
             && self.tab == o.tab
             && self.view_tabs() == o.view_tabs()
     }
@@ -646,6 +649,7 @@ impl Session {
                 "bootf" => s.boot_file = v.trim().to_string(),
                 "autosave" => s.autosave = v.trim() == "1",
                 "dot" => s.dot = v.trim() != "0",
+                "upcheck" => s.update_check = v.trim() != "0",
                 "dblup" => s.dblup = v.trim() != "0",
                 "panetabs" => {} // older files; pane tabs are always on
                 "spacepreview" => s.space_preview = v.trim() != "0",
@@ -748,7 +752,7 @@ impl Session {
         if !self.boot_file.is_empty() {
             o += &format!("bootf={}\n", self.boot_file);
         }
-        o += &format!("autosave={}\ndot={}\n", self.autosave as u8, self.dot as u8);
+        o += &format!("autosave={}\ndot={}\nupcheck={}\n", self.autosave as u8, self.dot as u8, self.update_check as u8);
         o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\npeekwheelnav={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8, self.peek_wheel_nav as u8);
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
