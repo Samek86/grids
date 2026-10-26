@@ -191,7 +191,6 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id if id == ID_TB_LAYOUT as usize => open_grid(),
                 id if id == ID_TB_SAVE as usize => save_current(),
                 id if id == ID_TB_LOAD as usize => open_session_list(),
-                ID_NEWFILE => create_text_file(),
                 id if id == ID_TB_FAV as usize => open_fav_manager(h),
                 id if id == ID_TB_SET as usize => popup_menu(app(|a| a.view_menu), ID_TB_SET),
                 id if (ID_DRIVE as usize..ID_DRIVE as usize + 26).contains(&id) => {
@@ -943,7 +942,6 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
     item(view, MF_STRING, ID_THEME, theme_action_label())?;
     item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Panegrid to front from anywhere", "어디서나 Panegrid 불러오기", "どこからでも Panegrid を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
-    item(view, MF_STRING, ID_NEWFILE, tr("New text file", "새 텍스트 파일", "新しいテキスト ファイル"))?;
     item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
     let colors = CreatePopupMenu()?;
     for (k, (name, _)) in LIGHT.accents.iter().enumerate() {
