@@ -142,6 +142,10 @@ unsafe fn composition_pending(start: HWND) -> bool {
 
 pub(crate) unsafe fn key(m: &MSG) -> bool {
     let vk = m.wParam.0 as u16;
+    // A pane drag in progress: Esc drops it and does not also clear a filter or close a dialog.
+    if VIRTUAL_KEY(vk) == VK_ESCAPE && cancel_pane_drag() {
+        return true;
+    }
     // The preview takes its own keys. Pane shortcuts must not act behind it.
     let peek = app(|a| a.peek);
     if !peek.0.is_null() && m.hwnd == peek {
