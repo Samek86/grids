@@ -411,6 +411,25 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     let pidls = selection_pidls(i);
     let refs: Vec<*const ITEMIDLIST> = pidls.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
     let background = refs.is_empty();
+    let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
+    let targets = super::ctxmenu::click_targets(background, &items);
+    // Nothing disabled: the shell menu, unchanged. A filter builds a menu that never loads the off handlers.
+    if super::ctxmenu::needs_filter(targets) {
+        let t0 = std::time::Instant::now();
+        let composed = view_of::<IFolderView2>(i)
+            .and_then(|fv| fv.GetFolder::<IShellFolder>().ok())
+            .and_then(|folder| super::ctxmenu::compose(owner, &folder, &refs, targets, &paths));
+        super::ctxmenu::log_phase("build", t0);
+        if let Some(cm) = composed {
+            if popup_ctx(owner, cm, &paths, &items, background, true, &props, pt, i) {
+                for p in &pidls {
+                    CoTaskMemFree(Some(*p as _));
+                }
+                return true;
+            }
+        }
+        super::ctxmenu::arm_strip(targets);
+    }
     let cm = if background {
         sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND).ok()
     } else if let Some(folder) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellFolder>().ok()) {
@@ -422,7 +441,6 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
         CoTaskMemFree(Some(p as _));
     }
     let Some(cm) = cm else { return false };
-    let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
     popup_ctx(owner, cm, &paths, &items, background, true, &props, pt, i)
 }
 
@@ -442,6 +460,18 @@ pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POIN
         return false;
     }
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
+    let targets = super::ctxmenu::click_targets(false, items);
+    if super::ctxmenu::needs_filter(targets) {
+        let t0 = std::time::Instant::now();
+        let composed = super::ctxmenu::compose_paths(owner, items, targets);
+        super::ctxmenu::log_phase("build", t0);
+        if let Some(cm) = composed {
+            if popup_ctx(owner, cm, &paths, items, false, false, "", pt, i) {
+                return true;
+            }
+        }
+        super::ctxmenu::arm_strip(targets);
+    }
     let Some(cm) = menu_for_paths(&paths) else { return false };
     popup_ctx(owner, cm, &paths, items, false, false, "", pt, i)
 }
@@ -474,10 +504,19 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     if GetKeyState(VK_SHIFT.0 as i32) < 0 {
         flags |= CMF_EXTENDEDVERBS;
     }
+    let t_query = std::time::Instant::now();
     let hr = cm.QueryContextMenu(menu, 0, 1, 0x7FFF, flags);
+    super::ctxmenu::log_phase("query", t_query);
     if !hr.is_ok() {
+        let _ = super::ctxmenu::take_strip();
         _ = DestroyMenu(menu);
         return false;
+    }
+    let strip = super::ctxmenu::take_strip();
+    if strip != 0 {
+        let t_strip = std::time::Instant::now();
+        super::ctxmenu::strip_disabled(menu, &cm, strip);
+        super::ctxmenu::log_phase("strip", t_strip);
     }
     // The background menu of some views (Windows 10) comes without Properties. Add the folder's own.
     let mut add_props = false;

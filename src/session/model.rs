@@ -296,6 +296,10 @@ pub(crate) struct Session {
     pub(crate) dot: bool,              // green unsaved mark on the save button
     pub(crate) tabs: Vec<Tab>,         // every tab's grid; the active one's grid is also the fields above
     pub(crate) tab: usize,             // which tab is on screen
+    /// Third-party context-menu handlers turned off, by id. Values are target names
+    /// (`file`, `folder`, `background`, `drive`). A missing id stays on. panegrid.json only:
+    /// a .grids file never carries this, and the system registry is never written.
+    pub(crate) ctx_off: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
@@ -416,6 +420,7 @@ impl Default for Session {
             update_check: true,
             tabs: Vec::new(),
             tab: 0,
+            ctx_off: std::collections::BTreeMap::new(),
         };
         // A first-ever start: layout_new 0 is two panes, left and right.
         s.set_heights(s.layout_heights());
@@ -483,6 +488,7 @@ impl PartialEq for Session {
             && self.update_check == o.update_check
             && self.tab == o.tab
             && self.view_tabs() == o.view_tabs()
+            && self.ctx_off == o.ctx_off
     }
 }
 
