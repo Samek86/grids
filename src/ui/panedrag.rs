@@ -430,6 +430,15 @@ mod tests {
         assert!(pane_grab(&strip, 2, close.left + 2, close.top + 2, 96).is_none());
         assert!(pane_grab(&strip, 2, plus.left + 2, plus.top + 2, 96).is_none());
         assert_eq!(pane_grab(&strip, 2, plus.right + 8, strip.tabs.top + 8, 96), Some(PaneGrab::Strip));
+
+        // A narrow column used to drop the number, and the buttons then covered the whole header.
+        for (w, dpi, strip_on) in [(240, 96, true), (200, 96, false), (384, 192, true), (80, 96, true)] {
+            let p = pane_geo(w, 400, dpi, strip_on);
+            let tabs = if strip_on { 2 } else { 1 };
+            let x = p.num.left + (p.num.right - p.num.left) / 2;
+            let y = p.num.top + (p.num.bottom - p.num.top) / 2;
+            assert_eq!(pane_grab(&p, tabs, x, y, dpi), Some(PaneGrab::Header), "{w}@{dpi} strip={strip_on}");
+        }
     }
 
     #[test]
