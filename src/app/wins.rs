@@ -124,6 +124,7 @@ pub(crate) fn window_value(s: &Session) -> Value {
         m.insert("window".into(), win_json(w));
     }
     m.insert("side".into(), Value::from(s.side));
+    m.insert("side_dpi".into(), Value::from(s.side_dpi));
     m.insert("side_split".into(), Value::from(s.side_split));
     if !s.file.is_empty() {
         m.insert("session".into(), Value::String(s.file.clone()));
@@ -156,6 +157,9 @@ pub(crate) fn session_from_window(v: &Value, base: &Session) -> Session {
     }
     if let Some(side) = obj.get("side").and_then(|n| n.as_i64()) {
         s.side = side as i32;
+    }
+    if let Some(d) = obj.get("side_dpi").and_then(|n| n.as_i64()) {
+        s.side_dpi = d as i32;
     }
     if let Some(split) = obj.get("side_split").and_then(|n| n.as_f64()) {
         s.side_split = sane_split(split);
@@ -298,7 +302,11 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     let dpi = GetDpiForWindow(main) as i32;
     if s.side <= 0 {
         s.side = 240 * dpi / 96;
+    } else if s.side_dpi > 0 && s.side_dpi != dpi {
+        // Saved on a monitor with another DPI: keep the same physical width.
+        s.side = s.side * dpi / s.side_dpi;
     }
+    s.side_dpi = dpi;
     let win = s.win;
     s.anchor();
     let ntabs = s.tabs.len().max(1);

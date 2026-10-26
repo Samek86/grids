@@ -35,6 +35,10 @@ fn is_on(v: &bool) -> bool {
 fn is_off(v: &bool) -> bool {
     !*v
 }
+fn is_zero_i32(v: &i32) -> bool {
+    *v == 0
+}
+
 fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
@@ -158,6 +162,9 @@ struct SettingsFile {
     window: Option<WinJson>,
     #[serde(default)]
     side: i32,
+    /// DPI `side` was measured at. Missing in older files: no rescale.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    side_dpi: i32,
     #[serde(default)]
     layout: LayoutJson,
     /// Permutation of pane slots since the named session was saved. Empty means they match the file.
@@ -287,6 +294,7 @@ impl SettingsFile {
             version: 1,
             window: None,
             side: 0,
+            side_dpi: 0,
             layout: LayoutJson::default(),
             order: Vec::new(),
             panes: Vec::new(),
@@ -371,6 +379,7 @@ impl SettingsFile {
             version: 1,
             window: s.win.map(|w| WinJson { left: w[0], top: w[1], right: w[2], bottom: w[3], maximized: w[4] != 0 }),
             side: s.side,
+            side_dpi: s.side_dpi,
             layout: LayoutJson { columns: s.heights.clone(), colr: s.colr.clone(), rowr: s.rowr.clone(), active: s.active },
             order: s.order.clone(),
             panes,
@@ -463,6 +472,7 @@ impl SettingsFile {
             s.win = Some([w.left, w.top, w.right, w.bottom, w.maximized as i32]);
         }
         s.side = self.side;
+        s.side_dpi = self.side_dpi;
         let heights: Vec<usize> = self.layout.columns.iter().take(4).copied().map(|n| n.clamp(1, 4)).collect();
         s.heights = if heights.is_empty() { left_right() } else { heights };
         s.colr = fix(self.layout.colr.clone(), s.heights.len());

@@ -356,6 +356,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 let dpi = (wp.0 & 0xffff) as i32;
                 app(|a| {
                     a.s.side = a.s.side * dpi / a.dpi;
+                    a.s.side_dpi = dpi;
                     a.dpi = dpi;
                 });
                 apply_font();
