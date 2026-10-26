@@ -298,8 +298,8 @@ impl Default for Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
-            accent: 0x0067C0, // Windows Settings blue; a chosen swatch replaces it
-            accent_dark: 0x4CC2FF,
+            accent: 0xA99BE0, // 3rd swatch (lavender); a chosen swatch replaces it
+            accent_dark: 0x6A5AA8,
             dark: false,
             dblup: true,
             space_preview: true,
