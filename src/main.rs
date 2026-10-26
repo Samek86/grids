@@ -14,6 +14,7 @@ mod shell;
 mod settings;
 mod everything;
 mod rename;
+mod winmerge;
 
 use imports::*;
 

@@ -251,10 +251,15 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id @ ID_ACCENT..=1405 => set_accent(pal().accents[id - ID_ACCENT].1),
                 ID_ACCENT_PICK => pick_accent(),
                 ID_KEYS => toggle_keys(),
+                id if crate::winmerge::gear(h, id) => {}
                 _ => {}
             },
             WM_INITMENUPOPUP => {
                 let (menu, dblup, accent, lang, panel, ext, hot) = app(|a| (a.view_menu, a.s.dblup, a.s.accent_now(), a.s.lang, a.s.tree_on, a.s.ext, a.hot_on));
+                // Submenus (language, colours, WinMerge panes) also send this. Rebuilding then destroys the one that just opened.
+                if HMENU(wp.0 as _) == menu {
+                    crate::winmerge::sync_gear(menu);
+                }
                 let check = |id: usize, on: bool| CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | if on { MF_CHECKED } else { MF_UNCHECKED }).0);
                 check(ID_HIDDEN, hidden());
                 check(ID_PANEL, panel);
@@ -962,6 +967,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_KEYS, tr("Keyboard shortcuts...", "단축키...", "ショートカット キー..."))?;
     item(view, MF_STRING, ID_HELP, tr("Help (online)\tF1", "도움말 (온라인)\tF1", "ヘルプ (オンライン)\tF1"))?;
     item(view, MF_STRING, ID_ABOUT, tr("About Panegrid", "Panegrid 정보", "Panegrid のバージョン情報"))?;
+    crate::winmerge::sync_gear(view);
     Ok(view)
 }
 

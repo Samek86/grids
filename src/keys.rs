@@ -106,6 +106,8 @@ const CMDS: &[Cmd] = &[
     cmd("file.new", FILE, s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), 0x4E, true, false, true, false, false),
     cmd("file.dir", FILE, s("New folder", "새 폴더", "新しいフォルダー"), 0x4E, true, true, false, false, false),
     cmd("file.mkdir", FILE, s("New folder in this pane", "이 패널에 새 폴더", "このペインに新しいフォルダー"), 0x76, false, false, false, false, false),
+    // Ctrl+Alt+C is free (copy path is Ctrl+Shift+C, batch rename is Ctrl+Shift+R).
+    cmd("file.winmerge", FILE, s("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較"), 0x43, true, false, true, false, false),
     cmd("sess.save", SESS, s("Save session", "세션 저장", "セッションを保存"), 0x53, true, false, false, false, false),
     cmd("fav.list", FAV, s("Favourites", "즐겨찾기", "お気に入り"), 0x42, true, false, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false, false),
@@ -555,6 +557,7 @@ Double-click a splitter: split evenly\n\
 Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
 Pane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
 Arguments: panegrid.exe C:\\a D:\\b ... or panegrid.exe work.grids\n\
+Ctrl+Alt+C compares the active pane's folder with the next pane in WinMerge. The gear menu and the file list can also compare two selected files, or one file with the same name in another pane. Settings → General sets the WinMerge path.\n\
 If Panegrid is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.";
 
 const NOTES_KO: &str = "\
@@ -567,6 +570,7 @@ const NOTES_KO: &str = "\
 패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
 패널 탭: 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 폴더가 하나면 탭 줄이 숨고, ⇄ 오른쪽 버튼으로 탭을 추가합니다(Ctrl+Alt+T). 둘 이상이면 탭 줄이 나옵니다. 기본은 Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
 실행 인자: panegrid.exe C:\\a D:\\b ... 또는 panegrid.exe 작업.grids\n\
+Ctrl+Alt+C는 활성 패널의 폴더를 다음 패널과 WinMerge로 비교합니다. 톱니바퀴 메뉴와 파일 목록에서는 선택한 파일 둘, 또는 다른 패널의 같은 이름과도 비교할 수 있어요. WinMerge 경로는 설정 → 일반에서 지정합니다.\n\
 이미 실행 중이면 그 프로세스에 새 창이 열립니다. 창 하나만 쓰기가 켜져 있으면 그 창을 앞으로 가져오고, 경로는 탭으로 엽니다.";
 
 const NOTES_JA: &str = "\
@@ -579,6 +583,7 @@ const NOTES_JA: &str = "\
 ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
 ペイン タブ: 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。フォルダーが一つならタブ列は隠れ、⇄ の右のボタンでタブを追加します（Ctrl+Alt+T）。二つ以上でタブ列が出ます。既定は Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、フォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
 引数: panegrid.exe C:\\a D:\\b ... または panegrid.exe work.grids\n\
+Ctrl+Alt+C はアクティブなペインのフォルダーを次のペインと WinMerge で比較します。歯車メニューとファイル一覧では、選んだ二つのファイル、または別のペインの同じ名前とも比較できます。WinMerge のパスは設定 → 一般で指定します。\n\
 すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときは、そのウィンドウを前面にし、パスはタブで開きます。";
 
 pub(crate) fn help_text() -> String {
@@ -633,6 +638,7 @@ mod tests {
             ("file.new", "Ctrl+Alt+N"),
             ("file.dir", "Ctrl+Shift+N"),
             ("file.mkdir", "F7"),
+            ("file.winmerge", "Ctrl+Alt+C"),
             ("pane.tab.new", "Ctrl+Alt+T"),
             ("pane.tab.close", "Ctrl+Alt+W"),
             ("pane.tab.next", "Ctrl+Alt+PageDown"),
@@ -670,6 +676,8 @@ mod tests {
         assert_eq!(lookup(b'E' as u16, false, true, false, true), index("app.front"));
         assert_eq!(lookup(b'E' as u16, false, false, true, true), None);
         assert_eq!(lookup(b'E' as u16, false, false, true, false), None);
+        assert_eq!(lookup(b'C' as u16, true, false, true, false), index("file.winmerge"));
+        assert_eq!(lookup(b'C' as u16, true, true, false, false), index("file.path"));
     }
 
     #[test]
