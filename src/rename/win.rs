@@ -6,12 +6,13 @@ use std::collections::HashSet;
 use std::sync::Once;
 
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWINDOWATTRIBUTE};
+use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 use crate::imports::*;
 use crate::tr;
 
-use super::engine::{self, BatchItem, CaseMode, Issue, PreviewRow, Rule};
+use super::engine::{self, BatchItem, CaseMode, DatePos, DateSrc, Issue, NumPos, PreviewRow, Rule, TrimEdge};
 use super::exec;
 
 const ID_ADD: i32 = 1;
@@ -31,6 +32,10 @@ const F_UP: i32 = 5;
 const F_DOWN: i32 = 6;
 const F_DEL: i32 = 7;
 const F_MODE: i32 = 8;
+const F_POS: i32 = 9;
+const F_C: i32 = 10;
+const F_SRC: i32 = 11;
+const F_AT: i32 = 12;
 
 const CB_RESETCONTENT: u32 = 0x014B;
 const CB_ADDSTRING: u32 = 0x0143;
@@ -437,9 +442,13 @@ unsafe fn make_rule_controls(host: HWND, i: usize, font: HFONT) {
     combo(F_KIND);
     edit(F_A);
     edit(F_B);
+    edit(F_C);
+    edit(F_AT);
     check(F_CASE, tx(s("Match case", "대소문자 구분", "大文字と小文字を区別")));
     check(F_EXT, tx(s("Include extension", "확장자 포함", "拡張子を含める")));
     combo(F_MODE);
+    combo(F_POS);
+    combo(F_SRC);
     mini(F_UP, "↑");
     mini(F_DOWN, "↓");
     mini(F_DEL, "×");
@@ -459,6 +468,11 @@ unsafe fn refill_kind(i: usize) {
         tx(s("Add suffix", "접미사 추가", "接尾辞を追加")),
         tx(s("Change case", "대소문자 변경", "大文字と小文字")),
         tx(s("Change extension", "확장자 변경", "拡張子を変更")),
+        tx(s("Number", "번호", "連番")),
+        tx(s("Date", "날짜", "日付")),
+        tx(s("Insert", "삽입", "挿入")),
+        tx(s("Delete characters", "글자 삭제", "文字を削除")),
+        tx(s("Trim", "다듬기", "トリム")),
     ] {
         let hs = HSTRING::from(label);
         let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
@@ -486,6 +500,22 @@ unsafe fn refill_mode(i: usize) {
     }
 }
 
+unsafe fn fill_combo(host: HWND, i: usize, field: i32, labels: &[&str]) {
+    let c = ctl(host, id(i, field));
+    if c.0.is_null() {
+        return;
+    }
+    let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
+    for label in labels {
+        let hs = HSTRING::from(*label);
+        let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
+    }
+}
+
+unsafe fn select_combo(host: HWND, i: usize, field: i32, sel: usize) {
+    let _ = SendMessageW(ctl(host, id(i, field)), CB_SETCURSEL, Some(WPARAM(sel)), None);
+}
+
 unsafe fn write_rule(i: usize, rule: &Rule) {
     let host = ST.with(|s| s.borrow().host);
     let set_edit = |f, text: &str| {
@@ -495,7 +525,7 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
     let set_check = |f, on: bool| {
         let _ = SendMessageW(ctl(host, id(i, f)), BM_SETCHECK, Some(WPARAM(usize::from(on))), None);
     };
-    let _ = SendMessageW(ctl(host, id(i, F_KIND)), CB_SETCURSEL, Some(WPARAM(kind_index(rule))), None);
+    select_combo(host, i, F_KIND, kind_index(rule));
     match rule {
         Rule::Replace { find, replace, case_sensitive, include_ext } => {
             set_edit(F_A, find);
@@ -514,15 +544,85 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
             cue(ctl(host, id(i, F_A)), tx(s("Suffix", "접미사", "接尾辞")));
         }
         Rule::Case { mode, include_ext } => {
-            let _ = SendMessageW(ctl(host, id(i, F_MODE)), CB_SETCURSEL, Some(WPARAM(mode_index(*mode))), None);
+            select_combo(host, i, F_MODE, mode_index(*mode));
             set_check(F_EXT, *include_ext);
         }
         Rule::Extension { ext } => {
             set_edit(F_A, ext);
             cue(ctl(host, id(i, F_A)), tx(s("New extension", "새 확장자", "新しい拡張子")));
         }
+        Rule::Number { start, step, pad, pos } => {
+            set_edit(F_A, &start.to_string());
+            set_edit(F_B, &step.to_string());
+            set_edit(F_C, &pad.to_string());
+            cue(ctl(host, id(i, F_A)), tx(s("Start", "시작", "開始")));
+            cue(ctl(host, id(i, F_B)), tx(s("Step", "간격", "間隔")));
+            cue(ctl(host, id(i, F_C)), tx(s("Digits", "자릿수", "桁数")));
+            fill_combo(host, i, F_POS, &[
+                tx(s("Before name", "이름 앞", "名前の前")),
+                tx(s("After name", "이름 뒤", "名前の後")),
+                tx(s("At position", "위치 지정", "位置を指定")),
+            ]);
+            let (sel, at) = match pos {
+                NumPos::Prefix => (0, String::new()),
+                NumPos::Suffix => (1, String::new()),
+                NumPos::At(n) => (2, n.to_string()),
+            };
+            select_combo(host, i, F_POS, sel);
+            set_edit(F_AT, &at);
+            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
+        }
+        Rule::Date { src, pattern, pos } => {
+            fill_combo(host, i, F_SRC, &[
+                tx(s("Modified", "수정한 날짜", "更新日時")),
+                tx(s("Created", "만든 날짜", "作成日時")),
+                tx(s("Accessed", "연 날짜", "アクセス日時")),
+            ]);
+            select_combo(host, i, F_SRC, match src {
+                DateSrc::Modified => 0,
+                DateSrc::Created => 1,
+                DateSrc::Accessed => 2,
+            });
+            set_edit(F_A, pattern);
+            cue(ctl(host, id(i, F_A)), "YYYY-MM-DD hh:mm:ss");
+            fill_combo(host, i, F_POS, &[
+                tx(s("Before name", "이름 앞", "名前の前")),
+                tx(s("After name", "이름 뒤", "名前の後")),
+                tx(s("Replace name", "이름 대신", "名前を置換")),
+            ]);
+            select_combo(host, i, F_POS, match pos {
+                DatePos::Prefix => 0,
+                DatePos::Suffix => 1,
+                DatePos::Replace => 2,
+            });
+        }
+        Rule::Insert { text, at } => {
+            set_edit(F_A, text);
+            set_edit(F_AT, &at.to_string());
+            cue(ctl(host, id(i, F_A)), tx(s("Text", "텍스트", "テキスト")));
+            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
+        }
+        Rule::Delete { at, len } => {
+            set_edit(F_AT, &at.to_string());
+            set_edit(F_C, &len.to_string());
+            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
+            cue(ctl(host, id(i, F_C)), tx(s("Length", "길이", "長さ")));
+        }
+        Rule::Trim { chars, edge } => {
+            set_edit(F_A, chars);
+            cue(ctl(host, id(i, F_A)), tx(s("Characters (empty = spaces)", "지울 문자 (비우면 공백)", "文字（空なら空白）")));
+            fill_combo(host, i, F_POS, &[
+                tx(s("Both ends", "양쪽", "両端")),
+                tx(s("Left", "왼쪽", "左")),
+                tx(s("Right", "오른쪽", "右")),
+            ]);
+            select_combo(host, i, F_POS, match edge {
+                TrimEdge::Both => 0,
+                TrimEdge::Left => 1,
+                TrimEdge::Right => 2,
+            });
+        }
     }
-    let _ = set_check;
 }
 
 unsafe fn read_rule(i: usize) -> Option<Rule> {
@@ -533,11 +633,43 @@ unsafe fn read_rule(i: usize) -> Option<Rule> {
     }
     let text = |f| crate::text_of(ctl(host, id(i, f)));
     let on = |f| SendMessageW(ctl(host, id(i, f)), BM_GETCHECK, None, None).0 == 1;
+    let sel = |f| SendMessageW(ctl(host, id(i, f)), CB_GETCURSEL, None, None).0;
     Some(match kind {
         1 => Rule::Prefix { text: text(F_A) },
         2 => Rule::Suffix { text: text(F_A) },
-        3 => Rule::Case { mode: mode_from(SendMessageW(ctl(host, id(i, F_MODE)), CB_GETCURSEL, None, None).0), include_ext: on(F_EXT) },
+        3 => Rule::Case { mode: mode_from(sel(F_MODE)), include_ext: on(F_EXT) },
         4 => Rule::Extension { ext: text(F_A) },
+        5 => {
+            let pos = match sel(F_POS) {
+                1 => NumPos::Suffix,
+                2 => NumPos::At(parse_i32(&text(F_AT), 0)),
+                _ => NumPos::Prefix,
+            };
+            Rule::Number { start: parse_i64(&text(F_A), 1), step: parse_i64(&text(F_B), 1), pad: parse_pad(&text(F_C)), pos }
+        }
+        6 => {
+            let src = match sel(F_SRC) {
+                1 => DateSrc::Created,
+                2 => DateSrc::Accessed,
+                _ => DateSrc::Modified,
+            };
+            let pos = match sel(F_POS) {
+                1 => DatePos::Suffix,
+                2 => DatePos::Replace,
+                _ => DatePos::Prefix,
+            };
+            Rule::Date { src, pattern: text(F_A), pos }
+        }
+        7 => Rule::Insert { text: text(F_A), at: parse_i32(&text(F_AT), 0) },
+        8 => Rule::Delete { at: parse_i32(&text(F_AT), 0), len: parse_usize(&text(F_C), 1) },
+        9 => {
+            let edge = match sel(F_POS) {
+                1 => TrimEdge::Left,
+                2 => TrimEdge::Right,
+                _ => TrimEdge::Both,
+            };
+            Rule::Trim { chars: text(F_A), edge }
+        }
         _ => Rule::Replace { find: text(F_A), replace: text(F_B), case_sensitive: on(F_CASE), include_ext: on(F_EXT) },
     })
 }
@@ -549,6 +681,11 @@ fn kind_index(rule: &Rule) -> usize {
         Rule::Suffix { .. } => 2,
         Rule::Case { .. } => 3,
         Rule::Extension { .. } => 4,
+        Rule::Number { .. } => 5,
+        Rule::Date { .. } => 6,
+        Rule::Insert { .. } => 7,
+        Rule::Delete { .. } => 8,
+        Rule::Trim { .. } => 9,
     }
 }
 
@@ -558,8 +695,34 @@ fn default_rule(kind: isize) -> Rule {
         2 => Rule::Suffix { text: String::new() },
         3 => Rule::Case { mode: CaseMode::Lower, include_ext: false },
         4 => Rule::Extension { ext: String::new() },
+        5 => Rule::Number { start: 1, step: 1, pad: 0, pos: NumPos::Suffix },
+        6 => Rule::Date { src: DateSrc::Modified, pattern: "YYYY-MM-DD".into(), pos: DatePos::Prefix },
+        7 => Rule::Insert { text: String::new(), at: 0 },
+        8 => Rule::Delete { at: 0, len: 1 },
+        9 => Rule::Trim { chars: String::new(), edge: TrimEdge::Both },
         _ => Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false },
     }
+}
+
+/// Empty text and a lone sign stay at the default so a minus can be typed.
+fn parse_i64(text: &str, default: i64) -> i64 {
+    let t = text.trim();
+    if t.is_empty() || t == "-" || t == "+" {
+        return default;
+    }
+    t.parse().unwrap_or(default)
+}
+
+fn parse_i32(text: &str, default: i32) -> i32 {
+    parse_i64(text, default as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+fn parse_pad(text: &str) -> u8 {
+    parse_i64(text, 0).clamp(0, 16) as u8
+}
+
+fn parse_usize(text: &str, default: i64) -> usize {
+    parse_i64(text, default).clamp(0, 10_000) as usize
 }
 
 fn mode_index(mode: CaseMode) -> usize {
@@ -577,14 +740,6 @@ fn mode_from(i: isize) -> CaseMode {
         2 => CaseMode::Title,
         3 => CaseMode::Sentence,
         _ => CaseMode::Lower,
-    }
-}
-
-fn shows(rule: &Rule) -> (bool, bool, bool, bool, bool) {
-    match rule {
-        Rule::Replace { .. } => (true, true, true, true, false),
-        Rule::Prefix { .. } | Rule::Suffix { .. } | Rule::Extension { .. } => (true, false, false, false, false),
-        Rule::Case { .. } => (false, false, false, true, true),
     }
 }
 
@@ -609,7 +764,11 @@ unsafe fn on_command(_h: HWND, id: i32, code: u32) {
                 F_DEL if code == BN_CLICKED => remove_rule(i),
                 F_KIND if code == CBN_SELCHANGE => change_kind(i),
                 F_MODE if code == CBN_SELCHANGE => sync_rule(i),
-                F_A | F_B if code == EN_CHANGE => sync_rule(i),
+                F_POS | F_SRC if code == CBN_SELCHANGE => {
+                    sync_rule(i);
+                    layout(hwnd());
+                }
+                F_A | F_B | F_C | F_AT if code == EN_CHANGE => sync_rule(i),
                 F_CASE | F_EXT if code == BN_CLICKED => sync_rule(i),
                 _ => {}
             }
@@ -661,10 +820,10 @@ unsafe fn add_rule() {
     });
     rebuild_rule_controls();
     let dpi = ST.with(|s| s.borrow().dpi);
-    let stride = sc(dpi, 92);
-    let n = ST.with(|s| s.borrow().rules.len()) as i32;
+    let rules = ST.with(|s| s.borrow().rules.clone());
+    let content = rules_span(&rules, dpi);
     let view = host_height();
-    let max = (n * stride - view).max(0);
+    let max = (content - view).max(0);
     ST.with(|s| s.borrow_mut().rule_scroll = max);
     layout(hwnd());
     recompute();
@@ -860,6 +1019,19 @@ unsafe fn refresh_views() {
     }
 }
 
+fn tz_offset_secs() -> i32 {
+    unsafe {
+        let mut info = TIME_ZONE_INFORMATION::default();
+        let id = GetTimeZoneInformation(&mut info);
+        if id == u32::MAX {
+            return 0;
+        }
+        // Bias is the minutes added to local time to reach UTC. DaylightBias applies during DST.
+        let extra = if id == 2 { info.DaylightBias } else { info.StandardBias };
+        info.Bias.saturating_add(extra).saturating_mul(-60)
+    }
+}
+
 fn recompute() {
     ST.with(|s| s.borrow_mut().note.clear());
     recompute_keep_note();
@@ -870,7 +1042,7 @@ fn recompute_keep_note() {
         let st = s.borrow();
         (st.items.clone(), st.rules.clone(), st.existing.clone())
     });
-    let rows = engine::preview(&items, &rules, &existing);
+    let rows = engine::preview(&items, &rules, &existing, tz_offset_secs());
     let max = preview_max(rows.len());
     ST.with(|s| {
         let mut st = s.borrow_mut();
@@ -991,6 +1163,21 @@ unsafe fn layout(h: HWND) {
     place_rules();
 }
 
+fn card_dip(rule: &Rule) -> i32 {
+    match rule {
+        Rule::Number { .. } | Rule::Date { .. } => 128,
+        _ => 92,
+    }
+}
+
+fn rule_stride(rule: &Rule, dpi: i32) -> i32 {
+    sc(dpi.max(96), card_dip(rule))
+}
+
+fn rules_span(rules: &[Rule], dpi: i32) -> i32 {
+    rules.iter().map(|r| rule_stride(r, dpi)).sum()
+}
+
 unsafe fn place_rules() {
     let host = ST.with(|s| s.borrow().host);
     if host.0.is_null() {
@@ -1000,9 +1187,8 @@ unsafe fn place_rules() {
     let mut rc = RECT::default();
     let _ = GetClientRect(host, &mut rc);
     let width = (rc.right - rc.left).max(1);
-    let stride = sc(dpi, 92);
-    let n = ST.with(|s| s.borrow().rules.len());
-    let content = n as i32 * stride;
+    let rules = ST.with(|s| s.borrow().rules.clone());
+    let content = rules_span(&rules, dpi);
     let view = (rc.bottom - rc.top).max(0);
     let max = (content - view).max(0);
     ST.with(|s| {
@@ -1015,13 +1201,14 @@ unsafe fn place_rules() {
         }
     });
     let scroll = ST.with(|s| s.borrow().rule_scroll);
-    let rules = ST.with(|s| s.borrow().rules.clone());
+    let mut y = -scroll;
     for (i, rule) in rules.iter().enumerate() {
-        let y = i as i32 * stride - scroll;
+        let stride = rule_stride(rule, dpi);
         let card = RECT { left: sc(dpi, 2), top: y + sc(dpi, 4), right: width - sc(dpi, 2), bottom: y + stride - sc(dpi, 4) };
         place_card(host, i, card, dpi, rule);
+        y += stride;
     }
-    for i in n..MAX_RULES {
+    for i in rules.len()..MAX_RULES {
         for f in 0..STRIDE {
             let c = ctl(host, id(i, f));
             if !c.0.is_null() {
@@ -1032,9 +1219,9 @@ unsafe fn place_rules() {
 }
 
 unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
-    let (a, b, case_on, ext_on, mode) = shows(rule);
     let row1 = card.top + sc(dpi, 10);
     let row2 = card.top + sc(dpi, 46);
+    let row3 = card.top + sc(dpi, 82);
     let h = sc(dpi, 26);
     let btn = sc(dpi, 28);
     let gap = sc(dpi, 6);
@@ -1050,43 +1237,77 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
     let _ = EnableWindow(ctl(host, id(i, F_UP)), (i > 0).into());
     let last = i + 1 == ST.with(|s| s.borrow().rules.len());
     let _ = EnableWindow(ctl(host, id(i, F_DOWN)), (!last).into());
+    for f in [F_A, F_B, F_C, F_AT, F_CASE, F_EXT, F_MODE, F_POS, F_SRC] {
+        put(host, id(i, f), RECT::default(), false);
+    }
 
     let x = card.left + sc(dpi, 10);
     let end = card.right - sc(dpi, 10);
-    let case_w = sc(dpi, 168);
-    let ext_w = sc(dpi, 176);
-    let mut right_edge = end;
-    if ext_on {
-        let r = RECT { left: right_edge - ext_w, top: row2, right: right_edge, bottom: row2 + h };
-        put(host, id(i, F_EXT), r, true);
-        right_edge = r.left - gap;
-    } else {
-        put(host, id(i, F_EXT), RECT::default(), false);
-    }
-    if case_on {
-        let r = RECT { left: right_edge - case_w, top: row2, right: right_edge, bottom: row2 + h };
-        put(host, id(i, F_CASE), r, true);
-        right_edge = r.left - gap;
-    } else {
-        put(host, id(i, F_CASE), RECT::default(), false);
-    }
-    if mode {
-        let r = RECT { left: x, top: row2, right: (x + sc(dpi, 200)).min(right_edge), bottom: row2 + h };
-        put(host, id(i, F_MODE), r, true);
-    } else {
-        put(host, id(i, F_MODE), RECT::default(), false);
-    }
-    if a && b {
-        let span = (right_edge - x - gap).max(sc(dpi, 40));
-        let w = span / 2;
-        put(host, id(i, F_A), RECT { left: x, top: row2, right: x + w, bottom: row2 + h }, true);
-        put(host, id(i, F_B), RECT { left: x + w + gap, top: row2, right: x + w + gap + w, bottom: row2 + h }, true);
-    } else if a {
-        put(host, id(i, F_A), RECT { left: x, top: row2, right: (x + sc(dpi, 280)).min(right_edge), bottom: row2 + h }, true);
-        put(host, id(i, F_B), RECT::default(), false);
-    } else {
-        put(host, id(i, F_A), RECT::default(), false);
-        put(host, id(i, F_B), RECT::default(), false);
+    let edit_at = |field, left, top, right| {
+        unsafe { put(host, id(i, field), RECT { left, top, right, bottom: top + h }, true); }
+    };
+    match rule {
+        Rule::Replace { .. } => {
+            let case_w = sc(dpi, 168);
+            let ext_w = sc(dpi, 176);
+            let mut edge = end;
+            edit_at(F_EXT, edge - ext_w, row2, edge);
+            edge -= ext_w + gap;
+            edit_at(F_CASE, edge - case_w, row2, edge);
+            edge -= case_w + gap;
+            let span = (edge - x - gap).max(sc(dpi, 40));
+            let w = span / 2;
+            edit_at(F_A, x, row2, x + w);
+            edit_at(F_B, x + w + gap, row2, x + w + gap + w);
+        }
+        Rule::Prefix { .. } | Rule::Suffix { .. } | Rule::Extension { .. } => {
+            edit_at(F_A, x, row2, (x + sc(dpi, 280)).min(end));
+        }
+        Rule::Case { .. } => {
+            let ext_w = sc(dpi, 176);
+            edit_at(F_EXT, end - ext_w, row2, end);
+            let mode_r = (end - ext_w - gap).max(x + sc(dpi, 40));
+            edit_at(F_MODE, x, row2, mode_r.min(x + sc(dpi, 220)));
+        }
+        Rule::Number { pos, .. } => {
+            let span = (end - x - gap * 2).max(sc(dpi, 90));
+            let w = span / 3;
+            edit_at(F_A, x, row2, x + w);
+            edit_at(F_B, x + w + gap, row2, x + w + gap + w);
+            edit_at(F_C, x + (w + gap) * 2, row2, (x + (w + gap) * 2 + w).min(end));
+            let pos_w = sc(dpi, 180);
+            edit_at(F_POS, x, row3, (x + pos_w).min(end));
+            if matches!(pos, NumPos::At(_)) {
+                let at_l = x + pos_w + gap;
+                if at_l < end {
+                    edit_at(F_AT, at_l, row3, (at_l + sc(dpi, 220)).min(end));
+                }
+            }
+        }
+        Rule::Date { .. } => {
+            let src_w = sc(dpi, 180);
+            edit_at(F_SRC, x, row2, (x + src_w).min(end));
+            let pat_l = x + src_w + gap;
+            if pat_l < end {
+                edit_at(F_A, pat_l, row2, end);
+            }
+            edit_at(F_POS, x, row3, (x + sc(dpi, 200)).min(end));
+        }
+        Rule::Insert { .. } => {
+            let at_w = sc(dpi, 200);
+            edit_at(F_A, x, row2, (end - at_w - gap).max(x + sc(dpi, 40)));
+            edit_at(F_AT, end - at_w, row2, end);
+        }
+        Rule::Delete { .. } => {
+            let w = sc(dpi, 180);
+            edit_at(F_AT, x, row2, x + w);
+            edit_at(F_C, x + w + gap, row2, (x + w + gap + w).min(end));
+        }
+        Rule::Trim { .. } => {
+            let edge_w = sc(dpi, 160);
+            edit_at(F_A, x, row2, (end - edge_w - gap).max(x + sc(dpi, 40)));
+            edit_at(F_POS, end - edge_w, row2, end);
+        }
     }
 }
 
@@ -1241,18 +1462,19 @@ unsafe fn paint_host(h: HWND) {
             crate::text(dc, r, tx(s("Add a rule. Names stay as they are until you do.", "규칙을 추가하세요. 그 전까지 이름은 그대로입니다.", "ルールを追加してください。それまでは名前はそのままです。")), font, crate::pal().sub, DT_LEFT);
             return;
         }
-        let stride = sc(dpi, 92);
         let scroll = ST.with(|s| s.borrow().rule_scroll);
         let width = rc.right - rc.left;
-        for (i, _rule) in rules.iter().enumerate() {
-            let y = i as i32 * stride - scroll;
+        let mut y = -scroll;
+        for (i, rule) in rules.iter().enumerate() {
+            let stride = rule_stride(rule, dpi);
             let card = RECT { left: sc(dpi, 2), top: y + sc(dpi, 4), right: width - sc(dpi, 2), bottom: y + stride - sc(dpi, 4) };
+            y += stride;
             if card.bottom < 0 || card.top > rc.bottom {
                 continue;
             }
             rfill(dc, card, sc(dpi, 8), crate::pal().card, Some(crate::pal().line));
             // Frames behind the borderless edits, slightly outside the control.
-            for f in [F_A, F_B] {
+            for f in [F_A, F_B, F_C, F_AT] {
                 let c = ctl(h, id(i, f));
                 if c.0.is_null() || !IsWindowVisible(c).as_bool() {
                     continue;
@@ -1266,7 +1488,7 @@ unsafe fn paint_host(h: HWND) {
                 rfill(dc, RECT { left: wr.left - inf, top: wr.top - inf, right: wr.right + inf, bottom: wr.bottom + inf }, sc(dpi, 4), crate::pal().card, Some(crate::pal().line));
             }
         }
-        let content = rules.len() as i32 * stride;
+        let content = rules_span(&rules, dpi);
         let view = rc.bottom - rc.top;
         let max = (content - view).max(0);
         if max > 0 {

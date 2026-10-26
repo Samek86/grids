@@ -10,6 +10,37 @@ pub(crate) enum CaseMode {
     Sentence,
 }
 
+/// Where a generated piece is written. `At` is a character index in the stem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NumPos {
+    Prefix,
+    Suffix,
+    /// `0` is before the first character. `-1` appends. Other negatives count back from the end.
+    At(i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DateSrc {
+    Modified,
+    Created,
+    Accessed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DatePos {
+    Prefix,
+    Suffix,
+    /// The stem becomes the formatted date. The extension stays.
+    Replace,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrimEdge {
+    Both,
+    Left,
+    Right,
+}
+
 /// One step in the stack. Later phases add variants; existing ones stay in this order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Rule {
@@ -18,6 +49,14 @@ pub(crate) enum Rule {
     Suffix { text: String },
     Case { mode: CaseMode, include_ext: bool },
     Extension { ext: String },
+    /// `start + step * index`, zero-padded. The index is the item's place in the batch.
+    Number { start: i64, step: i64, pad: u8, pos: NumPos },
+    /// File times only. There is no EXIF read.
+    Date { src: DateSrc, pattern: String, pos: DatePos },
+    Insert { text: String, at: i32 },
+    Delete { at: i32, len: usize },
+    /// Empty `chars` trims whitespace. Otherwise those characters.
+    Trim { chars: String, edge: TrimEdge },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,15 +141,19 @@ fn join_name(stem: &str, ext: &str) -> String {
     }
 }
 
-pub(crate) fn apply_name(item: &BatchItem, rules: &[Rule], _index: usize) -> String {
+pub(crate) fn apply_name(item: &BatchItem, rules: &[Rule], index: usize, tz_offset_secs: i32) -> String {
     let mut name = item.name.clone();
     for rule in rules {
-        name = apply_one(&name, item.is_dir, rule);
+        name = apply_one(&name, item, is_dir_of(item), rule, index, tz_offset_secs);
     }
     name
 }
 
-fn apply_one(name: &str, is_dir: bool, rule: &Rule) -> String {
+fn is_dir_of(item: &BatchItem) -> bool {
+    item.is_dir
+}
+
+fn apply_one(name: &str, item: &BatchItem, is_dir: bool, rule: &Rule, index: usize, tz: i32) -> String {
     let (stem, ext) = split_name(name, is_dir);
     match rule {
         Rule::Replace { find, replace, case_sensitive, include_ext } => {
@@ -151,7 +194,174 @@ fn apply_one(name: &str, is_dir: bool, rule: &Rule) -> String {
             let cleaned = new_ext.trim().trim_start_matches('.');
             join_name(stem, cleaned)
         }
+        Rule::Number { start, step, pad, pos } => {
+            let n = start.saturating_add(step.saturating_mul(index as i64));
+            let text = format_num(n, *pad);
+            match pos {
+                NumPos::Prefix => join_name(&format!("{text}{stem}"), ext),
+                NumPos::Suffix => join_name(&format!("{stem}{text}"), ext),
+                NumPos::At(at) => join_name(&insert_at(stem, &text, *at), ext),
+            }
+        }
+        Rule::Date { src, pattern, pos } => {
+            if pattern.is_empty() {
+                return name.to_string();
+            }
+            let stamp = match src {
+                DateSrc::Modified => item.modified,
+                DateSrc::Created => item.created,
+                DateSrc::Accessed => item.accessed,
+            };
+            let Some(stamp) = stamp else { return name.to_string() };
+            let text = format_date(stamp, tz, pattern);
+            match pos {
+                DatePos::Prefix => join_name(&format!("{text}{stem}"), ext),
+                DatePos::Suffix => join_name(&format!("{stem}{text}"), ext),
+                DatePos::Replace => join_name(&text, ext),
+            }
+        }
+        Rule::Insert { text, at } => {
+            if text.is_empty() {
+                name.to_string()
+            } else {
+                join_name(&insert_at(stem, text, *at), ext)
+            }
+        }
+        Rule::Delete { at, len } => {
+            if *len == 0 {
+                name.to_string()
+            } else {
+                join_name(&delete_at(stem, *at, *len), ext)
+            }
+        }
+        Rule::Trim { chars, edge } => join_name(&trim_stem(stem, chars, *edge), ext),
     }
+}
+
+fn format_num(n: i64, pad: u8) -> String {
+    let pad = pad as usize;
+    let neg = n < 0;
+    // `i64::MIN` has no positive counterpart; keep the magnitude as a wider integer.
+    let mag = if n == i64::MIN { 1u128 << 63 } else { n.unsigned_abs() as u128 };
+    let body = format!("{mag:0width$}", width = pad);
+    if neg { format!("-{body}") } else { body }
+}
+
+/// `0` starts, `-1` appends. A negative value counts back from the end, then one past that so `-1` is the end.
+fn index_insert(len: usize, at: i32) -> usize {
+    if at >= 0 {
+        (at as usize).min(len)
+    } else {
+        (len as i32 + at + 1).clamp(0, len as i32) as usize
+    }
+}
+
+/// `0` is the first character, `-1` the last. Nothing is deleted past the end.
+fn index_delete(len: usize, at: i32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if at >= 0 {
+        (at as usize).min(len)
+    } else {
+        (len as i32 + at).clamp(0, len as i32 - 1) as usize
+    }
+}
+
+fn insert_at(stem: &str, text: &str, at: i32) -> String {
+    let chars: Vec<char> = stem.chars().collect();
+    let i = index_insert(chars.len(), at);
+    let mut out = String::new();
+    out.extend(chars[..i].iter());
+    out.push_str(text);
+    out.extend(chars[i..].iter());
+    out
+}
+
+fn delete_at(stem: &str, at: i32, n: usize) -> String {
+    let chars: Vec<char> = stem.chars().collect();
+    if chars.is_empty() || n == 0 {
+        return stem.to_string();
+    }
+    let i = index_delete(chars.len(), at);
+    let end = (i + n).min(chars.len());
+    let mut out = String::new();
+    out.extend(chars[..i].iter());
+    out.extend(chars[end..].iter());
+    out
+}
+
+fn trim_stem(stem: &str, chars: &str, edge: TrimEdge) -> String {
+    let drop = |c: char| if chars.is_empty() { c.is_whitespace() } else { chars.contains(c) };
+    match edge {
+        TrimEdge::Both => stem.trim_matches(drop).to_string(),
+        TrimEdge::Left => stem.trim_start_matches(drop).to_string(),
+        TrimEdge::Right => stem.trim_end_matches(drop).to_string(),
+    }
+}
+
+/// `YYYY MM DD hh mm ss`. `MM` is the month and `mm` is the minute. Unknown letters stay as written.
+pub(crate) fn format_date(unix: i64, offset_secs: i32, pattern: &str) -> String {
+    let (y, mo, d, h, mi, s) = civil(unix, offset_secs);
+    let p: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < p.len() {
+        let rest: String = p[i..].iter().collect();
+        if let Some(tok) = rest.strip_prefix("YYYY") {
+            let _ = tok;
+            out.push_str(&format!("{y:04}"));
+            i += 4;
+        } else if rest.starts_with("YY") {
+            out.push_str(&format!("{:02}", (y.rem_euclid(100)) as u32));
+            i += 2;
+        } else if rest.starts_with("MM") {
+            out.push_str(&format!("{mo:02}"));
+            i += 2;
+        } else if rest.starts_with("DD") {
+            out.push_str(&format!("{d:02}"));
+            i += 2;
+        } else if rest.starts_with("hh") {
+            out.push_str(&format!("{h:02}"));
+            i += 2;
+        } else if rest.starts_with("mm") {
+            out.push_str(&format!("{mi:02}"));
+            i += 2;
+        } else if rest.starts_with("ss") {
+            out.push_str(&format!("{s:02}"));
+            i += 2;
+        } else {
+            out.push(p[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn civil(unix: i64, offset_secs: i32) -> (i32, u32, u32, u32, u32, u32) {
+    let secs = unix.saturating_add(offset_secs as i64);
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400) as u32;
+    let h = sod / 3600;
+    let mi = (sod % 3600) / 60;
+    let s = sod % 60;
+    let (y, mo, d) = civil_from_days(days);
+    (y, mo, d, h, mi, s)
+}
+
+/// Howard Hinnant, days since 1970-01-01 to a civil date.
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d)
 }
 
 fn replace_all(hay: &str, find: &str, repl: &str, case_sensitive: bool) -> String {
@@ -296,11 +506,12 @@ fn name_issues(dir: &str, name: &str) -> Vec<Issue> {
 
 /// `existing` holds every name currently in those folders, including the items being renamed.
 /// Keys are `(dir_key, name_key)`.
-pub(crate) fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(String, String)>) -> Vec<PreviewRow> {
+pub(crate) fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(String, String)>, tz_offset_secs: i32) -> Vec<PreviewRow> {
+    let tz = tz_offset_secs;
     let planned: Vec<(String, String)> = items
         .iter()
         .enumerate()
-        .map(|(i, it)| (it.name.clone(), apply_name(it, rules, i)))
+        .map(|(i, it)| (it.name.clone(), apply_name(it, rules, i, tz)))
         .collect();
     let mut occ = existing.clone();
     for it in items {
@@ -457,7 +668,7 @@ mod tests {
     }
 
     fn only(rules: &[Rule], name: &str) -> String {
-        apply_name(&item(name), rules, 0)
+        apply_name(&item(name), rules, 0, 0)
     }
 
     #[test]
@@ -482,7 +693,7 @@ mod tests {
         assert_eq!(only(&[suf.clone()], "cat.jpg"), "cat_v2.jpg");
         assert_eq!(only(&[pre, suf], "cat.jpg"), "IMG_cat_v2.jpg");
         assert_eq!(only(&[Rule::Suffix { text: "_x".into() }], ".gitignore"), ".gitignore_x");
-        assert_eq!(apply_name(&dir_item("photos"), &[Rule::Prefix { text: "a_".into() }], 0), "a_photos");
+        assert_eq!(apply_name(&dir_item("photos"), &[Rule::Prefix { text: "a_".into() }], 0, 0), "a_photos");
     }
 
     #[test]
@@ -497,7 +708,7 @@ mod tests {
         assert_eq!(only(&[sentence], "hello THERE.jpg"), "Hello there.jpg");
         assert_eq!(only(&[Rule::Extension { ext: ".png".into() }], "a.jpg"), "a.png");
         assert_eq!(only(&[Rule::Extension { ext: String::new() }], "a.jpg"), "a");
-        assert_eq!(apply_name(&dir_item("pics.jpg"), &[Rule::Extension { ext: "png".into() }], 0), "pics.jpg");
+        assert_eq!(apply_name(&dir_item("pics.jpg"), &[Rule::Extension { ext: "png".into() }], 0, 0), "pics.jpg");
     }
 
     #[test]
@@ -522,20 +733,21 @@ mod tests {
     fn validation_flags_bad_names_duplicates_and_existing_files() {
         let items = vec![item("a.txt"), item("b.txt"), item("c.txt")];
         let rules = [Rule::Replace { find: "a".into(), replace: "b".into(), case_sensitive: true, include_ext: false }];
-        let rows = preview(&items, &rules, &keys(&["a.txt", "b.txt", "c.txt"]));
+        let rows = preview(&items, &rules, &keys(&["a.txt", "b.txt", "c.txt"]), 0);
         assert!(rows[0].issues.contains(&Issue::Duplicate) || rows[0].issues.contains(&Issue::Exists) || rows[1].issues.is_empty());
         // a.txt → b.txt, and b.txt stays: both end on b.txt
         assert!(rows[0].issues.contains(&Issue::Duplicate));
         assert!(rows[1].issues.contains(&Issue::Duplicate));
         assert!(rows[2].issues.is_empty());
 
-        let clash = preview(&[item("new.txt")], &[Rule::Prefix { text: "old".into() }], &keys(&["new.txt", "oldnew.txt"]));
+        let clash = preview(&[item("new.txt")], &[Rule::Prefix { text: "old".into() }], &keys(&["new.txt", "oldnew.txt"]), 0);
         assert_eq!(clash[0].issues, vec![Issue::Exists]);
 
         let bad = preview(
             &[item("ok.txt")],
             &[Rule::Replace { find: "ok".into(), replace: "CON".into(), case_sensitive: true, include_ext: true }],
             &keys(&["ok.txt"]),
+            0,
         );
         assert_eq!(bad[0].new_name, "CON.txt");
         assert!(bad[0].issues.contains(&Issue::Reserved));
@@ -544,11 +756,12 @@ mod tests {
             &[item("ok.txt")],
             &[Rule::Prefix { text: "a:".into() }],
             &keys(&["ok.txt"]),
+            0,
         );
         assert!(chars[0].issues.contains(&Issue::InvalidChars));
 
         // A suffix sits in front of the extension, so the trailing mark is checked on a name with no extension.
-        let trail = preview(&[item("ok")], &[Rule::Suffix { text: " ".into() }], &keys(&["ok"]));
+        let trail = preview(&[item("ok")], &[Rule::Suffix { text: " ".into() }], &keys(&["ok"]), 0);
         assert_eq!(trail[0].new_name, "ok ");
         assert!(trail[0].issues.contains(&Issue::Trailing));
 
@@ -556,6 +769,7 @@ mod tests {
             &[item("ok.txt")],
             &[Rule::Replace { find: "ok.txt".into(), replace: String::new(), case_sensitive: true, include_ext: true }],
             &keys(&["ok.txt"]),
+            0,
         );
         assert!(blank[0].issues.contains(&Issue::Empty));
     }
@@ -583,6 +797,7 @@ mod tests {
                 &custom,
                 &[Rule::Replace { find: "a.txt".into(), replace: "b.txt".into(), case_sensitive: true, include_ext: true }],
                 &existing,
+                0,
             )
         };
         // Only the first file changes, onto a name the second still holds: duplicate.
@@ -623,6 +838,7 @@ mod tests {
                 (dir_key(r"C:\one"), name_key("a.txt")),
                 (dir_key(r"C:\two"), name_key("a.txt")),
             ]),
+            0,
         );
         assert!(other.iter().all(|r| r.issues.is_empty()));
         assert_eq!(other[0].new_name, "n_a.txt");
@@ -633,7 +849,7 @@ mod tests {
     fn long_paths_are_rejected() {
         let dir = "C:\\".to_string() + &"d".repeat(260);
         let it = BatchItem::new(dir, "name.txt", false);
-        let rows = preview(&[it], &[], &HashSet::new());
+        let rows = preview(&[it], &[], &HashSet::new(), 0);
         assert!(rows[0].issues.contains(&Issue::TooLong));
         assert!(path_too_long(r"C:\short", &"n".repeat(256)));
         assert!(!path_too_long(r"C:\short", "name.txt"));
@@ -706,4 +922,90 @@ mod tests {
         let ended = simulate(&["a.txt", "b.txt"], &cycle);
         assert_eq!(ended, vec!["b.txt".to_string(), "a.txt".to_string()]);
     }
+
+    #[test]
+    fn numbering_uses_index_padding_and_position() {
+        let suf = Rule::Number { start: 1, step: 1, pad: 3, pos: NumPos::Suffix };
+        assert_eq!(apply_name(&item("a.jpg"), &[suf.clone()], 0, 0), "a001.jpg");
+        assert_eq!(apply_name(&item("a.jpg"), &[suf], 2, 0), "a003.jpg");
+        let pre = Rule::Number { start: 10, step: 5, pad: 0, pos: NumPos::Prefix };
+        assert_eq!(apply_name(&item("a.jpg"), &[pre], 1, 0), "15a.jpg");
+        let at = Rule::Number { start: 1, step: 1, pad: 2, pos: NumPos::At(1) };
+        assert_eq!(apply_name(&item("ab.jpg"), &[at], 0, 0), "a01b.jpg");
+        let end = Rule::Number { start: 7, step: 1, pad: 2, pos: NumPos::At(-1) };
+        assert_eq!(apply_name(&item("ab.jpg"), &[end], 0, 0), "ab07.jpg");
+        let neg = Rule::Number { start: -2, step: 1, pad: 2, pos: NumPos::Suffix };
+        assert_eq!(apply_name(&item("a"), &[neg], 0, 0), "a-02");
+        assert_eq!(apply_name(&dir_item("pics"), &[Rule::Number { start: 1, step: 1, pad: 2, pos: NumPos::Prefix }], 0, 0), "01pics");
+        assert_eq!(apply_name(&item(".gitignore"), &[Rule::Number { start: 1, step: 1, pad: 2, pos: NumPos::Suffix }], 0, 0), ".gitignore01");
+        let items = vec![item("a.txt"), item("b.txt")];
+        let rows = preview(&items, &[Rule::Number { start: 5, step: 2, pad: 2, pos: NumPos::Prefix }], &keys(&["a.txt", "b.txt"]), 0);
+        assert_eq!(rows[0].new_name, "05a.txt");
+        assert_eq!(rows[1].new_name, "07b.txt");
+        assert!(rows.iter().all(|r| r.issues.is_empty()));
+        let held = preview(&items, &[Rule::Number { start: 1, step: 0, pad: 0, pos: NumPos::Suffix }], &keys(&["a.txt", "b.txt"]), 0);
+        assert_eq!(held[0].new_name, "a1.txt");
+        assert_eq!(held[1].new_name, "b1.txt");
+    }
+
+    #[test]
+    fn dates_come_from_file_times_not_exif() {
+        let mut it = item("shot.jpg");
+        it.modified = Some(0);
+        let prefix = Rule::Date { src: DateSrc::Modified, pattern: "YYYY-MM-DD".into(), pos: DatePos::Prefix };
+        assert_eq!(apply_name(&it, &[prefix], 0, 0), "1970-01-01shot.jpg");
+        let full = Rule::Date { src: DateSrc::Modified, pattern: "YYYY-MM-DD hh:mm:ss".into(), pos: DatePos::Replace };
+        assert_eq!(apply_name(&it, &[full], 0, 0), "1970-01-01 00:00:00.jpg");
+        let local = Rule::Date { src: DateSrc::Modified, pattern: "YYYY-MM-DD hh".into(), pos: DatePos::Suffix };
+        assert_eq!(apply_name(&it, &[local.clone()], 0, 9 * 3600), "shot1970-01-01 09.jpg");
+        assert_eq!(apply_name(&it, &[local], 0, -3600), "shot1969-12-31 23.jpg");
+        assert_eq!(apply_name(&item("shot.jpg"), &[Rule::Date { src: DateSrc::Modified, pattern: "YYYY".into(), pos: DatePos::Prefix }], 0, 0), "shot.jpg");
+        let blank = Rule::Date { src: DateSrc::Created, pattern: String::new(), pos: DatePos::Prefix };
+        assert_eq!(apply_name(&it, &[blank], 0, 0), "shot.jpg");
+        it.created = Some(86_400);
+        it.accessed = Some(1_582_934_400);
+        let created = Rule::Date { src: DateSrc::Created, pattern: "DD".into(), pos: DatePos::Replace };
+        assert_eq!(apply_name(&it, &[created], 0, 0), "02.jpg");
+        let accessed = Rule::Date { src: DateSrc::Accessed, pattern: "YYYY-MM-DD".into(), pos: DatePos::Replace };
+        assert_eq!(apply_name(&it, &[accessed], 0, 0), "2020-02-29.jpg");
+        assert_eq!(format_date(0, 0, "YY/MM/DD"), "70/01/01");
+        assert_eq!(format_date(0, 0, "file_MM"), "file_01");
+        assert_eq!(format_date(0, 0, "hhmm"), "0000");
+        assert_eq!(format_date(0, 0, "note"), "note");
+        let mut a = item("a.jpg");
+        let mut b = item("b.jpg");
+        a.modified = Some(0);
+        b.modified = Some(0);
+        let clash = preview(
+            &[a, b],
+            &[Rule::Date { src: DateSrc::Modified, pattern: "YYYYMMDD".into(), pos: DatePos::Replace }],
+            &keys(&["a.jpg", "b.jpg"]),
+            0,
+        );
+        assert_eq!(clash[0].new_name, "19700101.jpg");
+        assert!(clash[0].issues.contains(&Issue::Duplicate));
+        assert!(clash[1].issues.contains(&Issue::Duplicate));
+    }
+
+    #[test]
+    fn insert_delete_and_trim_use_characters() {
+        assert_eq!(only(&[Rule::Insert { text: "_".into(), at: 0 }], "ab.jpg"), "_ab.jpg");
+        assert_eq!(only(&[Rule::Insert { text: "X".into(), at: -1 }], "ab.jpg"), "abX.jpg");
+        assert_eq!(only(&[Rule::Insert { text: "X".into(), at: 1 }], "ab.jpg"), "aXb.jpg");
+        assert_eq!(only(&[Rule::Insert { text: String::new(), at: 0 }], "ab.jpg"), "ab.jpg");
+        assert_eq!(only(&[Rule::Insert { text: "다".into(), at: 1 }], "가나.jpg"), "가다나.jpg");
+        assert_eq!(only(&[Rule::Delete { at: 0, len: 1 }], "ab.jpg"), "b.jpg");
+        assert_eq!(only(&[Rule::Delete { at: -1, len: 1 }], "abc.jpg"), "ab.jpg");
+        assert_eq!(only(&[Rule::Delete { at: -2, len: 2 }], "abcd.jpg"), "ab.jpg");
+        assert_eq!(only(&[Rule::Delete { at: 1, len: 5 }], "abcd.jpg"), "a.jpg");
+        assert_eq!(only(&[Rule::Delete { at: 2, len: 2 }], "a.txt"), "a.txt");
+        assert_eq!(only(&[Rule::Delete { at: 0, len: 0 }], "ab.jpg"), "ab.jpg");
+        assert_eq!(only(&[Rule::Delete { at: 1, len: 1 }], "가나.jpg"), "가.jpg");
+        assert_eq!(only(&[Rule::Trim { chars: String::new(), edge: TrimEdge::Both }], "  hi  .jpg"), "hi.jpg");
+        assert_eq!(only(&[Rule::Trim { chars: "_".into(), edge: TrimEdge::Both }], "__a__.jpg"), "a.jpg");
+        assert_eq!(only(&[Rule::Trim { chars: "x".into(), edge: TrimEdge::Left }], "xxax.jpg"), "ax.jpg");
+        assert_eq!(only(&[Rule::Trim { chars: "x".into(), edge: TrimEdge::Right }], "xxax.jpg"), "xxa.jpg");
+        assert_eq!(only(&[Rule::Trim { chars: String::new(), edge: TrimEdge::Right }], "ab.jpg"), "ab.jpg");
+    }
+
 }
