@@ -68,17 +68,20 @@ pub(crate) unsafe fn buffered(h: HWND, draw: impl FnOnce(HDC, RECT)) {
     _ = EndPaint(h, &ps);
 }
 
-// Pane header colours (background, text/icons): tinted with the selection colour while active.
-// The address and filter fields keep their own colours either way.
-pub(crate) fn header_colors(pane: HWND) -> (u32, u32) {
+// Pane header colours (background, text/icons). A colour label fills the bar the way the accent
+// does: solid while this pane is active, the same colour softened into the card while it is not.
+// No label keeps the accent on the active pane only. Address and filter fields keep their own colours.
+fn header_chrome(pane: HWND) -> PaneChrome {
     app(|a| {
-        let active = a.panes.get(a.s.active).and_then(|p| p.as_ref()).is_some_and(|p| p.hwnd == pane);
-        if active || a.drop_hover == pane {
-            (a.s.accent_now(), on_color(a.s.accent_now()))
-        } else {
-            (pal().card, pal().text)
-        }
+        let active = a.panes.get(a.s.active).and_then(|p| p.as_ref()).is_some_and(|p| p.hwnd == pane) || a.drop_hover == pane;
+        let label = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == pane)).and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
+        pane_chrome(a.s.accent_now(), label, active, a.s.edge, pal())
     })
+}
+
+pub(crate) fn header_colors(pane: HWND) -> (u32, u32) {
+    let c = header_chrome(pane);
+    (c.head, c.ink)
 }
 
 pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
@@ -786,7 +789,8 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
         l => l,
     };
     let filtered = i.is_some_and(|i| FILTERS.lock().is_ok_and(|f| !f[i].is_empty()));
-    let (head, ink) = header_colors(h);
+    let chrome = header_chrome(h);
+    let (head, ink) = (chrome.head, chrome.ink);
     let focus = GetFocus();
     let focused = |id: i32| GetDlgItem(Some(h), id).is_ok_and(|e| e == focus);
     let (addr_on, filt_on) = (focused(ID_EDIT), focused(ID_FILTER));
@@ -795,28 +799,18 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
         let s = |v: i32| v * dpi / 96;
         let pg = pane_geo_of(h, rc.right, rc.bottom, dpi);
         fill(dc, rc, pal().card);
-        // active: header bar in the selection colour, same colour as the border
+        // Header and border. A colour label fills both, the same areas the accent uses on an active pane.
         fill(dc, RECT { bottom: pg.view.top, ..rc }, head);
         let edge = app(|a| a.s.edge);
         if active && edge {
-            frame(dc, rc, s(2), accent);
+            frame(dc, rc, s(2), chrome.border);
         } else {
-            frame(dc, rc, 1, pal().line);
+            frame(dc, rc, 1, chrome.border);
             fill(dc, RECT { left: pg.view.left, top: pg.view.top - 1, right: pg.view.right, bottom: pg.view.top }, pal().line);
         }
-        // colour label: a strip above the buttons, and the number on a chip of that colour
-        if let Some(t) = tint {
-            fill(dc, tint_band(rc.right, dpi, active && edge), t);
-        }
         if let Some(i) = i.filter(|_| pg.num.right > pg.num.left) {
-            let num_ink = match tint {
-                Some(t) => {
-                    fill(dc, pg.num, t);
-                    on_color(t)
-                }
-                None if active => ink,
-                None => pal().sub,
-            };
+            // On the header fill. A label colours the whole bar, so the number has no chip of its own.
+            let num_ink = if tint.is_some() || active { ink } else { pal().sub };
             text(dc, pg.num, &(i + 1).to_string(), small_font, num_ink, DT_CENTER);
         }
         for (p, on) in [(pg.addr, addr_on), (pg.filt, filt_on)] {
