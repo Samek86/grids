@@ -958,6 +958,7 @@ fn flip(id: u8) {
         TG_EDGE => app(|a| a.s.edge ^= true),
         TG_CONFIRM => app(|a| a.s.confirm ^= true),
         TG_AUTOSAVE => app(|a| a.s.autosave ^= true),
+        TG_UPDATE => app(|a| a.s.update_check ^= true),
         TG_EV => {
             app(|a| a.s.use_everything ^= true);
             unsafe {

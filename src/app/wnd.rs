@@ -377,6 +377,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 return DefWindowProcW(h, msg, wp, lp);
             }
             WM_THEME_SYNC => theme_sync(),
+            WM_UPDATE => on_update(h, wp.0),
             WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
