@@ -7,6 +7,7 @@ mod keys;
 mod ficons;
 mod font;
 mod layout;
+mod panedrag;
 mod tabs;
 mod theme;
 
@@ -19,5 +20,6 @@ pub(crate) use drives::*;
 pub(crate) use keys::*;
 pub(crate) use font::*;
 pub(crate) use layout::*;
+pub(crate) use panedrag::*;
 pub(crate) use tabs::*;
 pub(crate) use theme::*;
