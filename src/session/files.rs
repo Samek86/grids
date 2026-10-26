@@ -97,26 +97,76 @@ pub(crate) unsafe fn write_session(path: &Path) {
     refresh_save_button();
 }
 
-// The named-session save dialog: naming, overwrite prompts, and the sessions folder.
-pub(crate) unsafe fn ask_session_path(title: &str) -> Result<String> {
+/// Why a typed session name was refused.
+#[derive(Debug, PartialEq)]
+pub(crate) enum NameErr {
+    Invalid,
+    TooLong,
+}
+
+pub(crate) const SESSION_NAME_MAX: usize = 120;
+
+/// The `.grids` file a typed name saves to in `dir`, and whether a session with that name is already there
+/// (a `.grids` or an old `.qdr` file, any letter case).
+pub(crate) fn session_target(dir: &Path, input: &str) -> std::result::Result<(PathBuf, bool), NameErr> {
+    let stem = session_stem_ok(input).ok_or(NameErr::Invalid)?;
+    if stem.chars().count() > SESSION_NAME_MAX {
+        return Err(NameErr::TooLong);
+    }
+    let path = dir.join(format!("{stem}.grids"));
+    let low = stem.to_lowercase();
+    let taken = std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+        let p = e.path();
+        is_session_file(&p) && p.file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase() == low)
+    });
+    Ok((path, taken))
+}
+
+/// Name-only save prompt for the sessions folder. A bad name is explained and asked again; a taken name
+/// is replaced only after a Yes (No is the default). None means cancel.
+pub(crate) unsafe fn ask_session_path(title: &str) -> Option<PathBuf> {
     let main = app(|a| a.main);
     let dir = sessions_dir();
-    _ = std::fs::create_dir_all(&dir);
-    let dlg: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
-    let kind = HSTRING::from(tr("Panegrid session (*.grids)", "Panegrid 세션 (*.grids)", "Panegrid セッション (*.grids)"));
-    dlg.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(kind.as_ptr()), pszSpec: w!("*.grids") }])?;
-    dlg.SetDefaultExtension(w!("grids"))?;
-    dlg.SetTitle(&HSTRING::from(title))?;
-    if let Ok(f) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.to_string_lossy().as_ref()), None) {
-        dlg.SetFolder(&f)?;
+    if std::fs::create_dir_all(&dir).is_err() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return None;
     }
-    dlg.Show(Some(main))?; // Err on cancel
-    Ok(pwstr(dlg.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?))
+    let caption = HSTRING::from(title);
+    let mut name = String::new();
+    loop {
+        name = crate::settings::ask(main, title, &name)?;
+        match session_target(&dir, &name) {
+            Err(e) => {
+                let why = match e {
+                    NameErr::Invalid => tr(
+                        "That name can't be used. Leave out \\ / : * ? \" < > | and don't end it with a dot.",
+                        "이 이름은 쓸 수 없어요. \\ / : * ? \" < > | 는 빼고, 점으로 끝내지 마세요.",
+                        "この名前は使えません。\\ / : * ? \" < > | を除き、末尾をドットにしないでください。",
+                    ),
+                    NameErr::TooLong => tr("That name is too long.", "이름이 너무 길어요.", "名前が長すぎます。"),
+                };
+                MessageBoxW(Some(main), &HSTRING::from(why), &caption, MB_OK | MB_ICONWARNING);
+            }
+            Ok((path, true)) => {
+                let q = format!(
+                    "{} \"{}\"\n{}",
+                    tr("A session with this name already exists:", "같은 이름의 세션이 이미 있어요:", "同じ名前のセッションがあります:"),
+                    name.trim(),
+                    tr("Replace it?", "바꿀까요?", "置き換えますか?")
+                );
+                if MessageBoxW(Some(main), &HSTRING::from(q), &caption, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES {
+                    return Some(path);
+                }
+            }
+            Ok((path, false)) => return Some(path),
+        }
+    }
 }
 
 pub(crate) unsafe fn save_session_as() -> Result<()> {
-    let path = ask_session_path(tr("Save session", "세션 저장", "セッションを保存"))?;
-    write_session(Path::new(&path));
+    if let Some(path) = ask_session_path(tr("Save session", "세션 저장", "セッションを保存")) {
+        write_session(&path);
+    }
     Ok(())
 }
 
@@ -124,8 +174,8 @@ pub(crate) unsafe fn save_session_as() -> Result<()> {
 pub(crate) unsafe fn save_tab_as_session(i: usize) {
     remember_tabs();
     let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
-    let Ok(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
-    if crate::settings::store::write_atomic(Path::new(&path), text.as_bytes()).is_err() {
+    let Some(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
+    if crate::settings::store::write_atomic(&path, text.as_bytes()).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
     }
 }
@@ -174,3 +224,25 @@ pub(crate) struct CopyData {
     pub(crate) lp: *const core::ffi::c_void,
 }
 
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn session_target_checks_names_and_taken() {
+        let d = std::env::temp_dir().join(format!("pg-name-{}", std::process::id()));
+        _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("Work.grids"), "x").unwrap();
+        std::fs::write(d.join("old.qdr"), "x").unwrap();
+        assert_eq!(session_target(&d, " new "), Ok((d.join("new.grids"), false)));
+        assert_eq!(session_target(&d, "work"), Ok((d.join("work.grids"), true)));
+        assert_eq!(session_target(&d, "OLD").map(|r| r.1), Ok(true));
+        for bad in ["a/b", "x?", "CON", "", "end."] {
+            assert_eq!(session_target(&d, bad), Err(NameErr::Invalid), "{bad:?}");
+        }
+        assert_eq!(session_target(&d, &"a".repeat(SESSION_NAME_MAX + 1)), Err(NameErr::TooLong));
+        _ = std::fs::remove_dir_all(&d);
+    }
+}

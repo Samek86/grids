@@ -535,10 +535,12 @@ pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     Some(pwstr(name))
 }
 
+#[allow(dead_code)] // sessions use the list window now
 pub(crate) unsafe fn pick_open(owner: HWND) -> Option<String> {
     file_dialog(owner, false)
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
     use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
     let mut buf = [0u16; 520];
