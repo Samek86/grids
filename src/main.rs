@@ -741,25 +741,34 @@ mod tests {
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
             assert!(p.num.right > p.num.left && p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
-        // the number only shows while the address edit keeps s(32); otherwise the bar is laid out as before
+        // The number is reserved first. While the address edit still has s(32), the bar matches
+        // that wide layout. Below it, the number stays and the address (then the buttons) yield.
         for dpi in [96, 144] {
             let s = |v: i32| v * dpi / 96;
             for w in 60..=600 {
                 let p = pane_geo(w, 500, dpi, true);
-                if p.num.right > p.num.left {
+                assert_eq!(p.num.right - p.num.left, s(18), "{w}@{dpi}");
+                assert_eq!(p.btn[0].left, p.num.right, "{w}@{dpi}");
+                let edit = (p.addr.right - s(6)) - (p.addr.left + s(8));
+                if edit >= s(32) {
                     let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
                     assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
-                    assert!((p.addr.right - s(6)) - (p.addr.left + s(8)) >= s(32), "{w}@{dpi}");
-                } else {
-                    assert!(p.btn[0].left == s(4) && p.addr.left == s(4) + 3 * s(24) + s(4), "{w}@{dpi}");
+                    assert_eq!(p.addr.left, s(4) + s(18) + 3 * s(24) + s(4), "{w}@{dpi}");
+                }
+                for c in [p.btn[0], p.btn[1], p.btn[2], p.btn[3], p.addr, p.filt, p.fav] {
+                    if c.right > c.left {
+                        assert!(c.left >= p.num.right, "{w}@{dpi}");
+                    }
                 }
             }
         }
-        let shown = |w, dpi| {
+        let edit_of = |w, dpi| {
+            let s = |v: i32| v * dpi / 96;
             let p = pane_geo(w, 500, dpi, true);
-            p.num.right > p.num.left
+            (p.addr.right - s(6)) - (p.addr.left + s(8))
         };
-        assert!(!shown(240, 96) && shown(241, 96) && !shown(361, 144) && shown(362, 144));
+        assert!(edit_of(240, 96) < 32 && edit_of(241, 96) >= 32);
+        assert!(edit_of(361, 144) < 48 && edit_of(362, 144) >= 48);
     }
 
     #[test]

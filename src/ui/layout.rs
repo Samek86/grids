@@ -194,7 +194,7 @@ pub(crate) fn cell_rect(g: &Geo, h: &[usize], i: usize) -> RECT {
 // One tab hides the strip (the list uses it) and shows `add` just to the right of ⇄.
 // Window tabs are a different strip, on the main window.
 pub(crate) struct PaneGeo {
-    pub(crate) num: RECT,      // pane number (Ctrl+N); zero width when the pane is too narrow
+    pub(crate) num: RECT,      // pane number (Ctrl+N); the header drag handle, kept on a narrow pane
     pub(crate) btn: [RECT; 4], // back, forward, up, open-in
     pub(crate) addr: RECT,
     pub(crate) add: RECT, // add-tab button; zero width while the strip is showing
@@ -204,6 +204,34 @@ pub(crate) struct PaneGeo {
     pub(crate) view: RECT,
 }
 
+/// A positive-area rect that starts before `limit` covers the pane number (or sits off the left edge).
+fn covers_number(rect: RECT, limit: i32) -> bool {
+    rect.right > rect.left && rect.left < limit
+}
+
+fn hits(a: RECT, b: RECT) -> bool {
+    a.right > a.left && b.right > b.left && a.left < b.right && b.left < a.right
+}
+
+/// Park a button on `limit` so its window no longer covers the number.
+fn drop_button(rect: &mut RECT, limit: i32) {
+    if covers_number(*rect, limit) {
+        rect.left = limit;
+        rect.right = limit;
+    }
+}
+
+/// Address and filter may shrink to nothing. A button keeps its full width or goes away.
+fn shrink_from(rect: &mut RECT, limit: i32) {
+    if rect.right <= rect.left || rect.left >= limit {
+        return;
+    }
+    rect.left = limit;
+    if rect.right < rect.left {
+        rect.right = rect.left;
+    }
+}
+
 /// `strip` when this pane has two or more tabs. Callers that have a window use `pane_geo_of`.
 pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32, strip: bool) -> PaneGeo {
     let s = |v: i32| v * dpi / 96;
@@ -211,22 +239,44 @@ pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32, strip: bool) -> PaneGeo {
     let strip_h = if strip { s(26) } else { 0 };
     let y = (bar - bh) / 2;
     let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
-    let fav = r(w - pad - b, b);
+    // The number is the header drag handle. Reserve its s(18) before the address and the
+    // buttons, and keep it inside the plate. Those controls shrink or drop in what is left.
+    // While the address edit still has s(32) inside its insets, every other rect matches the
+    // wide-pane layout (the number used to disappear to protect that minimum).
+    let num_left = if w > pad { pad } else { 0 };
+    let nw = s(18).min((w - num_left).max(0));
+    let num = r(num_left, nw);
+    let limit = num.right;
+    let mut fav = r(w - pad - b, b);
     // back, forward, up, ⇄, favourite; the add-tab button joins them while the strip is hidden
     let nbtn = if strip { 5 } else { 6 };
     let fw = s(150).min((w - 2 * pad - nbtn * b) / 3).max(0);
-    let filt = r(fav.left - s(2) - fw, fw);
-    let add = if strip { RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh } } else { r(filt.left - s(2) - b, b) };
+    let mut filt = r(fav.left - s(2) - fw, fw);
+    let mut add = if strip { RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh } } else { r(filt.left - s(2) - b, b) };
     let open = r(add.left - s(2) - b, b);
-    // pane number at the far left, only while the address edit (pill minus its s(8)/s(6) insets) keeps s(32)
-    let nw = s(18);
-    let nw = if open.left - s(4) - (pad + 3 * b + s(4) + nw) >= s(8) + s(6) + s(32) { nw } else { 0 };
-    let x = pad + nw;
+    let x = limit;
     let addr_x = x + 3 * b + s(4);
+    let mut addr = r(addr_x, open.left - s(4) - addr_x);
+    let mut btn = [r(x, b), r(x + b, b), r(x + 2 * b, b), open];
+    drop_button(&mut fav, limit);
+    drop_button(&mut add, limit);
+    drop_button(&mut btn[3], limit);
+    shrink_from(&mut filt, limit);
+    shrink_from(&mut addr, limit);
+    if strip {
+        // The add slot stays a zero-width mark on the filter's left edge.
+        add = RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh };
+    }
+    // A left button that would land on a control still showing is dropped, address side first.
+    for i in [2, 1, 0] {
+        if [btn[3], add, filt, fav, addr, num].into_iter().any(|other| hits(btn[i], other)) {
+            btn[i].right = btn[i].left;
+        }
+    }
     PaneGeo {
-        num: r(pad, nw),
-        btn: [r(x, b), r(x + b, b), r(x + 2 * b, b), open],
-        addr: r(addr_x, open.left - s(4) - addr_x),
+        num,
+        btn,
+        addr,
         add,
         filt,
         fav,
@@ -750,30 +800,83 @@ mod tests {
         assert_eq!(one.add.right + 2, one.filt.left);
         assert_eq!(many.btn[3].right + 2, many.filt.left);
         assert!(one.addr.right < many.addr.right);
-        // the number needs a wider pane once the add button takes a slot
-        let edge = |strip| (60..=800).find(|&w| pane_geo(w, 500, 96, strip).num.right > pane_geo(w, 500, 96, strip).num.left).unwrap();
-        assert!(edge(false) > edge(true));
+        // The add button narrows the address, so the edit falls under s(32) on a wider pane.
+        // The number is reserved first and stays either way.
+        let keeps_edit = |strip| {
+            (60..=800)
+                .find(|&w| {
+                    let p = pane_geo(w, 500, 96, strip);
+                    (p.addr.right - 6) - (p.addr.left + 8) >= 32
+                })
+                .unwrap()
+        };
+        assert!(keeps_edit(false) > keeps_edit(true));
+        for strip in [false, true] {
+            let narrow = pane_geo(80, 400, 96, strip);
+            assert_eq!(narrow.num.right - narrow.num.left, 18, "strip={strip}");
+        }
         for (dpi, strip) in [(96, false), (144, false), (96, true), (144, true)] {
             let s = |v: i32| v * dpi / 96;
             for w in [400, 800, 1200] {
                 let p = pane_geo(w, 400, dpi, strip);
                 let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.add, p.filt, p.fav];
                 assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi} strip={strip}");
-                assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom, "{w}@{dpi}");
+                assert!(p.num.right - p.num.left == s(18) && p.fav.right <= w && p.view.top >= p.btn[0].bottom, "{w}@{dpi}");
             }
             for w in 60..=700 {
                 let p = pane_geo(w, 400, dpi, strip);
                 assert!(p.fav.right <= w && p.view.top >= p.btn[0].bottom, "{w}@{dpi}");
+                assert!(p.num.right > p.num.left && p.num.right <= w, "{w}@{dpi}");
+                let live: Vec<RECT> = [p.btn[0], p.btn[1], p.btn[2], p.btn[3], p.addr, p.add, p.filt, p.fav]
+                    .into_iter()
+                    .filter(|c| c.right > c.left)
+                    .collect();
+                for c in &live {
+                    assert!(c.left >= p.num.right, "covers number {w}@{dpi} strip={strip}");
+                }
+                for (i, a) in live.iter().enumerate() {
+                    for b in &live[i + 1..] {
+                        assert!(a.right <= b.left || b.right <= a.left, "overlap {w}@{dpi} strip={strip}");
+                    }
+                }
                 if strip {
                     assert_eq!((p.add.right, p.tabs.bottom - p.tabs.top), (p.add.left, s(26)));
                     assert_eq!(p.view.top, p.tabs.bottom);
                 } else {
-                    assert_eq!((p.tabs.bottom, p.add.right - p.add.left), (p.tabs.top, s(24)));
-                    assert_eq!(p.view.top, p.tabs.top);
-                    if p.btn[3].left >= p.btn[2].right {
+                    let add_w = p.add.right - p.add.left;
+                    assert!(add_w == s(24) || add_w == 0, "{w}@{dpi}");
+                    assert_eq!((p.tabs.bottom, p.view.top), (p.tabs.top, p.tabs.top));
+                    if p.btn[3].left >= p.btn[2].right && p.btn[3].right > p.btn[3].left && p.add.right > p.add.left {
                         assert!(p.btn[3].right <= p.add.left && p.add.right <= p.filt.left, "{w}@{dpi}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn pane_number_is_reserved_before_the_address() {
+        // Wide pane: the number leads, and the address edit still keeps its s(32).
+        let wide = pane_geo(800, 500, 96, true);
+        assert_eq!((wide.num.left, wide.num.right), (4, 22));
+        assert_eq!((wide.btn[0].left, wide.btn[2].right, wide.addr.left, wide.addr.right), (22, 94, 98, 590));
+        assert_eq!((wide.btn[3].left, wide.filt.left, wide.filt.right, wide.fav.left), (594, 620, 770, 772));
+        // Just below the old cutoff the number used to vanish. It stays, and the address gives up a pixel.
+        let above = pane_geo(241, 500, 96, true);
+        let below = pane_geo(240, 500, 96, true);
+        let edit = |p: &PaneGeo| (p.addr.right - 6) - (p.addr.left + 8);
+        assert_eq!((above.num.left, above.num.right, edit(&above)), (4, 22, 32));
+        assert_eq!((below.num.left, below.num.right), (4, 22));
+        assert_eq!(edit(&below), 31);
+        assert_eq!((below.btn[0].left, below.addr.left), (above.btn[0].left, above.addr.left));
+        assert!(below.btn.iter().all(|r| r.right - r.left == 24) && below.fav.right - below.fav.left == 24);
+        // A ~20% column at 200% DPI (1x3). The label is the whole grab target.
+        let col = pane_geo(384, 500, 192, true);
+        assert_eq!(col.num.right - col.num.left, 36);
+        assert!(edit(&col) < 64);
+        for c in [col.btn[0], col.btn[1], col.btn[2], col.btn[3], col.addr, col.filt, col.fav] {
+            if c.right > c.left {
+                assert!(c.left >= col.num.right);
             }
         }
     }
