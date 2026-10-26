@@ -17,6 +17,7 @@ pub unsafe fn open(owner: HWND) {
     let h = hwnd();
     if !h.0.is_null() && IsWindow(Some(h)).as_bool() {
         crate::winmerge::forget_status();
+        crate::folderapp::reload_shown();
         let _ = ShowWindow(h, SW_SHOWNORMAL);
         let _ = SetForegroundWindow(h);
         redraw();
@@ -52,6 +53,7 @@ pub unsafe fn redraw() {
 }
 
 pub unsafe fn refresh() {
+    crate::folderapp::reload_shown();
     let h = hwnd();
     if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
         return;
@@ -1051,6 +1053,22 @@ fn flip(id: u8) {
             unsafe {
                 crate::save_session();
                 crate::check_dirty();
+                redraw();
+            }
+            return;
+        }
+        TG_FOLDER => {
+            let want = !crate::folderapp::shown_on();
+            crate::folderapp::set_registered(want);
+            unsafe {
+                if crate::folderapp::shown_on() != want {
+                    let q = tx(s(
+                        "Could not change the default folder app.",
+                        "기본 폴더 앱을 바꾸지 못했어요.",
+                        "既定のフォルダーアプリを変更できませんでした。",
+                    ));
+                    let _ = MessageBoxW(Some(hwnd()), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+                }
                 redraw();
             }
             return;

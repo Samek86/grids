@@ -606,6 +606,8 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.winmerge_path.clear();
     });
     crate::winmerge::forget_status();
+    // The folder association is not a saved preference. Reset turns it off.
+    _ = crate::folderapp::set_registered(false);
     set_language(fresh.lang);
     crate::keys::reset_all();
     relayout();
