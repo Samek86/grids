@@ -57,26 +57,79 @@ fn render() -> Vec<u8> {
         Theme { name: "Dark", bg: DARK_BG, text: DARK_TEXT, sub: DARK_SUB },
     ];
     let dpis = [(96, "100%"), (120, "125%"), (144, "150%"), (192, "200%")];
-    // Actual-size buttons, then a 6× pixel view of the same icons.
-    let margin = 28;
-    let label_h = 18;
-    let row_gap = 14;
-    let col_gap = 18;
-    let btn_gap = 10;
+    let margin = 20;
+    let label_h = 16;
+    let row_gap = 12;
+    let col_gap = 16;
+    let btn_gap = 8;
     let states = ["Rest", "Hover", "Disabled", "Dirty"];
+    // 1x crops first (the icon itself, plus a 4px mat), then an 8× view of the 100% pair,
+    // then the icons sitting in the real 32×24 toolbar buttons.
+    let crop_pad = 4;
+    let crop_cell = 32 + crop_pad * 2;
+    let crop_w = margin * 2 + 64 + dpis.len() as i32 * (crop_cell + col_gap);
     let max_bh = 24 * 192 / 96;
     let cell_w = (32 * 192 / 96) * 2 + btn_gap;
-    let sheet_w = margin * 2 + 72 + dpis.len() as i32 * (cell_w + col_gap);
+    let btn_w = margin * 2 + 72 + dpis.len() as i32 * (cell_w + col_gap);
+    let big = 8;
+    let big_cell = 16 * big;
+    let big_w = margin * 2 + 64 + 3 * (big_cell + col_gap);
+    let sheet_w = crop_w.max(btn_w).max(big_w);
+    let crop_h = label_h + themes.len() as i32 * (label_h + 3 * (crop_cell + 8) + 8);
+    let big_h = label_h + themes.len() as i32 * (label_h + big_cell + 12);
     let block_h = label_h + states.len() as i32 * (max_bh + row_gap);
-    let zoom = 6;
-    let zoom_row_h = 32 * zoom + 8;
-    let zoom_h = label_h + themes.len() as i32 * (label_h + 2 * zoom_row_h + 8);
-    let sheet_h = margin + themes.len() as i32 * (block_h + 28) + zoom_h + margin;
+    let sheet_h = margin + crop_h + 12 + big_h + 12 + themes.len() as i32 * (block_h + 20) + margin;
     let (w, h) = (sheet_w as u32, sheet_h as u32);
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     fill(&mut rgba, w, 0, 0, w, h, 0xE7E4DE);
 
     let mut y = margin;
+    text(&mut rgba, w, h, margin, y, "1x", 0x2A2825);
+    y += label_h;
+    for theme in &themes {
+        text(&mut rgba, w, h, margin, y, theme.name, theme.text);
+        y += label_h;
+        for (tag, kind, rgb) in [
+            ("save", SessionIcon::Save, theme.sub),
+            ("load", SessionIcon::Load, theme.sub),
+            ("dirty", SessionIcon::Save, GREEN),
+        ] {
+            text(&mut rgba, w, h, margin, y + crop_pad + 4, tag, 0x5C574F);
+            let mut x = margin + 64;
+            for (i, &(dpi, name)) in dpis.iter().enumerate() {
+                if tag == "save" {
+                    text(&mut rgba, w, h, x, y - label_h, name, 0x5C574F);
+                }
+                let n = session_icon_px(dpi);
+                let ox = x + (crop_cell - n) / 2;
+                let oy = y + (crop_cell - n) / 2;
+                blit_icon(&mut rgba, w, h, ox, oy, n, 1, theme.bg, rgb, kind);
+                let _ = i;
+                x += crop_cell + col_gap;
+            }
+            y += crop_cell + 8;
+        }
+        y += 8;
+    }
+
+    text(&mut rgba, w, h, margin, y, "100% x8", 0x2A2825);
+    y += label_h;
+    for theme in &themes {
+        text(&mut rgba, w, h, margin, y, theme.name, theme.text);
+        y += label_h;
+        let mut x = margin + 64;
+        for (tag, kind, rgb) in [
+            ("save", SessionIcon::Save, theme.sub),
+            ("load", SessionIcon::Load, theme.sub),
+            ("dirty", SessionIcon::Save, GREEN),
+        ] {
+            text(&mut rgba, w, h, x, y - label_h, tag, 0x5C574F);
+            blit_icon(&mut rgba, w, h, x, y, 16, big, theme.bg, rgb, kind);
+            x += big_cell + col_gap;
+        }
+        y += big_cell + 12;
+    }
+
     for theme in &themes {
         text(&mut rgba, w, h, margin, y, theme.name, theme.text);
         y += label_h;
@@ -97,49 +150,30 @@ fn render() -> Vec<u8> {
                     "Dirty" => GREEN,
                     _ => theme.sub,
                 };
-                paint_button(&mut rgba, w, h, x, sy, bw, bh, dpi, bg, ink, SessionIcon::Save, state == "Dirty");
-                paint_button(&mut rgba, w, h, x + bw + btn_gap, sy, bw, bh, dpi, bg, if state == "Dirty" { theme.sub } else { ink }, SessionIcon::Load, false);
+                paint_button(&mut rgba, w, h, x, sy, bw, bh, dpi, bg, ink, SessionIcon::Save);
+                paint_button(
+                    &mut rgba,
+                    w,
+                    h,
+                    x + bw + btn_gap,
+                    sy,
+                    bw,
+                    bh,
+                    dpi,
+                    bg,
+                    if state == "Dirty" { theme.sub } else { ink },
+                    SessionIcon::Load,
+                );
                 x += cell_w + col_gap;
             }
             sy += max_bh + row_gap;
         }
-        y = sy + 16;
-    }
-    text(&mut rgba, w, h, margin, y, "Pixels x6", 0x5C574F);
-    y += label_h;
-    for theme in &themes {
-        text(&mut rgba, w, h, margin, y, theme.name, theme.text);
-        y += 16;
-        for (row, (kind, rgb, tag)) in [
-            (SessionIcon::Save, theme.sub, "save"),
-            (SessionIcon::Load, theme.sub, "load"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let _ = (row, tag);
-            let mut x = margin + 72;
-            for &(dpi, _) in &dpis {
-                let n = session_icon_px(dpi);
-                blit_icon(&mut rgba, w, h, x, y, n, zoom, theme.bg, rgb, kind);
-                x += 32 * zoom + col_gap;
-            }
-            y += zoom_row_h;
-        }
-        // Dirty save under the pair, light and dark.
-        let mut x = margin + 72;
-        text(&mut rgba, w, h, margin, y + 4, "dirty", 0x5C574F);
-        for &(dpi, _) in &dpis {
-            let n = session_icon_px(dpi);
-            blit_icon(&mut rgba, w, h, x, y, n, zoom, theme.bg, GREEN, SessionIcon::Save);
-            x += 32 * zoom + col_gap;
-        }
-        y += zoom_row_h + 8;
+        y = sy + 12;
     }
     encode_png(w, h, &rgba)
 }
 
-fn paint_button(buf: &mut [u8], sw: u32, sh: u32, x: i32, y: i32, bw: i32, bh: i32, dpi: i32, bg: u32, ink: u32, kind: SessionIcon, dirty: bool) {
+fn paint_button(buf: &mut [u8], sw: u32, sh: u32, x: i32, y: i32, bw: i32, bh: i32, dpi: i32, bg: u32, ink: u32, kind: SessionIcon) {
     fill(buf, sw, x, y, bw as u32, bh as u32, bg);
     let n = session_icon_px(dpi);
     let cov = session_icon_coverage(n, kind);
@@ -153,10 +187,6 @@ fn paint_button(buf: &mut [u8], sw: u32, sh: u32, x: i32, y: i32, bw: i32, bh: i
             }
             put(buf, sw, sh, ox + px, oy + py, blend(bg, ink, a as f32 / 255.0));
         }
-    }
-    if dirty {
-        let s = |v: i32| v * dpi / 96;
-        fill(buf, sw, x + bw - s(10), y + s(4), (s(10) - s(4)).max(1) as u32, (s(10) - s(4)).max(1) as u32, GREEN);
     }
 }
 

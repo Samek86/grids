@@ -141,14 +141,11 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
     if id == ID_TB_FAV {
         return draw_star(dc, rc, fg, Star::Outline, dpi);
     }
-    // Stacked windows, drawn (not a Segoe glyph). Save turns green, and keeps the corner dot, while dirty.
+    // Stacked windows, drawn (not a Segoe glyph). A dirty layout turns the whole save icon green.
     if id == ID_TB_SAVE || id == ID_TB_LOAD {
         let dirty = id == ID_TB_SAVE && app(|a| a.dirty);
         let kind = if id == ID_TB_SAVE { SessionIcon::Save } else { SessionIcon::Load };
         draw_session_icon(dc, rc, kind, if dirty { GREEN } else { fg }, dpi);
-        if dirty {
-            fill(dc, RECT { left: rc.right - s(10), top: rc.top + s(4), right: rc.right - s(4), bottom: rc.top + s(10) }, GREEN);
-        }
         return;
     }
     text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
