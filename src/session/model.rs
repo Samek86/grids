@@ -300,6 +300,8 @@ pub(crate) struct Session {
     /// (`file`, `folder`, `background`, `drive`). A missing id stays on. panegrid.json only:
     /// a .grids file never carries this, and the system registry is never written.
     pub(crate) ctx_off: std::collections::BTreeMap<String, Vec<String>>,
+    /// Menu item labels seen for a handler id. panegrid.json only; the registry is never written.
+    pub(crate) ctx_labels: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
@@ -421,6 +423,7 @@ impl Default for Session {
             tabs: Vec::new(),
             tab: 0,
             ctx_off: std::collections::BTreeMap::new(),
+            ctx_labels: std::collections::BTreeMap::new(),
         };
         // A first-ever start: layout_new 0 is two panes, left and right.
         s.set_heights(s.layout_heights());
@@ -489,6 +492,7 @@ impl PartialEq for Session {
             && self.tab == o.tab
             && self.view_tabs() == o.view_tabs()
             && self.ctx_off == o.ctx_off
+            && self.ctx_labels == o.ctx_labels
     }
 }
 

@@ -149,6 +149,11 @@ const CTX_NOTE: [&str; 3] = s(
 );
 const CTX_RESET_L: [&str; 3] = s("Reset to all enabled", "모두 사용", "すべて有効に戻す");
 const CTX_EMPTY: [&str; 3] = s("No third-party menu items", "타사 메뉴 항목이 없어요", "サードパーティの項目はありません");
+const CTX_PENDING: [&str; 3] = s(
+    "Open the menu once to show these",
+    "메뉴를 한 번 열면 표시됩니다",
+    "メニューを一度開くと表示されます",
+);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ctl {
@@ -357,6 +362,7 @@ struct St {
     hot: Option<usize>,
     font: HFONT,
     small: HFONT,
+    bold: HFONT,
     title_font: HFONT,
     mono: HFONT,
     icon: HFONT,
@@ -385,6 +391,7 @@ impl Default for St {
             hot: None,
             font: HFONT::default(),
             small: HFONT::default(),
+            bold: HFONT::default(),
             title_font: HFONT::default(),
             mono: HFONT::default(),
             icon: HFONT::default(),
@@ -412,6 +419,7 @@ struct Snap {
     hot: Option<usize>,
     font: HFONT,
     small: HFONT,
+    bold: HFONT,
     title_font: HFONT,
     mono: HFONT,
     icon: HFONT,
@@ -430,6 +438,7 @@ fn snap() -> Snap {
             hot: st.hot,
             font: st.font,
             small: st.small,
+            bold: st.bold,
             title_font: st.title_font,
             mono: st.mono,
             icon: st.icon,
@@ -461,15 +470,19 @@ enum Item {
     CtxBar { reset: RECT },
     CtxRow {
         id: String,
+        ids: Vec<String>,
+        scopes: Vec<u8>,
         rect: RECT,
         mark: RECT,
         chev: RECT,
         name: String,
-        targets: u8,
-        off: u8,
+        detail: String,
+        raw: String,
+        pending: bool,
+        tick: crate::shell::ctxmenu::Tick,
         chips: Vec<(u8, RECT)>,
     },
-    CtxSub { id: String, bit: u8, attached: u8, rect: RECT, mark: RECT, on: bool },
+    CtxSub { ids: Vec<String>, scopes: Vec<u8>, bit: u8, rect: RECT, mark: RECT, tick: crate::shell::ctxmenu::Tick },
     CtxEmpty(RECT),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
@@ -656,8 +669,8 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         g.items.push(Item::CtxNote(RECT { left, top: y, right, bottom: y + h }));
         y += h + sc(dpi, 8);
     }
-    let off = app(|a| a.s.ctx_off.clone());
-    let rows = crate::shell::ctxmenu::ui_rows(&off, rq);
+    let (off, seen) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_labels.clone()));
+    let rows = crate::shell::ctxmenu::ui_rows(&off, &seen, rq);
     let bw = sc(dpi, 220);
     let bh = sc(dpi, 32);
     let reset = RECT { left: (right - bw).max(left), top: y, right, bottom: y + bh };
@@ -668,25 +681,32 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         return y + sc(dpi, 44);
     }
     for row in rows {
-        let h = sc(dpi, 48);
+        let sub = row.pending || !row.detail.is_empty() || !row.raw.is_empty();
+        let h = sc(dpi, if sub { 64 } else { 48 });
         let rect = RECT { left, top: y, right, bottom: y + h };
-        let mark = RECT { left: left + sc(dpi, 14), top: y + (h - sc(dpi, 16)) / 2, right: left + sc(dpi, 30), bottom: y + (h + sc(dpi, 16)) / 2 };
+        let tick = sc(dpi, 16);
+        let mid = if sub { y + sc(dpi, 8) + sc(dpi, 11) } else { y + h / 2 };
+        let mark = RECT { left: left + sc(dpi, 14), top: mid - tick / 2, right: left + sc(dpi, 30), bottom: mid + tick / 2 };
         let chev = RECT { left: mark.right + sc(dpi, 2), top: y, right: mark.right + sc(dpi, 26), bottom: y + h };
         let chips = ctx_chips(row.targets, rect, dpi);
         let open = sn.ctx_open.iter().any(|id| id == &row.id);
         g.items.push(Item::CtxRow {
             id: row.id.clone(),
+            ids: row.ids.clone(),
+            scopes: row.scopes.clone(),
             rect,
             mark,
             chev,
             name: row.name,
-            targets: row.targets,
-            off: row.off,
+            detail: row.detail,
+            raw: row.raw,
+            pending: row.pending,
+            tick: row.tick,
             chips,
         });
         y += h;
         if open {
-            for bit in crate::shell::ctxmenu::target_bits() {
+            for (i, bit) in crate::shell::ctxmenu::target_bits().into_iter().enumerate() {
                 if row.targets & bit == 0 {
                     continue;
                 }
@@ -699,12 +719,12 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
                     bottom: y + (sh + sc(dpi, 16)) / 2,
                 };
                 g.items.push(Item::CtxSub {
-                    id: row.id.clone(),
+                    ids: row.ids.clone(),
+                    scopes: row.scopes.clone(),
                     bit,
-                    attached: row.targets,
                     rect: sub,
                     mark: sbox,
-                    on: crate::shell::ctxmenu::target_enabled(row.off, bit),
+                    tick: row.subs[i],
                 });
                 y += sh;
             }
@@ -728,7 +748,10 @@ fn ctx_chips(targets: u8, rect: RECT, dpi: i32) -> Vec<(u8, RECT)> {
             text_w += if ch.is_ascii() { sc(dpi, 7) } else { sc(dpi, 14) };
         }
         let w = sc(dpi, 20) + text_w;
-        let r = RECT { left: x - w, top: rect.top + sc(dpi, 14), right: x, bottom: rect.top + sc(dpi, 34) };
+        let chip_h = sc(dpi, 20);
+        let row_h = rect.bottom - rect.top;
+        let top = if row_h > sc(dpi, 52) { rect.top + sc(dpi, 8) } else { rect.top + (row_h - chip_h) / 2 };
+        let r = RECT { left: x - w, top, right: x, bottom: top + chip_h };
         x = r.left - sc(dpi, 6);
         out.push((bit, r));
     }
@@ -965,6 +988,7 @@ mod tests {
             hot: None,
             font: HFONT::default(),
             small: HFONT::default(),
+            bold: HFONT::default(),
             title_font: HFONT::default(),
             mono: HFONT::default(),
             icon: HFONT::default(),
@@ -1164,6 +1188,7 @@ mod tests {
         assert_eq!(tx(PAGES[CTX_PAGE]), "우클릭 메뉴 항목");
         assert_eq!(tx(CTX_RESET_L), "모두 사용");
         assert_eq!(tx(CTX_EMPTY), "타사 메뉴 항목이 없어요");
+        assert_eq!(tx(CTX_PENDING), "메뉴를 한 번 열면 표시됩니다");
         let (_, page) = commit_search(0, 0, "우클릭 메뉴 항목");
         assert_eq!(page, CTX_PAGE);
         let g = geo(client(), &shot(page, "우클릭"));

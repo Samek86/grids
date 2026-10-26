@@ -949,6 +949,8 @@ pub(crate) fn theme_action_label() -> &'static str {
 pub(crate) unsafe fn set_language(lang: Lang) {
     app(|a| a.s.choose_lang(lang));
     UI.store(lang.resolve(), Ordering::Relaxed);
+    // Vendor titles are chosen in the UI language. The next settings paint reads them again.
+    crate::shell::ctxmenu::invalidate();
     publish_shared();
     across_windows(|| {
         let (main, old) = app(|a| (a.main, a.view_menu));
