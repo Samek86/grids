@@ -120,6 +120,10 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 save_session();
             }
+            WM_TIMER if wp.0 == TIMER_FVIEWS => {
+                _ = KillTimer(Some(h), TIMER_FVIEWS);
+                crate::folderview::flush();
+            }
             WM_TIMER if wp.0 == TIMER_WINS => {
                 _ = KillTimer(Some(h), TIMER_WINS);
                 open_stashed();
@@ -369,7 +373,10 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             // Restart or sign-out does not send WM_CLOSE. Saving here keeps the last folders.
-            WM_ENDSESSION if wp.0 != 0 => save_session(),
+            WM_ENDSESSION if wp.0 != 0 => {
+                flush_folder_views();
+                save_session();
+            }
             // Windows light/dark changed. Queued so nothing is drawn inside the broadcast.
             WM_SETTINGCHANGE => {
                 if lp.0 != 0 {
@@ -385,7 +392,9 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
+                _ = KillTimer(Some(h), TIMER_FVIEWS);
                 _ = KillTimer(Some(h), TIMER_WINS);
+                flush_folder_views();
                 if app(|a| a.s.autosave) {
                     autosave_associated_tabs();
                 }
