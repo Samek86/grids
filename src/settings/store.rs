@@ -261,6 +261,10 @@ struct SettingsFile {
     /// Missing means on. Omitted while on, so an older file stays unchanged.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     peek_wheel_nav: bool,
+    /// Remember sort, columns, view mode, icon size and grouping for each folder.
+    /// Missing means on. The views themselves live in folder-views.json, never in grids.ini.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    remember_folder_view: bool,
     /// Quick look window size in DIP, per kind. Omitted until the user resizes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peek: Option<PeekJson>,
@@ -337,6 +341,7 @@ impl SettingsFile {
             use_everything: true,
             space_preview: true,
             peek_wheel_nav: true,
+            remember_folder_view: true,
             peek: None,
             ev_asked: false,
             session: String::new(),
@@ -423,6 +428,7 @@ impl SettingsFile {
             use_everything: s.use_everything,
             space_preview: s.space_preview,
             peek_wheel_nav: s.peek_wheel_nav,
+            remember_folder_view: s.remember_views,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
             session: s.file.clone(),
@@ -466,6 +472,7 @@ impl SettingsFile {
         self.extra.remove("ev_asked");
         self.extra.remove("space_preview");
         self.extra.remove("peek_wheel_nav");
+        self.extra.remove("remember_folder_view");
         self.extra.remove("layout_new");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
@@ -557,6 +564,7 @@ impl SettingsFile {
         s.use_everything = self.use_everything;
         s.space_preview = self.space_preview;
         s.peek_wheel_nav = self.peek_wheel_nav;
+        s.remember_views = self.remember_folder_view;
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
@@ -1451,6 +1459,29 @@ mod tests {
         file.merge_forward(&file.clone());
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["space_preview"], false);
+        assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn remember_folder_view_defaults_on_and_is_not_a_grids_ini_key_we_write_back() {
+        assert!(Session::default().remember_views);
+        assert!(adopt("{}").unwrap().remember_views);
+        assert!(adopt(r#"{"version":1}"#).unwrap().remember_views);
+        assert!(Session::parse("side=1\n").remember_views);
+        assert!(!Session::parse("folderview=0").remember_views);
+        assert!(Session::parse("folderview=1").remember_views);
+        let mut s = Session::default();
+        s.remember_views = false;
+        assert!(!Session::parse(&s.to_ini()).remember_views);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"remember_folder_view\": false"), "{text}");
+        assert!(!adopt(&text).unwrap().remember_views);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("remember_folder_view"));
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("remember_folder_view".into(), serde_json::json!(true));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["remember_folder_view"], false);
         assert!(saved.get("extra").is_none());
     }
 
