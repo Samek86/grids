@@ -18,6 +18,8 @@ pub(crate) struct Pane {
     pub(crate) disp: String,
     pub(crate) pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
     pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
+    /// Folder whose view we last applied here. None while per-folder memory is off.
+    pub(crate) view_watch: Option<crate::folderview::ViewWatch>,
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
     pub(crate) icon: i32,   // current folder in the system image list, -1 = none yet
     pub(crate) ticket: u32, // that lookup; 0 = none asked
@@ -484,6 +486,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.dblup = src.dblup;
     dst.space_preview = src.space_preview;
     dst.peek_wheel_nav = src.peek_wheel_nav;
+    dst.remember_views = src.remember_views;
     dst.peek_image = src.peek_image;
     dst.peek_doc = src.peek_doc;
     dst.hotkey = src.hotkey;

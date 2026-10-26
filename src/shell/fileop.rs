@@ -597,6 +597,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.dblup = fresh.dblup;
         a.s.space_preview = fresh.space_preview;
         a.s.peek_wheel_nav = fresh.peek_wheel_nav;
+        a.s.remember_views = fresh.remember_views;
         a.s.peek_image = None;
         a.s.peek_doc = None;
         a.s.accent = fresh.accent;
