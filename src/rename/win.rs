@@ -14,11 +14,17 @@ use crate::tr;
 
 use super::engine::{self, BatchItem, CaseMode, DatePos, DateSrc, Issue, NumPos, PreviewRow, Rule, TrimEdge};
 use super::exec;
+use super::presets::{self, Preset};
 
 const ID_ADD: i32 = 1;
 const ID_CLOSE: i32 = 2;
 const ID_APPLY: i32 = 3;
 const ID_UNDO: i32 = 4;
+const ID_FILTER: i32 = 5;
+const ID_EXT: i32 = 6;
+const ID_PRESET: i32 = 7;
+const ID_SAVE: i32 = 8;
+const ID_DELPRE: i32 = 9;
 const ID_BASE: i32 = 100;
 const STRIDE: i32 = 16;
 const MAX_RULES: usize = 24;
@@ -221,6 +227,12 @@ pub(crate) unsafe fn refresh() {
     set_btn(h, ID_CLOSE, tx(s("Close", "닫기", "閉じる")));
     set_btn(h, ID_APPLY, tx(s("Rename", "이름 바꾸기", "名前の変更")));
     set_btn(h, ID_UNDO, tx(s("Undo", "되돌리기", "元に戻す")));
+    set_btn(h, ID_SAVE, tx(s("Save", "저장", "保存")));
+    set_btn(h, ID_DELPRE, tx(s("Delete preset", "프리셋 삭제", "プリセットを削除")));
+    ST.with(|s| s.borrow_mut().filling = true);
+    refill_filter();
+    cue(ctl(h, ID_EXT), "jpg, png");
+    cue(ctl(h, ID_PRESET), tx(s("Preset name", "프리셋 이름", "プリセット名")));
     let n = ST.with(|s| s.borrow().rules.len());
     ST.with(|s| s.borrow_mut().filling = true);
     for i in 0..n {
@@ -383,6 +395,28 @@ unsafe fn build_shell(h: HWND) {
     btn(ID_CLOSE, tx(s("Close", "닫기", "閉じる")));
     btn(ID_APPLY, tx(s("Rename", "이름 바꾸기", "名前の変更")));
     btn(ID_UNDO, tx(s("Undo", "되돌리기", "元に戻す")));
+    btn(ID_SAVE, tx(s("Save", "저장", "保存")));
+    btn(ID_DELPRE, tx(s("Delete preset", "프리셋 삭제", "プリセットを削除")));
+    let list = |id| {
+        let c = child(h, w!("COMBOBOX"), "", 3 | 0x200 | 0x00200000 | tab, id, font);
+        theme_ctl(c);
+        c
+    };
+    let drop = |id| {
+        let c = child(h, w!("COMBOBOX"), "", 2 | 0x200 | 0x00200000 | tab, id, font);
+        theme_ctl(c);
+        c
+    };
+    list(ID_FILTER);
+    let ext = child(h, w!("EDIT"), "", 0x80 | tab, ID_EXT, font);
+    theme_ctl(ext);
+    let m = sc(ST.with(|s| s.borrow().dpi), 6) as isize;
+    let _ = SendMessageW(ext, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(m | (m << 16))));
+    drop(ID_PRESET);
+    refill_filter();
+    refill_presets(None);
+    cue(ext, "jpg, png");
+    cue(ctl(h, ID_PRESET), tx(s("Preset name", "프리셋 이름", "プリセット名")));
     let host = child(h, w!("PanegridRenameRules"), "", 0x02000000 | 0x04000000, 50, font);
     ST.with(|s| s.borrow_mut().host = host);
 }
@@ -473,6 +507,7 @@ unsafe fn refill_kind(i: usize) {
         tx(s("Insert", "삽입", "挿入")),
         tx(s("Delete characters", "글자 삭제", "文字を削除")),
         tx(s("Trim", "다듬기", "トリム")),
+        tx(s("Regular expression", "정규식", "正規表現")),
     ] {
         let hs = HSTRING::from(label);
         let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
@@ -534,6 +569,14 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
             set_check(F_EXT, *include_ext);
             cue(ctl(host, id(i, F_A)), tx(s("Find", "찾을 내용", "検索")));
             cue(ctl(host, id(i, F_B)), tx(s("Replace with", "바꿀 내용", "置換")));
+        }
+        Rule::Regex { pattern, replace, case_sensitive, include_ext } => {
+            set_edit(F_A, pattern);
+            set_edit(F_B, replace);
+            set_check(F_CASE, *case_sensitive);
+            set_check(F_EXT, *include_ext);
+            cue(ctl(host, id(i, F_A)), tx(s("Pattern", "패턴", "パターン")));
+            cue(ctl(host, id(i, F_B)), tx(s("Replace ($1)", "바꾸기 ($1)", "置換 ($1)")));
         }
         Rule::Prefix { text } => {
             set_edit(F_A, text);
@@ -670,6 +713,7 @@ unsafe fn read_rule(i: usize) -> Option<Rule> {
             };
             Rule::Trim { chars: text(F_A), edge }
         }
+        10 => Rule::Regex { pattern: text(F_A), replace: text(F_B), case_sensitive: on(F_CASE), include_ext: on(F_EXT) },
         _ => Rule::Replace { find: text(F_A), replace: text(F_B), case_sensitive: on(F_CASE), include_ext: on(F_EXT) },
     })
 }
@@ -686,6 +730,7 @@ fn kind_index(rule: &Rule) -> usize {
         Rule::Insert { .. } => 7,
         Rule::Delete { .. } => 8,
         Rule::Trim { .. } => 9,
+        Rule::Regex { .. } => 10,
     }
 }
 
@@ -700,6 +745,7 @@ fn default_rule(kind: isize) -> Rule {
         7 => Rule::Insert { text: String::new(), at: 0 },
         8 => Rule::Delete { at: 0, len: 1 },
         9 => Rule::Trim { chars: String::new(), edge: TrimEdge::Both },
+        10 => Rule::Regex { pattern: String::new(), replace: String::new(), case_sensitive: false, include_ext: false },
         _ => Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false },
     }
 }
@@ -752,6 +798,11 @@ unsafe fn on_command(_h: HWND, id: i32, code: u32) {
         ID_CLOSE => close(),
         ID_APPLY => apply(),
         ID_UNDO => undo(),
+        ID_SAVE if code == BN_CLICKED => save_preset(),
+        ID_DELPRE if code == BN_CLICKED => delete_preset(),
+        ID_FILTER if code == CBN_SELCHANGE => recompute(),
+        ID_EXT if code == EN_CHANGE => recompute(),
+        ID_PRESET if code == CBN_SELCHANGE => load_preset(),
         _ if id >= ID_BASE => {
             let i = ((id - ID_BASE) / STRIDE) as usize;
             let f = (id - ID_BASE) % STRIDE;
@@ -879,7 +930,7 @@ unsafe fn apply() {
         let mut pending = Vec::new();
         for (it, row) in st.items.iter().zip(st.rows.iter()) {
             pending.push(if row.issues.is_empty() { row.new_name.clone() } else { row.old_name.clone() });
-            if row.issues.is_empty() && row.old_name != row.new_name {
+            if !row.skipped && row.issues.is_empty() && row.old_name != row.new_name {
                 pairs.push((it.dir.clone(), row.old_name.clone(), row.new_name.clone()));
             }
         }
@@ -1042,7 +1093,7 @@ fn recompute_keep_note() {
         let st = s.borrow();
         (st.items.clone(), st.rules.clone(), st.existing.clone())
     });
-    let rows = engine::preview(&items, &rules, &existing, tz_offset_secs());
+    let rows = engine::preview_filtered(&items, &rules, &existing, tz_offset_secs(), &current_filter());
     let max = preview_max(rows.len());
     ST.with(|s| {
         let mut st = s.borrow_mut();
@@ -1085,6 +1136,8 @@ unsafe fn sync_buttons() {
     let undo = exec::last_undo().is_some();
     let _ = EnableWindow(ctl(h, ID_APPLY), (errs == 0 && changes > 0 && !busy).into());
     let _ = EnableWindow(ctl(h, ID_UNDO), (undo && !busy).into());
+    let _ = EnableWindow(ctl(h, ID_SAVE), (!busy).into());
+    let _ = EnableWindow(ctl(h, ID_DELPRE), (!busy).into());
     let _ = InvalidateRect(Some(ctl(h, ID_APPLY)), None, false);
     let _ = InvalidateRect(Some(ctl(h, ID_UNDO)), None, false);
 }
@@ -1102,6 +1155,7 @@ fn host_height() -> i32 {
 struct Geo {
     rules_lbl: RECT,
     add: RECT,
+    tools: RECT,
     host: RECT,
     prev_lbl: RECT,
     summary: RECT,
@@ -1130,7 +1184,9 @@ fn geo(rc: RECT, dpi: i32) -> Geo {
     let add = RECT { left: rc.right - pad - add_w, top: top + sc(dpi, 0), right: rc.right - pad, bottom: top + lbl_h };
     let foot_h = sc(dpi, 56);
     let foot_top = rc.bottom - foot_h;
-    let host_top = rules_lbl.bottom + sc(dpi, 8);
+    let tools_top = rules_lbl.bottom + sc(dpi, 8);
+    let tools = RECT { left: rc.left + pad, top: tools_top, right: rc.right - pad, bottom: tools_top + lbl_h };
+    let host_top = tools.bottom + sc(dpi, 8);
     let body = (foot_top - host_top - sc(dpi, 36)).max(sc(dpi, 220));
     let host_h = (body * 42 / 100).max(sc(dpi, 110));
     let host = RECT { left: rc.left + pad, top: host_top, right: rc.right - pad, bottom: host_top + host_h };
@@ -1143,7 +1199,7 @@ fn geo(rc: RECT, dpi: i32) -> Geo {
     let apply = RECT { left: rc.right - pad - sc(dpi, 128), top: btn_y, right: rc.right - pad, bottom: btn_y + btn_h };
     let close = RECT { left: apply.left - sc(dpi, 8) - sc(dpi, 96), top: btn_y, right: apply.left - sc(dpi, 8), bottom: btn_y + btn_h };
     let undo = RECT { left: rc.left + pad, top: btn_y, right: rc.left + pad + sc(dpi, 112), bottom: btn_y + btn_h };
-    Geo { rules_lbl, add, host, prev_lbl, summary, list, undo, close, apply }
+    Geo { rules_lbl, add, tools, host, prev_lbl, summary, list, undo, close, apply }
 }
 
 unsafe fn layout(h: HWND) {
@@ -1158,9 +1214,26 @@ unsafe fn layout(h: HWND) {
     move_to(ctl(h, ID_UNDO), g.undo);
     move_to(ctl(h, ID_CLOSE), g.close);
     move_to(ctl(h, ID_APPLY), g.apply);
+    place_tools(h, g.tools, dpi);
     let host = ST.with(|s| s.borrow().host);
     move_to(host, g.host);
     place_rules();
+}
+
+unsafe fn place_tools(h: HWND, r: RECT, dpi: i32) {
+    let gap = sc(dpi, 8);
+    let mut x = r.left;
+    let slot = |w: i32, x: &mut i32| {
+        let rect = RECT { left: *x, top: r.top, right: *x + w, bottom: r.bottom };
+        *x += w + gap;
+        rect
+    };
+    move_to(ctl(h, ID_FILTER), slot(sc(dpi, 128), &mut x));
+    move_to(ctl(h, ID_EXT), slot(sc(dpi, 148), &mut x));
+    move_to(ctl(h, ID_PRESET), slot(sc(dpi, 180), &mut x));
+    move_to(ctl(h, ID_SAVE), slot(sc(dpi, 72), &mut x));
+    let del_r = RECT { left: x, top: r.top, right: r.right.min(x + sc(dpi, 128)), bottom: r.bottom };
+    move_to(ctl(h, ID_DELPRE), del_r);
 }
 
 fn card_dip(rule: &Rule) -> i32 {
@@ -1247,7 +1320,7 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
         unsafe { put(host, id(i, field), RECT { left, top, right, bottom: top + h }, true); }
     };
     match rule {
-        Rule::Replace { .. } => {
+        Rule::Replace { .. } | Rule::Regex { .. } => {
             let case_w = sc(dpi, 168);
             let ext_w = sc(dpi, 176);
             let mut edge = end;
@@ -1371,11 +1444,12 @@ unsafe fn paint(h: HWND) {
         crate::text(dc, g.rules_lbl, tx(s("Rules", "규칙", "ルール")), font, crate::pal().text, DT_LEFT);
         let hint = tx(s("Top to bottom", "위에서 아래 순서로", "上から順に"));
         crate::text(dc, RECT { left: g.rules_lbl.left + sc(dpi, 70), ..g.rules_lbl }, hint, small, crate::pal().sub, DT_LEFT);
+        paint_edit_frame(dc, h, ID_EXT, dpi);
         crate::text(dc, g.prev_lbl, tx(s("Preview", "미리보기", "プレビュー")), font, crate::pal().text, DT_LEFT);
         let note = ST.with(|s| s.borrow().note.clone());
         let rows = ST.with(|s| s.borrow().rows.clone());
         let summary = if note.is_empty() {
-            summary_text(rows.len(), engine::change_count(&rows), engine::error_count(&rows))
+            summary_text(rows.len(), engine::change_count(&rows), engine::error_count(&rows), engine::skipped_count(&rows))
         } else {
             note
         };
@@ -1424,7 +1498,11 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
         let err_r = RECT { left: r.right - err_w, right: r.right - sc(dpi, 10), ..r };
         let accent = chrome();
         let wash = crate::blend(crate::pal().card, accent, 0.28);
-        if row.issues.is_empty() {
+        if row.skipped {
+            crate::text(dc, old_r, &row.old_name, font, crate::pal().sub, DT_LEFT);
+            crate::text(dc, new_r, &row.new_name, font, crate::pal().sub, DT_LEFT);
+            crate::text(dc, err_r, tx(s("Skipped", "제외", "対象外")), small, crate::pal().sub, DT_RIGHT);
+        } else if row.issues.is_empty() {
             paint_marked(dc, old_r, &row.old_name, row.old_span, font, crate::pal().text, wash, accent);
             paint_marked(dc, new_r, &row.new_name, row.new_span, font, crate::pal().text, wash, accent);
         } else {
@@ -1435,7 +1513,7 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
             }
         }
         crate::text(dc, arrow, "→", font, crate::pal().sub, DT_CENTER);
-        if multi {
+        if multi && !row.skipped {
             if let Some(folder) = items.get(i).map(|it| it.dir.rsplit(['\\', '/']).next().unwrap_or("").to_string()) {
                 if !folder.is_empty() && row.issues.is_empty() {
                     // Folder tag stays out of the highlighted name; the error column is free.
@@ -1613,14 +1691,194 @@ fn err_color() -> u32 {
     if crate::DARK_ON.load(std::sync::atomic::Ordering::Relaxed) { 0xFF7B72 } else { 0xC4314B }
 }
 
-fn summary_text(n: usize, changes: usize, errors: usize) -> String {
-    match (crate::ui(), errors) {
+unsafe fn paint_edit_frame(dc: HDC, parent: HWND, id: i32, dpi: i32) {
+    let c = ctl(parent, id);
+    if c.0.is_null() || !IsWindowVisible(c).as_bool() {
+        return;
+    }
+    let mut wr = RECT::default();
+    let _ = GetWindowRect(c, &mut wr);
+    let mut pts = [POINT { x: wr.left, y: wr.top }, POINT { x: wr.right, y: wr.bottom }];
+    let _ = MapWindowPoints(None, Some(parent), &mut pts);
+    let inf = sc(dpi, 3);
+    rfill(
+        dc,
+        RECT { left: pts[0].x - inf, top: pts[0].y - inf, right: pts[1].x + inf, bottom: pts[1].y + inf },
+        sc(dpi, 4),
+        crate::pal().bg,
+        Some(crate::pal().line),
+    );
+}
+
+fn current_filter() -> engine::Filter {
+    let (files, folders) = filter_flags();
+    let h = hwnd();
+    let extensions = if h.0.is_null() {
+        Vec::new()
+    } else {
+        engine::parse_extensions(&unsafe { crate::text_of(ctl(h, ID_EXT)) })
+    };
+    engine::Filter { files, folders, extensions }
+}
+
+fn filter_flags() -> (bool, bool) {
+    let h = hwnd();
+    if h.0.is_null() {
+        return (true, true);
+    }
+    match unsafe { SendMessageW(ctl(h, ID_FILTER), CB_GETCURSEL, None, None).0 } {
+        1 => (true, false),
+        2 => (false, true),
+        _ => (true, true),
+    }
+}
+
+unsafe fn refill_filter() {
+    let h = hwnd();
+    let c = ctl(h, ID_FILTER);
+    if c.0.is_null() {
+        return;
+    }
+    let cur = SendMessageW(c, CB_GETCURSEL, None, None).0;
+    let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
+    for label in [
+        tx(s("All items", "모든 항목", "すべての項目")),
+        tx(s("Files only", "파일만", "ファイルのみ")),
+        tx(s("Folders only", "폴더만", "フォルダーのみ")),
+    ] {
+        let hs = HSTRING::from(label);
+        let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
+    }
+    let _ = SendMessageW(c, CB_SETCURSEL, Some(WPARAM(if cur < 0 { 0 } else { cur as usize })), None);
+}
+
+unsafe fn refill_presets(select: Option<&str>) {
+    let c = ctl(hwnd(), ID_PRESET);
+    if c.0.is_null() {
+        return;
+    }
+    let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
+    for preset in presets::list(&presets::dir()) {
+        let hs = HSTRING::from(&preset.name);
+        let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
+    }
+    if let Some(name) = select {
+        let _ = SetWindowTextW(c, &HSTRING::from(name));
+    }
+}
+
+unsafe fn load_preset() {
+    let h = hwnd();
+    let name = crate::text_of(ctl(h, ID_PRESET));
+    let Some(preset) = presets::list(&presets::dir()).into_iter().find(|p| p.name == name) else { return };
+    let rules = if preset.rules.is_empty() {
+        vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }]
+    } else {
+        preset.rules.into_iter().take(MAX_RULES).collect()
+    };
+    let sel = if preset.files && !preset.folders {
+        1
+    } else if !preset.files && preset.folders {
+        2
+    } else {
+        0
+    };
+    ST.with(|s| {
+        let mut st = s.borrow_mut();
+        st.filling = true;
+        st.rules = rules;
+        st.note.clear();
+        st.rule_scroll = 0;
+    });
+    let _ = SendMessageW(ctl(h, ID_FILTER), CB_SETCURSEL, Some(WPARAM(sel)), None);
+    let _ = SetWindowTextW(ctl(h, ID_EXT), &HSTRING::from(&preset.extensions));
+    ST.with(|s| s.borrow_mut().filling = false);
+    rebuild_rule_controls();
+    layout(h);
+    recompute();
+}
+
+unsafe fn save_preset() {
+    if ST.with(|s| s.borrow().busy) {
+        return;
+    }
+    let h = hwnd();
+    let name = crate::text_of(ctl(h, ID_PRESET)).trim().to_string();
+    if name.is_empty() {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let n = ST.with(|s| s.borrow().rules.len());
+    let mut rules = Vec::with_capacity(n);
+    for i in 0..n {
+        if let Some(rule) = read_rule(i) {
+            rules.push(rule);
+        }
+    }
+    ST.with(|s| s.borrow_mut().rules.clone_from(&rules));
+    let (files, folders) = filter_flags();
+    let preset = Preset { name: name.clone(), rules, files, folders, extensions: crate::text_of(ctl(h, ID_EXT)) };
+    let note = match presets::save(&presets::dir(), &preset) {
+        Ok(()) => {
+            ST.with(|s| s.borrow_mut().filling = true);
+            refill_presets(Some(&name));
+            ST.with(|s| s.borrow_mut().filling = false);
+            match crate::ui() {
+                1 => format!("'{name}' 프리셋을 저장했습니다"),
+                2 => format!("プリセット「{name}」を保存しました"),
+                _ => format!("Saved preset \"{name}\""),
+            }
+        }
+        Err(e) => format!("{}{e}", tr("Could not save the preset: ", "프리셋을 저장하지 못했습니다: ", "プリセットを保存できませんでした: ")),
+    };
+    ST.with(|s| s.borrow_mut().note = note);
+    let _ = InvalidateRect(Some(h), None, false);
+}
+
+unsafe fn delete_preset() {
+    if ST.with(|s| s.borrow().busy) {
+        return;
+    }
+    let h = hwnd();
+    let name = crate::text_of(ctl(h, ID_PRESET)).trim().to_string();
+    if name.is_empty() {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    let note = match presets::delete(&presets::dir(), &name) {
+        Ok(()) => {
+            ST.with(|s| s.borrow_mut().filling = true);
+            refill_presets(None);
+            let _ = SetWindowTextW(ctl(h, ID_PRESET), &HSTRING::from(""));
+            ST.with(|s| s.borrow_mut().filling = false);
+            match crate::ui() {
+                1 => format!("'{name}' 프리셋을 지웠습니다"),
+                2 => format!("プリセット「{name}」を削除しました"),
+                _ => format!("Deleted preset \"{name}\""),
+            }
+        }
+        Err(e) => format!("{}{e}", tr("Could not delete the preset: ", "프리셋을 지우지 못했습니다: ", "プリセットを削除できませんでした: ")),
+    };
+    ST.with(|s| s.borrow_mut().note = note);
+    let _ = InvalidateRect(Some(h), None, false);
+}
+
+fn summary_text(n: usize, changes: usize, errors: usize, skipped: usize) -> String {
+    let base = match (crate::ui(), errors) {
         (1, 0) => format!("{n}개 · 변경 {changes}"),
         (1, e) => format!("{n}개 · 변경 {changes} · 오류 {e}"),
         (2, 0) => format!("{n} 件 · 変更 {changes}"),
         (2, e) => format!("{n} 件 · 変更 {changes} · エラー {e}"),
         (_, 0) => format!("{n} items · {changes} changes"),
         (_, e) => format!("{n} items · {changes} changes · {e} errors"),
+    };
+    if skipped == 0 {
+        return base;
+    }
+    match crate::ui() {
+        1 => format!("{base} · 제외 {skipped}"),
+        2 => format!("{base} · 対象外 {skipped}"),
+        _ => format!("{base} · skipped {skipped}"),
     }
 }
 
@@ -1649,6 +1907,7 @@ fn issue_text(issue: Issue) -> &'static str {
         Issue::TooLong => tr("Path too long", "경로가 너무 깁니다", "パスが長すぎます"),
         Issue::Duplicate => tr("Duplicate name", "이름이 겹칩니다", "名前が重複"),
         Issue::Exists => tr("Already exists", "이미 있는 이름", "既に存在します"),
+        Issue::BadPattern => tr("Invalid pattern", "정규식이 잘못되었습니다", "正規表現が不正です"),
     }
 }
 
