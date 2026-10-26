@@ -144,10 +144,15 @@ pub(crate) fn start_async() {
 }
 
 pub(crate) fn install_async() {
-    if busy() {
-        return;
-    }
-    let _ = std::thread::Builder::new().name("panegrid-ev-install".into()).spawn(|| {
+    // Claim the busy state under the lock before spawning, so a quick second click cannot start a second winget.
+    let prev = {
+        let mut c = cache();
+        if matches!(c.activity, Activity::Checking | Activity::Starting | Activity::Installing | Activity::Winget(_)) {
+            return;
+        }
+        std::mem::replace(&mut c.activity, Activity::Checking)
+    };
+    let spawned = std::thread::Builder::new().name("panegrid-ev-install".into()).spawn(|| {
         if install_plan(winget_available()) == InstallPlan::Browser {
             open_downloads();
             set_activity(Activity::OpenedPage);
@@ -172,6 +177,9 @@ pub(crate) fn install_async() {
             }
         }
     });
+    if spawned.is_err() {
+        set_activity(prev);
+    }
 }
 
 /// True when Everything is neither running nor found on this PC. Reads the registry and the disk once,
