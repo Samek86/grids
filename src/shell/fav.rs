@@ -423,7 +423,7 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     }
     let Some(cm) = cm else { return false };
     let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
-    popup_ctx(owner, cm, &paths, &items, background, true, &props, pt)
+    popup_ctx(owner, cm, &paths, &items, background, true, &props, pt, i)
 }
 
 /// Explorer menu for files that are not the pane's current selection (search results, by full path).
@@ -443,7 +443,7 @@ pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POIN
     }
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let Some(cm) = menu_for_paths(&paths) else { return false };
-    popup_ctx(owner, cm, &paths, items, false, false, "", pt)
+    popup_ctx(owner, cm, &paths, items, false, false, "", pt, i)
 }
 
 unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
@@ -465,7 +465,7 @@ unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
     menu
 }
 
-unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, pane_selection: bool, props_folder: &str, pt: POINT) -> bool {
+unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, pane_selection: bool, props_folder: &str, pt: POINT, pane: usize) -> bool {
     let Ok(menu) = CreatePopupMenu() else { return false };
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
     if !background {
@@ -508,6 +508,14 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         _ = InsertMenuW(menu, 0, MF_STRING | MF_BYPOSITION, ID_CTX_BATCH as usize, &label);
         _ = InsertMenuW(menu, 1, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
     }
+    // Next to Favourites (or above Properties on a background click). Only commands that fit this click.
+    if !paths.is_empty() {
+        let at = menu_index(menu, ID_CTX_FAV as usize).map(|i| i + 1).unwrap_or(0);
+        crate::winmerge::insert_ctx(menu, at, pane, items);
+    } else if background {
+        let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
+        crate::winmerge::insert_ctx(menu, at, pane, items);
+    }
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
     });
@@ -528,6 +536,7 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         if !props_folder.is_empty() {
             _ = SHObjectProperties(Some(owner), SHOP_FILEPATH, &HSTRING::from(props_folder), None);
         }
+    } else if crate::winmerge::ctx_command(owner, cmd, pane, items) {
     } else if cmd > 0 {
         let mut ici = CMINVOKECOMMANDINFO {
             cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,

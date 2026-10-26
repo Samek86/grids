@@ -259,6 +259,8 @@ pub(crate) struct Session {
     pub(crate) one_window: bool,       // one top-level window; a second launch and new-window actions open a tab
     /// Subfolder search asks Everything when it is running. Missing from the file means on.
     pub(crate) use_everything: bool,
+    /// WinMergeU.exe, or a folder that contains it. Empty means auto-detect.
+    pub(crate) winmerge_path: String,
     /// The one-time "install Everything?" question was already shown. Never asked again.
     pub(crate) ev_asked: bool,
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
@@ -327,6 +329,7 @@ impl Default for Session {
             single: true,
             one_window: true,
             use_everything: true,
+            winmerge_path: String::new(),
             ev_asked: false,
             cols: vec![String::new(); MAXP],
             tints: vec![0; MAXP],
@@ -393,6 +396,7 @@ impl PartialEq for Session {
             && self.single == o.single
             && self.one_window == o.one_window
             && self.use_everything == o.use_everything
+            && self.winmerge_path == o.winmerge_path
             && self.ev_asked == o.ev_asked
             && self.cols == o.cols
             && self.tints == o.tints
@@ -677,6 +681,7 @@ impl Session {
                 "single" => s.single = v.trim() != "0",
                 "onewindow" => s.one_window = v.trim() != "0",
                 "everything" => s.use_everything = v.trim() != "0",
+                "winmerge" => s.winmerge_path = v.trim().to_string(),
                 "evasked" => s.ev_asked = v.trim() == "1",
                 "session" => s.file = v.trim().to_string(),
                 "tabs" => {
@@ -772,6 +777,9 @@ impl Session {
         }
         o += &format!("autosave={}\ndot={}\nupcheck={}\n", self.autosave as u8, self.dot as u8, self.update_check as u8);
         o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\npeekwheelnav={}\nfolderview={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8, self.peek_wheel_nav as u8, self.remember_views as u8);
+        if !self.winmerge_path.trim().is_empty() {
+            o += &format!("winmerge={}\n", self.winmerge_path.trim());
+        }
         if !self.file.is_empty() {
             o += &format!("session={}\n", self.file);
         }

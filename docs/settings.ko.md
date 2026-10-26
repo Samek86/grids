@@ -20,6 +20,7 @@
 | --- | --- |
 | `side_split` | 폴더 트리와 즐겨찾기 사이 구분선. 다시 열 때 돌아옵니다. 왼쪽 패널 전체는 설정에서 숨길 수 있습니다. |
 | `use_everything` | `"use_everything": false`가 없으면 켜져 있습니다. 켜져 있으면 하위 폴더 검색이, Everything이 실행 중일 때 Everything에 묻습니다. 설정 → 일반에는 설치되어 실행 중, 설치되어 있지만 실행 중이 아님, 설치되어 있지 않음이 나오고, Everything이 버전을 알려 주면 함께 표시됩니다. Everything 시작은 설치된 `Everything.exe`를 실행합니다. 설치는 winget이 있으면 `winget install --id voidtools.Everything -e`를 실행하고, 없으면 voidtools 다운로드 페이지를 엽니다. |
+| `winmerge_path` | 비어 있으면 자동 감지이며, 키는 빠집니다. 설정 → 일반 → WinMerge에서 찾았는지 보이고, `WinMergeU.exe`나 그 폴더를 직접 지정할 수 있습니다. 그 경로, `HKLM`/`HKCU` `Software\Thingamahoochie\WinMerge`의 `Executable`, `WinMergeU.exe` App Paths, Program Files, `PATH` 순으로 찾습니다. 폴더 비교는 Ctrl+Alt+C, 톱니바퀴 메뉴, 파일 목록 메뉴입니다. |
 | `ev_asked` | Everything 설치를 한 번만 물은 답을 기억합니다. Everything이 없을 때 처음 하위 폴더 검색을 하면 설치할지 묻습니다. |
 | `drive_buttons` | 키가 없으면 켜짐. 설정 → 모양 → 드라이브 버튼 표시를 끄면 버튼이 숨고 그 자리를 탭이 씁니다. 창이 좁으면 뒤쪽 글자부터 숨깁니다. |
 | `layout_new` | 첫 실행과 새 창의 기본 레이아웃. 좌우 2개, 위아래 2개, 2×2, 1개 중 하나입니다. 다른 실행에서 넘겨받은 경로는 1패널 탭으로 열립니다. 창 탭을 새로 만들면(+ 또는 Ctrl+T) 기본 레이아웃 대신 지금 탭의 배치를 가져옵니다. |

@@ -125,6 +125,7 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Num+ or Ctrl+Shift+A / Num− / Num* | Select / deselect / invert by pattern |
 |  | Ctrl+Alt+N | New text file |
 |  | Ctrl+Shift+N, F7 | New folder |
+|  | Ctrl+Alt+C | Compare the two panes in WinMerge |
 |  | F2, Del, Ctrl+C / V, F5 | Same as Explorer (Ctrl+V of a copied picture saves it here as a PNG) |
 | **Other** | Ctrl+B | Quick favourites list |
 |  | Ctrl+S | Save session |

@@ -16,8 +16,10 @@ pub unsafe fn open(owner: HWND) {
     ensure_class();
     let h = hwnd();
     if !h.0.is_null() && IsWindow(Some(h)).as_bool() {
+        crate::winmerge::forget_status();
         let _ = ShowWindow(h, SW_SHOWNORMAL);
         let _ = SetForegroundWindow(h);
+        redraw();
         return;
     }
     let dpi = GetDpiForWindow(owner) as i32;
@@ -65,6 +67,7 @@ pub unsafe fn refresh() {
     let _ = SetWindowTextW(h, &HSTRING::from(tx(TITLE)));
     cue(h, S_SEARCH, tx(FIND));
     cue(h, S_KEYQ, tx(s("Search actions or keys", "동작 또는 키 검색", "操作またはキーを検索")));
+    cue(h, S_WM, tx(s("Auto-detect", "자동 감지", "自動検出")));
     layout(h);
     let _ = InvalidateRect(Some(h), None, true);
 }
@@ -184,10 +187,12 @@ unsafe fn build_children(h: HWND) {
     btn(S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う")), true);
     btn(S_FV_RESET, tx(s("Reset", "지우기", "消す")), true);
     btn(S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す")), true);
+    child_at(h, w!("EDIT"), "", 0x80 | tab, S_WM, font);
+    btn(S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…")), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_WM, S_WM_BROWSE];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -255,7 +260,11 @@ unsafe fn fill_strings(h: HWND) {
         (S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う"))),
         (S_FV_RESET, tx(s("Reset", "지우기", "消す"))),
         (S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す"))),
+        (S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…"))),
     ];
+    BUSY.with(|b| b.set(true));
+    let _ = SetWindowTextW(ctl(h, S_WM), &HSTRING::from(app(|a| a.s.winmerge_path.clone())));
+    BUSY.with(|b| b.set(false));
     for (id, label) in labels {
         let _ = SetWindowTextW(ctl(h, id), &HSTRING::from(label));
     }
@@ -371,7 +380,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_WM, S_WM_BROWSE] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -418,6 +427,10 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                     let _ = SetWindowTextW(b, &HSTRING::from(ev_button_label()));
                     let _ = EnableWindow(b, !crate::everything::busy());
                     move_to(b, c.ctl, crate::everything::action().is_some() && intersects(c.ctl, content));
+                }
+                if c.spec.ctl == Ctl::WmPath {
+                    move_to(ctl(h, S_WM_BROWSE), c.adv[0], intersects(c.adv[0], content));
+                    crate::place_edit(ctl(h, S_WM), inset(c.ctl, sc(sn.dpi, FIELD_INSET_DIP)), intersects(c.ctl, content));
                 }
             }
             Item::KeyBar { edit, reset } => {
@@ -652,6 +665,24 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     // Disabled rows stay on a white (or dark-theme card) ground; only the label grays.
     rfill(dc, c.rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
+    if c.spec.ctl == Ctl::WmPath {
+        let title_r = RECT {
+            left: c.rect.left + sc(dpi, 16),
+            top: c.rect.top + sc(dpi, 12),
+            right: c.adv[0].left - sc(dpi, 12),
+            bottom: c.adv[0].bottom,
+        };
+        crate::text(dc, title_r, tx(c.spec.title), sn.font, crate::pal().text, DT_LEFT);
+        let desc_r = RECT {
+            left: c.rect.left + sc(dpi, 16),
+            top: c.adv[0].bottom + sc(dpi, 2),
+            right: c.rect.right - sc(dpi, 16),
+            bottom: c.ctl.top - sc(dpi, 4),
+        };
+        crate::text(dc, desc_r, tx(c.spec.desc), sn.small, crate::pal().sub, DT_LEFT);
+        draw_field(dc, c.ctl, dpi);
+        return;
+    }
     let color = if c.spec.live { crate::pal().text } else { crate::pal().sub };
     let title = if c.spec.ctl == Ctl::About {
         format!("Panegrid v{}", env!("CARGO_PKG_VERSION"))
@@ -661,10 +692,18 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 12), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 12) };
     let title_line = if c.spec.desc[0].is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
     crate::text(dc, title_line, &title, sn.font, color, DT_LEFT);
-    if c.spec.ctl == Ctl::EvStatus {
+    if c.spec.ctl == Ctl::EvStatus || c.spec.ctl == Ctl::WmStatus {
         let line = sc(dpi, 18);
         let desc_r = RECT { top: title_line.bottom, bottom: title_line.bottom + line, ..text_r };
-        crate::text(dc, desc_r, &ev_status_line(), sn.small, crate::pal().text, DT_LEFT);
+        if c.spec.ctl == Ctl::WmStatus {
+            let found = crate::winmerge::status_now(&app(|a| a.s.winmerge_path.clone()));
+            let (head, detail) = crate::winmerge::status_text(&found);
+            crate::text(dc, desc_r, &head, sn.small, crate::pal().text, DT_LEFT);
+            let more = RECT { top: desc_r.bottom, bottom: (desc_r.bottom + line).min(text_r.bottom), ..text_r };
+            crate::text(dc, more, &detail, sn.small, crate::pal().sub, DT_LEFT);
+        } else {
+            crate::text(dc, desc_r, &ev_status_line(), sn.small, crate::pal().text, DT_LEFT);
+        }
     } else if c.spec.ctl == Ctl::EvAct {
         let line = sc(dpi, 18);
         let desc_r = RECT { top: title_line.bottom, bottom: (title_line.bottom + line).min(text_r.bottom), ..text_r };
@@ -1055,6 +1094,14 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         let _ = InvalidateRect(Some(h), None, false);
         return;
     }
+    if code == EN_CHANGE && id == S_WM {
+        let path = crate::text_of(ctl(h, S_WM));
+        app(|a| a.s.winmerge_path = path);
+        crate::winmerge::forget_status();
+        crate::save_session();
+        let _ = InvalidateRect(Some(h), None, false);
+        return;
+    }
     if code == EN_CHANGE && id == S_KEYQ {
         let q = crate::text_of(ctl(h, S_KEYQ));
         ST.with(|s| {
@@ -1130,6 +1177,17 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
                 Some(crate::everything::EvAction::Install) => crate::everything::install_async(),
                 None => {}
             }
+        }
+        S_WM_BROWSE => {
+            let cur = app(|a| a.s.winmerge_path.clone());
+            let Some(path) = crate::winmerge::pick_exe(h, &cur) else { return };
+            app(|a| a.s.winmerge_path = path.clone());
+            crate::winmerge::forget_status();
+            BUSY.with(|b| b.set(true));
+            let _ = SetWindowTextW(ctl(h, S_WM), &HSTRING::from(&path));
+            BUSY.with(|b| b.set(false));
+            crate::save_session();
+            let _ = InvalidateRect(Some(h), None, false);
         }
         id if (S_FAV0..S_REN0).contains(&id) => delete_fav((id - S_FAV0) as usize),
         id if (S_REN0..S_REN0 + FAV_MAX).contains(&id) => rename_fav(h, (id - S_REN0) as usize),
@@ -1456,6 +1514,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 crate::note_side(h);
                 crate::everything::bind_settings(h.0 as isize);
                 crate::everything::probe_async();
+                crate::winmerge::forget_status();
                 refresh();
                 return LRESULT(0);
             }

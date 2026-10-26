@@ -15,6 +15,7 @@ mod settings;
 mod folderview;
 mod everything;
 mod rename;
+mod winmerge;
 
 use imports::*;
 
