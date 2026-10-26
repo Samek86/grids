@@ -30,7 +30,7 @@ pub(crate) fn drive_tip(c: u8, kind: u32) -> String {
         2 => tr("Removable drive", "이동식 드라이브", "リムーバブル ドライブ"),
         3 => tr("Local disk", "로컬 디스크", "ローカル ディスク"),
         4 => tr("Network drive", "네트워크 드라이브", "ネットワーク ドライブ"),
-        5 => tr("CD/DVD drive", "CD/DVD ドライブ", "CD/DVD ドライブ"),
+        5 => tr("CD/DVD drive", "CD/DVD 드라이브", "CD/DVD ドライブ"),
         _ => tr("Drive", "드라이브", "ドライブ"),
     };
     format!("{name} ({}:) — {}", c as char, tr("open in the active pane", "지금 패널에서 열기", "アクティブなペインで開く"))
