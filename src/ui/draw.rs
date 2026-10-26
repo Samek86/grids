@@ -86,8 +86,9 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
     let parent = GetParent(d.hwndItem).unwrap_or_default();
     let on_main = parent == main;
     let (dc, rc, id) = (d.hDC, d.rcItem, d.CtlID as i32);
-    let pressed = d.itemState.0 & ODS_SELECTED.0 != 0;
-    let hot = hover == d.hwndItem;
+    let disabled = d.itemState.0 & ODS_DISABLED.0 != 0;
+    let pressed = !disabled && d.itemState.0 & ODS_SELECTED.0 != 0;
+    let hot = !disabled && hover == d.hwndItem;
     let (bg, ink) = if on_main { (pal().bg, pal().text) } else { header_colors(parent) };
     let tinted = bg != pal().bg && bg != pal().card;
     fill(dc, rc, bg);
@@ -100,7 +101,14 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         };
         fill(dc, rc, blend(bg, ink, t));
     }
-    let fg = if tinted || hot || pressed { ink } else { pal().sub };
+    // Disabled sits below the resting sub colour. Hover and press use the full ink, same as the glyphs.
+    let fg = if disabled {
+        blend(bg, pal().sub, 0.45)
+    } else if tinted || hot || pressed {
+        ink
+    } else {
+        pal().sub
+    };
     if id == ID_FAV {
         // ★ filled (gray, or the header ink when tinted) in a favourite folder, otherwise ☆ with a small +
         let fav = app(|a| a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == parent)).is_some_and(|i| a.s.is_fav(&a.s.paths[i])));
@@ -129,15 +137,29 @@ pub(crate) unsafe fn draw_button(d: &DRAWITEMSTRUCT) {
         text(dc, icon, glyph(id), icon_font, fg, DT_CENTER);
         return text(dc, RECT { left: icon.right + s(4), ..rc }, &text_of(d.hwndItem), font, pal().text, DT_LEFT);
     }
-    // icon only, names live in the tooltips; save turns green with a dot while the layout differs
+    // icon only, names live in the tooltips
     if id == ID_TB_FAV {
         return draw_star(dc, rc, fg, Star::Outline, dpi);
     }
-    let dirty = id == ID_TB_SAVE && app(|a| a.dirty);
-    text(dc, rc, glyph(id), icon_font, if dirty { GREEN } else { fg }, DT_CENTER);
-    if dirty {
-        fill(dc, RECT { left: rc.right - s(10), top: rc.top + s(4), right: rc.right - s(4), bottom: rc.top + s(10) }, GREEN);
+    // Stacked windows, drawn (not a Segoe glyph). Save turns green, and keeps the corner dot, while dirty.
+    if id == ID_TB_SAVE || id == ID_TB_LOAD {
+        let dirty = id == ID_TB_SAVE && app(|a| a.dirty);
+        let kind = if id == ID_TB_SAVE { SessionIcon::Save } else { SessionIcon::Load };
+        draw_session_icon(dc, rc, kind, if dirty { GREEN } else { fg }, dpi);
+        if dirty {
+            fill(dc, RECT { left: rc.right - s(10), top: rc.top + s(4), right: rc.right - s(4), bottom: rc.top + s(10) }, GREEN);
+        }
+        return;
     }
+    text(dc, rc, glyph(id), icon_font, fg, DT_CENTER);
+}
+
+unsafe fn draw_session_icon(dc: HDC, rc: RECT, kind: SessionIcon, rgb: u32, dpi: i32) {
+    let n = session_icon_px(dpi);
+    let px = session_icon_bgra(n, kind, rgb);
+    let x = (rc.left + rc.right - n) / 2;
+    let y = (rc.top + rc.bottom - n) / 2;
+    blit_bgra(dc, RECT { left: x, top: y, right: x + n, bottom: y + n }, n, n, &px);
 }
 
 // A chubby five-point star (inner radius 0.56 of the outer one) with softly rounded tips, as 0..=255
