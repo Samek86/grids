@@ -101,11 +101,11 @@ pub(crate) fn net_fail_text() -> &'static str {
     net_bar_text(true)
 }
 
-/// Address-bar line while a share is in flight or has failed. The pill is narrow, so this
-/// stays the short phrase and does not repeat the path.
+/// Address-bar line while a share is in flight or has failed. The pill is shared with the
+/// buttons, so the failure line stays a few words and does not repeat the path.
 pub(crate) fn net_bar_text(bad: bool) -> &'static str {
     if bad {
-        tr("Can't reach", "연결할 수 없음", "接続できません")
+        tr("Unreachable", "연결 실패", "接続失敗")
     } else {
         tr("Connecting…", "연결 중…", "接続中…")
     }
@@ -2042,15 +2042,15 @@ mod missing_tests {
         UI.store(0, Ordering::Relaxed);
         assert_eq!(NET_WAIT_MS, 8000);
         assert_eq!(net_wait_text(), "Connecting…");
-        assert_eq!(net_fail_text(), "Can't reach");
+        assert_eq!(net_fail_text(), "Unreachable");
         assert_eq!(net_bar_text(false), net_wait_text());
         assert_eq!(net_bar_text(true), net_fail_text());
         UI.store(1, Ordering::Relaxed);
         assert_eq!(net_wait_text(), "연결 중…");
-        assert_eq!(net_fail_text(), "연결할 수 없음");
+        assert_eq!(net_fail_text(), "연결 실패");
         UI.store(2, Ordering::Relaxed);
         assert_eq!(net_wait_text(), "接続中…");
-        assert_eq!(net_fail_text(), "接続できません");
+        assert_eq!(net_fail_text(), "接続失敗");
         UI.store(prev, Ordering::Relaxed);
     }
 
