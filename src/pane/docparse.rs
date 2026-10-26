@@ -120,6 +120,9 @@ fn le64(b: &[u8], at: usize) -> u64 {
     b.get(at..at + 8).map_or(0, |x| u64::from_le_bytes(x.try_into().unwrap()))
 }
 
+/// Largest buffer a docx/xlsx preview reads in one go (central directory or one compressed entry).
+const MAX_ZIP_ALLOC: u64 = 32 << 20;
+
 /// Every entry of a ZIP, from its central directory (ZIP64 too). None: not a ZIP.
 pub(crate) fn zip_entries<R: Read + Seek>(f: &mut R) -> Option<Vec<ZipEntry>> {
     let len = f.seek(SeekFrom::End(0)).ok()?;
@@ -139,7 +142,7 @@ pub(crate) fn zip_entries<R: Read + Seek>(f: &mut R) -> Option<Vec<ZipEntry>> {
             (count, size, start) = (le64(&z, 32), le64(&z, 40), le64(&z, 48));
         }
     }
-    if size > 64 << 20 {
+    if size > MAX_ZIP_ALLOC {
         return None;
     }
     let mut cd = vec![0u8; size as usize];
@@ -184,7 +187,11 @@ pub(crate) fn zip_read<R: Read + Seek>(f: &mut R, e: &ZipEntry, max: usize) -> O
         return None;
     }
     f.seek(SeekFrom::Current((le16(&h, 26) + le16(&h, 28)) as i64)).ok()?;
-    let take = if e.method == 0 { e.csize.min(max as u64) } else { e.csize.min(256 << 20) };
+    // A corrupt or hostile size must not allocate more than the cap: no preview instead.
+    if e.method != 0 && e.csize > MAX_ZIP_ALLOC {
+        return None;
+    }
+    let take = if e.method == 0 { e.csize.min(max as u64).min(MAX_ZIP_ALLOC) } else { e.csize };
     let mut data = vec![0u8; take as usize];
     f.read_exact(&mut data).ok()?;
     match e.method {
@@ -674,6 +681,10 @@ mod tests {
         let text = xml_text(&decode_text(&doc), &["w:t"], &["w:p"], &[], &[]);
         assert_eq!(text.lines().next(), Some("안녕 & hi"));
         assert!(zip_entries(&mut std::io::Cursor::new(b"not a zip at all".to_vec())).is_none());
+        // A corrupt compressed size above the cap gives no preview instead of a huge buffer.
+        let mut bad = es[1].clone();
+        bad.csize = MAX_ZIP_ALLOC + 1;
+        assert!(zip_read(&mut cur, &bad, 1 << 20).is_none());
     }
 
     #[test]
