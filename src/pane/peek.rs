@@ -1189,6 +1189,8 @@ unsafe fn start_handler(h: HWND, gen: usize) {
 // The handler's parent: the plate's colour (and "Opening…") until the handler draws over it.
 pub(crate) extern "system" fn peek_host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // With two windows open, act on the window this popup belongs to.
+        bind_hwnd(h);
         match msg {
             WM_ERASEBKGND => return LRESULT(1),
             WM_PAINT => {
@@ -2717,6 +2719,8 @@ unsafe fn restore_under_cursor(h: HWND) {
 
 pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // With two windows open, act on the window this popup belongs to.
+        bind_hwnd(h);
         let page = || {
             let st = geo_of(h).stage;
             (st.bottom - st.top) * 9 / 10
