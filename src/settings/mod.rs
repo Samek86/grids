@@ -470,6 +470,8 @@ enum Item {
     CtxBar { reset: RECT },
     CtxRow {
         id: String,
+        ids: Vec<String>,
+        scopes: Vec<u8>,
         rect: RECT,
         mark: RECT,
         chev: RECT,
@@ -477,11 +479,10 @@ enum Item {
         detail: String,
         raw: String,
         pending: bool,
-        targets: u8,
-        off: u8,
+        tick: crate::shell::ctxmenu::Tick,
         chips: Vec<(u8, RECT)>,
     },
-    CtxSub { id: String, bit: u8, attached: u8, rect: RECT, mark: RECT, on: bool },
+    CtxSub { ids: Vec<String>, scopes: Vec<u8>, bit: u8, rect: RECT, mark: RECT, tick: crate::shell::ctxmenu::Tick },
     CtxEmpty(RECT),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
@@ -691,6 +692,8 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         let open = sn.ctx_open.iter().any(|id| id == &row.id);
         g.items.push(Item::CtxRow {
             id: row.id.clone(),
+            ids: row.ids.clone(),
+            scopes: row.scopes.clone(),
             rect,
             mark,
             chev,
@@ -698,13 +701,12 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
             detail: row.detail,
             raw: row.raw,
             pending: row.pending,
-            targets: row.targets,
-            off: row.off,
+            tick: row.tick,
             chips,
         });
         y += h;
         if open {
-            for bit in crate::shell::ctxmenu::target_bits() {
+            for (i, bit) in crate::shell::ctxmenu::target_bits().into_iter().enumerate() {
                 if row.targets & bit == 0 {
                     continue;
                 }
@@ -717,12 +719,12 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
                     bottom: y + (sh + sc(dpi, 16)) / 2,
                 };
                 g.items.push(Item::CtxSub {
-                    id: row.id.clone(),
+                    ids: row.ids.clone(),
+                    scopes: row.scopes.clone(),
                     bit,
-                    attached: row.targets,
                     rect: sub,
                     mark: sbox,
-                    on: crate::shell::ctxmenu::target_enabled(row.off, bit),
+                    tick: row.subs[i],
                 });
                 y += sh;
             }
