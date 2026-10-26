@@ -1859,8 +1859,8 @@ mod ratio_tests {
 
     #[test]
     fn empty_heights_are_safe() {
-        assert_eq!(layout_label(&[]), "");
-        let mut s = Session::default();
+        assert_eq!(crate::layout_label(&[]), "");
+        let mut s = crate::Session::default();
         s.set_heights(Vec::new());
         assert_eq!(s.heights, vec![1]);
     }
