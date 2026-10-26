@@ -19,8 +19,14 @@
 // an identical item set. Disabled handlers are never given their own visible menu.
 //
 // Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
+//
+// Settings shows a product name (VERSIONINFO, then a known-vendor name) and, under it,
+// the menu strings that handler adds. Static verbs contribute their registry text.
+// A real menu records the strings the user actually saw (`ctx_labels` in panegrid.json).
+// Handlers that share a product title are one settings row; a toggle writes every
+// handler in that row. Recording never inserts, deletes, or reorders the menu.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -98,6 +104,12 @@ struct Row {
     classes: Vec<String>,
     /// Class passed to IShellExtInit. The most specific registration.
     anchor: String,
+    /// Friendly product title when it is better than `name`. Empty for a verb whose menu text is the title.
+    product: String,
+    /// Registry key or class name, shown dimmed when it is not the title.
+    raw: String,
+    /// Menu strings read from the registry. Observed strings live in `ctx_labels`.
+    static_labels: Vec<String>,
 }
 
 struct Part {
@@ -145,10 +157,24 @@ impl Drop for CtxHost {
 }
 
 pub(crate) struct UiRow {
+    /// Expand key. The handler id, or `group:` plus every id when several share a title.
     pub(crate) id: String,
+    /// Every handler a click on this row changes.
+    pub(crate) ids: Vec<String>,
+    /// Target mask of each id, in the same order as `ids`.
+    pub(crate) scopes: Vec<u8>,
+    /// Friendly product name. The large title on the settings row.
     pub(crate) name: String,
+    /// Component name, empty when it would repeat the title or a menu label.
+    pub(crate) raw: String,
+    /// Menu item labels, joined for the line under the title. Empty when unknown or identical to the title.
+    pub(crate) detail: String,
+    /// No menu text yet. The row shows a hint until a real menu is opened.
+    pub(crate) pending: bool,
     pub(crate) targets: u8,
-    pub(crate) off: u8,
+    pub(crate) tick: Tick,
+    /// File, folder, empty space, drive.
+    pub(crate) subs: [Tick; 4],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -211,51 +237,323 @@ pub(crate) fn tick_of(off: u8, attached: u8) -> Tick {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn target_enabled(off: u8, bit: u8) -> bool {
     off & bit == 0
 }
 
 /// Master checkbox. On means every attached target is enabled; a click then turns them all off.
 /// Anything else (off or mixed) turns them all on.
+#[cfg(test)]
 pub(crate) fn toggle_master(map: &mut BTreeMap<String, Vec<String>>, id: &str, attached: u8) {
     let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
     let next = if cur & attached == 0 { attached } else { cur & !attached };
     write_bits(map, id, next & TARGET_ALL);
 }
 
+#[cfg(test)]
 pub(crate) fn toggle_target(map: &mut BTreeMap<String, Vec<String>>, id: &str, bit: u8, attached: u8) {
     let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
     let next = (cur ^ bit) & attached & TARGET_ALL;
     write_bits(map, id, next);
 }
 
+/// One decision for the whole product group, then the same direction is written to every handler.
+/// A mixed group turns every member on. Each handler keeps only its own target bits.
+pub(crate) fn toggle_ids_master(map: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) {
+    if ids.is_empty() || ids.len() != scopes.len() {
+        return;
+    }
+    let fully_on = ids.iter().zip(scopes).all(|(id, attached)| {
+        let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        cur & attached == 0
+    });
+    for (id, attached) in ids.iter().zip(scopes) {
+        let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        let next = if fully_on { *attached } else { cur & !attached };
+        write_bits(map, id, next & TARGET_ALL);
+    }
+}
+
+pub(crate) fn toggle_ids_target(map: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8], bit: u8) {
+    if ids.len() != scopes.len() || bit == 0 {
+        return;
+    }
+    let relevant: Vec<usize> = scopes.iter().enumerate().filter(|(_, t)| *t & bit != 0).map(|(i, _)| i).collect();
+    if relevant.is_empty() {
+        return;
+    }
+    let fully_on = relevant.iter().all(|&i| {
+        let cur = bits_of(map.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
+        cur & bit == 0
+    });
+    for i in relevant {
+        let cur = bits_of(map.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
+        let attached = scopes[i];
+        let next = if fully_on { (cur | bit) & attached } else { (cur & !bit) & attached };
+        write_bits(map, &ids[i], next & TARGET_ALL);
+    }
+}
+
 pub(crate) fn clear_off(map: &mut BTreeMap<String, Vec<String>>) {
     map.clear();
 }
 
-pub(crate) fn ui_rows(off: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
+pub(crate) fn ui_rows(off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
     let q = q.trim().to_lowercase();
-    catalogue()
-        .into_iter()
-        .filter(|r| !r.builtin && r.targets != 0)
-        .filter(|r| q.is_empty() || r.name.to_lowercase().contains(&q) || target_blob(r.targets).contains(&q))
-        .map(|r| UiRow {
-            off: bits_of(off.get(&r.id).map(Vec::as_slice).unwrap_or(&[])),
-            id: r.id,
-            name: r.name,
-            targets: r.targets,
-        })
-        .collect()
+    let rows: Vec<Row> = catalogue().into_iter().filter(|r| !r.builtin && r.targets != 0).collect();
+    assemble(&rows, off, seen, &q)
 }
 
-/// Search hit on a handler name. A one-character query does not walk the registry.
+/// Search hit on a handler, its component name, or a menu label. A one-character query does not walk the registry.
 pub(crate) fn name_hit(q: &str) -> bool {
     let q = q.trim();
     if q.chars().count() < 2 {
         return false;
     }
     let q = q.to_lowercase();
-    catalogue().iter().any(|r| !r.builtin && r.name.to_lowercase().contains(&q))
+    let seen = app(|a| a.s.ctx_labels.clone());
+    catalogue().iter().any(|r| !r.builtin && row_matches(r, &seen, &q))
+}
+
+struct Presented {
+    name: String,
+    raw: String,
+    labels: Vec<String>,
+    pending: bool,
+}
+
+fn present_row(r: &Row, seen: &BTreeMap<String, Vec<String>>) -> Presented {
+    let name = title_of(r);
+    let mut labels = Vec::new();
+    push_unique(&mut labels, &r.static_labels);
+    if !r.verb.is_empty() {
+        push_unique(&mut labels, std::slice::from_ref(&r.name));
+    }
+    if let Some(extra) = seen.get(&r.id) {
+        push_unique(&mut labels, extra);
+    }
+    let known = !r.static_labels.is_empty() || (!r.verb.is_empty() && !r.name.is_empty()) || seen.get(&r.id).is_some_and(|v| !v.is_empty());
+    let shown: Vec<String> = labels.into_iter().filter(|l| name.is_empty() || fold_menu(l) != fold_menu(&name)).collect();
+    let raw = display_raw(&name, &r.raw, &shown);
+    Presented { name, raw, labels: shown, pending: !known }
+}
+
+fn row_matches(r: &Row, seen: &BTreeMap<String, Vec<String>>, q: &str) -> bool {
+    let title = title_of(r).to_lowercase();
+    if title.contains(q) || r.name.to_lowercase().contains(q) || r.raw.to_lowercase().contains(q) || r.product.to_lowercase().contains(q) || target_blob(r.targets).contains(q) {
+        return true;
+    }
+    if r.static_labels.iter().any(|l| l.to_lowercase().contains(q)) {
+        return true;
+    }
+    seen.get(&r.id).is_some_and(|v| v.iter().any(|l| l.to_lowercase().contains(q)))
+}
+
+fn title_of(r: &Row) -> String {
+    if let Some(t) = usable_title(&r.product) {
+        return t;
+    }
+    // A stored readable fallback may be the menu text ("Configure"). A placeholder still is not.
+    if kept_title(&r.product) {
+        return r.product.clone();
+    }
+    // A static verb's `name` is the registry menu text used to delete the item. It is not a product.
+    if r.verb.is_empty() {
+        if let Some(t) = usable_title(&r.name) {
+            return t;
+        }
+    }
+    if let Some(t) = usable_title(&r.raw) {
+        return t;
+    }
+    let raw = r.raw.trim();
+    if kept_title(raw) && !menu_sentence(raw) {
+        raw.to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn usable_title(s: &str) -> Option<String> {
+    let t = s.trim();
+    if !kept_title(t) || menu_sentence(t) {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+fn kept_title(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !title_junk(t) && !identifier_like(t) && parse_guid(t).is_none()
+}
+
+/// Empty titles stay separate. Two "Configure" verbs must not become one product.
+fn group_key(title: &str) -> Option<String> {
+    let t = title.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(fold_menu(t))
+    }
+}
+
+fn display_raw(title: &str, raw: &str, labels: &[String]) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let folded = fold_menu(raw);
+    if folded == fold_menu(title) || labels.iter().any(|l| fold_menu(l) == folded) {
+        String::new()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn push_unique(slot: &mut Vec<String>, incoming: &[String]) {
+    for label in incoming {
+        let label = menu_label(label);
+        if label.is_empty() {
+            continue;
+        }
+        if slot.iter().any(|e| fold_menu(e) == fold_menu(&label)) {
+            continue;
+        }
+        slot.push(label);
+        if slot.len() >= 8 {
+            break;
+        }
+    }
+}
+
+struct Acc {
+    title: String,
+    key: String,
+    ids: Vec<String>,
+    scopes: Vec<u8>,
+    targets: u8,
+    labels: Vec<String>,
+    raws: Vec<String>,
+    any_known: bool,
+}
+
+fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
+    let mut accs: Vec<Acc> = Vec::new();
+    for r in rows {
+        let shown = present_row(r, seen);
+        let key = group_key(&shown.name);
+        if let Some(k) = key.as_ref() {
+            if let Some(acc) = accs.iter_mut().find(|a| a.key == *k) {
+                acc.ids.push(r.id.clone());
+                acc.scopes.push(r.targets);
+                acc.targets |= r.targets;
+                push_unique(&mut acc.labels, &shown.labels);
+                if !shown.raw.is_empty() {
+                    acc.raws.push(shown.raw);
+                }
+                acc.any_known |= !shown.pending;
+                continue;
+            }
+        }
+        accs.push(Acc {
+            key: key.unwrap_or_else(|| format!("id:{}", r.id)),
+            title: shown.name,
+            ids: vec![r.id.clone()],
+            scopes: vec![r.targets],
+            targets: r.targets,
+            labels: shown.labels,
+            raws: if shown.raw.is_empty() { Vec::new() } else { vec![shown.raw] },
+            any_known: !shown.pending,
+        });
+    }
+    let mut out = Vec::new();
+    for acc in accs {
+        let hit = q.is_empty()
+            || acc.title.to_lowercase().contains(q)
+            || acc.labels.iter().any(|l| l.to_lowercase().contains(q))
+            || acc.raws.iter().any(|raw| raw.to_lowercase().contains(q))
+            || rows.iter().any(|r| acc.ids.iter().any(|id| id == &r.id) && row_matches(r, seen, q));
+        if !hit {
+            continue;
+        }
+        let labels: Vec<String> = acc.labels.into_iter().filter(|l| fold_menu(l) != fold_menu(&acc.title)).collect();
+        let pending = !acc.any_known && labels.is_empty();
+        let raw = shared_raw(&acc.title, &acc.raws, &labels);
+        let (tick, subs) = group_ticks(off, &acc.ids, &acc.scopes);
+        let id = if acc.ids.len() == 1 {
+            acc.ids[0].clone()
+        } else {
+            let mut sorted = acc.ids.clone();
+            sorted.sort();
+            format!("group:{}", sorted.join("|"))
+        };
+        out.push(UiRow {
+            id,
+            ids: acc.ids,
+            scopes: acc.scopes,
+            name: acc.title,
+            raw,
+            detail: labels.join(" · "),
+            pending,
+            targets: acc.targets,
+            tick,
+            subs,
+        });
+    }
+    out
+}
+
+fn shared_raw(title: &str, raws: &[String], labels: &[String]) -> String {
+    let Some(first) = raws.first() else { return String::new() };
+    let folded = fold_menu(first);
+    if raws.iter().any(|raw| fold_menu(raw) != folded) {
+        return String::new();
+    }
+    display_raw(title, first, labels)
+}
+
+fn group_ticks(off: &BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) -> (Tick, [Tick; 4]) {
+    let bits = [FILE, FOLDER, BACKGROUND, DRIVE];
+    let mut subs = [Tick::On; 4];
+    for (i, bit) in bits.into_iter().enumerate() {
+        let mut relevant = 0usize;
+        let mut offs = 0usize;
+        for (id, scope) in ids.iter().zip(scopes) {
+            if scope & bit == 0 {
+                continue;
+            }
+            relevant += 1;
+            let cur = bits_of(off.get(id).map(Vec::as_slice).unwrap_or(&[]));
+            if cur & bit != 0 {
+                offs += 1;
+            }
+        }
+        subs[i] = if relevant == 0 || offs == 0 {
+            Tick::On
+        } else if offs == relevant {
+            Tick::Off
+        } else {
+            Tick::Mixed
+        };
+    }
+    let mut states = Vec::new();
+    for (id, scope) in ids.iter().zip(scopes) {
+        if *scope == 0 {
+            continue;
+        }
+        let cur = bits_of(off.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        states.push(tick_of(cur, *scope));
+    }
+    let tick = if states.is_empty() || states.iter().all(|t| *t == Tick::On) {
+        Tick::On
+    } else if states.iter().all(|t| *t == Tick::Off) {
+        Tick::Off
+    } else {
+        Tick::Mixed
+    };
+    (tick, subs)
 }
 
 pub(crate) fn invalidate() {
@@ -501,8 +799,26 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
     collapse_separators(menu);
 }
 
+struct ProbeItem {
+    verb: String,
+    /// `fold_menu` of the raw item text. Deletion compares this, not the cleaned label.
+    folded: String,
+    /// What the settings page shows: accelerators and a trailing shortcut suffix removed.
+    label: String,
+}
+
 /// Verbs and folded labels a disabled COM handler adds. The menu is destroyed; nothing is shown.
 unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String>)> {
+    let items = probe_items(row, targets)?;
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).filter(|s| !s.is_empty()).collect();
+    note_labels(&row.id, &labels);
+    let verbs = items.iter().filter(|i| !i.verb.is_empty()).map(|i| i.verb.clone()).collect();
+    let names = items.iter().map(|i| i.folded.clone()).filter(|s| !s.is_empty()).collect();
+    Some((verbs, names))
+}
+
+/// Top-level strings a COM handler adds on a throwaway menu. Nothing is shown.
+unsafe fn probe_items(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
     let guid = row.clsid?;
     let (folder_pidl, data) = probe_context()?;
     let cm = cocreate(&guid, &row.anchor, folder_pidl, data.as_ref())?;
@@ -519,8 +835,7 @@ unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String
         _ = DestroyMenu(menu);
         return None;
     }
-    let mut verbs = Vec::new();
-    let mut names = Vec::new();
+    let mut items = Vec::new();
     let n = GetMenuItemCount(Some(menu)).max(0) as u32;
     // Top level only. Deleting that row on the real menu removes the handler's submenu with it.
     // A child named like a shell command ("Open") must not be collected.
@@ -534,16 +849,144 @@ unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String
         if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
             continue;
         }
-        if !verb_l.is_empty() {
-            verbs.push(verb_l);
+        let raw = item_text(menu, i);
+        let folded = fold_menu(&raw);
+        let label = menu_label(&raw);
+        if verb_l.is_empty() && folded.is_empty() && label.is_empty() {
+            continue;
         }
-        let text = fold_menu(&item_text(menu, i));
-        if !text.is_empty() {
-            names.push(text);
-        }
+        items.push(ProbeItem { verb: verb_l, folded, label });
     }
     _ = DestroyMenu(menu);
-    Some((verbs, names))
+    Some(items)
+}
+
+/// Read menu strings off the shell menu Panegrid just built, and ask handlers we have not seen yet.
+/// The menu itself is left as the shell built it.
+pub(crate) unsafe fn observe_menu(menu: HMENU, cm: &IContextMenu, targets: u8) {
+    if targets == 0 {
+        return;
+    }
+    let t0 = Instant::now();
+    let cat = catalogue();
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    for i in 0..n {
+        if super::menu_sep(menu, i) {
+            continue;
+        }
+        let id = GetMenuItemID(menu, i as i32);
+        if id == u32::MAX || id < 1 || id >= 0x8000 {
+            continue;
+        }
+        let verb = super::cmd_verb(cm, (id - 1) as usize);
+        let verb_l = verb.trim().to_ascii_lowercase();
+        if verb_l.is_empty() || builtin_verb(&verb_l) || shell_owned(&verb_l) {
+            continue;
+        }
+        let text = menu_label(&item_text(menu, i));
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(row) = cat.iter().find(|r| !r.builtin && !r.verb.is_empty() && r.verb.eq_ignore_ascii_case(&verb_l)) {
+            note_labels(&row.id, std::slice::from_ref(&text));
+        }
+    }
+    learn_unknown_com(&cat, targets);
+    log_phase("labels", t0);
+}
+
+/// Enabled COM handlers whose menu text is not cached yet. Disabled ones are asked by `probe_marks`.
+unsafe fn learn_unknown_com(cat: &[Row], targets: u8) {
+    if probe_context().is_none() {
+        return;
+    }
+    let off = app(|a| a.s.ctx_off.clone());
+    let seen: HashSet<String> = app(|a| a.s.ctx_labels.keys().cloned().collect());
+    let mut tried = 0u32;
+    for row in cat {
+        if tried >= 8 {
+            break;
+        }
+        if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
+            continue;
+        }
+        if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off) {
+            continue;
+        }
+        tried += 1;
+        match probe_items(row, targets) {
+            Some(items) => {
+                let labels: Vec<String> = items.into_iter().map(|i| i.label).filter(|s| !s.is_empty()).collect();
+                if labels.is_empty() {
+                    mark_missed(&row.id, targets);
+                } else {
+                    note_labels(&row.id, &labels);
+                }
+            }
+            None => mark_missed(&row.id, targets),
+        }
+    }
+}
+
+/// Empty or failed probes, per handler and click kind. A few tries cover a different selection; then we stop asking.
+static MISSED: Mutex<Vec<(String, u8, u8)>> = Mutex::new(Vec::new());
+
+fn missed_label(id: &str, targets: u8) -> bool {
+    MISSED.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(i, t, n)| i == id && *t == targets && *n >= 3)
+}
+
+fn mark_missed(id: &str, targets: u8) {
+    let mut g = MISSED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, _, n)) = g.iter_mut().find(|(i, t, _)| i == id && *t == targets) {
+        *n = n.saturating_add(1);
+    } else {
+        g.push((id.to_string(), targets, 1));
+    }
+}
+
+/// Remember cleaned menu strings for a handler. Empty input does not count as "seen".
+fn note_labels(id: &str, incoming: &[String]) {
+    if id.is_empty() || incoming.is_empty() {
+        return;
+    }
+    let changed = app(|a| {
+        let slot = a.s.ctx_labels.entry(id.to_string()).or_default();
+        merge_labels(slot, incoming)
+    });
+    if changed {
+        unsafe {
+            crate::note_save();
+            crate::settings::refresh_ctx_labels();
+        }
+    }
+}
+
+/// Cleaned menu strings for `ctx_labels`. Already-saved accelerator tails and repeated labels collapse here.
+pub(crate) fn cleaned_labels(incoming: &[String]) -> Vec<String> {
+    let mut slot = Vec::new();
+    merge_labels(&mut slot, incoming);
+    slot
+}
+
+fn merge_labels(slot: &mut Vec<String>, incoming: &[String]) -> bool {
+    let old = std::mem::take(slot);
+    let mut cleaned: Vec<String> = Vec::new();
+    for raw in old.iter().chain(incoming.iter()) {
+        let label: String = menu_label(raw);
+        if label.is_empty() || label.chars().count() > 80 {
+            continue;
+        }
+        if cleaned.iter().any(|e| fold_menu(e) == fold_menu(&label)) {
+            continue;
+        }
+        if cleaned.len() >= 8 {
+            break;
+        }
+        cleaned.push(label);
+    }
+    let changed = cleaned != old;
+    *slot = cleaned;
+    changed
 }
 
 fn probe_context() -> Option<(*mut ITEMIDLIST, Option<IDataObject>)> {
@@ -613,21 +1056,25 @@ fn clean_label(s: &str) -> String {
     strip_accel(&t)
 }
 
-/// `AABdzCtx Class`, `FileSyncEx`: a COM identifier, not a product name.
+/// `AABdzCtx Class`, `BdzShell`, `HVShell Module`: a COM identifier, not a product name.
 fn identifier_like(s: &str) -> bool {
     let t = s.trim();
-    if t.is_empty() {
+    if t.is_empty() || parse_guid(t).is_some() {
         return true;
     }
     let low = t.to_ascii_lowercase();
-    if low.ends_with(" class") || low.ends_with(" context menu") {
+    if low.ends_with(".dll") || low.ends_with(".exe") {
+        return true;
+    }
+    if low.ends_with(" class") || low.ends_with(" context menu") || low.ends_with(" module") {
         return true;
     }
     if t.contains([' ', '\t']) {
         return false;
     }
-    let marked = low.ends_with("contextmenu") || low.ends_with("class") || low.ends_with("ctx") || low.ends_with("ex");
-    marked && t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_lowercase())
+    let shellish = low.contains("shell") || low.contains("ctx") || low.contains("context") || low.ends_with("ext") || low.ends_with("ex");
+    let mixed = t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_lowercase());
+    shellish && mixed
 }
 
 /// First candidate that reads as a product name. Class identifiers are kept only when nothing else exists.
@@ -635,7 +1082,7 @@ fn pick_label(candidates: &[&str]) -> String {
     let mut cleaned = Vec::new();
     for s in candidates {
         let t = clean_label(s);
-        if t.is_empty() || parse_guid(&t).is_some() {
+        if t.is_empty() || parse_guid(&t).is_some() || title_junk(&t) {
             continue;
         }
         cleaned.push(t);
@@ -644,6 +1091,547 @@ fn pick_label(candidates: &[&str]) -> String {
         return s.clone();
     }
     cleaned.into_iter().next().unwrap_or_default()
+}
+
+/// ProductName, then FileDescription, then a known vendor. A menu sentence is never the title.
+fn friendly_name(product: &str, desc: &str, fallbacks: &[&str]) -> String {
+    for s in [product, desc] {
+        if let Some(name) = mapped_title(s) {
+            return name;
+        }
+    }
+    for s in fallbacks {
+        if let Some(name) = known_product(s) {
+            return name;
+        }
+    }
+    let picked = polish_name(&pick_label(fallbacks));
+    if let Some(name) = known_product(&picked) {
+        return name;
+    }
+    if product_like(&picked) && !menu_sentence(&picked) && !title_junk(&picked) { picked } else { String::new() }
+}
+
+fn mapped_title(s: &str) -> Option<String> {
+    if title_junk(s) {
+        return None;
+    }
+    let t = polish_name(s);
+    if title_junk(&t) {
+        return None;
+    }
+    if let Some(name) = known_product(&t).or_else(|| known_product(s)) {
+        return Some(name);
+    }
+    if product_like(&t) && !menu_sentence(&t) { Some(t) } else { None }
+}
+
+/// `%1`, `%*`, `%V`, `%L`, a path, or a command line. None of these is a product name.
+fn title_junk(s: &str) -> bool {
+    let t = s.trim().trim_matches('"').trim();
+    if t.is_empty() {
+        return false;
+    }
+    contains_placeholder(t) || looks_like_command(t)
+}
+
+fn contains_placeholder(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'%' {
+            let n = b[i + 1].to_ascii_lowercase();
+            if n == b'*' || b[i + 1].is_ascii_digit() || matches!(n, b'd' | b'i' | b'l' | b'u' | b'v' | b'w') {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn looks_like_command(s: &str) -> bool {
+    if s.contains(['\\', '/']) {
+        return true;
+    }
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return true;
+    }
+    s.split_whitespace().any(|w| {
+        let low = w.trim_matches('"').to_ascii_lowercase();
+        [".exe", ".dll", ".ocx", ".cpl", ".bat", ".cmd", ".com"].iter().any(|ext| low.ends_with(ext))
+    })
+}
+
+fn product_like(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.chars().count() >= 2 && !identifier_like(t)
+}
+
+/// Drop a generic suffix, a possessive, and a trailing `(V)` / `(x64)` tag.
+fn polish_name(s: &str) -> String {
+    let mut t = normalize_marks(&clean_label(s));
+    loop {
+        let next = strip_name_suffix(&t);
+        let next = strip_possessive(&next);
+        let next = strip_name_tag(&next);
+        let next = normalize_marks(&next);
+        if next == t {
+            break;
+        }
+        t = next;
+    }
+    t
+}
+
+fn strip_name_suffix(s: &str) -> String {
+    let t = s.trim();
+    let low = t.to_ascii_lowercase();
+    const SUFFIXES: &[&str] = &[
+        "shell menu dll",
+        "explorer extension library",
+        "shell integration library",
+        "shell extension",
+        "context menu",
+        "shell ext",
+    ];
+    for suf in SUFFIXES {
+        if low == *suf {
+            return String::new();
+        }
+        let spaced = format!(" {suf}");
+        if let Some(stem) = low.strip_suffix(&spaced) {
+            return t[..stem.len()].trim().to_string();
+        }
+    }
+    t.to_string()
+}
+
+fn strip_possessive(s: &str) -> String {
+    let t = s.trim();
+    let chars: Vec<char> = t.chars().collect();
+    if chars.len() >= 3 {
+        let n = chars.len();
+        let mark = chars[n - 2];
+        let last = chars[n - 1];
+        if (last == 's' || last == 'S') && matches!(mark, '\'' | '\u{2019}' | '\u{FF07}') {
+            let stem: String = chars[..n - 2].iter().collect();
+            let stem = stem.trim();
+            if stem.chars().count() >= 2 {
+                return stem.to_string();
+            }
+        }
+    }
+    t.to_string()
+}
+
+fn is_mark(c: char) -> bool {
+    matches!(c, '\u{00AE}' | '\u{2122}' | '\u{00A9}')
+}
+
+fn normalize_marks(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut raw = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if is_mark(*c) {
+            let prev_alnum = i > 0 && chars[i - 1].is_alphanumeric();
+            let next_alnum = chars.get(i + 1).is_some_and(|d| d.is_alphanumeric());
+            if prev_alnum && next_alnum {
+                raw.push(' ');
+            }
+            continue;
+        }
+        raw.push(*c);
+    }
+    collapse_ws(&raw)
+}
+
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for c in s.trim().chars() {
+        if c.is_whitespace() {
+            if !out.is_empty() {
+                gap = true;
+            }
+            continue;
+        }
+        if gap {
+            out.push(' ');
+            gap = false;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `Bandizip (V)` or `Bandizip(V)` → `Bandizip`. A short parenthetical tag, not a phrase.
+fn strip_name_tag(s: &str) -> String {
+    let t = s.trim();
+    let chars: Vec<char> = t.chars().collect();
+    if chars.len() < 3 || !matches!(chars.last().copied(), Some(')') | Some('\u{FF09}')) {
+        return t.to_string();
+    }
+    let Some(open) = chars[..chars.len() - 1].iter().rposition(|c| matches!(c, '(' | '\u{FF08}')) else {
+        return t.to_string();
+    };
+    if open == 0 {
+        return t.to_string();
+    }
+    let inner: String = chars[open + 1..chars.len() - 1].iter().collect();
+    let folded: String = inner.trim().chars().map(fold_width_char).collect();
+    let low = folded.to_ascii_lowercase();
+    let tag = (folded.chars().count() == 1 && folded.chars().all(|c| c.is_ascii_alphabetic())) || matches!(low.as_str(), "x86" | "x64" | "32" | "64");
+    if !tag {
+        return t.to_string();
+    }
+    let before: String = chars[..open].iter().collect();
+    let before = before.trim();
+    if before.is_empty() { t.to_string() } else { before.to_string() }
+}
+
+/// Menu text as the user reads it: no accelerator, no file name, no trailing `(X)` or `(Ctrl+C)`.
+fn menu_label(s: &str) -> String {
+    let t = clean_label(s);
+    let t = t.split('\t').next().unwrap_or(&t).trim();
+    let t = generalize_filenames(t);
+    let t = strip_shortcut_suffix(&t);
+    if label_is_placeholder(&t) { String::new() } else { t }
+}
+
+fn strip_shortcut_suffix(s: &str) -> String {
+    let mut t = s.trim().to_string();
+    while let Some(next) = strip_one_shortcut(&t) {
+        t = next;
+    }
+    t
+}
+
+/// A trailing `(B)` / `（Ｖ）` / `(Ctrl+C)`, including the one sitting just before `...` or `…`.
+fn strip_one_shortcut(s: &str) -> Option<String> {
+    let t = s.trim_end();
+    let (core, ellipsis) = split_ellipsis(t);
+    let core = core.trim_end();
+    let mut chars: Vec<char> = core.chars().collect();
+    let close = chars.last().copied()?;
+    if close != ')' && close != '\u{FF09}' {
+        return None;
+    }
+    chars.pop();
+    let open = chars.iter().rposition(|c| *c == '(' || *c == '\u{FF08}')?;
+    if open == 0 {
+        return None;
+    }
+    let inner: String = chars[open + 1..].iter().collect();
+    if !shortcut_token(inner.trim()) {
+        return None;
+    }
+    let before: String = chars[..open].iter().collect();
+    let before = before.trim_end();
+    if before.is_empty() {
+        return None;
+    }
+    let mut out = before.to_string();
+    out.push_str(ellipsis);
+    if out == t { None } else { Some(out) }
+}
+
+fn split_ellipsis(s: &str) -> (&str, &str) {
+    if let Some(rest) = s.strip_suffix('\u{2026}') {
+        (rest, "\u{2026}")
+    } else if let Some(rest) = s.strip_suffix("...") {
+        (rest, "...")
+    } else {
+        (s, "")
+    }
+}
+
+fn shortcut_token(s: &str) -> bool {
+    let t: String = s.trim().chars().map(fold_width_char).collect();
+    if t.chars().count() == 1 && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+        return true;
+    }
+    let low = t.to_ascii_lowercase().replace(' ', "");
+    let modified = ["ctrl", "control", "shift", "alt", "win"].iter().any(|m| low.starts_with(m)) && low.contains('+');
+    modified && low.chars().all(|c| c.is_ascii_alphanumeric() || c == '+') && low.len() <= 24
+}
+
+fn fold_width_char(c: char) -> char {
+    match c as u32 {
+        0xFF10..=0xFF19 => char::from_u32(c as u32 - 0xFF10 + u32::from(b'0')).unwrap_or(c),
+        0xFF21..=0xFF3A => char::from_u32(c as u32 - 0xFF21 + u32::from(b'A')).unwrap_or(c),
+        0xFF41..=0xFF5A => char::from_u32(c as u32 - 0xFF41 + u32::from(b'a')).unwrap_or(c),
+        _ => c,
+    }
+}
+
+/// `"a.zip" に圧縮` and `"b.zip" に圧縮` become the same `"…" に圧縮`.
+fn generalize_filenames(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(end) = file_quote_end(&chars, i) {
+            out.push(chars[i]);
+            out.push('\u{2026}');
+            out.push(chars[end]);
+            i = end + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn file_quote_end(chars: &[char], i: usize) -> Option<usize> {
+    let close = match chars.get(i).copied()? {
+        '"' => '"',
+        '\u{FF02}' => '\u{FF02}',
+        '「' => '」',
+        '『' => '』',
+        '\u{201C}' => '\u{201D}',
+        '\'' => '\'',
+        _ => return None,
+    };
+    let end = chars[i + 1..].iter().position(|c| *c == close)? + i + 1;
+    let inner: String = chars[i + 1..end].iter().collect();
+    let n = inner.chars().count();
+    if (1..=120).contains(&n) && inner.contains(['.', '\\', '/']) { Some(end) } else { None }
+}
+
+fn label_is_placeholder(s: &str) -> bool {
+    let t = s.trim();
+    t.is_empty() || t.chars().all(|c| c.is_whitespace() || matches!(c, '"' | '\u{FF02}' | '「' | '」' | '『' | '』' | '\u{201C}' | '\u{201D}' | '\'' | '\u{2019}' | '\u{2026}' | '.'))
+}
+
+/// Menu text and bare verbs. These stay off the product title.
+fn menu_sentence(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if strip_one_shortcut(t).is_some() || t.ends_with("...") || t.ends_with('\u{2026}') {
+        return true;
+    }
+    let low = fold_menu(t);
+    const EXACT: &[&str] = &[
+        "configure", "open", "print", "edit", "explore", "find", "run", "delete", "rename", "properties", "share", "copy", "paste",
+    ];
+    if EXACT.contains(&low.as_str()) {
+        return true;
+    }
+    if low.starts_with("open in ") || low.starts_with("open with ") || low.starts_with("print ") || low.starts_with("add to ") || low.starts_with("configure ") {
+        return true;
+    }
+    t.contains("で開く") || t.contains("を開く") || t.contains("인쇄")
+}
+
+fn norm_component(s: &str) -> String {
+    let mut t = strip_name_tag(&clean_label(s)).to_ascii_lowercase();
+    for suf in [" context menu", " contextmenu", " class", " module", " shell extension", " shellextension"] {
+        if let Some(rest) = t.strip_suffix(suf) {
+            t = rest.trim().to_string();
+            break;
+        }
+    }
+    t.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+}
+
+/// Raw component names that VERSIONINFO does not already explain.
+struct Tokens {
+    /// Non-alphanumeric splits, plus camel-case pieces (`OpenInExcel` → excel).
+    all: Vec<String>,
+    /// Splits on punctuation and spaces only. `WordPad` stays one word.
+    plain: Vec<String>,
+}
+
+fn tokens_of(s: &str) -> Tokens {
+    let mut all = Vec::new();
+    let mut plain = Vec::new();
+    let mut cur = String::new();
+    let flush = |cur: &mut String, all: &mut Vec<String>, plain: &mut Vec<String>| {
+        if cur.is_empty() {
+            return;
+        }
+        let word: String = cur.chars().map(fold_width_char).collect();
+        cur.clear();
+        let low = word.to_ascii_lowercase();
+        push_token(plain, &low);
+        push_token(all, &low);
+        let chars: Vec<char> = low.chars().collect();
+        let mut part = String::new();
+        for (i, c) in word.chars().enumerate() {
+            let prev = i.checked_sub(1).and_then(|j| word.chars().nth(j));
+            if prev.is_some_and(|p| p.is_ascii_lowercase() && c.is_ascii_uppercase()) && !part.is_empty() {
+                push_token(all, &part);
+                part.clear();
+            }
+            part.push(chars.get(i).copied().unwrap_or(c).to_ascii_lowercase());
+        }
+        if !part.is_empty() {
+            push_token(all, &part);
+        }
+    };
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            cur.push(c);
+        } else {
+            flush(&mut cur, &mut all, &mut plain);
+        }
+    }
+    flush(&mut cur, &mut all, &mut plain);
+    Tokens { all, plain }
+}
+
+fn push_token(out: &mut Vec<String>, w: &str) {
+    if !w.is_empty() && !out.iter().any(|e| e == w) {
+        out.push(w.to_string());
+    }
+}
+
+fn has_word(words: &[String], key: &str) -> bool {
+    words.iter().any(|w| w == key)
+}
+
+fn known_product(s: &str) -> Option<String> {
+    let tokens = tokens_of(s);
+    if tokens.all.is_empty() && !s.contains("한컴") {
+        return None;
+    }
+    if has_word(&tokens.all, "hwp") || s.contains("한컴") {
+        return Some("한글(Hwp)".to_string());
+    }
+    const OFFICE: &[&str] = &["excel", "winword", "powerpnt", "powerpoint", "onenote", "msaccess", "mspub", "outlook", "msword"];
+    let office_word = tokens.all.iter().any(|w| OFFICE.contains(&w.as_str())) || has_word(&tokens.plain, "word");
+    let microsoft_office = has_word(&tokens.plain, "microsoft") && (has_word(&tokens.plain, "office") || office_word);
+    if office_word || microsoft_office {
+        return Some("Microsoft Office".to_string());
+    }
+    let script_host = has_word(&tokens.all, "wscript")
+        || has_word(&tokens.all, "cscript")
+        || (has_word(&tokens.plain, "windows") && has_word(&tokens.plain, "script") && has_word(&tokens.plain, "host"));
+    if script_host {
+        return Some(tr("Windows Script Host", "Windows 스크립트 호스트", "Windows スクリプト ホスト").to_string());
+    }
+    let n = norm_component(s);
+    const VENDORS: &[(&[&str], &str, &str, &str)] = &[
+        (&["bdzshell", "aabdzctx", "bandizip"], "Bandizip", "반디집", "Bandizip"),
+        (&["lhshellext", "lockhunter"], "LockHunter", "LockHunter", "LockHunter"),
+        (&["synofoldercontextmenu", "synologydrive"], "Synology Drive", "Synology Drive", "Synology Drive"),
+        (&["hvshell", "hvcontext", "honeyview"], "Honeyview", "허니뷰", "Honeyview"),
+        (&["tortoisesvn"], "TortoiseSVN", "TortoiseSVN", "TortoiseSVN"),
+        (&["tortoisegit"], "TortoiseGit", "TortoiseGit", "TortoiseGit"),
+        (&["7zip", "sevenzip"], "7-Zip", "7-Zip", "7-Zip"),
+        (&["winrar"], "WinRAR", "WinRAR", "WinRAR"),
+        (&["winmerge"], "WinMerge", "WinMerge", "WinMerge"),
+    ];
+    for (keys, en, ko, ja) in VENDORS {
+        let word = tokens.all.iter().any(|w| keys.iter().any(|k| w == *k));
+        let compact = n.len() >= 4 && keys.iter().any(|k| n == *k || (n.starts_with(k) && n.len() - k.len() <= 3));
+        if word || compact {
+            return Some(tr(en, ko, ja).to_string());
+        }
+    }
+    None
+}
+
+fn verb_raw(verb_key: &str, stem: &str) -> String {
+    let key = component_raw(verb_key, "");
+    let stem_raw = component_raw(stem, "");
+    let stem_ok = kept_title(&stem_raw) && !menu_sentence(&stem_raw);
+    let key_ok = kept_title(&key) && !menu_sentence(&key);
+    if !key_ok && stem_ok { stem_raw } else if key_ok { key } else { String::new() }
+}
+
+/// Product title for one static verb. Version info, then the ProgID's application, then a readable name.
+fn verb_product(product: &str, desc: &str, stem: &str, menu: &str, verb: &str, owner: &str) -> String {
+    let stem = if title_junk(stem) { "" } else { stem };
+    let mut title = friendly_name(product, desc, &[stem]);
+    if title_junk(&title) || menu_sentence(&title) {
+        title.clear();
+    }
+    if title.is_empty() {
+        if let Some(mapped) = known_product(menu).or_else(|| known_product(verb)) {
+            title = mapped;
+        }
+    }
+    if title.is_empty() {
+        let owner = polish_name(owner);
+        if kept_title(&owner) && !menu_sentence(&owner) {
+            title = known_product(&owner).unwrap_or(owner);
+        }
+    }
+    if title.is_empty() {
+        title = readable_fallback(menu, verb);
+    }
+    if title_junk(&title) { String::new() } else { title }
+}
+
+fn readable_fallback(menu: &str, verb: &str) -> String {
+    let menu_t = polish_name(menu);
+    if kept_title(&menu_t) {
+        return known_product(&menu_t).unwrap_or(menu_t);
+    }
+    let verb_t = polish_name(verb);
+    if kept_title(&verb_t) && !menu_sentence(&verb_t) {
+        known_product(&verb_t).unwrap_or(verb_t)
+    } else {
+        String::new()
+    }
+}
+
+fn component_raw(key_name: &str, fallback: &str) -> String {
+    for s in [key_name, fallback] {
+        if parse_guid(s).is_some() {
+            continue;
+        }
+        let t = strip_name_tag(&clean_label(s));
+        if t.is_empty() || parse_guid(&t).is_some() {
+            continue;
+        }
+        return t;
+    }
+    String::new()
+}
+
+fn file_stem(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let expanded = if path.contains('%') { expand_env(path) } else { path.to_string() };
+    let file = expanded.trim().trim_matches('"').rsplit(['\\', '/']).next().unwrap_or("").trim().to_string();
+    let low = file.to_ascii_lowercase();
+    if let Some(stem) = low.strip_suffix(".dll").or_else(|| low.strip_suffix(".exe")) {
+        file[..stem.len()].to_string()
+    } else {
+        file
+    }
+}
+
+/// `rundll32.exe dll,Entry` is the DLL. A bare `%1` / `%*` is not a file.
+fn version_target(command: &str) -> String {
+    if command.trim().is_empty() {
+        return String::new();
+    }
+    let expanded = if command.contains('%') { expand_env(command) } else { command.to_string() };
+    let (exe, args) = split_cmd(&expanded);
+    let file = exe.rsplit(['\\', '/']).next().unwrap_or(&exe).to_ascii_lowercase();
+    if file == "rundll32.exe" || file == "rundll32" {
+        let dll = args.trim().trim_matches('"').split(',').next().unwrap_or("").trim().trim_matches('"');
+        return if real_module(dll) { dll.to_string() } else { String::new() };
+    }
+    if real_module(&exe) { exe.trim().trim_matches('"').to_string() } else { String::new() }
+}
+
+fn real_module(s: &str) -> bool {
+    let t = s.trim().trim_matches('"');
+    if t.is_empty() || contains_placeholder(t) {
+        return false;
+    }
+    let low = t.to_ascii_lowercase();
+    [".exe", ".dll", ".ocx", ".cpl"].iter().any(|ext| low.ends_with(ext))
 }
 
 fn fold_menu(s: &str) -> String {
@@ -1113,7 +2101,7 @@ unsafe fn scan_all() -> Vec<Row> {
         }
         scan_extensions(root, prefix, &mut rows, &mut dlls, &mut seen_clsid, &approved);
     }
-    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.id.cmp(&b.id)));
+    rows.sort_by(|a, b| title_of(a).to_lowercase().cmp(&title_of(b).to_lowercase()).then(a.id.cmp(&b.id)));
     rows
 }
 
@@ -1190,18 +2178,33 @@ unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &m
         }).unwrap_or_default();
         let guid = parse_guid(&value).or_else(|| parse_guid(&name));
         let Some(guid) = guid else { continue };
-        let (title, dll, company) = clsid_meta(&guid, approved, dlls, clsids);
-        let mut friendly = title;
-        if (friendly.is_empty() || identifier_like(&friendly)) && parse_guid(&name).is_none() && !identifier_like(&name) {
-            friendly = clean_label(&name);
+        let (legacy, dll, company) = clsid_meta(&guid, approved, dlls, clsids);
+        let (desc, product, _) = if dll.is_empty() {
+            (String::new(), String::new(), String::new())
+        } else {
+            file_version(&dll, dlls)
+        };
+        let stem = file_stem(&dll);
+        let shown = friendly_name(&product, &desc, &[&legacy, &name, &stem]);
+        let mut display = if shown.is_empty() { legacy.clone() } else { shown };
+        if (display.is_empty() || identifier_like(&display) || menu_sentence(&display)) && parse_guid(&name).is_none() && !identifier_like(&name) && !menu_sentence(&name) {
+            display = clean_label(&name);
         }
-        if friendly.is_empty() {
-            friendly = if parse_guid(&name).is_none() { clean_label(&name) } else { guid_text(&guid) };
+        if display.is_empty() {
+            display = if parse_guid(&name).is_none() { clean_label(&name) } else { guid_text(&guid) };
         }
-        let builtin = com_builtin(&name, &guid, &dll, &company) || builtin_component_name(&friendly) || builtin_component_name(&name);
+        // Builtin detection stays on the pre-vendor strings, so a friendlier title does not hide or reveal a handler.
+        let builtin = com_builtin(&name, &guid, &dll, &company) || builtin_component_name(&legacy) || builtin_component_name(&name);
+        let product_title = if menu_sentence(&display) {
+            String::new()
+        } else if product_like(&display) && (identifier_like(&legacy) || !legacy.eq_ignore_ascii_case(&display)) {
+            display.clone()
+        } else {
+            String::new()
+        };
         upsert(rows, Row {
             id: format!("clsid:{}", guid_text(&guid)),
-            name: friendly,
+            name: display.clone(),
             targets,
             builtin,
             clsid: Some(guid),
@@ -1213,9 +2216,59 @@ unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &m
             position: 0,
             classes: vec![rel.to_string()],
             anchor: rel.to_string(),
+            product: product_title,
+            raw: component_raw(&name, &legacy),
+            static_labels: Vec::new(),
         });
     }
     _ = RegCloseKey(key);
+}
+
+fn generic_class(rel: &str) -> bool {
+    let n = rel.trim().trim_matches('\\').to_ascii_lowercase();
+    matches!(n.as_str(), "*" | "directory" | "folder" | "drive" | "allfilesystemobjects" | "unknown")
+        || n.starts_with("systemfileassociations\\")
+        || n.ends_with("\\background")
+}
+
+/// The application that owns this ProgID: its open command's version info, or the ProgID's own name.
+unsafe fn owner_name(root: HKEY, full: &str, rel: &str, dlls: &mut HashMap<String, (String, String, String)>) -> String {
+    if generic_class(rel) {
+        return String::new();
+    }
+    if let Some((head, tail)) = rel.split_once('\\') {
+        if head.eq_ignore_ascii_case("Applications") {
+            let stem = file_stem(tail);
+            if kept_title(&stem) && !menu_sentence(&stem) {
+                return known_product(&stem).unwrap_or(stem);
+            }
+        }
+    }
+    let open = open_at(root, &format!(r"{full}\shell\open\command")).map(|ck| {
+        let command = key_sz(ck, PCWSTR::null());
+        _ = RegCloseKey(ck);
+        command
+    }).unwrap_or_default();
+    let target = version_target(&open);
+    if !target.is_empty() {
+        let (desc, product, _) = file_version(&target, dlls);
+        let stem_owned = file_stem(&target);
+        let stem = if title_junk(&stem_owned) { "" } else { stem_owned.as_str() };
+        let title = friendly_name(&product, &desc, &[stem]);
+        if kept_title(&title) && !menu_sentence(&title) {
+            return title;
+        }
+    }
+    if progid_like(rel) && !rel.contains('\\') {
+        if let Some(k) = open_at(root, full) {
+            let name = polish_name(&key_sz(k, PCWSTR::null()));
+            _ = RegCloseKey(k);
+            if kept_title(&name) && !menu_sentence(&name) {
+                return known_product(&name).unwrap_or(name);
+            }
+        }
+    }
+    String::new()
 }
 
 unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>) {
@@ -1235,6 +2288,7 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
             continue;
         }
         let display = key_sz(vk, PCWSTR::null());
+        let mui = key_sz_named(vk, "MuiVerb");
         let extended = value_exists(vk, "Extended");
         let position = match key_sz_named(vk, "Position").to_ascii_lowercase().as_str() {
             "top" => -1,
@@ -1254,19 +2308,32 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
         if command.is_empty() && delegate_guid.is_none() {
             continue;
         }
+        // `name` stays the registry menu text. Deletion matches that string; the product title is separate.
         let friendly = {
             let raw = if display.is_empty() { name.as_str() } else { display.as_str() };
             let shown = clean_label(raw);
             if shown.is_empty() { clean_label(&name) } else { shown }
         };
         let builtin = verb_builtin(&name, &command, &delegate_dll) || builtin_component_name(&friendly);
+        let target = if command.is_empty() { delegate_dll.clone() } else { version_target(&command) };
+        let (desc, product, _) = if target.is_empty() {
+            (String::new(), String::new(), String::new())
+        } else {
+            file_version(&target, dlls)
+        };
+        let stem = file_stem(&target);
+        let owner = owner_name(root, full, rel, dlls);
+        let product_title = verb_product(&product, &desc, &stem, &friendly, &name, &owner);
+        let mut static_labels = Vec::new();
+        push_unique(&mut static_labels, &[menu_label(&mui), friendly.clone()]);
+        push_unique(&mut static_labels, &cascade_labels(root, &sub));
         upsert(rows, Row {
             id: format!("verb:{}", name.to_ascii_lowercase()),
             name: friendly,
             targets,
             builtin,
             clsid: delegate_guid,
-            verb: name,
+            verb: name.clone(),
             command: command.clone(),
             rank: specificity(rel),
             extended,
@@ -1274,9 +2341,52 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
             position,
             classes: vec![rel.to_string()],
             anchor: rel.to_string(),
+            product: product_title,
+            raw: verb_raw(&name, &stem),
+            static_labels,
         });
     }
     _ = RegCloseKey(key);
+}
+
+/// One level of `shell\<verb>\shell\<child>`. The parent row keeps those menu strings.
+unsafe fn cascade_labels(root: HKEY, verb_key: &str) -> Vec<String> {
+    let path = format!(r"{verb_key}\shell");
+    let Some(key) = open_at(root, &path) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut i = 0u32;
+    while i < 64 {
+        let Some(name) = enum_key(key, i) else { break };
+        i += 1;
+        if name.eq_ignore_ascii_case("command") {
+            continue;
+        }
+        let Some(vk) = open_at(root, &format!(r"{path}\{name}")) else { continue };
+        if value_exists(vk, "LegacyDisable") || value_exists(vk, "ProgrammaticAccessOnly") {
+            _ = RegCloseKey(vk);
+            continue;
+        }
+        let mui = key_sz_named(vk, "MuiVerb");
+        let display = key_sz(vk, PCWSTR::null());
+        _ = RegCloseKey(vk);
+        let raw = if !mui.is_empty() {
+            mui
+        } else if !display.is_empty() {
+            display
+        } else {
+            name
+        };
+        let label = menu_label(&raw);
+        if label.is_empty() || out.iter().any(|e: &String| fold_menu(e) == fold_menu(&label)) {
+            continue;
+        }
+        out.push(label);
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    _ = RegCloseKey(key);
+    out
 }
 
 fn upsert(rows: &mut Vec<Row>, incoming: Row) {
@@ -1299,13 +2409,21 @@ fn upsert(rows: &mut Vec<Row>, incoming: Row) {
             have.clsid = incoming.clsid;
         }
         let incoming_better = !incoming.name.is_empty()
-            && (have.name.is_empty() || parse_guid(&have.name).is_some() || (identifier_like(&have.name) && !identifier_like(&incoming.name)));
+            && !title_junk(&incoming.name)
+            && (have.name.is_empty() || title_junk(&have.name) || parse_guid(&have.name).is_some() || (identifier_like(&have.name) && !identifier_like(&incoming.name)));
         if incoming_better {
             have.name = incoming.name;
         }
         if have.verb.is_empty() {
             have.verb = incoming.verb;
         }
+        if better_title(&have.product, &incoming.product) {
+            have.product = incoming.product;
+        }
+        if have.raw.is_empty() {
+            have.raw = incoming.raw;
+        }
+        push_unique(&mut have.static_labels, &incoming.static_labels);
         for c in incoming.classes {
             if !have.classes.iter().any(|e| e.eq_ignore_ascii_case(&c)) {
                 have.classes.push(c);
@@ -1314,6 +2432,24 @@ fn upsert(rows: &mut Vec<Row>, incoming: Row) {
         return;
     }
     rows.push(incoming);
+}
+
+fn better_title(have: &str, incoming: &str) -> bool {
+    if !kept_title(incoming) {
+        return false;
+    }
+    if !kept_title(have) {
+        return true;
+    }
+    let have_menu = menu_sentence(have);
+    let incoming_menu = menu_sentence(incoming);
+    if have_menu && !incoming_menu {
+        return true;
+    }
+    if !have_menu && incoming_menu {
+        return false;
+    }
+    parse_guid(have).is_some() || (identifier_like(have) && !identifier_like(incoming))
 }
 
 fn specificity(class: &str) -> u8 {
@@ -1927,6 +3063,9 @@ mod tests {
             position: 0,
             classes: vec!["AllFilesystemObjects".into()],
             anchor: "AllFilesystemObjects".into(),
+            product: String::new(),
+            raw: String::new(),
+            static_labels: Vec::new(),
         };
         let send = Row {
             id: "clsid:sendto".into(),
@@ -1942,6 +3081,9 @@ mod tests {
             position: 0,
             classes: vec!["AllFilesystemObjects".into()],
             anchor: "AllFilesystemObjects".into(),
+            product: String::new(),
+            raw: String::new(),
+            static_labels: Vec::new(),
         };
         let cat = vec![third, send];
         assert!(blocked(&cat[0], FILE, &off));
@@ -2028,6 +3170,255 @@ mod tests {
         assert!(under_windows(r"%windir%\System32\PhotoViewer.dll"));
         assert!(under_windows(r"C:\Windows\System32\shimgvw.dll"));
         assert!(!under_windows(r"C:\Program Files\7-Zip\7-zip.dll"));
+        assert!(identifier_like("BdzShell"));
+        assert!(identifier_like("LHShellExt"));
+        assert!(identifier_like("HVShell Module"));
+        assert_eq!(strip_name_tag("TortoiseSVN (V)"), "TortoiseSVN");
+        assert_eq!(strip_name_tag("Bandizip (x64)"), "Bandizip");
+        assert_eq!(strip_name_tag("Bandizip(V)"), "Bandizip");
+        assert_eq!(strip_name_tag("Synology Drive"), "Synology Drive");
+        assert_eq!(menu_label("&반디집으로 압축하기"), "반디집으로 압축하기");
+        assert_eq!(menu_label("SVN 업데이트 (U)"), "SVN 업데이트");
+        assert_eq!(menu_label("Add to archive...\tCtrl+A"), "Add to archive...");
+        assert_eq!(menu_label("Fish && Chips (Ctrl+C)"), "Fish & Chips");
+        assert_eq!(menu_label("Open with (Notepad++)"), "Open with (Notepad++)");
+        assert_eq!(menu_label("Visual Studio で開く(V)"), "Visual Studio で開く");
+        assert_eq!(menu_label("Visual Studio で開く（V）"), "Visual Studio で開く");
+        assert_eq!(menu_label("Open(V)..."), "Open...");
+        assert_eq!(menu_label("Open（Ｖ）…"), "Open…");
+        assert_eq!(menu_label("Pick (B)"), "Pick");
+        assert_eq!(menu_label("Pick (F)"), "Pick");
+        assert_eq!(menu_label("한글 문서(Hwp) 인쇄(P)"), "한글 문서(Hwp) 인쇄");
+        assert_eq!(menu_label("\"a.zip\" に圧縮"), "\"…\" に圧縮");
+        assert_eq!(menu_label("\"b.zip\" に圧縮"), "\"…\" に圧縮");
+        assert_eq!(menu_label("「a.zip」に圧縮"), "「…」に圧縮");
+        assert_eq!(menu_label("\"a.zip\""), "");
+    }
+
+    #[test]
+    fn product_titles_prefer_version_info_then_known_vendors() {
+        let prev = crate::UI.load(std::sync::atomic::Ordering::Relaxed);
+        crate::UI.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(friendly_name("Bandizip", "BdzShell", &["BdzShell"]), "Bandizip");
+        assert_eq!(friendly_name("Bandizip (V)", "", &["BdzShell"]), "Bandizip");
+        assert_eq!(friendly_name("Bandizip Shell Extension", "", &["BdzShell"]), "Bandizip");
+        assert_eq!(known_product("BdzShell").as_deref(), Some("Bandizip"));
+        assert_eq!(known_product("LHShellExt").as_deref(), Some("LockHunter"));
+        assert_eq!(known_product("SynoFolderContextMenu Class").as_deref(), Some("Synology Drive"));
+        assert_eq!(known_product("HVShell Module").as_deref(), Some("Honeyview"));
+        assert_eq!(friendly_name("", "", &["HVShell Module"]), "Honeyview");
+        crate::UI.store(1, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(known_product("BdzShell").as_deref(), Some("반디집"));
+        assert_eq!(known_product("AABdzCtx Class").as_deref(), Some("반디집"));
+        assert_eq!(friendly_name("BdzShell", "", &["BdzShell"]), "반디집");
+        assert_eq!(known_product("HVShell Module").as_deref(), Some("허니뷰"));
+        // A known product follows the UI language. An unknown ProductName stays as written.
+        assert_eq!(friendly_name("Bandizip", "", &["BdzShell"]), "반디집");
+        assert_eq!(friendly_name("Bandizip shell menu dll", "", &["BdzShell"]), "반디집");
+        assert_eq!(friendly_name("Something Else", "", &["BdzShell"]), "Something Else");
+        crate::UI.store(prev, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn product_titles_drop_menu_sentences_and_library_suffixes() {
+        let prev = crate::UI.load(std::sync::atomic::Ordering::Relaxed);
+        crate::UI.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(polish_name("Bandizip shell menu dll"), "Bandizip");
+        assert_eq!(polish_name("WinMerge Explorer Extension Library"), "WinMerge");
+        assert_eq!(polish_name("Foo Shell Integration library"), "Foo");
+        assert_eq!(polish_name("Explorer Extension Library"), "");
+        assert_eq!(polish_name("Bandizip's"), "Bandizip");
+        assert_eq!(polish_name("Bandizip’s"), "Bandizip");
+        assert_eq!(polish_name("Microsoft®Office"), "Microsoft Office");
+        assert_eq!(polish_name("Bandizip®"), "Bandizip");
+        assert_eq!(polish_name("Foo ® bar"), "Foo bar");
+        assert_eq!(known_product("Open in Excel").as_deref(), Some("Microsoft Office"));
+        assert_eq!(known_product("EXCEL").as_deref(), Some("Microsoft Office"));
+        assert_eq!(known_product("Microsoft Word").as_deref(), Some("Microsoft Office"));
+        assert_eq!(known_product("WinMerge").as_deref(), Some("WinMerge"));
+        assert_eq!(known_product("WinMerge Explorer Extension Library").as_deref(), Some("WinMerge"));
+        assert_eq!(known_product("wscript").as_deref(), Some("Windows Script Host"));
+        assert_eq!(known_product("Windows Script Host").as_deref(), Some("Windows Script Host"));
+        assert_eq!(known_product("한글 문서(Hwp) 인쇄(P)").as_deref(), Some("한글(Hwp)"));
+        assert_eq!(known_product("Hwp").as_deref(), Some("한글(Hwp)"));
+        assert!(known_product("Excellent Viewer").is_none());
+        assert!(known_product("WordPad").is_none());
+        assert!(known_product("Configure").is_none());
+        assert!(menu_sentence("Configure"));
+        assert!(menu_sentence("Open in Excel"));
+        assert!(menu_sentence("한글 문서(Hwp) 인쇄(P)"));
+        assert!(!menu_sentence("한글(Hwp)"));
+        assert!(!menu_sentence("Microsoft Office"));
+        assert_eq!(friendly_name("", "", &["Configure"]), "");
+        assert_eq!(friendly_name("", "", &["Open in Excel"]), "Microsoft Office");
+        assert_eq!(friendly_name("", "", &["한글 문서(Hwp) 인쇄(P)"]), "한글(Hwp)");
+        assert_eq!(friendly_name("Microsoft Excel", "", &["excel"]), "Microsoft Office");
+        assert_eq!(friendly_name("LockHunter", "", &["LHShellExt"]), "LockHunter");
+        let configure = Row {
+            id: "verb:configure".into(),
+            name: "Configure".into(),
+            verb: "configure".into(),
+            product: String::new(),
+            raw: "Configure".into(),
+            targets: FILE,
+            builtin: false,
+            clsid: None,
+            command: String::new(),
+            rank: 1,
+            extended: false,
+            single: false,
+            position: 0,
+            classes: Vec::new(),
+            anchor: String::new(),
+            static_labels: vec!["Configure".into()],
+        };
+        assert_eq!(title_of(&configure), "");
+        assert!(title_junk("%1"));
+        assert!(title_junk("%*"));
+        assert!(title_junk("%V"));
+        assert!(title_junk("%L"));
+        assert!(title_junk(r#""C:\App\a.exe" "%1""#));
+        assert!(title_junk(r"C:\Windows\notepad.exe"));
+        assert!(!title_junk("Configure"));
+        assert!(!title_junk("구성"));
+        assert!(!title_junk("Microsoft Office"));
+        assert!(!title_junk("한글(Hwp)"));
+        assert_eq!(version_target("%1"), "");
+        assert_eq!(version_target("%*"), "");
+        assert_eq!(version_target(r#""C:\App\a.exe" "%1""#), r"C:\App\a.exe");
+        assert_eq!(version_target(r"rundll32.exe %1"), "");
+        assert_eq!(version_target(r#"C:\Windows\System32\rundll32.exe "C:\App\a.dll",Entry %1"#), r"C:\App\a.dll");
+        assert_eq!(friendly_name("", "", &["%1", "Configure"]), "");
+        assert_eq!(verb_product("", "", "%1", "Configure", "config", ""), "Configure");
+        assert_eq!(verb_product("", "", "%1", "구성", "config", ""), "구성");
+        assert_eq!(verb_product("", "", "%1", "Open in Excel", "config", ""), "Microsoft Office");
+        assert_eq!(verb_product("", "", "%1", "Configure", "config", "LockHunter"), "LockHunter");
+        assert_eq!(verb_product("Bandizip", "", "%1", "Configure", "config", ""), "Bandizip");
+        assert!(better_title("%1", "Bandizip"));
+        assert!(better_title("Configure", "Bandizip"));
+        assert!(!better_title("Bandizip", "Configure"));
+        assert!(!better_title("Bandizip", "%1"));
+        let placeholder = Row { product: "%1".into(), raw: "%1".into(), ..configure.clone() };
+        assert_eq!(title_of(&placeholder), "");
+        let named = Row { product: "Configure".into(), ..configure };
+        assert_eq!(title_of(&named), "Configure");
+        crate::UI.store(1, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(known_product("wscript").as_deref(), Some("Windows 스크립트 호스트"));
+        assert_eq!(known_product("Hwp").as_deref(), Some("한글(Hwp)"));
+        crate::UI.store(prev, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn repeated_labels_collapse_and_the_same_product_is_one_toggle() {
+        let mut slot = Vec::new();
+        assert!(merge_labels(&mut slot, &["Visual Studio で開く(V)".into(), "Visual Studio で開く".into()]));
+        assert_eq!(slot, vec!["Visual Studio で開く".to_string()]);
+        assert!(merge_labels(&mut slot, &["\"a.zip\" に圧縮".into(), "\"b.zip\" に圧縮".into()]));
+        assert_eq!(slot, vec!["Visual Studio で開く".to_string(), "\"…\" に圧縮".to_string()]);
+        let mut saved = Vec::new();
+        assert!(!merge_labels(&mut saved, &["\"a.zip\"".into(), "\"b.zip\"".into()]));
+        assert!(saved.is_empty());
+
+        let excel = sample_row("verb:excel", "Open in Excel", "Microsoft Office", "excel", FILE);
+        let word = sample_row("verb:word", "Open in Word", "Microsoft Office", "word", FILE | FOLDER);
+        let configure = sample_row("verb:configure", "Configure", "", "configure", FILE);
+        let rows = vec![excel, word, configure];
+        let ui = assemble(&rows, &BTreeMap::new(), &BTreeMap::new(), "");
+        assert_eq!(ui.len(), 2);
+        assert_eq!(ui[0].name, "Microsoft Office");
+        assert_eq!(ui[0].ids, vec!["verb:excel".to_string(), "verb:word".to_string()]);
+        assert!(ui[0].detail.contains("Open in Excel"));
+        assert!(ui[0].detail.contains("Open in Word"));
+        assert_eq!(ui[0].tick, Tick::On);
+        assert_eq!(ui[1].name, "");
+        assert_eq!(ui[1].ids, vec!["verb:configure".to_string()]);
+        assert_eq!(ui[1].detail, "Configure");
+
+        let mut off = BTreeMap::new();
+        toggle_ids_master(&mut off, &ui[0].ids, &ui[0].scopes);
+        assert_eq!(bits_of(&off["verb:excel"]), FILE);
+        assert_eq!(bits_of(&off["verb:word"]), FILE | FOLDER);
+        assert_eq!(assemble(&rows, &off, &BTreeMap::new(), "")[0].tick, Tick::Off);
+        toggle_ids_target(&mut off, &ui[0].ids, &ui[0].scopes, FILE);
+        assert!(!off.contains_key("verb:excel"));
+        assert_eq!(bits_of(&off["verb:word"]), FOLDER);
+        write_bits(&mut off, "verb:excel", FILE);
+        let mixed = assemble(&rows, &off, &BTreeMap::new(), "");
+        assert_eq!(mixed[0].tick, Tick::Mixed);
+        assert_eq!(mixed[0].subs[0], Tick::Mixed);
+        toggle_ids_master(&mut off, &mixed[0].ids, &mixed[0].scopes);
+        assert_eq!(bits_of(off.get("verb:excel").map(Vec::as_slice).unwrap_or(&[])) & (FILE | FOLDER), 0);
+        assert_eq!(bits_of(off.get("verb:word").map(Vec::as_slice).unwrap_or(&[])) & (FILE | FOLDER), 0);
+    }
+
+    fn sample_row(id: &str, name: &str, product: &str, verb: &str, targets: u8) -> Row {
+        Row {
+            id: id.into(),
+            name: name.into(),
+            targets,
+            builtin: false,
+            clsid: None,
+            verb: verb.into(),
+            command: String::new(),
+            rank: 1,
+            extended: false,
+            single: false,
+            position: 0,
+            classes: Vec::new(),
+            anchor: String::new(),
+            product: product.into(),
+            raw: name.into(),
+            static_labels: if verb.is_empty() { Vec::new() } else { vec![name.into()] },
+        }
+    }
+
+    #[test]
+    fn menu_labels_merge_once_and_drop_a_repeated_title() {
+        let mut slot = Vec::new();
+        assert!(merge_labels(&mut slot, &["&반디집으로 압축하기 (A)".into(), "SVN 업데이트".into()]));
+        assert!(!merge_labels(&mut slot, &["반디집으로 압축하기".into()]));
+        assert_eq!(slot, vec!["반디집으로 압축하기".to_string(), "SVN 업데이트".to_string()]);
+        let row = Row {
+            id: "clsid:x".into(),
+            name: "반디집".into(),
+            targets: FILE,
+            builtin: false,
+            clsid: None,
+            verb: String::new(),
+            command: String::new(),
+            rank: 1,
+            extended: false,
+            single: false,
+            position: 0,
+            classes: Vec::new(),
+            anchor: String::new(),
+            product: "반디집".into(),
+            raw: "BdzShell".into(),
+            static_labels: Vec::new(),
+        };
+        let mut seen = BTreeMap::new();
+        let pending = present_row(&row, &seen);
+        assert!(pending.pending);
+        assert_eq!(pending.name, "반디집");
+        assert_eq!(pending.raw, "BdzShell");
+        assert!(pending.labels.is_empty());
+        seen.insert("clsid:x".into(), slot);
+        let shown = present_row(&row, &seen);
+        assert!(!shown.pending);
+        assert_eq!(shown.labels.join(" · "), "반디집으로 압축하기 · SVN 업데이트");
+        assert_eq!(shown.raw, "BdzShell");
+        let verb = Row {
+            name: "7-Zip".into(),
+            product: "7-Zip".into(),
+            raw: "7-Zip".into(),
+            verb: "7-Zip".into(),
+            static_labels: vec!["7-Zip".into()],
+            ..row
+        };
+        let quiet = present_row(&verb, &BTreeMap::new());
+        assert!(!quiet.pending);
+        assert!(quiet.labels.is_empty(), "a label that repeats the title is not shown again");
+        assert!(quiet.raw.is_empty());
     }
 
     #[test]
