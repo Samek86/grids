@@ -267,6 +267,9 @@ struct SettingsFile {
     /// The one-time Everything install question was shown. Missing means not yet.
     #[serde(default, skip_serializing_if = "is_off")]
     ev_asked: bool,
+    /// WinMergeU.exe, or a folder that contains it. Empty means auto-detect. Omitted while empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    winmerge_path: String,
     #[serde(default)]
     session: String,
     #[serde(default)]
@@ -339,6 +342,7 @@ impl SettingsFile {
             peek_wheel_nav: true,
             peek: None,
             ev_asked: false,
+            winmerge_path: String::new(),
             session: String::new(),
             favorites: Vec::new(),
             recent: Vec::new(),
@@ -425,6 +429,7 @@ impl SettingsFile {
             peek_wheel_nav: s.peek_wheel_nav,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
+            winmerge_path: s.winmerge_path.trim().to_string(),
             session: s.file.clone(),
             favorites,
             recent: s.recent.clone(),
@@ -464,6 +469,7 @@ impl SettingsFile {
         self.extra.remove("drive_buttons");
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
+        self.extra.remove("winmerge_path");
         self.extra.remove("space_preview");
         self.extra.remove("peek_wheel_nav");
         self.extra.remove("layout_new");
@@ -560,6 +566,7 @@ impl SettingsFile {
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
+        s.winmerge_path = self.winmerge_path.trim().to_string();
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -1431,6 +1438,30 @@ mod tests {
         assert!(text.contains("\"use_everything\": false"), "{text}");
         assert!(!adopt(&text).unwrap().use_everything);
         assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("use_everything"));
+    }
+
+    #[test]
+    fn winmerge_path_is_omitted_when_empty_and_round_trips() {
+        assert!(Session::default().winmerge_path.is_empty());
+        assert!(adopt(r#"{"version":1}"#).unwrap().winmerge_path.is_empty());
+        assert!(!Session::default().to_ini().contains("winmerge="));
+        let mut s = Session::default();
+        s.winmerge_path = r"D:\Tools\WinMergeU.exe".into();
+        assert_eq!(Session::parse(&s.to_ini()).winmerge_path, s.winmerge_path);
+        assert_eq!(Session::parse("winmerge=C:\\WinMerge\\WinMergeU.exe").winmerge_path, r"C:\WinMerge\WinMergeU.exe");
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"winmerge_path\""), "{text}");
+        assert_eq!(adopt(&text).unwrap().winmerge_path, s.winmerge_path);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("winmerge_path"));
+        let mut previous = SettingsFile::blank();
+        previous.extra.insert("winmerge_path".into(), serde_json::json!(r"C:\old.exe"));
+        previous.extra.insert("future_flag".into(), serde_json::json!(1));
+        let mut file = SettingsFile::from_session(&s);
+        file.merge_forward(&previous);
+        let saved = pretty(&file);
+        assert_eq!(saved.matches("winmerge_path").count(), 1, "{saved}");
+        assert!(saved.contains("future_flag"), "{saved}");
+        assert!(saved.contains(r"D:\\Tools\\WinMergeU.exe"), "{saved}");
     }
 
     #[test]
