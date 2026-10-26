@@ -29,7 +29,12 @@ const S_ADV_RESET: i32 = 26;
 const S_EV: i32 = 27;
 const S_FACE: i32 = 28;
 const S_LAYOUT: i32 = 29;
-const S_FAV0: i32 = 400;
+const S_FAV0: i32 = 20000;
+/// Delete buttons are S_FAV0 + i, rename buttons S_REN0 + i. Control ids stay under 0x8000.
+const FAV_MAX: i32 = 4096;
+const S_REN0: i32 = S_FAV0 + FAV_MAX;
+/// One past the highest favourite row whose buttons were created, so loops skip the empty range.
+static FAV_MADE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 const TG_SINGLE: u8 = 1;
 const TG_DBLUP: u8 = 2;

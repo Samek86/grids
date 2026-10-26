@@ -191,12 +191,14 @@ fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
             f(c);
         }
     }
-    for i in 0..256 {
-        let c = unsafe { GetDlgItem(Some(h), S_FAV0 + i).unwrap_or_default() };
-        if c.0.is_null() {
-            continue;
+    let made = FAV_MADE.load(std::sync::atomic::Ordering::Relaxed);
+    for base in [S_FAV0, S_REN0] {
+        for i in 0..made {
+            let c = unsafe { GetDlgItem(Some(h), base + i).unwrap_or_default() };
+            if !c.0.is_null() {
+                f(c);
+            }
         }
-        f(c);
     }
 }
 
@@ -366,9 +368,10 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
     for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
         hide(id);
     }
-    let n = fav_tree_rows().len().min(128) as i32;
-    for base in [S_FAV0, S_FAV0 + 128] {
-        for i in 0..128 {
+    let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
+    let made = FAV_MADE.load(std::sync::atomic::Ordering::Relaxed);
+    for base in [S_FAV0, S_REN0] {
+        for i in 0..made {
             let c = ctl(h, base + i);
             if c.0.is_null() {
                 continue;
@@ -409,15 +412,16 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 crate::place_edit(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, FIELD_INSET_DIP)), intersects(*edit, content));
                 move_to(ctl(h, S_RESET), *reset, intersects(*reset, content));
             }
-            Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && *i < 128 && btn.right > btn.left => {
+            Item::FavRow { i, rename, btn, .. } if *i != usize::MAX && *i < FAV_MAX as usize && btn.right > btn.left => {
                 let id = S_FAV0 + *i as i32;
+                FAV_MADE.fetch_max(*i as i32 + 1, std::sync::atomic::Ordering::Relaxed);
                 let mut b = ctl(h, id);
                 if b.0.is_null() {
                     b = child_at(h, w!("BUTTON"), tx(s("Delete", "삭제", "削除")), 0xB | 0x00010000, id, sn.font);
                 }
                 let _ = SetWindowTextW(b, &HSTRING::from(tx(s("Delete", "삭제", "削除"))));
                 move_to(b, *btn, intersects(*btn, content));
-                let rid = S_FAV0 + 128 + *i as i32;
+                let rid = S_REN0 + *i as i32;
                 let mut r = ctl(h, rid);
                 if r.0.is_null() {
                     r = child_at(h, w!("BUTTON"), tx(s("Rename", "이름 변경", "名前の変更")), 0xB | 0x00010000, rid, sn.font);
@@ -1080,8 +1084,8 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
                 None => {}
             }
         }
-        id if (S_FAV0..S_FAV0 + 128).contains(&id) => delete_fav((id - S_FAV0) as usize),
-        id if (S_FAV0 + 128..S_FAV0 + 256).contains(&id) => rename_fav(h, (id - S_FAV0 - 128) as usize),
+        id if (S_FAV0..S_REN0).contains(&id) => delete_fav((id - S_FAV0) as usize),
+        id if (S_REN0..S_REN0 + FAV_MAX).contains(&id) => rename_fav(h, (id - S_REN0) as usize),
         _ => {}
     }
 }
