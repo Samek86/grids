@@ -281,10 +281,12 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
         parts.push(format!("{} {spec}", tr("Filter", "필터", "フィルター")));
     }
     let drive = path.get(1..2) == Some(":");
+    // A UNC or mapped drive is not asked for free space here. GetDiskFreeSpaceExW waits out a dead
+    // share, including a pane restored from the session before its off-thread navigate finishes.
+    let share = unsafe { super::share_path(path) };
     if busy {
         parts.push(tr("Copying / moving…", "복사·이동 중…", "コピー / 移動中…").into());
-    } else if drive || path.starts_with(r"\\") {
-        // ponytail: a dead network share can stall this call once per change
+    } else if !share && (drive || path.starts_with(r"\\")) {
         let (mut free, mut total) = (0, 0);
         if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
             let label = if drive { &path[..2] } else { tr("Network", "네트워크", "ネットワーク") };

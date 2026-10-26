@@ -869,15 +869,17 @@ pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting, link) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
         let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
         let tint = i.and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
-        let folder = i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon);
+        let link = i.and_then(|i| a.panes[i].as_ref()).and_then(|p| p.net.clone());
+        // While a share is unresolved the previous folder's icon stays out of the pill.
+        let folder = if link.is_some() { -1 } else { i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon) };
         let waiting = a.kids.as_ref().filter(|k| k.hwnd == h).map(|k| k.dir.clone());
-        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting)
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting, link)
     });
     let ilist = match app(|a| a.ilist.clone()) {
         None if folder >= 0 => {
@@ -918,20 +920,21 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 frame(dc, p, 1, if active { ink } else { accent });
             }
         }
-        if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
+        if let Some(n) = link.as_ref() {
+            // Network glyph in the slot the folder icon left. Not a shell lookup: that would touch the share.
+            if let Some(r) = addr_icon(pg.addr, dpi) {
+                let glyph = if n.bad { "\u{E783}" } else { "\u{E774}" };
+                text(dc, r, glyph, icon_font, pal().sub, DT_CENTER);
+            }
+        } else if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
             if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
                 _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
                 _ = DestroyIcon(icon);
             }
         }
         if let Some(i) = i.filter(|_| crumbs_on) {
-            let link = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.net.clone()));
             if let Some(n) = link {
-                let label = if n.bad {
-                    tr("Can't reach this folder", "이 폴더에 연결할 수 없음", "このフォルダーに接続できません")
-                } else {
-                    tr("Connecting…", "연결 중…", "接続中…")
-                };
+                let label = net_bar_text(n.bad);
                 let field = crumb_field(pg.addr, dpi);
                 let ink = if n.bad { pal().sub } else { pal().text };
                 text(dc, RECT { left: field.left + s(4), right: field.right - s(4), ..field }, label, font, ink, DT_LEFT);
