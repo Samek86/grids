@@ -481,6 +481,10 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
     let (remember, path) = app(|a| (a.s.remember_views, a.s.paths.get(i).cloned().unwrap_or_default()));
     let key = remember.then(|| crate::folderview::normalize_folder_key(&path)).flatten();
     let Some(key) = key else {
+        // Memory off: the pane keeps its columns. A new Details pane with none yet gets Name, Date modified, Size.
+        if mode == 4 && is_fs(&path) && app(|a| a.s.cols.get(i).is_none_or(|c| c.is_empty())) {
+            arm_builtin_columns(i, &fv);
+        }
         app(|a| {
             if i < a.s.views.len() {
                 a.s.views[i] = (mode, icon);
@@ -496,9 +500,14 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
     .unwrap_or(crate::folderview::ViewSnap { mode, icon, columns: String::new(), group: None });
     snap.mode = mode;
     snap.icon = icon;
+    // Switching to Details with no column list must not snapshot the shell's Type column into memory.
+    let fill_default = snap.columns.is_empty() && mode == 4 && is_fs(&path);
+    if fill_default {
+        arm_builtin_columns(i, &fv);
+    }
     if snap.columns.is_empty() || snap.group.is_none() {
         if let Some(live) = read_snap(i) {
-            if snap.columns.is_empty() {
+            if snap.columns.is_empty() && !fill_default {
                 snap.columns = live.columns;
             }
             if snap.group.is_none() {
@@ -509,22 +518,45 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
     if crate::folderview::remember(&key, snap.clone()) {
         note_folder_views();
     }
+    let mut applied = snap.clone();
+    if fill_default {
+        applied.columns = crate::folderview::default_details_columns();
+    }
+    let quiet = crate::folderview::watch_quiet(&applied.columns);
     app(|a| {
         let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return };
         match p.view_watch.as_mut().filter(|w| w.key == key) {
             Some(w) => {
-                w.applied = snap.clone();
-                if let Some(b) = w.baseline.as_mut() {
+                w.applied = applied;
+                if fill_default {
+                    w.baseline = None;
+                } else if let Some(b) = w.baseline.as_mut() {
                     b.mode = mode;
                     b.icon = icon;
                 }
-                w.quiet = 2;
+                w.quiet = quiet;
             }
             None => {
-                p.view_watch = Some(crate::folderview::ViewWatch { key, applied: snap, baseline: None, quiet: 2 });
+                p.view_watch = Some(crate::folderview::ViewWatch { key, applied, baseline: None, quiet });
             }
         }
     });
+}
+
+/// Put Name, Date modified, Size on the view and keep putting them back while the shell rebuilds.
+unsafe fn arm_builtin_columns(i: usize, fv: &IFolderView2) {
+    let text = crate::folderview::default_details_columns();
+    let lv = view_list(fv);
+    free_min_widths(lv);
+    apply_cols(fv, &text, lv);
+    let h = app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return None };
+        p.settle = Some((text, 4));
+        Some(p.hwnd)
+    });
+    if let Some(h) = h {
+        SetTimer(Some(h), TIMER_SETTLE, 50, None);
+    }
 }
 
 /// The pane's current view becomes "Default view for a new pane", saved the same way the settings window saves it.
@@ -688,6 +720,20 @@ pub(crate) unsafe fn save_view(i: usize) {
         return;
     }
     let mut live = crate::folderview::ViewSnap { mode: m.0, icon: z, columns: cols.unwrap_or_default(), group };
+    // The built-in Name / Date modified / Size set is not a user edit. If the shell put Type back, try again.
+    if crate::folderview::settle_builtin_columns(&mut watch, &live.columns) {
+        if let Some(fv) = view_of::<IFolderView2>(i) {
+            let lv = view_list(&fv);
+            free_min_widths(lv);
+            apply_cols(&fv, &watch.applied.columns, lv);
+        }
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.view_watch = Some(watch);
+            }
+        });
+        return;
+    }
     live.columns = crate::folderview::align_columns(&watch.applied.columns, &live.columns);
     let save = crate::folderview::observe(&mut watch, &live);
     app(|a| {
@@ -817,6 +863,10 @@ unsafe fn read_snap(i: usize) -> Option<crate::folderview::ViewSnap> {
 }
 
 unsafe fn apply_snap_to_pane(i: usize, snap: &crate::folderview::ViewSnap, key: &str) {
+    let mut snap = snap.clone();
+    if snap.columns.is_empty() && (snap.mode == 0 || snap.mode == 4) && is_fs(key) {
+        snap.columns = crate::folderview::default_details_columns();
+    }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let lv = view_list(&fv);
     free_min_widths(lv);
@@ -838,7 +888,7 @@ unsafe fn apply_snap_to_pane(i: usize, snap: &crate::folderview::ViewSnap, key: 
                 key: key.to_string(),
                 applied: snap.clone(),
                 baseline: None,
-                quiet: 2,
+                quiet: crate::folderview::watch_quiet(&snap.columns),
             });
             return Some(p.hwnd);
         }
@@ -1059,7 +1109,12 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
     if let Some(fv) = view_of::<IFolderView2>(i) {
         let lv = view_list(&fv); // the new folder's list exists by now
         free_min_widths(lv);
-        put_widths(&fv, &cols, lv);
+        // The built-in set has to be put back whole: the shell rebuilds Name, Date modified, Type, Size.
+        if crate::folderview::is_builtin_default(&cols) && !crate::folderview::same_column_keys(&cols, &read_cols(&fv, lv).unwrap_or_default()) {
+            apply_cols(&fv, &cols, lv);
+        } else {
+            put_widths(&fv, &cols, lv);
+        }
     }
     let left = left - 1;
     app(|a| {
@@ -1099,24 +1154,32 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             // The previous folder's icon goes as soon as the browse starts. A new lookup replaces it.
             (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
             let pending = p.pending.take().filter(|c| !c.is_empty());
-            // A saved folder view, else the user default, else this pane's own view.
+            // A saved folder view, else the user default, else this pane's own columns.
+            // A filesystem folder with no remembered columns gets Name, Date modified, Size
+            // (IColumnManager::SetColumns of PKEY_ItemNameDisplay, PKEY_DateModified, PKEY_Size).
             // Shell places still refuse the pane's filesystem columns when nothing was saved for them.
-            let (view, cols, group) = if let Some(v) = folder.clone() {
-                let cols = (!v.columns.is_empty()).then_some(v.columns.clone());
-                ((v.mode, v.icon), cols, v.group.clone())
-            } else {
-                let cols = pending.or_else(|| (!own.is_empty()).then_some(own));
-                (pane_view, cols.filter(|_| fs), None)
-            };
+            let saved = folder.as_ref().map(|v| v.columns.as_str());
+            let mode = folder.as_ref().map(|v| v.mode).unwrap_or(pane_view.0);
+            let details = mode == 0 || mode == 4;
+            let fallback = if folder.is_some() || !fs { String::new() } else { pending.or_else(|| (!own.is_empty()).then_some(own)).unwrap_or_default() };
+            let cols = crate::folderview::pick_folder_columns(saved, &fallback, details, fs);
+            let view = folder.as_ref().map(|v| (v.mode, v.icon)).unwrap_or(pane_view);
+            let group = folder.as_ref().and_then(|v| v.group.clone());
             if remember {
                 p.view_watch = crate::folderview::normalize_folder_key(&path).map(|key| {
-                    let applied = folder.unwrap_or(crate::folderview::ViewSnap {
+                    let mut applied = folder.clone().unwrap_or(crate::folderview::ViewSnap {
                         mode: view.0,
                         icon: view.1,
-                        columns: cols.clone().unwrap_or_default(),
+                        columns: String::new(),
                         group: None,
                     });
-                    crate::folderview::ViewWatch { key, applied, baseline: None, quiet: 2 }
+                    if applied.columns.is_empty() {
+                        if let Some(c) = &cols {
+                            applied.columns = c.clone();
+                        }
+                    }
+                    let quiet = crate::folderview::watch_quiet(&applied.columns);
+                    crate::folderview::ViewWatch { key, applied, baseline: None, quiet }
                 });
             } else {
                 p.view_watch = None;
