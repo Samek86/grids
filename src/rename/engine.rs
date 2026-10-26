@@ -345,7 +345,7 @@ fn index_delete(len: usize, at: i32) -> usize {
         return 0;
     }
     if at >= 0 {
-        (at as usize).min(len - 1)
+        (at as usize).min(len)
     } else {
         (len as i32 + at).clamp(0, len as i32 - 1) as usize
     }
@@ -1120,6 +1120,7 @@ mod tests {
         assert_eq!(only(&[Rule::Delete { at: -1, len: 1 }], "abc.jpg"), "ab.jpg");
         assert_eq!(only(&[Rule::Delete { at: -2, len: 2 }], "abcd.jpg"), "ab.jpg");
         assert_eq!(only(&[Rule::Delete { at: 1, len: 5 }], "abcd.jpg"), "a.jpg");
+        assert_eq!(only(&[Rule::Delete { at: 2, len: 2 }], "a.txt"), "a.txt");
         assert_eq!(only(&[Rule::Delete { at: 0, len: 0 }], "ab.jpg"), "ab.jpg");
         assert_eq!(only(&[Rule::Delete { at: 1, len: 1 }], "가나.jpg"), "가.jpg");
         assert_eq!(only(&[Rule::Trim { chars: String::new(), edge: TrimEdge::Both }], "  hi  .jpg"), "hi.jpg");
