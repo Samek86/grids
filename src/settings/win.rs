@@ -1231,12 +1231,17 @@ unsafe fn rename_fav(h: HWND, k: usize) {
     if name.is_empty() {
         return;
     }
-    app(|a| {
+    let key = (row.name.clone(), row.path.clone(), row.group);
+    let done = app(|a| {
         a.s.ensure_fav_tree();
-        crate::rename_at(&mut a.s.tree, &row.id, &name);
+        let Some(id) = crate::locate(&a.s.tree, &row.id, &key) else { return false };
+        crate::rename_at(&mut a.s.tree, &id, &name);
         a.s.sync_favs();
+        true
     });
-    crate::commit_favs();
+    if done {
+        crate::commit_favs();
+    }
 }
 
 unsafe fn reset_keys(h: HWND) {
