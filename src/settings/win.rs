@@ -232,8 +232,12 @@ unsafe fn fill_strings(h: HWND) {
     fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
     let boot = app(|a| a.s.boot) as usize;
     fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout", "기본 레이아웃", "既定のレイアウト")).into()], boot.min(2));
-    let view_i = match app(|a| a.s.view_new) { 3 => 1, 1 => 2, _ => 0 };
-    fill_combo(h, S_VIEW, &[tx(s("Details", "자세히", "詳細")).into(), tx(s("List", "목록", "一覧")).into(), tx(s("Large icons", "큰 아이콘", "大きなアイコン")).into()], view_i);
+    let view_labels: Vec<String> = crate::EXPLORER_VIEWS.iter().map(|&(_, _, en, ko, ja)| tx(s(en, ko, ja)).to_string()).collect();
+    let view_i = app(|a| {
+        let (mode, icon) = a.s.default_view();
+        crate::explorer_view_index(mode, icon).unwrap_or(5)
+    });
+    fill_combo(h, S_VIEW, &view_labels, view_i);
     let start = app(|a| a.s.start_new) as usize;
     fill_combo(h, S_DIR, &[tx(s("This PC", "내 PC", "PC")).into(), tx(s("Desktop", "바탕 화면", "デスクトップ")).into(), tx(s("Choose a folder…", "지정 폴더…", "フォルダーを指定…")).into()], start.min(2));
     let del = app(|a| a.s.del) as usize;
@@ -1227,8 +1231,12 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
             }
         }
         S_VIEW => {
-            let mode = [4, 3, 1][sel.min(2)];
-            app(|a| a.s.view_new = mode);
+            let sel = sel.min(crate::EXPLORER_VIEWS.len() - 1);
+            let (mode, icon, ..) = crate::EXPLORER_VIEWS[sel];
+            app(|a| {
+                a.s.view_new = mode;
+                a.s.view_icon = crate::stored_view_icon(mode, icon);
+            });
             unsafe { crate::save_session(); }
         }
         S_DIR => {
