@@ -462,6 +462,26 @@ pub(crate) fn rename_at(tree: &mut Vec<FavNode>, id: &[usize], name: &str) -> bo
     true
 }
 
+/// What a rename started on: name, path, group. Ids shift while a prompt is open.
+pub(crate) type NodeKey = (String, String, bool);
+
+pub(crate) fn node_key(tree: &[FavNode], id: &[usize]) -> Option<NodeKey> {
+    tree_rows(tree).into_iter().find(|r| r.id == id).map(|r| (r.name, r.path, r.group))
+}
+
+/// Where the node a rename started on is now: `id` if it still holds it, else the one other
+/// node with the same key. None when it is gone or ambiguous.
+pub(crate) fn locate(tree: &[FavNode], id: &[usize], key: &NodeKey) -> Option<Vec<usize>> {
+    let rows = tree_rows(tree);
+    let same = |r: &FavRow| r.name == key.0 && r.path == key.1 && r.group == key.2;
+    if rows.iter().any(|r| r.id == id && same(r)) {
+        return Some(id.to_vec());
+    }
+    let mut hits = rows.iter().filter(|r| same(r));
+    let first = hits.next()?;
+    hits.next().is_none().then(|| first.id.clone())
+}
+
 pub(crate) fn delete_at(tree: &mut Vec<FavNode>, id: &[usize]) -> bool {
     take_node(tree, id).is_some()
 }
@@ -1146,5 +1166,15 @@ mod tests {
         let before = t.len();
         assert!(apply_drop(&mut t, &[0], &[7, 3], 1).is_none());
         assert_eq!(t.len(), before);
+    }
+
+    #[test]
+    fn rename_follows_a_shifted_node() {
+        let mut t = vec![FavNode::leaf("C:\\a", "a", false), FavNode::leaf("C:\\b", "b", false)];
+        let key = node_key(&t, &[1]).unwrap();
+        t.remove(0);
+        assert_eq!(locate(&t, &[1], &key), Some(vec![0]));
+        t.clear();
+        assert_eq!(locate(&t, &[1], &key), None);
     }
 }

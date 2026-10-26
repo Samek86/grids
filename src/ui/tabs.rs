@@ -741,11 +741,21 @@ pub(crate) unsafe fn begin_rename(i: usize) {
     if stored_tab_name(&prev) == next {
         return;
     }
-    app(|a| {
-        if let Some(t) = a.s.tabs.get_mut(i) {
-            t.name = next;
-        }
+    // The prompt runs a message loop; tabs may have moved. Rename the tab still named `prev`.
+    let done = app(|a| {
+        let at = if a.s.tabs.get(i).is_some_and(|t| t.name == prev) {
+            Some(i)
+        } else {
+            let mut m = a.s.tabs.iter().enumerate().filter(|(_, t)| t.name == prev).map(|(k, _)| k);
+            m.next().filter(|_| m.next().is_none())
+        };
+        let Some(t) = at.and_then(|k| a.s.tabs.get_mut(k)) else { return false };
+        t.name = next;
+        true
     });
+    if !done {
+        return;
+    }
     tabs_invalidate();
     note_save();
 }

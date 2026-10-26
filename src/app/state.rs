@@ -41,6 +41,7 @@ pub(crate) struct Desk {
     pub(crate) side_press: Option<(i32, i32, usize)>,
     pub(crate) side_edit: HWND,
     pub(crate) side_edit_at: Vec<usize>,
+    pub(crate) side_edit_key: Option<crate::NodeKey>,
     pub(crate) tree_input: bool, // a click/key reached the tree since its last selection change
     pub(crate) focus_keep: HWND, // focus when this window last went to the back
     pub(crate) click_nc: bool,   // the activating click was outside the client (title bar)
@@ -188,6 +189,7 @@ pub(crate) fn blank_desk() -> Desk {
         side_press: None,
         side_edit: HWND::default(),
         side_edit_at: Vec::new(),
+        side_edit_key: None,
         tree_input: false,
         focus_keep: HWND::default(),
         click_nc: false,

@@ -293,7 +293,10 @@ pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
     if edit.0.is_null() {
         return;
     }
-    app(|a| a.side_edit_at = id.to_vec());
+    app(|a| {
+        a.side_edit_at = id.to_vec();
+        a.side_edit_key = node_key(&a.s.tree, id);
+    });
     _ = SetWindowTextW(edit, &HSTRING::from(label.as_str()));
     SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
     place_side_edit();
@@ -303,17 +306,22 @@ pub(crate) unsafe fn begin_side_rename(id: &[usize]) {
 }
 
 pub(crate) unsafe fn end_side_rename(save: bool) {
-    let (edit, id) = app(|a| (a.side_edit, std::mem::take(&mut a.side_edit_at)));
+    let (edit, id, key) = app(|a| (a.side_edit, std::mem::take(&mut a.side_edit_at), a.side_edit_key.take()));
     if edit.0.is_null() || id.is_empty() {
         return;
     }
     if save {
         let name = text_of(edit);
-        app(|a| {
+        // The tree may have changed under the edit box; rename the node it was opened on, or nothing.
+        let done = app(|a| {
+            let Some(id) = key.as_ref().and_then(|k| locate(&a.s.tree, &id, k)) else { return false };
             rename_at(&mut a.s.tree, &id, name.trim());
             a.s.sync_favs();
+            true
         });
-        favs_changed();
+        if done {
+            favs_changed();
+        }
     }
     _ = ShowWindow(edit, SW_HIDE);
     let host = app(|a| a.side_hwnd);
