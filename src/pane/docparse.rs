@@ -518,7 +518,14 @@ fn param(v: &str, name: &str) -> Option<String> {
 }
 
 /// The readable body of a MIME part: text/plain first, else HTML as text; attachments' names listed.
+const MIME_DEPTH: u32 = 16;
+
 fn mime_body(head: &[(String, String)], body: &str, files: &mut Vec<String>) -> Option<(bool, String)> {
+    mime_part(head, body, files, 0)
+}
+
+/// `depth` caps nested multiparts so a crafted message cannot overflow the worker's stack.
+fn mime_part(head: &[(String, String)], body: &str, files: &mut Vec<String>, depth: u32) -> Option<(bool, String)> {
     let get = |k: &str| head.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
     let ctype = get("content-type").unwrap_or("text/plain");
     let kind = ctype.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
@@ -530,6 +537,9 @@ fn mime_body(head: &[(String, String)], body: &str, files: &mut Vec<String>) -> 
         }
     }
     if kind.starts_with("multipart/") {
+        if depth >= MIME_DEPTH {
+            return None;
+        }
         let b = param(ctype, "boundary")?;
         let mark = format!("--{b}");
         let mut best: Option<(bool, String)> = None;
@@ -538,7 +548,7 @@ fn mime_body(head: &[(String, String)], body: &str, files: &mut Vec<String>) -> 
                 break;
             }
             let (h, b) = split_head(part.trim_start_matches(['\r', '\n']));
-            if let Some((plain, t)) = mime_body(&headers(h), b, files) {
+            if let Some((plain, t)) = mime_part(&headers(h), b, files, depth + 1) {
                 // plain beats html; the first of each kind wins
                 if best.as_ref().is_none_or(|(p, _)| !p && plain) {
                     best = Some((plain, t));
@@ -710,5 +720,16 @@ mod tests {
         assert!(eml_text(b"Subject: hi\r\n\r\nbody", 2).starts_with("件名: hi\n"));
         let h = html_text("<html><head><title>x</title></head><body><script>var a;</script><h1>Title</h1><p>a &amp; b</p><ul><li>one</li></ul></body></html>");
         assert_eq!(h, "Title\n\na & b\n\n• one"); // blocks a blank line apart
+    }
+
+    #[test]
+    fn deep_multipart_is_capped() {
+        let mut body = String::from("hello");
+        for i in (0..5000).rev() {
+            body = format!("--b{i}x\r\nContent-Type: multipart/mixed; boundary=b{n}x\r\n\r\n{body}\r\n--b{i}x--", n = i + 1);
+        }
+        let head = vec![("content-type".to_string(), "multipart/mixed; boundary=b0x".to_string())];
+        let mut files = Vec::new();
+        assert!(mime_body(&head, &body, &mut files).is_none());
     }
 }
