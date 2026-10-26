@@ -199,7 +199,7 @@ const FILE: &[Spec] = &[
     Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[
-    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("The panegrid-sessions folder next to the exe.", "exe 옆 panegrid-sessions 폴더예요.", "exe の隣にある panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
+    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("%APPDATA%\\Panegrid\\panegrid-sessions.", "%APPDATA%\\Panegrid\\panegrid-sessions 폴더예요.", "%APPDATA%\\Panegrid\\panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
     Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
