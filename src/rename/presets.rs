@@ -13,6 +13,9 @@ pub(crate) struct Preset {
     pub files: bool,
     pub folders: bool,
     pub extensions: String,
+    /// Parallel to `rules`. Missing entries stay on, so older presets still load.
+    #[serde(default)]
+    pub enabled: Vec<bool>,
 }
 
 pub(crate) fn dir() -> PathBuf {
@@ -100,6 +103,7 @@ mod tests {
                 Rule::Case { mode: CaseMode::Lower, include_ext: true },
                 Rule::Regex { pattern: r"(\d+)".into(), replace: "n$1".into(), case_sensitive: true, include_ext: false },
             ],
+            enabled: vec![true, false],
         };
         save(&folder, &preset).unwrap();
         std::fs::write(folder.join("not-a-preset.txt"), "nope").unwrap();
