@@ -440,15 +440,17 @@ pub(crate) unsafe fn delete_selection(i: usize, shift: bool) {
             return;
         }
     }
-    start_delete(paths, permanent);
+    // Permanent delete nobody confirmed yet: let the shell show its own confirmation.
+    let owner = if permanent && !ask { app(|a| a.main.0 as isize) } else { 0 };
+    start_delete(paths, permanent, owner);
 }
 
-pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool) -> bool {
+pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool, ask_owner: isize) -> bool {
     let busy = Busy::new();
     let job = std::thread::Builder::new().spawn(move || {
         let _busy = busy;
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-        if let Err(e) = run_delete(&srcs, permanent) {
+        if let Err(e) = run_delete(&srcs, permanent, ask_owner) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let text = HSTRING::from(format!("{}{}", tr("Delete failed: ", "삭제하지 못했습니다: ", "削除できませんでした: "), e.message()));
                 _ = MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
@@ -463,9 +465,14 @@ pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool) -> bool {
     true
 }
 
-pub(crate) unsafe fn run_delete(srcs: &[String], permanent: bool) -> Result<()> {
+pub(crate) unsafe fn run_delete(srcs: &[String], permanent: bool, ask_owner: isize) -> Result<()> {
     let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
-    let mut flags = FOF_NOCONFIRMATION | FOF_NOCONFIRMMKDIR;
+    let mut flags = FOF_NOCONFIRMMKDIR;
+    if ask_owner != 0 && permanent {
+        op.SetOwnerWindow(HWND(ask_owner as _))?;
+    } else {
+        flags |= FOF_NOCONFIRMATION;
+    }
     if !permanent {
         flags |= FOF_ALLOWUNDO | FOFX_ADDUNDORECORD;
     }
