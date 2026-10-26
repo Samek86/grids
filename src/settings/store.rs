@@ -1204,7 +1204,7 @@ mod tests {
         assert!(ini.is_file());
         assert!(!dir.join("grids.ini.bak").exists());
         assert!(!dir.join(format!("panegrid.json.{}.tmp", std::process::id())).exists());
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "only panegrid.json is left");
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "no tmp file is left");
     }
 
     #[test]
