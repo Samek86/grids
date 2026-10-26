@@ -68,7 +68,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let dt: IDropTarget = PaneDrop { slot: slot.clone(), hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_watch: None, recover: None, icon: -1, ticket: 0, slot })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_watch: None, recover: None, icon: -1, ticket: 0, net: None, slot })
 }
 
 const EM_GETMARGINS: u32 = 0xD4;
@@ -146,8 +146,10 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
         (p, queued)
     });
     if let Some(p) = p {
+        end_share(i, p.hwnd);
         drop_find(p.hwnd);
         drop_icon_request(p.hwnd);
+        _ = KillTimer(Some(p.hwnd), TIMER_KIDS);
         for id in [ID_EDIT, ID_FILTER] {
             if let Ok(c) = GetDlgItem(Some(p.hwnd), id) {
                 a11y_name(c, None);

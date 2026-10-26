@@ -508,6 +508,9 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_MOUSELEAVE => crumb_hover(h, None),
             WM_KIDS => kids_show(h, wp.0),
+            WM_NET => net_done(h, wp.0),
+            WM_TIMER if wp.0 == TIMER_NET => net_timeout(h),
+            WM_TIMER if wp.0 == TIMER_KIDS => kids_timeout(h),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
