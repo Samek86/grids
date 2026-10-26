@@ -866,7 +866,9 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 paint_pane_tabs(dc, &pg, &list, cur, dpi, font, accent);
             }
         }
-        if filtered {
+        if pg.filt.right - pg.filt.left < s(24) {
+            // Too narrow for the icon slot. Drawing it anyway would cover the pane number.
+        } else if filtered {
             // filter applied: accent chip left of the edit (which starts at filt.left + s(24))
             let chip =
                 RECT { left: pg.filt.left + s(3), top: pg.filt.top + s(3), right: pg.filt.left + s(21), bottom: pg.filt.bottom - s(3) };
