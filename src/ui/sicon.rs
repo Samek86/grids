@@ -1,8 +1,9 @@
 // Save and load on the tab row. A session is a stack of windows: the back frame sits up-left
-// and the front frame holds a 2×2 pane grid. The corner badge is a disc with the mark cut
-// out of it: a plus to keep the arrangement, an up arrow to restore it. Rasterised like the
-// star — one coverage bitmap — so the ink follows hover, pressed, disabled, and dirty green.
-// Frames snap to the pixel grid and stay solid (0 or 255) at 100/125/150/200%.
+// and the front frame holds a 2×2 pane grid. The corner mark is not a disc. At 100% it is a
+// hard 5×5 plus (keep) or a hard 5×5 up-arrow (restore). The arrow's head is an open
+// chevron, so at 16px it is not a plus and not a flat bar. One empty pixel sits between the
+// mark and the frame. Other DPIs are the same picture, nearest-neighbour, so every pixel stays on or off.
+// The bitmap is one colour; a dirty save is that colour painted green.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SessionIcon {
@@ -16,22 +17,20 @@ pub(crate) fn session_icon_px(dpi: i32) -> i32 {
     (16 * dpi.max(1) / 96).max(1)
 }
 
-/// Coverage, 0..=255, row-major `n`×`n`. `n` is [`session_icon_px`].
+/// Coverage, 0 or 255, row-major `n`×`n`. `n` is [`session_icon_px`]. No partial pixels.
 pub(crate) fn session_icon_coverage(n: i32, kind: SessionIcon) -> Vec<u8> {
     let n = n.max(1);
-    let lay = layout(n);
     let mut out = vec![0u8; (n * n) as usize];
-    for py in 0..n {
-        for px in 0..n {
-            let mut hit = 0u32;
-            for sy in 0..4 {
-                for sx in 0..4 {
-                    let x = px as f32 + (sx as f32 + 0.5) / 4.0;
-                    let y = py as f32 + (sy as f32 + 0.5) / 4.0;
-                    hit += u32::from(sample(x, y, kind, &lay));
-                }
+    for y in 0..n {
+        for x in 0..n {
+            let (sx, sy) = if n == 16 {
+                (x, y)
+            } else {
+                ((x * 16 / n).min(15), (y * 16 / n).min(15))
+            };
+            if ink16(sx, sy, kind) {
+                out[(y * n + x) as usize] = 255;
             }
-            out[(py * n + px) as usize] = (hit * 255 / 16) as u8;
         }
     }
     out
@@ -48,129 +47,37 @@ pub(crate) fn session_icon_bgra(n: i32, kind: SessionIcon, rgb: u32) -> Vec<u8> 
     px
 }
 
-#[derive(Clone, Copy)]
-struct Frame {
-    l: f32,
-    t: f32,
-    r: f32,
-    b: f32,
-}
-
-struct Lay {
-    sw: f32,
-    scale: f32,
-    back: Frame,
-    front: Frame,
-    badge: (f32, f32),
-    erase: f32,
-    disc: f32,
-}
-
-fn stroke_px(n: i32) -> f32 {
-    // One device pixel at 100% and 125%, two from 150% up. Matches the star's ~11% weight
-    // on the window itself (an 8px frame with a 1px stroke) and stays an integer so edges land
-    // between pixels.
-    let t = n as f32 / 16.0;
-    if t < 1.4 { 1.0 } else { t.round().max(2.0) }
-}
-
-fn snap(v: f32, sw: f32) -> f32 {
-    if (sw as i32) % 2 == 0 {
-        v.round()
-    } else {
-        (v - 0.5).round() + 0.5
+// 16×16 master, one pixel per cell. Front frame ends at column/row 9. Column 10 and row 10
+// stay empty (the 1px gap). The mark occupies 11..=15.
+fn ink16(x: i32, y: i32, kind: SessionIcon) -> bool {
+    if !(0..16).contains(&x) || !(0..16).contains(&y) {
+        return false;
     }
-}
-
-fn frame_at(sw: f32, scale: f32, l: f32, t: f32, r: f32, b: f32) -> Frame {
-    Frame {
-        l: snap(l * scale, sw),
-        t: snap(t * scale, sw),
-        r: snap(r * scale, sw),
-        b: snap(b * scale, sw),
+    if x >= 11 && y >= 11 {
+        return mark5(x - 11, y - 11, kind);
     }
-}
-
-fn layout(n: i32) -> Lay {
-    let sw = stroke_px(n);
-    let scale = n as f32 / 16.0;
-    // 16px master. The stack sits up-left so a whole badge disc fits in the corner.
-    let back = frame_at(sw, scale, 1.5, 1.5, 8.5, 7.5);
-    let front = frame_at(sw, scale, 3.5, 4.5, 11.5, 12.5);
-    Lay {
-        sw,
-        scale,
-        back,
-        front,
-        badge: (snap(12.2 * scale, sw), snap(12.2 * scale, sw)),
-        erase: 3.85 * scale,
-        disc: 2.95 * scale,
+    if (3..=9).contains(&x) && (3..=9).contains(&y) {
+        return frame(x, y, 3, 3, 9, 9)
+            || (x == 6 && (4..=8).contains(&y))
+            || (y == 6 && (4..=8).contains(&x));
     }
+    frame(x, y, 1, 1, 7, 7)
 }
 
-fn sample(x: f32, y: f32, kind: SessionIcon, lay: &Lay) -> bool {
-    let mut on = on_frame(x, y, &lay.back, lay.sw);
-    if in_outer(x, y, &lay.front, lay.sw) {
-        on = false;
-    }
-    if on_frame(x, y, &lay.front, lay.sw) || on_grid(x, y, &lay.front, lay.sw) {
-        on = true;
-    }
-    let (cx, cy) = lay.badge;
-    let d = (x - cx).hypot(y - cy);
-    if d <= lay.erase {
-        on = false;
-    }
-    if d <= lay.disc {
-        on = !on_mark(x, y, kind, lay);
-    }
-    on
+fn frame(x: i32, y: i32, l: i32, t: i32, r: i32, b: i32) -> bool {
+    x >= l && x <= r && y >= t && y <= b && (x == l || x == r || y == t || y == b)
 }
 
-fn on_frame(x: f32, y: f32, f: &Frame, sw: f32) -> bool {
-    let h = sw * 0.5;
-    let outer = x >= f.l - h && x < f.r + h && y >= f.t - h && y < f.b + h;
-    let inner = x >= f.l + h && x < f.r - h && y >= f.t + h && y < f.b - h;
-    outer && !inner
-}
-
-fn in_outer(x: f32, y: f32, f: &Frame, sw: f32) -> bool {
-    let h = sw * 0.5;
-    x >= f.l - h && x < f.r + h && y >= f.t - h && y < f.b + h
-}
-
-/// 2×2 split of the front window's client. Lines stop at the inner edge of the frame.
-fn on_grid(x: f32, y: f32, f: &Frame, sw: f32) -> bool {
-    let h = sw * 0.5;
-    let (l, t, r, b) = (f.l + h, f.t + h, f.r - h, f.b - h);
-    let (mx, my) = ((f.l + f.r) * 0.5, (f.t + f.b) * 0.5);
-    let vert = x >= mx - h && x < mx + h && y >= t && y < b;
-    let horz = y >= my - h && y < my + h && x >= l && x < r;
-    vert || horz
-}
-
-/// Cut out of the badge disc. Save is a plus (keep). Load is an up arrow (restore).
-fn on_mark(x: f32, y: f32, kind: SessionIcon, lay: &Lay) -> bool {
-    let (cx, cy, sw, s) = (lay.badge.0, lay.badge.1, lay.sw, lay.scale);
-    let h = sw * 0.5;
-    let arm = 1.65 * s;
+/// 5×5. Save is a plus. Load is an up-arrow: a chevron head over a stem. A filled triangle
+/// shares the plus, and a flat bar reads as a T, so the head stays open.
+fn mark5(x: i32, y: i32, kind: SessionIcon) -> bool {
     match kind {
-        SessionIcon::Save => {
-            let vert = x >= cx - h && x < cx + h && y >= cy - arm && y < cy + arm;
-            let horz = y >= cy - h && y < cy + h && x >= cx - arm && x < cx + arm;
-            vert || horz
-        }
+        SessionIcon::Save => x == 2 || y == 2,
         SessionIcon::Load => {
-            // Flat-headed arrow: a pixel above the bar, the bar, then the shaft. All axis-aligned.
-            let head_y = snap(cy - s, sw);
-            let tip_top = snap(cy - 2.0 * s, sw);
-            let shaft_bot = snap(cy + 1.5 * s, sw);
-            let x0 = snap(cx - 1.5 * s, sw);
-            let x1 = snap(cx + 1.5 * s, sw);
-            let tip = x >= cx - h && x < cx + h && y >= tip_top - h && y < head_y;
-            let head = y >= head_y - h && y < head_y + h && x >= x0 - h && x < x1 + h;
-            let shaft = x >= cx - h && x < cx + h && y >= head_y - h && y < shaft_bot + h;
-            tip || head || shaft
+            (y == 0 && x == 2)
+                || (y == 1 && (x == 1 || x == 3))
+                || (y == 2 && (x == 0 || x == 4))
+                || (y >= 3 && x == 2)
         }
     }
 }
@@ -193,38 +100,50 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_share_frames_and_differ_at_the_badge() {
-        for n in [16, 20, 24, 32] {
-            let lay = layout(n);
-            let save = session_icon_coverage(n, SessionIcon::Save);
-            let load = session_icon_coverage(n, SessionIcon::Load);
-            assert_eq!(save.len(), (n * n) as usize);
-            assert_ne!(save, load, "{n}");
-            let (cx, cy, r) = (lay.badge.0, lay.badge.1, lay.erase);
-            let mut diffs = 0;
-            for y in 0..n {
-                for x in 0..n {
-                    let (s, l) = (at(&save, n, x, y), at(&load, n, x, y));
-                    let d = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
-                    if d > r + 1.75 {
-                        assert_eq!(s, l, "n={n} leaked at {x},{y}");
-                        assert!(s == 0 || s == 255, "n={n} soft frame {x},{y}={s}");
-                    }
-                    if s != l {
-                        diffs += 1;
-                        assert!(d <= r + 1.75, "n={n} diff outside badge at {x},{y}");
-                    }
+    fn at_100_percent_badges_are_hard_5px_and_clear_of_the_grid() {
+        let save = session_icon_coverage(16, SessionIcon::Save);
+        let load = session_icon_coverage(16, SessionIcon::Load);
+        assert!(save.iter().chain(&load).all(|&a| a == 0 || a == 255));
+        // One empty pixel between the front frame (ends at 9) and the mark (starts at 11).
+        for i in 0..16 {
+            assert_eq!((at(&save, 16, i, 10), at(&save, 16, 10, i)), (0, 0));
+            assert_eq!((at(&load, 16, i, 10), at(&load, 16, 10, i)), (0, 0));
+        }
+        let plus = ["..#..", "..#..", "#####", "..#..", "..#.."];
+        let arrow = ["..#..", ".#.#.", "#...#", "..#..", "..#.."];
+        for (mark, cov) in [(plus, &save), (arrow, &load)] {
+            for dy in 0..5 {
+                for dx in 0..5 {
+                    let on = mark[dy].as_bytes()[dx] == b'#';
+                    assert_eq!(
+                        at(cov, 16, 11 + dx as i32, 11 + dy as i32) == 255,
+                        on,
+                        "{dx},{dy}"
+                    );
                 }
             }
-            assert!(diffs > 4, "{n} badges are identical");
-            // Back frame's outer top-left pixel is solid ink, and it is the same on both.
-            let (x, y) = ((lay.back.l - lay.sw / 2.0) as i32, (lay.back.t - lay.sw / 2.0) as i32);
-            assert_eq!((at(&save, n, x, y), at(&load, n, x, y)), (255, 255), "{n} back corner");
-            // The 2×2 cross is inside the front window and clear of the badge.
-            let (gx, gy) = ((lay.front.l + lay.front.r) * 0.5, (lay.front.t + lay.front.b) * 0.5);
-            let (x, y) = ((gx - lay.sw / 2.0) as i32, (gy - lay.sw / 2.0) as i32);
-            assert_eq!((at(&save, n, x, y), at(&load, n, x, y)), (255, 255), "{n} grid");
-            assert_eq!(at(&save, n, 0, 0), 0, "{n} margin");
+        }
+        // The 2×2 cross is shared, and the two icons match everywhere outside the mark.
+        assert_eq!((at(&save, 16, 6, 6), at(&load, 16, 6, 6)), (255, 255));
+        for y in 0..16 {
+            for x in 0..16 {
+                if x >= 11 && y >= 11 {
+                    continue;
+                }
+                assert_eq!(at(&save, 16, x, y), at(&load, 16, x, y), "{x},{y}");
+            }
+        }
+        assert_eq!(at(&save, 16, 1, 1), 255);
+        assert_eq!(at(&save, 16, 0, 0), 0);
+    }
+
+    #[test]
+    fn other_dpis_stay_hard_edged() {
+        for n in [20, 24, 32] {
+            let save = session_icon_coverage(n, SessionIcon::Save);
+            let load = session_icon_coverage(n, SessionIcon::Load);
+            assert!(save.iter().chain(&load).all(|&a| a == 0 || a == 255), "{n}");
+            assert_ne!(save, load, "{n}");
         }
     }
 
