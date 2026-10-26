@@ -58,6 +58,7 @@ version = "0.62"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1.11.1"
 # Inflate for ZIP-based documents in the preview. Pure Rust, no C. Not called until F3 opens one.
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
