@@ -59,6 +59,8 @@ const TG_SPACE: u8 = 17;
 const TG_WHEEL: u8 = 18;
 const TG_UPDATE: u8 = 19;
 const TG_REMEMBER: u8 = 20;
+/// Default folder app. The knob follows HKCU, not a saved preference.
+const TG_FOLDER: u8 = 21;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -175,6 +177,7 @@ const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language (Korean, Japanese, or English); otherwise English. A change applies right away.", "기본값은 Windows 표시 언어(한국어, 일본어, 영어)를 따라요. 그 외에는 영어예요. 바꾸면 바로 적용돼요.", "既定は Windows の表示言語（韓国語、日本語、英語）に従います。それ以外は英語です。変えるとすぐに適用されます。"), live: true, ctl: Ctl::Lang },
     Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), live: true, ctl: Ctl::Face },
     Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), live: true, ctl: Ctl::Start },
+    Spec { title: s("Use as default folder app", "기본 폴더 앱으로 사용", "既定のフォルダーアプリとして使用"), desc: s("Win+E and special folders stay with Explorer.", "Win+E와 특수 폴더는 탐색기 그대로예요.", "Win+E と特殊フォルダーはエクスプローラーのままです。"), live: true, ctl: Ctl::Toggle(TG_FOLDER) },
     Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
     Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Shift+E when Panegrid is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Shift+E は、このウィンドウのタブを開きます。"), live: true, ctl: Ctl::Toggle(TG_ONE) },
@@ -775,6 +778,7 @@ fn toggle_on(id: u8) -> bool {
         TG_SPACE => app(|a| a.s.space_preview),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav),
         TG_REMEMBER => app(|a| a.s.remember_views),
+        TG_FOLDER => crate::folderapp::shown_on(),
         _ => false,
     }
 }
@@ -909,6 +913,30 @@ mod tests {
         assert_eq!(pick_search(2, 5, "단축키"), 5);
         assert!(!search_miss("단축키"));
         assert!(!search_miss(""));
+    }
+
+    #[test]
+    fn default_folder_app_toggle_is_on_general_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let hit = |g: &Geo| g.items.iter().any(|it| matches!(it, Item::Card(c) if c.spec.ctl == Ctl::Toggle(TG_FOLDER)));
+        let (anchor, page) = commit_search(2, 2, "Use as default folder app");
+        assert_eq!((anchor, page), (2, 0));
+        let g = geo(client(), &shot(page, "Use as default folder app"));
+        assert!(g.show[0] && hit(&g));
+        assert!(hit(&geo(client(), &shot(0, "Win+E and special folders"))));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "기본 폴더 앱으로 사용");
+        assert_eq!(page, 0);
+        assert!(hit(&geo(client(), &shot(page, "기본 폴더 앱으로 사용"))));
+        assert!(hit(&geo(client(), &shot(0, "특수 폴더"))));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "既定のフォルダーアプリとして使用");
+        assert_eq!(page, 0);
+        assert!(hit(&geo(client(), &shot(page, "既定のフォルダーアプリとして使用"))));
+        assert!(hit(&geo(client(), &shot(0, "特殊フォルダー"))));
     }
 
     #[test]
