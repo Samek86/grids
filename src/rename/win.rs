@@ -1455,8 +1455,7 @@ unsafe fn collect_pane(i: usize) -> Vec<BatchItem> {
         let mut sr = STRRET::default();
         let mut name = PWSTR::null();
         let path = if sf.GetDisplayNameOf(pidl_ref, SHGDNF(SHGDN_FORPARSING.0), &mut sr).is_ok() && StrRetToStrW(&mut sr, Some(pidl_ref), &mut name).is_ok() {
-            let p = crate::pwstr(name);
-            CoTaskMemFree(Some(name.0 as _));
+            let p = crate::pwstr(name); // pwstr frees the buffer
             p
         } else {
             String::new()
