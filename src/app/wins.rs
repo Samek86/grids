@@ -286,6 +286,15 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     _ = DwmSetWindowAttribute(main, DWMWA_CAPTION_COLOR, &caption as *const _ as _, 4);
     let square = DWMWCP_DONOTROUND;
     _ = DwmSetWindowAttribute(main, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const _ as _, 4);
+    // A later CreateWindow failure must not leave a half-built desk behind. Destroying the
+    // bound main window runs WM_DESTROY, which drops the desk and releases its handles.
+    let fail = |e: windows::core::Error| -> windows::core::Error {
+        if pushed {
+            app(|a| a.main = main);
+            _ = DestroyWindow(main);
+        }
+        e
+    };
     let dpi = GetDpiForWindow(main) as i32;
     if s.side <= 0 {
         s.side = 240 * dpi / 96;
@@ -295,7 +304,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     let ntabs = s.tabs.len().max(1);
     let view_menu = make_menus().unwrap_or_default();
     let tip_style = WS_POPUP | WINDOW_STYLE(0x01 | 0x02);
-    let tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, tip_style, 0, 0, 0, 0, Some(main), None, None, None)?;
+    let tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, None, tip_style, 0, 0, 0, 0, Some(main), None, None, None).map_err(fail)?;
     app(|a| {
         (a.s, a.main, a.dpi, a.view_menu, a.tip) = (s, main, dpi, view_menu, tip);
         a.park = (0..ntabs).map(|_| no_panes()).collect();
@@ -307,14 +316,14 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         let seeded = app(|a| crate::store::sync_text(&a.s));
         LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
     }
-    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None)?;
+    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).map_err(fail)?;
     let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
     _ = ShowWindow(tab_edit, SW_HIDE);
     app(|a| (a.tabs_hwnd, a.tab_edit) = (tabs_hwnd, tab_edit));
     let bar_ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     let mut bars = [HWND::default(); 2];
     for b in &mut bars {
-        *b = CreateWindowExW(bar_ex, w!("PanegridBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None)?;
+        *b = CreateWindowExW(bar_ex, w!("PanegridBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None).map_err(fail)?;
         _ = SetLayeredWindowAttributes(*b, COLORREF(0), 170, LWA_ALPHA);
     }
     app(|a| a.bars = bars);
