@@ -1535,6 +1535,16 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     crate::commit_favs();
                 }
             }
+            WM_CAPTURECHANGED => {
+                // Capture taken away mid-drag (Alt+Tab, a popup): end the drag as a button-up would.
+                // A normal button-up has already cleared both, so this does nothing then.
+                let fav = ST.with(|s| s.borrow_mut().fav_drag.take());
+                ST.with(|s| s.borrow_mut().drag = None);
+                if fav.is_some() {
+                    crate::commit_favs();
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
+            }
             WM_MOUSEWHEEL => {
                 let delta = ((wp.0 >> 16) as i16 as i32) / 120;
                 if delta != 0 {
