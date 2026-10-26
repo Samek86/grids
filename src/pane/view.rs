@@ -930,6 +930,7 @@ pub(crate) unsafe fn apply_theme() {
     prime_theme(dark);
     across_windows(|| apply_theme_desk());
     settings::refresh();
+    crate::rename::refresh();
     refresh_fav_manager();
 }
 
