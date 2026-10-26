@@ -85,7 +85,7 @@ pub(crate) unsafe fn save_current() {
 
 pub(crate) unsafe fn write_session(path: &Path) {
     remember_tabs();
-    if std::fs::write(path, app(|a| a.s.snapshot())).is_err() {
+    if crate::settings::store::write_atomic(path, app(|a| a.s.snapshot()).as_bytes()).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
@@ -125,7 +125,7 @@ pub(crate) unsafe fn save_tab_as_session(i: usize) {
     remember_tabs();
     let Some(text) = app(|a| tab_session_text(&a.s, i)) else { return };
     let Ok(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
-    if std::fs::write(Path::new(&path), text).is_err() {
+    if crate::settings::store::write_atomic(Path::new(&path), text.as_bytes()).is_err() {
         _ = MessageBeep(MB_ICONWARNING);
     }
 }
