@@ -196,7 +196,7 @@ const FILE: &[Spec] = &[
     Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), live: true, ctl: Ctl::CopyEng },
     Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
     Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), live: true, ctl: Ctl::DelMode },
-    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by New text file on the view menu and by Ctrl+Alt+N. Empty follows the display language.", "보기 메뉴의 새 텍스트 파일과 Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "表示メニューの新しいテキスト ファイルと Ctrl+Alt+N が使います。空なら表示言語に従います。"), live: true, ctl: Ctl::NewName },
+    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by Ctrl+Alt+N. Empty follows the display language.", "Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "Ctrl+Alt+N が使います。空なら表示言語に従います。"), live: true, ctl: Ctl::NewName },
     Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[

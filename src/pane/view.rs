@@ -1150,6 +1150,10 @@ pub(crate) unsafe fn swap_panes(i: usize, j: usize) {
         let mut base = a.base.take();
         swap_in(&mut a.s, base.as_mut(), i, j);
         a.base = base;
+        let tab = a.s.tab;
+        if let Some(b) = a.tab_base.get_mut(tab) {
+            swap_tab_slots(&mut b.grid, i, j);
+        }
         a.s.anchor();
         a.zoom = None;
         let to = |k: &mut usize| {
@@ -1170,7 +1174,7 @@ pub(crate) unsafe fn swap_panes(i: usize, j: usize) {
         }
         to(&mut a.peek_pane);
         a.status_key.clear();
-        a.dirty = a.s.dot && session_dirty(&a.s, a.base.as_ref());
+        let _ = pull_dirty(a);
         [i, j].map(|k| a.panes[k].as_ref().map(|p| p.hwnd))
     });
     for k in [i, j] {
@@ -1262,6 +1266,11 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
         let mut base = a.base.take();
         permute_in(&mut a.s, base.as_mut(), &perm);
         a.base = base;
+        let tab = a.s.tab;
+        let order: [u8; MAXP] = std::array::from_fn(|i| perm[i] as u8);
+        if let Some(b) = a.tab_base.get_mut(tab) {
+            reorder_tab_slots(&mut b.grid, &order);
+        }
         a.s.anchor();
         let to = |k: &mut usize| *k = perm.iter().position(|&p| p == *k).unwrap_or(*k);
         if let Some(d) = a.drop_open.as_mut() {
@@ -1285,7 +1294,7 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
             a.s.active = h[..c].iter().sum::<usize>() + r.min(h[c] - 1);
         }
         a.s.set_heights(h);
-        a.dirty = a.s.dot && session_dirty(&a.s, a.base.as_ref());
+        let _ = pull_dirty(a);
         gone
     });
     NAV_GEN.fetch_add(1, Ordering::SeqCst);

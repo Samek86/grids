@@ -110,6 +110,8 @@ pub(crate) struct Desk {
     pub(crate) drop_open: Option<(HWND, usize, IShellItem)>, // folder dropped on a top bar, opened by WM_DROP_OPEN
     pub(crate) park: Vec<Vec<Option<Pane>>>,             // hidden browsers, parallel to s.tabs; empty once evicted
     pub(crate) park_lru: Vec<usize>,                     // parked tabs that still have browsers, oldest first
+    /// Clean grid and pane-order of each tab, parallel to `s.tabs`. The save dot reads the active one.
+    pub(crate) tab_base: Vec<TabBase>,
     pub(crate) save_since: Option<Instant>,              // first unsaved change in this debounce window
     pub(crate) closed: Vec<Tab>,                         // recently closed tabs, newest first (not saved)
     pub(crate) tabs_hwnd: HWND,
@@ -257,6 +259,7 @@ pub(crate) fn blank_desk() -> Desk {
         drop_open: None,
         park: Vec::new(),
         park_lru: Vec::new(),
+        tab_base: Vec::new(),
         save_since: None,
         closed: Vec::new(),
         tabs_hwnd: HWND::default(),

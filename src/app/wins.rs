@@ -384,18 +384,10 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     show_active_tab();
     relayout();
     focus_view(app(|a| a.s.active));
-    let file = app(|a| a.s.file.clone());
-    let saved = std::fs::read_to_string(&file).ok();
     app(|a| {
-        let base = match &saved {
-            Some(t) => {
-                let mut b = Session::parse(t);
-                b.reorder(&a.s.order);
-                b
-            }
-            None => a.s.clone(),
-        };
-        a.base = Some(base);
+        a.tab_base = initial_tab_bases(&a.s);
+        a.base = Some(a.s.clone());
+        let _ = pull_dirty(a);
     });
     refresh_save_button();
     SetTimer(Some(main), TIMER_STATUS, 300, None);
@@ -438,7 +430,8 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
         return;
     }
     let mut built = fresh_tab_session();
-    if let Some(f) = session_arg(&args) {
+    let loaded = session_arg(&args).map(|s| s.to_string());
+    if let Some(f) = loaded.as_deref() {
         let Ok(t) = std::fs::read_to_string(f) else {
             _ = MessageBeep(MB_ICONWARNING);
             return;
@@ -453,9 +446,15 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
     }
     let pick = built.tab.min(tabs.len() - 1);
     let base = app(|a| a.s.tabs.len());
-    for tab in tabs {
+    for (k, mut tab) in tabs.into_iter().enumerate() {
+        tab.session.clear();
+        if loaded.as_ref().is_some() && k == pick {
+            tab.session = loaded.clone().unwrap_or_default();
+        }
         app(|a| {
             fit_park(a);
+            let at = a.s.tabs.len();
+            insert_tab_base(a, at, &tab);
             a.s.tabs.push(tab);
             a.park.push(no_panes());
         });
@@ -485,7 +484,7 @@ pub(crate) unsafe fn open_in_new_window(args: Vec<String>) -> HWND {
     if let Some(f) = session_arg(&args) {
         if let Ok(t) = std::fs::read_to_string(f) {
             s.take_layout(&Session::parse(&t));
-            s.file = f.to_string();
+            link_loaded_window(&mut s, f);
         }
     } else if !args.is_empty() {
         apply_args(&mut s, args);
@@ -545,6 +544,12 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
             a.s.side = side;
             a.park = vec![no_panes()];
             a.park_lru.clear();
+            a.tab_base = initial_tab_bases(&a.s);
+            for b in &mut a.tab_base {
+                b.order.clear();
+            }
+            a.s.order.clear();
+            let _ = pull_dirty(a);
             a.zoom = None;
             a.panes = no_panes();
         });
@@ -562,6 +567,7 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
         fit_park(a);
         let tab = a.s.tabs.remove(i);
         let mut parked = a.park.remove(i);
+        remove_tab_base(a, i);
         lru_remove_shift(a, i);
         let was = a.s.tab;
         let switched = i == was;
@@ -572,6 +578,8 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
             lru_forget(a, j);
             parked = std::mem::replace(&mut a.panes, next);
             a.s.publish();
+            restore_tab_order(a, j);
+            let _ = pull_dirty(a);
         } else if i < was {
             a.s.tab = was - 1;
         }
@@ -589,6 +597,7 @@ pub(crate) unsafe fn take_tab(i: usize) -> Option<Tab> {
         focus_view(active_pane());
     }
     tabs_invalidate();
+    refresh_save_button();
     Some(tab)
 }
 
@@ -596,6 +605,7 @@ unsafe fn insert_tab(at: usize, tab: Tab) {
     let j = app(|a| {
         fit_park(a);
         let at = at.min(a.s.tabs.len());
+        insert_tab_base(a, at, &tab);
         a.s.tabs.insert(at, tab);
         a.park.insert(at, no_panes());
         lru_insert_shift(a, at);
@@ -614,6 +624,12 @@ unsafe fn undo_take(source: HWND, only: bool, i: usize, tab: Tab) {
             a.s.tabs = vec![tab];
             a.s.tab = 0;
             a.s.publish();
+            a.tab_base = initial_tab_bases(&a.s);
+            for b in &mut a.tab_base {
+                b.order.clear();
+            }
+            a.s.order.clear();
+            let _ = pull_dirty(a);
             a.park = vec![no_panes()];
             a.park_lru.clear();
         });
