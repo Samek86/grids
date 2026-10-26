@@ -218,6 +218,7 @@ pub(crate) fn moved_active(active: usize, from: usize, to: usize) -> usize {
 pub(crate) struct Session {
     pub(crate) win: Option<[i32; 5]>, // normal rect l,t,r,b + maximized flag
     pub(crate) side: i32,             // sidebar width in px
+    pub(crate) side_dpi: i32,         // DPI `side` was measured at; 0 = unknown (older files)
     pub(crate) heights: Vec<usize>,   // panes per column, left to right (1..=4 columns of 1..=4)
     pub(crate) colr: Vec<f64>,        // column width ratios
     pub(crate) rowr: Vec<Vec<f64>>,   // row height ratios, per column
@@ -290,6 +291,7 @@ impl Default for Session {
         let mut s = Session {
             win: None,
             side: 0,
+            side_dpi: 0,
             heights: Vec::new(),
             colr: Vec::new(),
             rowr: Vec::new(),
@@ -582,6 +584,7 @@ impl Session {
             match k {
                 "win" => s.win = nums(v).try_into().ok(),
                 "side" => s.side = v.parse().unwrap_or(0),
+                "sidedpi" => s.side_dpi = v.parse().unwrap_or(0),
                 "split" => s.side_split = sane_split(v.parse().unwrap_or(0.5)),
                 "cols" => {
                     let h: Vec<usize> = nums::<usize>(v).into_iter().take(4).map(|n| n.clamp(1, 4)).collect();
@@ -723,6 +726,7 @@ impl Session {
             o += &format!("win={}\n", join(&w));
         }
         let rowr = self.rowr.iter().map(|r| join(r)).collect::<Vec<_>>().join("|");
+        o += &format!("sidedpi={}\n", self.side_dpi);
         o += &format!("side={}\nsplit={}\ncols={}\n", self.side, self.side_split, join(&self.heights));
         o += &format!("colr={}\nrowr={rowr}\nactive={}\n", join(&self.colr), self.active);
         o += &format!("accent={:06X}\naccent_dark={:06X}\ndark={}\n", self.accent, self.accent_dark, self.dark as u8);
