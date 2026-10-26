@@ -614,7 +614,17 @@ impl IContextMenu_Impl for FavCtx_Impl {
     }
     fn GetCommandString(&self, idcmd: usize, utype: u32, preserved: *const u32, pszname: PSTR, cchmax: u32) -> Result<()> {
         if idcmd == self.cmd.get() as usize {
-            return Ok(());
+            // No verb or help text for our item. Leave an empty string and say so, rather than Ok with an untouched buffer.
+            if !pszname.is_null() && cchmax > 0 {
+                unsafe {
+                    if utype & GCS_UNICODE != 0 {
+                        *(pszname.0 as *mut u16) = 0;
+                    } else {
+                        *pszname.0 = 0;
+                    }
+                }
+            }
+            return Err(E_NOTIMPL.into());
         }
         unsafe { self.inner.GetCommandString(idcmd, utype, Some(preserved), pszname, cchmax) }
     }
