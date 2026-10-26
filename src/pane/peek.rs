@@ -2729,6 +2729,13 @@ pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
         match msg {
             WM_PAINT => paint_peek(h),
             WM_ERASEBKGND => return LRESULT(1),
+            // Dragged onto a monitor with another DPI: take the size Windows suggests so the popup
+            // keeps its physical size. Text and chrome still follow the main window's DPI.
+            WM_DPICHANGED => {
+                let r = &*(lp.0 as *const RECT);
+                _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                _ = InvalidateRect(Some(h), None, false);
+            }
             // The thick frame is only there so the sizing hits work. The client fills the window;
             // the accent line is painted, not a system border.
             WM_NCCALCSIZE if wp.0 != 0 => return LRESULT(0),
