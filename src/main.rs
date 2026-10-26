@@ -26,7 +26,9 @@ pub(crate) use settings::store;
 
 fn main() -> Result<()> {
     unsafe {
-        let args: Vec<String> = std::env::args().skip(1).map(resolve).collect();
+        let mut raw: Vec<String> = std::env::args().skip(1).collect();
+        wait_for_previous(&mut raw);
+        let args: Vec<String> = raw.into_iter().map(resolve).collect();
         // Read first so single=0 can opt out of handing arguments to the running window.
         // one_window still hands off: the running window comes forward and opens paths as tabs.
         // panegrid.json is the store. If it is missing, a previous grids.json is copied;
@@ -183,6 +185,7 @@ fn main() -> Result<()> {
         }
         // Other saved windows open after this one is on screen, so the first paint is one window.
         SetTimer(Some(main), TIMER_WINS, 50, None);
+        startup(main, app(|a| a.s.update_check));
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

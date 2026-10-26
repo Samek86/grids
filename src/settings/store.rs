@@ -235,6 +235,9 @@ struct SettingsFile {
     autosave: bool,
     #[serde(default = "yes")]
     dot: bool,
+    /// Check GitHub for a newer release at startup. Missing means on.
+    #[serde(default = "yes")]
+    update_check: bool,
     #[serde(default = "yes")]
     dblup: bool,
     /// Global hotkey. Missing means on, so an older settings file keeps the hotkey on.
@@ -325,6 +328,7 @@ impl SettingsFile {
             boot_file: String::new(),
             autosave: false,
             dot: true,
+            update_check: true,
             dblup: true,
             hotkey: true,
             lang: lang_auto(),
@@ -410,6 +414,7 @@ impl SettingsFile {
             boot_file: s.boot_file.clone(),
             autosave: s.autosave,
             dot: s.dot,
+            update_check: s.update_check,
             dblup: s.dblup,
             hotkey: s.hotkey,
             lang: s.lang.ini().into(),
@@ -543,6 +548,7 @@ impl SettingsFile {
         s.boot_file = self.boot_file.clone();
         s.autosave = self.autosave;
         s.dot = self.dot;
+        s.update_check = self.update_check;
         s.dblup = self.dblup;
         s.hotkey = self.hotkey;
         s.lang = Lang::from_ini(&self.lang);
