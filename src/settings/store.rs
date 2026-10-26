@@ -790,7 +790,8 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let mut tmp = path.to_path_buf();
     let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| SETTINGS_FILE.into());
-    tmp.set_file_name(format!("{name}.tmp"));
+    // One tmp (and .bak) per process: two windows with single=0 must not write the same file.
+    tmp.set_file_name(format!("{name}.{}.tmp", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
@@ -1202,7 +1203,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ini).unwrap(), body);
         assert!(ini.is_file());
         assert!(!dir.join("grids.ini.bak").exists());
-        assert!(!dir.join("panegrid.json.tmp").exists());
+        assert!(!dir.join(format!("panegrid.json.{}.tmp", std::process::id())).exists());
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "no tmp file is left");
     }
 
     #[test]
