@@ -77,9 +77,16 @@ fn main() -> Result<()> {
         }
 
         OleInitialize(None)?; // OLE (not just COM) for drag & drop
-        match session_arg(&args).and_then(|f| std::fs::read_to_string(f).ok()) {
-            Some(t) => s.take_layout(&Session::parse(&t)),
-            None => apply_args(&mut s, args),
+        if let Some(f) = session_arg(&args) {
+            match std::fs::read_to_string(f) {
+                Ok(t) => {
+                    s.take_layout(&Session::parse(&t));
+                    link_loaded_window(&mut s, f);
+                }
+                Err(_) => apply_args(&mut s, args),
+            }
+        } else {
+            apply_args(&mut s, args);
         }
 
         _ = BufferedPaintInit();

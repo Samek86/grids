@@ -191,8 +191,11 @@ pub(crate) fn rename_session(old: &Path, stem: &str) -> Result<PathBuf> {
 /// ✕ or Delete. The shell deletes it (Recycle Bin when it can, with its confirmation when that is on).
 /// Those dialogs run a modal loop, so the current session is read again afterwards. True means the file is gone.
 pub(crate) unsafe fn delete_session(path: &Path) -> bool {
-    let (main, before) = app(|a| (a.main, a.s.file.clone()));
-    let was_cur = same_file(path, &before);
+    let (main, before_paths) = app(|a| {
+        let paths: Vec<String> = a.s.tabs.iter().map(|t| t.session.clone()).collect();
+        (a.main, paths)
+    });
+    let linked: Vec<bool> = before_paths.iter().map(|p| same_file(path, p)).collect();
     let op = (|| -> Result<IFileOperation> {
         let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
         op.SetOwnerWindow(main)?;
@@ -220,7 +223,15 @@ pub(crate) unsafe fn delete_session(path: &Path) -> bool {
             a.note = Some((note, Instant::now() + Duration::from_secs(3)));
             a.lost = 0;
         }
-        file_after_delete(&before, &a.s.file, was_cur, deleted).map(|f| a.s.file = f).is_some()
+        let now: Vec<String> = a.s.tabs.iter().map(|t| t.session.clone()).collect();
+        let Some(next) = sessions_after_delete(&before_paths, &now, &linked, deleted) else { return false };
+        for (i, p) in next.into_iter().enumerate() {
+            if let Some(t) = a.s.tabs.get_mut(i) {
+                t.session = p;
+            }
+        }
+        settle_sessions(&mut a.s);
+        true
     });
     if relinked {
         refresh_save_button();
@@ -277,9 +288,12 @@ pub(crate) unsafe fn end_load_rename() -> Option<usize> {
 
 /// Enter in the box. A bad or taken name beeps and leaves the box open.
 pub(crate) unsafe fn commit_load_rename() {
-    let (edit, k, before) = app(|a| (a.load_edit, a.load_editing, a.s.file.clone()));
+    let (edit, k, before_paths) = app(|a| {
+        let paths: Vec<String> = a.s.tabs.iter().map(|t| t.session.clone()).collect();
+        (a.load_edit, a.load_editing, paths)
+    });
     let Some(old) = k.and_then(|k| app(|a| a.cards.get(k).map(|c| c.0.clone()))) else { return };
-    let was_cur = same_file(&old, &before);
+    let linked: Vec<bool> = before_paths.iter().map(|p| same_file(&old, p)).collect();
     let Some(new) = session_stem_ok(&text_of(edit)).and_then(|s| rename_session(&old, &s).ok()) else {
         _ = MessageBeep(MB_ICONWARNING);
         return;
@@ -288,7 +302,17 @@ pub(crate) unsafe fn commit_load_rename() {
     if new == old {
         return;
     }
-    let relinked = app(|a| file_after_rename(&before, &a.s.file, was_cur, &new.to_string_lossy()).map(|f| a.s.file = f).is_some());
+    let relinked = app(|a| {
+        let now: Vec<String> = a.s.tabs.iter().map(|t| t.session.clone()).collect();
+        let Some(next) = sessions_after_rename(&before_paths, &now, &linked, &new.to_string_lossy()) else { return false };
+        for (i, p) in next.into_iter().enumerate() {
+            if let Some(t) = a.s.tabs.get_mut(i) {
+                t.session = p;
+            }
+        }
+        settle_sessions(&mut a.s);
+        true
+    });
     if relinked {
         refresh_save_button();
     }
