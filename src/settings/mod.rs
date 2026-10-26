@@ -28,6 +28,9 @@ const S_ADV_IM: i32 = 25;
 const S_ADV_RESET: i32 = 26;
 const S_EV: i32 = 27;
 const S_FACE: i32 = 28;
+const S_FV_DEF: i32 = 30;
+const S_FV_RESET: i32 = 31;
+const S_FV_CLEAR: i32 = 32;
 const S_LAYOUT: i32 = 29;
 const S_FAV0: i32 = 20000;
 /// Delete buttons are S_FAV0 + i, rename buttons S_REN0 + i. Control ids stay under 0x8000.
@@ -53,6 +56,7 @@ const TG_DRIVES: u8 = 16;
 const TG_SPACE: u8 = 17;
 const TG_WHEEL: u8 = 18;
 const TG_UPDATE: u8 = 19;
+const TG_REMEMBER: u8 = 20;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -150,6 +154,9 @@ enum Ctl {
     EvStatus,
     EvAct,
     Toggle(u8),
+    FolderDefault,
+    FolderReset,
+    FolderClear,
 }
 
 #[derive(Clone, Copy)]
@@ -184,6 +191,10 @@ const LOOK: &[Spec] = &[
 ];
 const VIEW: &[Spec] = &[
     Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("Used when a pane has no view of its own yet.", "아직 보기가 없는 패널에 써요.", "まだ表示を持たないペインに使います。"), live: true, ctl: Ctl::ViewMode },
+    Spec { title: s("Remember view per folder", "폴더마다 보기 기억", "フォルダーごとに表示を記憶"), desc: s("Sort, columns, view mode, icon size and grouping are restored in any pane. Saved in folder-views.json next to the settings. On by default.", "정렬, 열, 보기 방식, 아이콘 크기, 그룹을 어느 패널에서든 되돌립니다. 설정 옆의 folder-views.json에 저장해요. 기본값은 켜짐.", "並べ替え、列、表示、アイコンの大きさ、グループをどのペインでも戻します。設定の隣の folder-views.json に保存します。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_REMEMBER) },
+    Spec { title: s("Default view for every folder", "모든 폴더의 기본 보기", "すべてのフォルダーの既定の表示"), desc: s("Folders with no saved view use this. Takes the active pane's sort, columns, view mode, icon size and grouping.", "기억된 보기가 없는 폴더가 이것을 씁니다. 활성 패널의 정렬, 열, 보기 방식, 아이콘 크기, 그룹을 가져와요.", "記憶がないフォルダーはこれを使います。アクティブなペインの並べ替え、列、表示、アイコンの大きさ、グループを取り込みます。"), live: true, ctl: Ctl::FolderDefault },
+    Spec { title: s("Reset this folder's view", "이 폴더의 보기 지우기", "このフォルダーの表示を消す"), desc: s("Forgets the active pane's folder. It uses the default view from here on.", "활성 패널의 폴더만 잊습니다. 이제부터 기본 보기를 씁니다.", "アクティブなペインのフォルダーだけ忘れます。ここからは既定の表示を使います。"), live: true, ctl: Ctl::FolderReset },
+    Spec { title: s("Clear all remembered views", "기억한 보기를 모두 지우기", "記憶した表示をすべて消す"), desc: s("Forgets every folder. The default view stays.", "모든 폴더의 기억을 지웁니다. 기본 보기는 남아요.", "すべてのフォルダーの記憶を消します。既定の表示は残ります。"), live: true, ctl: Ctl::FolderClear },
     Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), live: true, ctl: Ctl::StartDir },
     Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
     Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), live: true, ctl: Ctl::Toggle(TG_EXT) },
@@ -604,9 +615,13 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
             sw.reverse();
             RECT { left: sw.first().map(|r| r.left).unwrap_or(btn.left), ..btn }
         }
-        Ctl::Adv | Ctl::AdvReset => {
-            let n = if spec.ctl == Ctl::Adv { 3 } else { 1 };
-            let bw = sc(dpi, if spec.ctl == Ctl::Adv { 108 } else { 96 });
+        Ctl::Adv | Ctl::AdvReset | Ctl::FolderDefault | Ctl::FolderReset | Ctl::FolderClear => {
+            let (n, bw) = match spec.ctl {
+                Ctl::Adv => (3, sc(dpi, 108)),
+                Ctl::FolderDefault => (1, sc(dpi, 188)),
+                Ctl::FolderReset | Ctl::FolderClear => (1, sc(dpi, 132)),
+                _ => (1, sc(dpi, 96)),
+            };
             let gap = sc(dpi, 6);
             let total = bw * n + gap * (n - 1);
             let mut x = rect.right - pad - total;
@@ -731,6 +746,7 @@ fn toggle_on(id: u8) -> bool {
         TG_EV => app(|a| a.s.use_everything),
         TG_SPACE => app(|a| a.s.space_preview),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav),
+        TG_REMEMBER => app(|a| a.s.remember_views),
         _ => false,
     }
 }
@@ -865,6 +881,35 @@ mod tests {
         assert_eq!(pick_search(2, 5, "단축키"), 5);
         assert!(!search_miss("단축키"));
         assert!(!search_miss(""));
+    }
+
+    #[test]
+    fn folder_view_memory_is_on_the_panes_page_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let hit = |g: &Geo, ctl: Ctl| g.items.iter().any(|it| matches!(it, Item::Card(c) if c.spec.ctl == ctl));
+        let (anchor, page) = commit_search(0, 0, "Remember view per folder");
+        assert_eq!((anchor, page), (0, 2));
+        let g = geo(client(), &shot(page, "Remember view per folder"));
+        assert!(hit(&g, Ctl::Toggle(TG_REMEMBER)));
+        assert!(hit(&geo(client(), &shot(2, "folder-views.json")), Ctl::Toggle(TG_REMEMBER)));
+        assert!(hit(&geo(client(), &shot(2, "Reset this folder")), Ctl::FolderReset));
+        assert!(hit(&geo(client(), &shot(2, "Clear all remembered")), Ctl::FolderClear));
+        assert!(hit(&geo(client(), &shot(2, "Default view for every folder")), Ctl::FolderDefault));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "폴더마다 보기");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "폴더마다 보기")), Ctl::Toggle(TG_REMEMBER)));
+        assert!(hit(&geo(client(), &shot(2, "이 폴더의 보기")), Ctl::FolderReset));
+        assert!(hit(&geo(client(), &shot(2, "기억한 보기를 모두")), Ctl::FolderClear));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "フォルダーごとに表示");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "フォルダーごとに表示")), Ctl::Toggle(TG_REMEMBER)));
+        assert!(hit(&geo(client(), &shot(2, "このフォルダーの表示")), Ctl::FolderReset));
+        assert!(hit(&geo(client(), &shot(2, "記憶した表示をすべて")), Ctl::FolderClear));
     }
 
     #[test]

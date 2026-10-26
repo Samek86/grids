@@ -544,8 +544,10 @@ thread_local! {
     pub(crate) static KEEP_VIEWS: Cell<bool> = const { Cell::new(false) };
 }
 
-// Pane-sticky view mode and columns (order, widths, sort): remember them before leaving a folder,
-// re-apply after arriving. Columns seen in shell places (This PC ...) are theirs, not the pane's.
+// View mode and columns (order, widths, sort). With per-folder memory off, they stick to the pane:
+// read them before leaving a folder, put them on the next one. Shell places keep their own columns.
+// With memory on, a change is stored for the folder instead, and the pane's session view is left
+// alone so a tab switch does not look like an unsaved layout edit.
 pub(crate) unsafe fn save_view(i: usize) {
     if KEEP_VIEWS.with(|c| c.get()) {
         return;
@@ -554,13 +556,218 @@ pub(crate) unsafe fn save_view(i: usize) {
         return; // columns are about to be put on, or still settling: don't overwrite them
     }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
-    free_min_widths(view_list(&fv)); // a list made after the folder change gets it here
+    let lv = view_list(&fv);
+    free_min_widths(lv); // a list made after the folder change gets it here
     let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
-    if fv.GetViewModeAndIconSize(&mut m, &mut z).is_ok() {
-        app(|a| a.s.views[i] = (m.0, z));
+    let mode_ok = fv.GetViewModeAndIconSize(&mut m, &mut z).is_ok();
+    let cols = read_cols(&fv, lv);
+    let group = read_group(&fv);
+    let remember = app(|a| a.s.remember_views);
+    if !remember {
+        if mode_ok {
+            app(|a| a.s.views[i] = (m.0, z));
+        }
+        if let Some(c) = cols.filter(|_| app(|a| is_fs(&a.s.paths[i]))) {
+            app(|a| a.s.cols[i] = c);
+        }
+        return;
     }
-    if let Some(c) = read_cols(&fv, view_list(&fv)).filter(|_| app(|a| is_fs(&a.s.paths[i]))) {
-        app(|a| a.s.cols[i] = c);
+    if !mode_ok {
+        return;
+    }
+    let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    let Some(key) = crate::folderview::normalize_folder_key(&path) else { return };
+    let Some(mut watch) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.view_watch.clone())) else {
+        return;
+    };
+    if watch.key != key {
+        return;
+    }
+    let mut live = crate::folderview::ViewSnap { mode: m.0, icon: z, columns: cols.unwrap_or_default(), group };
+    live.columns = crate::folderview::align_columns(&watch.applied.columns, &live.columns);
+    let save = crate::folderview::observe(&mut watch, &live);
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.view_watch = Some(watch);
+        }
+    });
+    if save && crate::folderview::remember(&key, live) {
+        note_folder_views();
+    }
+}
+
+/// Coalesce folder-view edits into one write of folder-views.json.
+pub(crate) unsafe fn note_folder_views() {
+    let main = app(|a| a.main);
+    if main.0.is_null() {
+        crate::folderview::flush();
+        return;
+    }
+    SetTimer(Some(main), TIMER_FVIEWS, FVIEW_SAVE_MS, None);
+}
+
+/// Last chance before the window goes away: the debounce timer may not have fired.
+pub(crate) unsafe fn flush_folder_views() {
+    let n = app(|a| a.s.panes());
+    for i in 0..n {
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.settle = None;
+                if let Some(w) = p.view_watch.as_mut() {
+                    w.quiet = 0;
+                }
+            }
+        });
+        save_view(i);
+    }
+    crate::folderview::flush();
+}
+
+/// Open folders start watching for edits. What is already on screen is the baseline, not a new memory.
+pub(crate) unsafe fn arm_folder_watches() {
+    let n = app(|a| a.s.panes());
+    for i in 0..n {
+        let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+        let Some(key) = crate::folderview::normalize_folder_key(&path) else { continue };
+        let Some(live) = read_snap(i) else { continue };
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.view_watch = Some(crate::folderview::ViewWatch {
+                    key,
+                    applied: live.clone(),
+                    baseline: Some(live),
+                    quiet: 0,
+                });
+            }
+        });
+    }
+}
+
+pub(crate) unsafe fn set_default_folder_view() {
+    let i = app(|a| a.s.active);
+    let Some(snap) = read_snap(i) else {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    if snap.mode == 0 && snap.columns.is_empty() {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    crate::folderview::set_default(snap);
+    crate::folderview::flush();
+}
+
+pub(crate) unsafe fn reset_active_folder_view() {
+    let i = app(|a| a.s.active);
+    let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    let Some(key) = crate::folderview::normalize_folder_key(&path) else {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    crate::folderview::forget(&path);
+    if let Some(snap) = crate::folderview::default_view() {
+        apply_snap_to_pane(i, &snap, &key);
+    } else if let Some(live) = read_snap(i) {
+        // Nothing to put back. Keep what is on screen, and do not write it as a new memory.
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.view_watch = Some(crate::folderview::ViewWatch {
+                    key,
+                    applied: live.clone(),
+                    baseline: Some(live),
+                    quiet: 0,
+                });
+            }
+        });
+    }
+    crate::folderview::flush();
+}
+
+pub(crate) unsafe fn clear_remembered_folder_views() {
+    crate::folderview::clear_folders();
+    let n = app(|a| a.s.panes());
+    for i in 0..n {
+        let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+        let Some(key) = crate::folderview::normalize_folder_key(&path) else { continue };
+        let Some(live) = read_snap(i) else { continue };
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.view_watch = Some(crate::folderview::ViewWatch {
+                    key,
+                    applied: live.clone(),
+                    baseline: Some(live),
+                    quiet: 0,
+                });
+            }
+        });
+    }
+    crate::folderview::flush();
+}
+
+unsafe fn read_snap(i: usize) -> Option<crate::folderview::ViewSnap> {
+    let fv = view_of::<IFolderView2>(i)?;
+    let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
+    fv.GetViewModeAndIconSize(&mut m, &mut z).ok()?;
+    let columns = read_cols(&fv, view_list(&fv)).unwrap_or_default();
+    Some(crate::folderview::ViewSnap { mode: m.0, icon: z, columns, group: read_group(&fv) })
+}
+
+unsafe fn apply_snap_to_pane(i: usize, snap: &crate::folderview::ViewSnap, key: &str) {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return };
+    let lv = view_list(&fv);
+    free_min_widths(lv);
+    if snap.mode != 0 {
+        let _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(snap.mode), snap.icon);
+    }
+    if !snap.columns.is_empty() {
+        apply_cols(&fv, &snap.columns, lv);
+    }
+    if let Some(g) = &snap.group {
+        apply_group(&fv, g);
+    }
+    let h = app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            if !snap.columns.is_empty() {
+                p.settle = Some((snap.columns.clone(), 4));
+            }
+            p.view_watch = Some(crate::folderview::ViewWatch {
+                key: key.to_string(),
+                applied: snap.clone(),
+                baseline: None,
+                quiet: 2,
+            });
+            return Some(p.hwnd);
+        }
+        None
+    });
+    if let Some(h) = h {
+        if !snap.columns.is_empty() {
+            SetTimer(Some(h), TIMER_SETTLE, 50, None);
+        }
+    }
+}
+
+unsafe fn read_group(fv: &IFolderView2) -> Option<String> {
+    let mut key = PROPERTYKEY::default();
+    let mut asc = BOOL(0);
+    if fv.GetGroupBy(&mut key, Some(&mut asc)).is_err() {
+        return None;
+    }
+    if key.pid == 0 && key.fmtid == GUID::zeroed() {
+        return Some(String::new());
+    }
+    Some(format!("{:?}/{}={}", key.fmtid, key.pid, if asc.as_bool() { 1 } else { -1 }))
+}
+
+unsafe fn apply_group(fv: &IFolderView2, group: &str) {
+    if group.is_empty() {
+        let null = PROPERTYKEY::default();
+        let _ = fv.SetGroupBy(&null, false);
+        return;
+    }
+    let (_, sort) = parse_cols(&format!(";{group}"));
+    if let Some((key, dir)) = sort.into_iter().next() {
+        let _ = fv.SetGroupBy(&key, dir >= 0);
     }
 }
 
@@ -771,19 +978,46 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         app(|a| gone_note(a, &missing, &opened));
         update_status();
     }
-    let Some((h, eb, view, cols, ticket)) = app(|a| {
+    let Some((h, eb, view, cols, group, ticket)) = app(|a| {
         let fs = is_fs(&parse);
         let old = std::mem::replace(&mut a.s.paths[i], parse.clone());
         let path = a.s.paths[i].clone();
         visit(&mut a.s.recent, &old, &path);
-        let (v, own) = (a.s.views[i], a.s.cols[i].clone());
+        let remember = a.s.remember_views;
+        let choice = if remember { crate::folderview::choose(&path) } else { crate::folderview::Choice::None };
+        let (pane_view, own) = (a.s.views[i], a.s.cols[i].clone());
+        let folder = match choice {
+            crate::folderview::Choice::Saved(v) | crate::folderview::Choice::Default(v) => Some(v),
+            crate::folderview::Choice::None => None,
+        };
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
             // The previous folder's icon goes as soon as the browse starts. A new lookup replaces it.
             (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
-            // waiting columns (session, open in) first, else the pane's own; none in shell places
-            let cols = p.pending.take().unwrap_or(own);
-            (p.hwnd, p.eb.clone(), v, Some(cols).filter(|c| fs && !c.is_empty()), p.ticket)
+            let pending = p.pending.take().filter(|c| !c.is_empty());
+            // A saved folder view, else the user default, else this pane's own view.
+            // Shell places still refuse the pane's filesystem columns when nothing was saved for them.
+            let (view, cols, group) = if let Some(v) = folder.clone() {
+                let cols = (!v.columns.is_empty()).then_some(v.columns.clone());
+                ((v.mode, v.icon), cols, v.group.clone())
+            } else {
+                let cols = pending.or_else(|| (!own.is_empty()).then_some(own));
+                (pane_view, cols.filter(|_| fs), None)
+            };
+            if remember {
+                p.view_watch = crate::folderview::normalize_folder_key(&path).map(|key| {
+                    let applied = folder.unwrap_or(crate::folderview::ViewSnap {
+                        mode: view.0,
+                        icon: view.1,
+                        columns: cols.clone().unwrap_or_default(),
+                        group: None,
+                    });
+                    crate::folderview::ViewWatch { key, applied, baseline: None, quiet: 2 }
+                });
+            } else {
+                p.view_watch = None;
+            }
+            (p.hwnd, p.eb.clone(), view, cols, group, p.ticket)
         })
     }) else {
         tabs_invalidate();
@@ -816,6 +1050,9 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
             });
             SetTimer(Some(h), TIMER_SETTLE, 50, None);
         }
+        if let Some(g) = group {
+            apply_group(&fv, &g);
+        }
         // No full-row select: a drag that starts in the size/date cells draws a selection box
         // (and selects the names it covers) instead of grabbing that row's file.
         _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
@@ -844,6 +1081,9 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     }
     tabs_invalidate();
     note_save();
+    if crate::folderview::is_dirty() {
+        note_folder_views();
+    }
 }
 
 #[implement(IExplorerBrowserEvents)]

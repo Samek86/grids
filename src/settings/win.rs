@@ -181,10 +181,13 @@ unsafe fn build_children(h: HWND) {
     btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), true);
     btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), true);
     btn(S_EV, ev_button_label(), true);
+    btn(S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う")), true);
+    btn(S_FV_RESET, tx(s("Reset", "지우기", "消す")), true);
+    btn(S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す")), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -249,6 +252,9 @@ unsafe fn fill_strings(h: HWND) {
         (S_ADV_IM, tx(s("Import", "가져오기", "インポート"))),
         (S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…"))),
         (S_EV, ev_button_label()),
+        (S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う"))),
+        (S_FV_RESET, tx(s("Reset", "지우기", "消す"))),
+        (S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す"))),
     ];
     for (id, label) in labels {
         let _ = SetWindowTextW(ctl(h, id), &HSTRING::from(label));
@@ -365,7 +371,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -398,8 +404,14 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                         move_to(ctl(h, *id), c.adv[i], intersects(c.adv[i], content));
                     }
                 }
-                if c.spec.ctl == Ctl::AdvReset {
-                    move_to(ctl(h, S_ADV_RESET), c.adv[0], intersects(c.adv[0], content));
+                if matches!(c.spec.ctl, Ctl::AdvReset | Ctl::FolderDefault | Ctl::FolderReset | Ctl::FolderClear) {
+                    let id = match c.spec.ctl {
+                        Ctl::FolderDefault => S_FV_DEF,
+                        Ctl::FolderReset => S_FV_RESET,
+                        Ctl::FolderClear => S_FV_CLEAR,
+                        _ => S_ADV_RESET,
+                    };
+                    move_to(ctl(h, id), c.adv[0], intersects(c.adv[0], content));
                 }
                 if c.spec.ctl == Ctl::EvAct {
                     let b = ctl(h, S_EV);
@@ -969,6 +981,28 @@ fn flip(id: u8) {
         }
         TG_SPACE => app(|a| a.s.space_preview ^= true),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav ^= true),
+        TG_REMEMBER => {
+            app(|a| a.s.remember_views ^= true);
+            let on = app(|a| a.s.remember_views);
+            unsafe {
+                // Other windows read the flag from the shared session. Arm or capture before they poll.
+                crate::publish_shared();
+                crate::across_windows(|| {
+                    if on {
+                        crate::arm_folder_watches();
+                    } else {
+                        // Each pane keeps the view on screen as its own, now that folders no longer override it.
+                        let n = app(|a| a.s.panes());
+                        for i in 0..n {
+                            crate::save_view(i);
+                        }
+                    }
+                });
+                crate::save_session();
+                redraw();
+            }
+            return;
+        }
         TG_DOT => {
             app(|a| a.s.dot ^= true);
             unsafe {
@@ -1075,6 +1109,18 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         S_ADV_EX => export_settings(h),
         S_ADV_IM => import_settings(h),
         S_ADV_RESET => reset_ini(h),
+        S_FV_DEF => crate::set_default_folder_view(),
+        S_FV_RESET => crate::reset_active_folder_view(),
+        S_FV_CLEAR => {
+            let q = tx(s(
+                "Forget the saved view of every folder? The default view stays.",
+                "모든 폴더의 기억된 보기를 지울까요? 기본 보기는 남아요.",
+                "すべてのフォルダーの記憶した表示を消しますか? 既定の表示は残ります。",
+            ));
+            if confirm_box(h, q) {
+                crate::clear_remembered_folder_views();
+            }
+        }
         S_EV => {
             if crate::everything::busy() {
                 return;
