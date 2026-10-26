@@ -472,6 +472,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.drive_buttons = src.drive_buttons;
     dst.stat = src.stat;
     dst.view_new = src.view_new;
+    dst.view_icon = src.view_icon;
     dst.start_new = src.start_new;
     dst.start_path = src.start_path.clone();
     dst.ext = src.ext;
