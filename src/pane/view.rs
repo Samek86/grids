@@ -993,8 +993,18 @@ pub(crate) fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx:
 // yet without full-row select only the name is the item, so its date and size cells are empty space. confirm()
 // tells them apart after the click: a press on the name selects or opens it. Group headers, collapse buttons and
 // column headers are never background.
-pub(crate) fn bg_role(role: u32) -> bool {
-    role == ROLE_SYSTEM_LIST || role == ROLE_SYSTEM_LISTITEM
+// The column header of a details view is a list too, nested in the item list: never background, so a
+// double-click on a header divider (auto-fit a column) does not go up a folder.
+pub(crate) fn bg_role(role: u32, parent: Option<u32>) -> bool {
+    (role == ROLE_SYSTEM_LIST && parent != Some(ROLE_SYSTEM_LIST)) || role == ROLE_SYSTEM_LISTITEM
+}
+
+unsafe fn role_of(a: &IAccessible, child: &VARIANT) -> Option<u32> {
+    let mut role = a.get_accRole(child).ok()?;
+    let r = &role.Anonymous.Anonymous;
+    let out = (r.vt == VT_I4).then(|| r.Anonymous.lVal as u32);
+    _ = VariantClear(&mut role);
+    out
 }
 
 // The generation is read before the probe and again after it: a navigation during the probe voids it.
@@ -1021,11 +1031,13 @@ pub(crate) unsafe fn on_background(m: &MSG) -> bool {
     if AccessibleObjectFromPoint(m.pt, &mut acc, &mut child).is_err() {
         return false;
     }
-    let bg = acc.and_then(|a| a.get_accRole(&child).ok()).is_some_and(|mut role| {
-        let r = &role.Anonymous.Anonymous;
-        let bg = r.vt == VT_I4 && bg_role(r.Anonymous.lVal as u32);
-        _ = VariantClear(&mut role);
-        bg
+    let bg = acc.is_some_and(|a| {
+        let Some(role) = role_of(&a, &child) else { return false };
+        let parent = (role == ROLE_SYSTEM_LIST)
+            .then(|| a.accParent().ok().and_then(|p| p.cast::<IAccessible>().ok()))
+            .flatten()
+            .and_then(|p| role_of(&p, &VARIANT::from(0i32)));
+        bg_role(role, parent)
     });
     _ = VariantClear(&mut child);
     bg
