@@ -339,6 +339,10 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     match ch {
         VK_F5 if list => {
             resum_sizes();
+            crate::ui::forget_missing();
+            if let Some(side) = app(|a| (!a.side_hwnd.is_invalid()).then_some(a.side_hwnd)) {
+                _ = InvalidateRect(Some(side), None, false);
+            }
             shell()
         }
         VK_DELETE if !ctrl && !alt && list => {
