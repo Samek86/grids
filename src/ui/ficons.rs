@@ -133,6 +133,28 @@ struct Cache {
     list: isize,
 }
 
+/// Most "missing" paths remembered before the set starts over (paths that reappear get rechecked).
+const MISSING_CAP: usize = 1024;
+
+fn note_missing(mem: &mut IconMem, norm: String) -> bool {
+    if mem.missing.len() >= MISSING_CAP {
+        forget_missing_in(mem);
+    }
+    mem.checked.insert(norm.clone());
+    mem.missing.insert(norm)
+}
+
+fn forget_missing_in(mem: &mut IconMem) {
+    for k in mem.missing.drain() {
+        mem.checked.remove(&k);
+    }
+}
+
+/// Refresh (F5): recheck every path that was missing, so a drive or folder that came back gets its icon.
+pub(crate) fn forget_missing() {
+    forget_missing_in(&mut cache().mem);
+}
+
 fn cache() -> std::sync::MutexGuard<'static, Cache> {
     static CACHE: std::sync::OnceLock<Mutex<Cache>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Cache { mem: IconMem::default(), list: 0 })).lock().unwrap_or_else(|e| e.into_inner())
@@ -277,9 +299,7 @@ fn run_job(job: IconJob) -> bool {
         IconJob::Path(path) => {
             if path_missing(&path) {
                 let norm = norm_path(&path);
-                let mut c = cache();
-                c.mem.checked.insert(norm.clone());
-                c.mem.missing.insert(norm)
+                note_missing(&mut cache().mem, norm)
             } else {
                 let norm = norm_path(&path);
                 store_shell(&path, FILE_ATTRIBUTE_NORMAL, true, key, move |m, idx| {
@@ -292,8 +312,12 @@ fn run_job(job: IconJob) -> bool {
             let missing = path_missing(&path);
             let norm = norm_path(&path);
             let mut c = cache();
-            c.mem.checked.insert(norm.clone());
-            if missing { c.mem.missing.insert(norm) } else { false }
+            if missing {
+                note_missing(&mut c.mem, norm)
+            } else {
+                c.mem.checked.insert(norm);
+                false
+            }
         }
     }
 }
@@ -428,6 +452,20 @@ mod tests {
         assert!(!per_file_icon("txt"));
         assert!(!per_file_icon("pdf"));
         assert!(!per_file_icon(""));
+    }
+
+    #[test]
+    fn missing_paths_are_rechecked_after_forget_and_capped() {
+        let mut mem = IconMem::default();
+        assert!(note_missing(&mut mem, norm_path(r"X:\gone")));
+        assert!(decide(&mem, r"X:\gone", false).dim);
+        forget_missing_in(&mut mem);
+        let d = decide(&mem, r"X:\gone", false);
+        assert!(!d.dim && d.jobs.iter().any(|j| matches!(j, IconJob::Exists(_))));
+        for i in 0..MISSING_CAP + 5 {
+            note_missing(&mut mem, format!("x:\\{i}"));
+        }
+        assert!(mem.missing.len() <= MISSING_CAP);
     }
 
     #[test]
