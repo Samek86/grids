@@ -74,6 +74,19 @@ pub unsafe fn refresh() {
     let _ = InvalidateRect(Some(h), None, true);
 }
 
+/// The right-click page is open and a menu just learned new item names.
+pub(crate) unsafe fn refresh_ctx_labels() {
+    let h = hwnd();
+    if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
+        return;
+    }
+    if ST.with(|s| s.borrow().page) != CTX_PAGE {
+        return;
+    }
+    layout(h);
+    let _ = InvalidateRect(Some(h), None, false);
+}
+
 fn ensure_class() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| unsafe {
@@ -132,18 +145,19 @@ fn rebuild_fonts() {
     let new = (
         make_font(face, 14, 400, dpi),
         make_font(face, 12, 400, dpi),
+        make_font(face, 16, 700, dpi),
         make_font(title_face, 24, title_w, dpi),
         make_font("Consolas", 12, 400, dpi),
         make_font("Segoe MDL2 Assets", 14, 400, dpi),
     );
     let old = ST.with(|s| {
         let mut st = s.borrow_mut();
-        let old = (st.font, st.small, st.title_font, st.mono, st.icon);
-        (st.font, st.small, st.title_font, st.mono, st.icon) = new;
+        let old = (st.font, st.small, st.bold, st.title_font, st.mono, st.icon);
+        (st.font, st.small, st.bold, st.title_font, st.mono, st.icon) = new;
         old
     });
     unsafe {
-        for f in [old.0, old.1, old.2, old.3, old.4] {
+        for f in [old.0, old.1, old.2, old.3, old.4, old.5] {
             if !f.is_invalid() {
                 let _ = DeleteObject(f.into());
             }
@@ -557,9 +571,9 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 let _ = crate::wrap_text(dc, *r, tx(CTX_NOTE), sn.small, crate::pal().sub, false);
             }
             Item::CtxBar { .. } => {}
-            Item::CtxRow { id, rect, mark, chev, name, off, chips, .. } => {
+            Item::CtxRow { id, rect, mark, chev, name, detail, raw, pending, off, chips, .. } => {
                 let open = sn.ctx_open.iter().any(|x| x == id);
-                draw_ctx_row(dc, *rect, *mark, *chev, name, *off, chips, open, sn, accent);
+                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *pending, *off, chips, open, sn, accent);
             }
             Item::CtxSub { rect, mark, bit, on, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *on, sn, accent),
             Item::CtxEmpty(r) => crate::text(dc, *r, tx(CTX_EMPTY), sn.small, crate::pal().sub, DT_LEFT),
@@ -781,18 +795,49 @@ unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent:
     }
 }
 
-unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, off: u8, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
+unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, pending: bool, off: u8, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
     let attached = chips.iter().fold(0u8, |a, (b, _)| a | *b);
     draw_tick(dc, mark, crate::shell::ctxmenu::tick_of(off, attached), accent, dpi, sn.icon);
-    crate::text(dc, chev, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
+    let chev_box = RECT { top: mark.top, bottom: mark.bottom, ..chev };
+    crate::text(dc, chev_box, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
     let name_right = chips.first().map(|(_, r)| r.left - sc(dpi, 8)).unwrap_or(rect.right - sc(dpi, 12));
-    crate::text(dc, RECT { left: chev.right, right: name_right, ..rect }, name, sn.font, crate::pal().text, DT_LEFT);
+    let text_r = RECT { left: chev.right, right: name_right, ..rect };
+    let line = if pending { tx(CTX_PENDING) } else { detail };
+    if line.is_empty() && raw.is_empty() {
+        crate::text(dc, text_r, name, sn.bold, crate::pal().text, DT_LEFT);
+    } else {
+        let title = RECT { top: rect.top + sc(dpi, 6), bottom: rect.top + sc(dpi, 28), ..text_r };
+        crate::text(dc, title, name, sn.bold, crate::pal().text, DT_LEFT);
+        let sub = RECT { top: title.bottom, bottom: rect.bottom - sc(dpi, 4), ..text_r };
+        let mut left = sub.left;
+        if !line.is_empty() {
+            let w = line_width(dc, line, sn.small);
+            let shown = RECT { right: (left + w).min(sub.right), ..sub };
+            crate::text(dc, shown, line, sn.small, crate::pal().sub, DT_LEFT);
+            left = shown.right + sc(dpi, 10);
+        }
+        if !raw.is_empty() && left + sc(dpi, 24) < sub.right {
+            crate::text(dc, RECT { left, ..sub }, raw, sn.small, crate::blend(crate::pal().sub, crate::pal().card, 0.45), DT_LEFT);
+        }
+    }
     for (bit, r) in chips {
         rfill(dc, *r, sc(dpi, 4), crate::blend(crate::pal().card, crate::pal().text, 0.06), Some(crate::pal().line));
         crate::text(dc, *r, crate::shell::ctxmenu::target_label(*bit), sn.small, crate::pal().sub, DT_CENTER);
     }
+}
+
+unsafe fn line_width(dc: HDC, s: &str, font: HFONT) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    let mut r = RECT::default();
+    let old = SelectObject(dc, font.into());
+    DrawTextW(dc, &mut w, &mut r, DT_SINGLELINE | DT_CALCRECT | DT_NOPREFIX);
+    SelectObject(dc, old);
+    r.right - r.left
 }
 
 unsafe fn draw_ctx_sub(dc: HDC, rect: RECT, mark: RECT, bit: u8, on: bool, sn: &Snap, accent: u32) {
@@ -1821,11 +1866,11 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 crate::keys::cancel();
                 let old = ST.with(|s| {
                     let mut st = s.borrow_mut();
-                    let old = (st.font, st.small, st.title_font, st.mono, st.icon);
+                    let old = (st.font, st.small, st.bold, st.title_font, st.mono, st.icon);
                     *st = St::default(); // drops the installed-family list
                     old
                 });
-                for f in [old.0, old.1, old.2, old.3, old.4] {
+                for f in [old.0, old.1, old.2, old.3, old.4, old.5] {
                     if !f.is_invalid() {
                         let _ = DeleteObject(f.into());
                     }
