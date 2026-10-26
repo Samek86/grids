@@ -471,7 +471,8 @@ unsafe fn refresh_find_in(i: usize, force: bool) {
     }
     let (gen, recursive, everywhere, use_ev) = {
         let mut map = find_map();
-        let u = map.get_mut(&(hwnd.0 as isize)).unwrap();
+        // The install prompt above is modal: the pane may have closed while it was up.
+        let Some(u) = map.get_mut(&(hwnd.0 as isize)) else { return };
         u.gen = u.gen.wrapping_add(1);
         u.query = query.clone();
         u.root = root.clone();
