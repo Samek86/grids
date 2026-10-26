@@ -3,18 +3,20 @@
 // The registry is read, never written. Enablement lives in panegrid.json (`ctx_menu`),
 // not in HKCR and not in a .grids file. Explorer is unchanged.
 //
-// Building the menu (only when something that applies to this click is off):
-// `SHCreateDefaultContextMenu` gets the shell's own verbs (Open, Copy, Delete, Properties, …)
-// plus any association key that has no disabled third-party handler for this click.
-// A key that does is left out, and each built-in or still-enabled handler on it is
-// CoCreated on its own, so a disabled DLL is never loaded. Static verbs on those keys
-// are appended here. `aKeys` cannot name a single handler — the key is the whole class —
-// so this split is what actually skips the load.
+// The visible menu is always the shell view's own `IContextMenu` (the same object as
+// when nothing is disabled). `SHCreateDefaultContextMenu` with a filtered `aKeys` list
+// cannot match that file menu: dropping one class key (`*`, a ProgID, SystemFileAssociations)
+// also drops every other verb on it, and putting those verbs back by hand changes order
+// and adds items the shell would have hidden. Folder clicks happened to look closer
+// because their menu is mostly Directory/Folder keys. `compose` is kept below and is
+// not used for the popup.
 //
-// If that object cannot be created, the shell menu is built as usual and matching items
-// are removed afterwards. That still loads the handler. App items (favourites, batch
-// rename, WinMerge) are inserted by `popup_ctx` either way, and a click with nothing
-// disabled never comes through here.
+// When a handler is off for this click, `popup_ctx` builds that normal menu and then
+// deletes only the disabled handler's commands. Static verbs match the registry verb.
+// A COM handler is CoCreated into a throwaway menu solely to learn the strings it
+// adds; those strings are deleted from the real menu. The shell has already loaded
+// every handler on the real menu, including ones that are off — that is the cost of
+// an identical item set. Disabled handlers are never given their own visible menu.
 //
 // Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
 
@@ -264,6 +266,20 @@ pub(crate) fn invalidate() {
 
 thread_local! {
     static STRIP: Cell<u8> = const { Cell::new(0) };
+    static PROBE: RefCell<Option<ProbeCtx>> = const { RefCell::new(None) };
+}
+
+struct ProbeCtx {
+    folder_pidl: *mut ITEMIDLIST,
+    data: Option<IDataObject>,
+}
+
+pub(crate) struct ProbeGuard;
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        clear_probe();
+    }
 }
 
 pub(crate) fn arm_strip(targets: u8) {
@@ -272,6 +288,68 @@ pub(crate) fn arm_strip(targets: u8) {
 
 pub(crate) fn take_strip() -> u8 {
     STRIP.with(|s| s.replace(0))
+}
+
+/// Remember the folder of this click so a disabled COM handler can be asked, off to the side,
+/// which menu strings it would add. The visible menu is still the shell's.
+pub(crate) unsafe fn arm_probe(owner: HWND, folder: &IShellFolder, children: &[*const ITEMIDLIST]) -> ProbeGuard {
+    clear_probe();
+    let folder_pidl = SHGetIDListFromObject(folder).unwrap_or(std::ptr::null_mut());
+    let refs: Vec<*const ITEMIDLIST> = children.iter().copied().filter(|p| !p.is_null()).collect();
+    let data = if refs.is_empty() { None } else { folder.GetUIObjectOf::<IDataObject>(owner, &refs, None).ok() };
+    PROBE.with(|p| *p.borrow_mut() = Some(ProbeCtx { folder_pidl, data }));
+    ProbeGuard
+}
+
+pub(crate) unsafe fn arm_probe_paths(owner: HWND, items: &[(String, bool)]) -> Option<ProbeGuard> {
+    let parent = crate::parent_of(&items.first()?.0)?;
+    if !items.iter().all(|(p, _)| crate::parent_of(p).is_some_and(|q| q.eq_ignore_ascii_case(&parent))) {
+        return None;
+    }
+    let mut folder_pidl = std::ptr::null_mut();
+    SHParseDisplayName(&HSTRING::from(&parent), None, &mut folder_pidl, 0, None).ok()?;
+    if folder_pidl.is_null() {
+        return None;
+    }
+    let desktop = SHGetDesktopFolder().ok();
+    let folder: Option<IShellFolder> = desktop.as_ref().and_then(|d| d.BindToObject(folder_pidl, None).ok());
+    CoTaskMemFree(Some(folder_pidl as _));
+    let folder = folder?;
+    let mut kids: Vec<*mut ITEMIDLIST> = Vec::new();
+    for (path, _) in items {
+        let name = path.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(path);
+        if name.is_empty() {
+            continue;
+        }
+        let mut child: *mut ITEMIDLIST = std::ptr::null_mut();
+        let wide = HSTRING::from(name);
+        if folder.ParseDisplayName(HWND::default(), None, &wide, None, &mut child, std::ptr::null_mut()).is_ok() && !child.is_null() {
+            kids.push(child);
+        }
+    }
+    if kids.len() != items.len() {
+        for p in &kids {
+            CoTaskMemFree(Some(*p as _));
+        }
+        return None;
+    }
+    let refs: Vec<*const ITEMIDLIST> = kids.iter().copied().map(|p| p as *const ITEMIDLIST).collect();
+    let guard = arm_probe(owner, &folder, &refs);
+    for p in kids {
+        CoTaskMemFree(Some(p as _));
+    }
+    Some(guard)
+}
+
+fn clear_probe() {
+    let old = PROBE.with(|p| p.borrow_mut().take());
+    if let Some(ctx) = old {
+        unsafe {
+            if !ctx.folder_pidl.is_null() {
+                CoTaskMemFree(Some(ctx.folder_pidl as _));
+            }
+        }
+    }
 }
 
 pub(crate) fn log_phase(phase: &str, t0: Instant) {
@@ -292,6 +370,7 @@ fn timing() -> bool {
     })
 }
 
+#[allow(dead_code)] // Kept so the filtered-key builder still compiles. The popup does not call it.
 pub(crate) unsafe fn compose(owner: HWND, folder: &IShellFolder, children: &[*const ITEMIDLIST], targets: u8, paths: &[String]) -> Option<IContextMenu> {
     let t0 = Instant::now();
     let folder_pidl = SHGetIDListFromObject(folder).unwrap_or(std::ptr::null_mut());
@@ -327,6 +406,7 @@ pub(crate) unsafe fn compose(owner: HWND, folder: &IShellFolder, children: &[*co
 }
 
 /// Same parent folder: one filtered menu. Mixed parents fall back to the shell menu.
+#[allow(dead_code)] // See `compose`.
 pub(crate) unsafe fn compose_paths(owner: HWND, items: &[(String, bool)], targets: u8) -> Option<IContextMenu> {
     let parent = crate::parent_of(&items.first()?.0)?;
     if !items.iter().all(|(p, _)| crate::parent_of(p).is_some_and(|q| q.eq_ignore_ascii_case(&parent))) {
@@ -377,11 +457,21 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
         if !blocked(r, targets, &off) {
             continue;
         }
+        // A static verb's registry name is the menu verb. Its label is the menu text.
         if !r.verb.is_empty() {
             verbs.push(r.verb.to_ascii_lowercase());
+            if !r.name.is_empty() {
+                names.push(fold_menu(&r.name));
+            }
         }
-        if !r.name.is_empty() {
-            names.push(fold_menu(&r.name));
+        // A COM handler's catalogue name is a product or class name, not the menu text
+        // ("지금 동기화"). Ask it on a throwaway menu, then delete those strings.
+        // Static verbs, including DelegateExecute, already match on the registry verb.
+        if r.clsid.is_some() && r.verb.is_empty() {
+            if let Some((vs, ns)) = probe_marks(r, targets) {
+                verbs.extend(vs);
+                names.extend(ns);
+            }
         }
     }
     let n = GetMenuItemCount(Some(menu));
@@ -393,6 +483,9 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
             continue;
         }
         let id = GetMenuItemID(menu, i as i32);
+        if id != u32::MAX && id >= 0x8000 {
+            continue;
+        }
         let verb = if id != u32::MAX && id >= 1 && id < 0x8000 { super::cmd_verb(cm, (id - 1) as usize) } else { String::new() };
         let verb_l = verb.trim().to_ascii_lowercase();
         if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
@@ -403,6 +496,78 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
         let drop_name = !text.is_empty() && names.iter().any(|n| n == &text);
         if drop_verb || drop_name {
             _ = DeleteMenu(menu, i, MF_BYPOSITION);
+        }
+    }
+    collapse_separators(menu);
+}
+
+/// Verbs and folded labels a disabled COM handler adds. The menu is destroyed; nothing is shown.
+unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String>)> {
+    let guid = row.clsid?;
+    let (folder_pidl, data) = probe_context()?;
+    let cm = cocreate(&guid, &row.anchor, folder_pidl, data.as_ref())?;
+    let menu = CreatePopupMenu().ok()?;
+    let mut flags = CMF_EXPLORE | CMF_CANRENAME;
+    if targets & BACKGROUND == 0 {
+        flags |= CMF_ITEMMENU;
+    }
+    if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+        flags |= CMF_EXTENDEDVERBS;
+    }
+    let hr = cm.QueryContextMenu(menu, 0, 1, 0x7FFF, flags);
+    if hr.is_err() {
+        _ = DestroyMenu(menu);
+        return None;
+    }
+    let mut verbs = Vec::new();
+    let mut names = Vec::new();
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    // Top level only. Deleting that row on the real menu removes the handler's submenu with it.
+    // A child named like a shell command ("Open") must not be collected.
+    for i in 0..n {
+        if super::menu_sep(menu, i) {
+            continue;
+        }
+        let id = GetMenuItemID(menu, i as i32);
+        let verb = if id != u32::MAX && id >= 1 && id < 0x8000 { super::cmd_verb(&cm, (id - 1) as usize) } else { String::new() };
+        let verb_l = verb.trim().to_ascii_lowercase();
+        if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
+            continue;
+        }
+        if !verb_l.is_empty() {
+            verbs.push(verb_l);
+        }
+        let text = fold_menu(&item_text(menu, i));
+        if !text.is_empty() {
+            names.push(text);
+        }
+    }
+    _ = DestroyMenu(menu);
+    Some((verbs, names))
+}
+
+fn probe_context() -> Option<(*mut ITEMIDLIST, Option<IDataObject>)> {
+    PROBE.with(|p| {
+        let borrowed = p.borrow();
+        let ctx = borrowed.as_ref()?;
+        Some((ctx.folder_pidl, ctx.data.clone()))
+    })
+}
+
+unsafe fn collapse_separators(menu: HMENU) {
+    loop {
+        let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+        let mut removed = false;
+        let mut i = 0u32;
+        while i + 1 < n {
+            if super::menu_sep(menu, i) && super::menu_sep(menu, i + 1) && DeleteMenu(menu, i + 1, MF_BYPOSITION).is_ok() {
+                removed = true;
+                break;
+            }
+            i += 1;
+        }
+        if !removed {
+            break;
         }
     }
 }
@@ -426,8 +591,63 @@ fn item_text(menu: HMENU, pos: u32) -> String {
     String::from_utf16_lossy(&buf[..n]).trim_end_matches('\0').to_string()
 }
 
+/// Menu text with accelerators removed: `&Browse` → `Browse`, `Fish && Chips` → `Fish & Chips`.
+fn strip_accel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            if chars.peek() == Some(&'&') {
+                chars.next();
+                out.push('&');
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out.trim().to_string()
+}
+
+fn clean_label(s: &str) -> String {
+    let t = if s.starts_with('@') { indirect(s) } else { s.to_string() };
+    strip_accel(&t)
+}
+
+/// `AABdzCtx Class`, `FileSyncEx`: a COM identifier, not a product name.
+fn identifier_like(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let low = t.to_ascii_lowercase();
+    if low.ends_with(" class") || low.ends_with(" context menu") {
+        return true;
+    }
+    if t.contains([' ', '\t']) {
+        return false;
+    }
+    let marked = low.ends_with("contextmenu") || low.ends_with("class") || low.ends_with("ctx") || low.ends_with("ex");
+    marked && t.chars().any(|c| c.is_ascii_uppercase()) && t.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// First candidate that reads as a product name. Class identifiers are kept only when nothing else exists.
+fn pick_label(candidates: &[&str]) -> String {
+    let mut cleaned = Vec::new();
+    for s in candidates {
+        let t = clean_label(s);
+        if t.is_empty() || parse_guid(&t).is_some() {
+            continue;
+        }
+        cleaned.push(t);
+    }
+    if let Some(s) = cleaned.iter().find(|s| !identifier_like(s)) {
+        return s.clone();
+    }
+    cleaned.into_iter().next().unwrap_or_default()
+}
+
 fn fold_menu(s: &str) -> String {
-    s.chars().filter(|c| *c != '&').collect::<String>().trim().to_ascii_lowercase()
+    strip_accel(s).to_ascii_lowercase()
 }
 
 impl IContextMenu_Impl for CtxHost_Impl {
@@ -884,7 +1104,7 @@ fn catalogue() -> Vec<Row> {
 
 unsafe fn scan_all() -> Vec<Row> {
     let mut rows = Vec::new();
-    let mut dlls: HashMap<String, (String, String)> = HashMap::new();
+    let mut dlls: HashMap<String, (String, String, String)> = HashMap::new();
     let mut seen_clsid: HashMap<String, (String, String, String)> = HashMap::new();
     let approved = read_approved();
     for (root, prefix) in roots() {
@@ -907,7 +1127,7 @@ fn roots() -> [(HKEY, &'static str); 5] {
     ]
 }
 
-unsafe fn scan_extensions(root: HKEY, prefix: &str, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
+unsafe fn scan_extensions(root: HKEY, prefix: &str, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
     let base = prefix.trim_end_matches('\\');
     let Some(key) = open_at(root, base) else { return };
     let mut i = 0u32;
@@ -949,13 +1169,13 @@ fn progid_like(s: &str) -> bool {
     !t.is_empty() && t.len() < 128 && !t.starts_with('.') && !t.contains(['\\', '/']) && parse_guid(t).is_none()
 }
 
-unsafe fn scan_class(root: HKEY, prefix: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
+unsafe fn scan_class(root: HKEY, prefix: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
     let full = join_reg(prefix, rel);
     scan_handlers(root, &full, rel, targets, rows, dlls, clsids, approved);
     scan_verbs(root, &full, rel, targets, rows, dlls, clsids);
 }
 
-unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
+unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>, approved: &HashMap<String, String>) {
     let path = format!(r"{full}\shellex\ContextMenuHandlers");
     let Some(key) = open_at(root, &path) else { return };
     let mut i = 0u32;
@@ -971,11 +1191,14 @@ unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &m
         let guid = parse_guid(&value).or_else(|| parse_guid(&name));
         let Some(guid) = guid else { continue };
         let (title, dll, company) = clsid_meta(&guid, approved, dlls, clsids);
-        let builtin = com_builtin(&name, &guid, &dll, &company);
-        let mut friendly = if !title.is_empty() { title } else if parse_guid(&name).is_none() { name.clone() } else { String::new() };
-        if friendly.is_empty() {
-            friendly = guid_text(&guid);
+        let mut friendly = title;
+        if (friendly.is_empty() || identifier_like(&friendly)) && parse_guid(&name).is_none() && !identifier_like(&name) {
+            friendly = clean_label(&name);
         }
+        if friendly.is_empty() {
+            friendly = if parse_guid(&name).is_none() { clean_label(&name) } else { guid_text(&guid) };
+        }
+        let builtin = com_builtin(&name, &guid, &dll, &company) || builtin_component_name(&friendly) || builtin_component_name(&name);
         upsert(rows, Row {
             id: format!("clsid:{}", guid_text(&guid)),
             name: friendly,
@@ -995,7 +1218,7 @@ unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &m
     _ = RegCloseKey(key);
 }
 
-unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String)>, clsids: &mut HashMap<String, (String, String, String)>) {
+unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>) {
     let path = format!(r"{full}\shell");
     let Some(key) = open_at(root, &path) else { return };
     let mut i = 0u32;
@@ -1031,11 +1254,12 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
         if command.is_empty() && delegate_guid.is_none() {
             continue;
         }
-        let builtin = verb_builtin(&name, &command, &delegate_dll);
         let friendly = {
-            let shown = if display.is_empty() { name.clone() } else { indirect(&display) };
-            if shown.is_empty() { name.clone() } else { shown }
+            let raw = if display.is_empty() { name.as_str() } else { display.as_str() };
+            let shown = clean_label(raw);
+            if shown.is_empty() { clean_label(&name) } else { shown }
         };
+        let builtin = verb_builtin(&name, &command, &delegate_dll) || builtin_component_name(&friendly);
         upsert(rows, Row {
             id: format!("verb:{}", name.to_ascii_lowercase()),
             name: friendly,
@@ -1074,10 +1298,10 @@ fn upsert(rows: &mut Vec<Row>, incoming: Row) {
         if have.clsid.is_none() {
             have.clsid = incoming.clsid;
         }
-        if have.name.is_empty() || parse_guid(&have.name).is_some() {
-            if !incoming.name.is_empty() {
-                have.name = incoming.name;
-            }
+        let incoming_better = !incoming.name.is_empty()
+            && (have.name.is_empty() || parse_guid(&have.name).is_some() || (identifier_like(&have.name) && !identifier_like(&incoming.name)));
+        if incoming_better {
+            have.name = incoming.name;
         }
         if have.verb.is_empty() {
             have.verb = incoming.verb;
@@ -1127,13 +1351,23 @@ fn verb_builtin(key: &str, command: &str, delegate_dll: &str) -> bool {
 }
 
 fn inbox_dll(dll: &str, company: &str) -> bool {
-    if dll.is_empty() || !under_windows(dll) {
+    if dll.is_empty() {
         return false;
     }
-    if !company.is_empty() && !company.to_ascii_lowercase().contains("microsoft") {
-        return false;
+    let path = if dll.contains('%') { expand_env(dll) } else { dll.to_string() };
+    let microsoft = company.to_ascii_lowercase().contains("microsoft");
+    if under_windows(&path) {
+        // A third-party DLL that happens to sit in System32 stays listed.
+        return company.is_empty() || microsoft;
     }
-    true
+    // Photo Viewer and OLE DB ship outside System32 (Common Files\System\Ole DB, PhotoViewer.dll).
+    if microsoft {
+        let p = path.replace('/', "\\").to_ascii_lowercase();
+        if p.contains("\\ole db\\") || p.contains("photoviewer") || p.contains("msdasc") || p.contains("shimgvw") {
+            return true;
+        }
+    }
+    false
 }
 
 fn command_inbox(cmd: &str) -> bool {
@@ -1163,14 +1397,22 @@ fn foreign_path(low: &str) -> bool {
 }
 
 pub(crate) fn under_windows(path: &str) -> bool {
-    let p = path.trim().trim_matches('"').replace('/', "\\").to_ascii_lowercase();
-    let p = p.trim_start_matches("\\\\?\\").to_string();
-    p.contains("\\windows\\system32\\")
-        || p.contains("\\windows\\syswow64\\")
-        || p.contains("\\windows\\systemapps\\")
-        || p.contains("\\windows\\winsxs\\")
-        || p.contains("\\windows\\systemresources\\")
-        || p.contains("\\windows\\explorer.exe")
+    let expanded = if path.contains('%') { expand_env(path) } else { path.to_string() };
+    let p = expanded.trim().trim_matches('"').replace('/', "\\").to_ascii_lowercase();
+    let p = p.trim_start_matches("\\\\?\\");
+    p.contains("\\windows\\")
+}
+
+/// Windows-shipped shell components that are not in the known-CLSID list.
+fn builtin_component_name(name: &str) -> bool {
+    let n = fold_menu(name);
+    if n.contains("windows photo viewer") || (n.contains("photo") && n.contains("image verbs")) {
+        return true;
+    }
+    if n.contains("ole db") && (n.contains("microsoft") || n.contains("data link")) {
+        return true;
+    }
+    false
 }
 
 pub(crate) fn builtin_verb(name: &str) -> bool {
@@ -1311,21 +1553,20 @@ fn builtin_clsid(g: &GUID) -> bool {
     IDS.contains(&text.as_str())
 }
 
-fn clsid_meta(guid: &GUID, approved: &HashMap<String, String>, dlls: &mut HashMap<String, (String, String)>, clsids: &mut HashMap<String, (String, String, String)>) -> (String, String, String) {
+fn clsid_meta(guid: &GUID, approved: &HashMap<String, String>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>) -> (String, String, String) {
     let key = guid_text(guid);
     if let Some((name, dll, company)) = clsids.get(&key) {
         return (name.clone(), dll.clone(), company.clone());
     }
-    let (mut name, dll) = unsafe { read_clsid(&key) };
-    if name.is_empty() {
-        if let Some(n) = approved.get(&key) {
-            name = n.clone();
-        }
-    }
-    let (desc, company) = if dll.is_empty() { (String::new(), String::new()) } else { file_version(&dll, dlls) };
-    if name.is_empty() {
-        name = desc.clone();
-    }
+    let (default_name, localized, dll) = unsafe { read_clsid(&key) };
+    let approved_name = approved.get(&key).cloned().unwrap_or_default();
+    let (desc, product, company) = if dll.is_empty() {
+        (String::new(), String::new(), String::new())
+    } else {
+        file_version(&dll, dlls)
+    };
+    // LocalizedString, then the DLL's product and description, then the Approved list, then the CLSID default.
+    let mut name = pick_label(&[&localized, &product, &desc, &approved_name, &default_name]);
     if name.is_empty() {
         name = dll.rsplit(['\\', '/']).next().unwrap_or("").to_string();
     }
@@ -1333,7 +1574,8 @@ fn clsid_meta(guid: &GUID, approved: &HashMap<String, String>, dlls: &mut HashMa
     (name, dll, company)
 }
 
-unsafe fn read_clsid(guid: &str) -> (String, String) {
+/// CLSID default, LocalizedString, and the server DLL. LocalizedString is often `@dll,-id`.
+unsafe fn read_clsid(guid: &str) -> (String, String, String) {
     let braced = format!("{{{guid}}}");
     let paths = [
         format!(r"CLSID\{braced}"),
@@ -1344,6 +1586,7 @@ unsafe fn read_clsid(guid: &str) -> (String, String) {
     ];
     let roots = [HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_LOCAL_MACHINE, HKEY_CLASSES_ROOT];
     let mut name = String::new();
+    let mut localized = String::new();
     let mut dll = String::new();
     for (root, path) in roots.iter().copied().zip(paths.iter()) {
         let Some(k) = open_at(root, path) else { continue };
@@ -1351,6 +1594,12 @@ unsafe fn read_clsid(guid: &str) -> (String, String) {
             let v = key_sz(k, PCWSTR::null());
             if parse_guid(&v).is_none() {
                 name = v;
+            }
+        }
+        if localized.is_empty() {
+            let v = key_sz_named(k, "LocalizedString");
+            if !v.is_empty() {
+                localized = v;
             }
         }
         if dll.is_empty() {
@@ -1366,11 +1615,11 @@ unsafe fn read_clsid(guid: &str) -> (String, String) {
             }
         }
         _ = RegCloseKey(k);
-        if !name.is_empty() && !dll.is_empty() {
+        if !dll.is_empty() && !localized.is_empty() {
             break;
         }
     }
-    (name, dll)
+    (name, localized, dll)
 }
 
 unsafe fn read_approved() -> HashMap<String, String> {
@@ -1406,26 +1655,28 @@ unsafe fn read_approved() -> HashMap<String, String> {
     out
 }
 
-fn file_version(path: &str, cache: &mut HashMap<String, (String, String)>) -> (String, String) {
-    let key = path.to_ascii_lowercase();
+fn file_version(path: &str, cache: &mut HashMap<String, (String, String, String)>) -> (String, String, String) {
+    let expanded = if path.contains('%') { expand_env(path) } else { path.to_string() };
+    let key = expanded.to_ascii_lowercase();
     if let Some(v) = cache.get(&key) {
         return v.clone();
     }
-    let got = unsafe { read_version(path) };
+    let got = unsafe { read_version(&expanded) };
     cache.insert(key, got.clone());
     got
 }
 
-unsafe fn read_version(path: &str) -> (String, String) {
+/// FileDescription, ProductName, CompanyName.
+unsafe fn read_version(path: &str) -> (String, String, String) {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut handle = 0u32;
     let size = GetFileVersionInfoSizeW(PCWSTR(wide.as_ptr()), &mut handle);
     if size == 0 || size > 8 * 1024 * 1024 {
-        return (String::new(), String::new());
+        return (String::new(), String::new(), String::new());
     }
     let mut block = vec![0u8; size as usize];
     if !GetFileVersionInfoW(PCWSTR(wide.as_ptr()), 0, size, block.as_mut_ptr() as _).as_bool() {
-        return (String::new(), String::new());
+        return (String::new(), String::new(), String::new());
     }
     let mut trans = std::ptr::null_mut();
     let mut tlen = 0u32;
@@ -1441,15 +1692,14 @@ unsafe fn read_version(path: &str) -> (String, String) {
         let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
         String::from_utf16_lossy(&slice[..end]).trim().to_string()
     };
-    let _ = query;
     if !VerQueryValueW(block.as_ptr() as _, w!("\\VarFileInfo\\Translation"), &mut trans, &mut tlen).as_bool() || trans.is_null() || tlen < 4 {
-        return (String::new(), String::new());
+        return (String::new(), String::new(), String::new());
     }
     let b = std::slice::from_raw_parts(trans as *const u8, 4);
     let lang = u16::from_le_bytes([b[0], b[1]]);
     let cp = u16::from_le_bytes([b[2], b[3]]);
     let stem = format!("\\StringFileInfo\\{lang:04x}{cp:04x}");
-    (query(&format!("{stem}\\FileDescription")), query(&format!("{stem}\\CompanyName")))
+    (query(&format!("{stem}\\FileDescription")), query(&format!("{stem}\\ProductName")), query(&format!("{stem}\\CompanyName")))
 }
 
 fn indirect(s: &str) -> String {
@@ -1467,6 +1717,7 @@ fn indirect(s: &str) -> String {
     if t.is_empty() { s.to_string() } else { t }
 }
 
+#[allow(dead_code)] // Only the unused filtered-key builder asks for this class list.
 pub(crate) fn classes_for(targets: u8, paths: &[String]) -> Vec<String> {
     let mut v = Vec::new();
     let mut push = |s: String| {
@@ -1510,6 +1761,7 @@ pub(crate) fn classes_for(targets: u8, paths: &[String]) -> Vec<String> {
     v
 }
 
+#[allow(dead_code)]
 fn ext_of(path: &str) -> Option<String> {
     let name = path.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(path);
     let (_, ext) = name.rsplit_once('.')?;
@@ -1519,6 +1771,7 @@ fn ext_of(path: &str) -> Option<String> {
     Some(ext.to_ascii_lowercase())
 }
 
+#[allow(dead_code)]
 unsafe fn prog_of(ext: &str) -> Option<String> {
     let k = open_hkcr(&format!(".{ext}"))?;
     let v = key_sz(k, PCWSTR::null());
@@ -1526,6 +1779,7 @@ unsafe fn prog_of(ext: &str) -> Option<String> {
     progid_like(&v).then_some(v)
 }
 
+#[allow(dead_code)]
 unsafe fn perceived_of(ext: &str) -> Option<String> {
     let k = open_hkcr(&format!(".{ext}"))?;
     let v = key_sz_named(k, "PerceivedType");
@@ -1749,5 +2003,36 @@ mod tests {
         assert_eq!(guid_text(&g), "7ba4c740-9e81-11cf-99d3-00aa004ae837");
         assert!(builtin_clsid(&g));
         assert!(parse_guid("not-a-guid").is_none());
+    }
+
+    #[test]
+    fn menu_labels_drop_accelerators_and_class_identifiers() {
+        assert_eq!(strip_accel("&Browse"), "Browse");
+        assert_eq!(strip_accel("C&onfigure..."), "Configure...");
+        assert_eq!(strip_accel("Fish && Chips"), "Fish & Chips");
+        assert_eq!(fold_menu("C&onfigure..."), "configure...");
+        assert_eq!(fold_menu("Fish && Chips"), fold_menu("Fish & Chips"));
+        assert!(identifier_like("AABdzCtx Class"));
+        assert!(identifier_like("SynoFolderContextMenu Class"));
+        assert!(identifier_like("FileSyncEx"));
+        assert!(identifier_like("HVContext Class"));
+        assert!(!identifier_like("7-Zip"));
+        assert!(!identifier_like("Synology Drive"));
+        assert_eq!(pick_label(&["AABdzCtx Class", "Synology Drive"]), "Synology Drive");
+        assert_eq!(pick_label(&["FileSyncEx"]), "FileSyncEx");
+        assert!(builtin_component_name("Windows Photo Viewer Image Verbs"));
+        assert!(builtin_component_name("Microsoft OLE DB Service Component Data Links"));
+        assert!(!builtin_component_name("7-Zip"));
+        assert!(!builtin_component_name("Synology Drive"));
+        assert!(under_windows(r"%SystemRoot%\System32\msdasc.dll"));
+        assert!(under_windows(r"%windir%\System32\PhotoViewer.dll"));
+        assert!(under_windows(r"C:\Windows\System32\shimgvw.dll"));
+        assert!(!under_windows(r"C:\Program Files\7-Zip\7-zip.dll"));
+    }
+
+    #[test]
+    fn the_filtered_key_builder_stays_compiled() {
+        let _compose: unsafe fn(HWND, &IShellFolder, &[*const ITEMIDLIST], u8, &[String]) -> Option<IContextMenu> = compose;
+        let _paths: unsafe fn(HWND, &[(String, bool)], u8) -> Option<IContextMenu> = compose_paths;
     }
 }

@@ -722,7 +722,12 @@ fn ctx_chips(targets: u8, rect: RECT, dpi: i32) -> Vec<(u8, RECT)> {
             continue;
         }
         let label = crate::shell::ctxmenu::target_label(bit);
-        let w = sc(dpi, 16) + label.chars().count() as i32 * sc(dpi, 7);
+        // Hangul and kana are about twice an ASCII cell. A flat 7px count clips "드라이브" to "드라…".
+        let mut text_w = 0i32;
+        for ch in label.chars() {
+            text_w += if ch.is_ascii() { sc(dpi, 7) } else { sc(dpi, 14) };
+        }
+        let w = sc(dpi, 20) + text_w;
         let r = RECT { left: x - w, top: rect.top + sc(dpi, 14), right: x, bottom: rect.top + sc(dpi, 34) };
         x = r.left - sc(dpi, 6);
         out.push((bit, r));
@@ -1174,5 +1179,18 @@ mod tests {
         let g = geo(client(), &shot(page, "右クリック"));
         assert!(g.show[CTX_PAGE]);
         assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
+    }
+
+    #[test]
+    fn drive_chip_fits_the_korean_label() {
+        let _lock = ui_lock();
+        let _keep = lang(1);
+        let bits = crate::shell::ctxmenu::FILE | crate::shell::ctxmenu::FOLDER | crate::shell::ctxmenu::BACKGROUND | crate::shell::ctxmenu::DRIVE;
+        let chips = ctx_chips(bits, RECT { left: 0, top: 0, right: 900, bottom: 48 }, 96);
+        assert_eq!(chips.len(), 4);
+        let (_, r) = chips.iter().find(|(b, _)| *b == crate::shell::ctxmenu::DRIVE).copied().unwrap();
+        let w = r.right - r.left;
+        assert!(w >= 18 + 13 * 4, "drive chip width {w}");
+        assert_eq!(crate::shell::ctxmenu::target_label(crate::shell::ctxmenu::DRIVE), "드라이브");
     }
 }
