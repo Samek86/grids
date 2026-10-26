@@ -57,6 +57,9 @@ pub(crate) struct Desk {
     pub(crate) dpi: i32,
     pub(crate) panes: Vec<Option<Pane>>,
     pub(crate) drag: Option<Hit>,
+    pub(crate) pane_press: Option<PanePress>, // header press; a drag only after it moves
+    pub(crate) pane_drag: Option<PaneMove>,   // pane grabbed by its header or tab strip
+    pub(crate) pane_over: HWND,               // accent preview of the drop region
     pub(crate) gap_hot: Option<Hit>, // splitter under the pointer, drawn in the accent colour
     pub(crate) sizing: bool, // inside the window's own move/size loop
     pub(crate) was_max: bool, // maximized when last not minimized (kept while minimized)
@@ -207,6 +210,9 @@ pub(crate) fn blank_desk() -> Desk {
         dpi: 96,
         panes: (0..MAXP).map(|_| None).collect(),
         drag: None,
+        pane_press: None,
+        pane_drag: None,
+        pane_over: HWND::default(),
         gap_hot: None,
         sizing: false,
         was_max: false,
@@ -384,7 +390,7 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if h.0.is_null() || d.main.0.is_null() {
         return false;
     }
-    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.fav_mgr || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || h == d.peek || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
+    if h == d.main || h == d.tabs_hwnd || h == d.tab_edit || h == d.tree_hwnd || h == d.fav_popup || h == d.fav_mgr || h == d.load || h == d.grid || h == d.tip || h == d.keys_popup || h == d.peek || h == d.pane_over || d.matcher.as_ref().is_some_and(|m| m.hwnd == h || m.edit == h) || d.bars.contains(&h) {
         return true;
     }
     if !d.fav_mgr.0.is_null() && unsafe { IsChild(d.fav_mgr, h).as_bool() } {
