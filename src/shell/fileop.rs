@@ -488,44 +488,6 @@ pub(crate) fn default_new_name() -> String {
     tr("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt").into()
 }
 
-pub(crate) unsafe fn create_text_file() {
-    let i = active_pane();
-    let dir = app(|a| a.s.paths[i].clone());
-    if !is_fs(&dir) {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
-    }
-    let base = app(|a| if a.s.new_name.trim().is_empty() { default_new_name() } else { a.s.new_name.clone() });
-    let dirp = PathBuf::from(&dir);
-    let first = dirp.join(&base);
-    let stem = first.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    let ext = first.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    // create_new: never truncate a file that is already there, even one created a moment ago.
-    let mut made = false;
-    for n in 1u32..1000 {
-        let path = match n {
-            1 => first.clone(),
-            _ if ext.is_empty() => dirp.join(format!("{stem} ({n})")),
-            _ => dirp.join(format!("{stem} ({n}).{ext}")),
-        };
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => {
-                made = true;
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => break,
-        }
-    }
-    if !made {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
-    }
-    if let Some(sv) = view_of::<IShellView>(i) {
-        _ = sv.Refresh();
-    }
-}
-
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
     let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
     let opts = dlg.GetOptions().unwrap_or_default();
