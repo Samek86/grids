@@ -221,7 +221,14 @@ fn tab_heading(name: &str, index: usize) -> String {
 }
 
 fn path_line(index: usize, path: &str) -> String {
-    let shown = if path.is_empty() { tr("(empty)", "(비어 있음)", "(空)") } else { path };
+    // Shell folders (::{CLSID}) read as their name, e.g. This PC, not the raw id.
+    let shown = if path.is_empty() {
+        tr("(empty)", "(비어 있음)", "(空)").to_string()
+    } else if path.starts_with("::") {
+        crate::short_name(path)
+    } else {
+        path.to_string()
+    };
     format!("{}   {shown}", index + 1)
 }
 
