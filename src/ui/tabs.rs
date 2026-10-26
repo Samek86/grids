@@ -517,8 +517,12 @@ pub(crate) unsafe fn switch_tab(j: usize) {
             a.panes = no_panes();
         }
         lru_forget(a, j);
+        let old = a.s.tab;
+        stash_tab_order(a, old);
         a.s.tab = j;
         a.s.publish();
+        restore_tab_order(a, j);
+        let _ = pull_dirty(a);
         a.zoom = None;
         a.s.tabs[j].filters.clone()
     });
@@ -532,6 +536,7 @@ pub(crate) unsafe fn switch_tab(j: usize) {
     tabs_invalidate();
     evict_park();
     note_save();
+    refresh_save_button();
 }
 
 pub(crate) unsafe fn switch_rel(d: i32) {
@@ -566,11 +571,18 @@ pub(crate) unsafe fn new_tab() {
             pane_cur: vec![0; MAXP],
             ..a.s.clone()
         };
+        let old = a.s.tab;
+        stash_tab_order(a, old);
         let name = next_tab_name(&a.s.tabs);
-        a.s.tabs.push(Tab::from_live(&fresh, name, false, vec![String::new(); MAXP]));
+        let tab = Tab::from_live(&fresh, name, false, vec![String::new(); MAXP]);
+        a.s.tabs.push(tab.clone());
         a.park.push(no_panes());
+        let at = a.s.tabs.len() - 1;
+        insert_tab_base(a, at, &tab);
         a.s.tab = a.s.tabs.len() - 1;
         a.s.publish();
+        a.s.order.clear();
+        let _ = pull_dirty(a);
         a.zoom = None;
     });
     put_filters(&vec![String::new(); MAXP]);
@@ -582,6 +594,7 @@ pub(crate) unsafe fn new_tab() {
     tabs_invalidate();
     evict_park();
     note_save();
+    refresh_save_button();
 }
 
 pub(crate) unsafe fn duplicate_tab(i: usize) {
@@ -592,12 +605,11 @@ pub(crate) unsafe fn duplicate_tab(i: usize) {
             return None;
         }
         fit_park(a);
-        let mut t = a.s.tabs[i].clone();
-        t.name = duplicate_name(&a.s.tabs, &t.name);
-        t.locked = false;
+        let t = fork_tab(&a.s.tabs[i], duplicate_name(&a.s.tabs, &a.s.tabs[i].name));
         let j = (i + 1).min(a.s.tabs.len());
-        a.s.tabs.insert(j, t);
+        a.s.tabs.insert(j, t.clone());
         a.park.insert(j, no_panes());
+        insert_tab_base(a, j, &t);
         lru_insert_shift(a, j);
         if j <= a.s.tab {
             a.s.tab += 1;
@@ -623,6 +635,7 @@ pub(crate) unsafe fn close_tab(i: usize) {
         fit_park(a);
         let tab = a.s.tabs.remove(i);
         let mut parked = a.park.remove(i);
+        remove_tab_base(a, i);
         lru_remove_shift(a, i);
         a.closed.insert(0, tab);
         a.closed.truncate(CLOSED_KEEP);
@@ -635,6 +648,8 @@ pub(crate) unsafe fn close_tab(i: usize) {
             lru_forget(a, j);
             parked = std::mem::replace(&mut a.panes, next);
             a.s.publish();
+            restore_tab_order(a, j);
+            let _ = pull_dirty(a);
         } else if i < was {
             a.s.tab = was - 1;
         }
@@ -653,6 +668,7 @@ pub(crate) unsafe fn close_tab(i: usize) {
     }
     tabs_invalidate();
     note_save();
+    refresh_save_button();
 }
 
 pub(crate) unsafe fn close_other_tabs(keep: usize) {
@@ -671,8 +687,9 @@ pub(crate) unsafe fn reopen_closed_at(k: usize) {
         let t = a.closed.remove(k);
         fit_park(a);
         let j = (a.s.tab + 1).min(a.s.tabs.len());
-        a.s.tabs.insert(j, t);
+        a.s.tabs.insert(j, t.clone());
         a.park.insert(j, no_panes());
+        insert_tab_base(a, j, &t);
         lru_insert_shift(a, j);
         Some(j)
     });
@@ -692,6 +709,7 @@ pub(crate) unsafe fn reorder_tab(from: usize, to: usize) {
         fit_park(a);
         reorder_vec(&mut a.s.tabs, from, to);
         reorder_vec(&mut a.park, from, to);
+        reorder_vec(&mut a.tab_base, from, to);
         a.park_lru = a.park_lru.iter().copied().map(|i| moved_active(i, from, to)).collect();
         a.s.tab = moved_active(a.s.tab, from, to);
     });
@@ -841,6 +859,13 @@ pub(crate) unsafe fn install_grids(s: Session) {
         a.park = (0..n).map(|_| no_panes()).collect();
         a.park_lru.clear();
         a.zoom = None;
+        let order = a.s.order.clone();
+        let tab = a.s.tab;
+        a.tab_base = a.s.tabs.iter().enumerate().map(|(i, t)| TabBase {
+            grid: t.clone(),
+            order: if i == tab { order.clone() } else { Vec::new() },
+        }).collect();
+        let _ = pull_dirty(a);
     });
     show_active_tab();
 }

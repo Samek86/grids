@@ -29,6 +29,9 @@ pub(crate) struct Tab {
     pub(crate) pane_folders: Vec<Vec<String>>,
     /// Per pane: which pane-tab is current. The current entry in `pane_folders` is stale; `paths[i]` is the truth.
     pub(crate) pane_cur: Vec<usize>,
+    /// `.grids` file this tab was saved as, or that a session was loaded into. Empty means Save asks for a name.
+    /// Other tabs keep their own paths. Omitted from older files, which still load.
+    pub(crate) session: String,
 }
 
 /// A title the user typed. Empty and the old numeric defaults (`"1"`, `"2"`, …) are automatic.
@@ -116,6 +119,7 @@ impl Tab {
             tints: s.tints.clone(),
             pane_folders: pack.0,
             pane_cur: pack.1,
+            session: String::new(),
         }
     }
 }
@@ -242,7 +246,9 @@ pub(crate) struct Session {
     pub(crate) pane_folders: Vec<Vec<String>>,
     pub(crate) pane_cur: Vec<usize>,
     pub(crate) hotkey: bool,           // global hotkey brings Panegrid forward; the chord is in the keymap
-    pub(crate) file: String,           // named session (.grids) the layout was last loaded from / saved to
+    /// Session file of the tab on screen. Mirrors `tabs[tab].session`.
+    /// Older files stored only this, for the whole window; it is adopted onto the active tab.
+    pub(crate) file: String,
     pub(crate) favs: Vec<String>,      // favourite leaves, depth-first (`path` or `path\tname`)
     pub(crate) tree: Vec<FavNode>,     // groups and leaves; `favs` is derived from this
     pub(crate) recent: Vec<String>,    // recently visited folders from every pane, newest first, app-wide
@@ -494,9 +500,11 @@ impl Session {
         let name = tabs[i].name.clone();
         let locked = tabs[i].locked;
         let color = tabs[i].color;
+        let session = tabs[i].session.clone();
         let filters = tabs[i].filters.clone();
         tabs[i] = Tab::from_live(self, name, locked, filters);
         tabs[i].color = color;
+        tabs[i].session = session;
         tabs
     }
 
@@ -505,6 +513,7 @@ impl Session {
         if self.tabs.is_empty() {
             self.tabs.push(Tab::from_live(self, "1".into(), false, vec![String::new(); MAXP]));
             self.tab = 0;
+            settle_sessions(self);
             return;
         }
         if self.tab >= self.tabs.len() {
@@ -513,9 +522,12 @@ impl Session {
         let name = self.tabs[self.tab].name.clone();
         let locked = self.tabs[self.tab].locked;
         let color = self.tabs[self.tab].color;
+        let session = self.tabs[self.tab].session.clone();
         let filters = pad_filters(std::mem::take(&mut self.tabs[self.tab].filters));
         self.tabs[self.tab] = Tab::from_live(self, name, locked, filters);
         self.tabs[self.tab].color = color;
+        self.tabs[self.tab].session = session;
+        settle_sessions(self);
     }
 
     /// Copy the active tab onto the live grid fields.
@@ -537,6 +549,7 @@ impl Session {
         self.tints = t.tints;
         self.pane_folders = pad_pane_folders(t.pane_folders);
         self.pane_cur = pad_pane_cur(t.pane_cur);
+        settle_sessions(self);
     }
 
     pub(crate) fn accent_now(&self) -> u32 {
@@ -802,11 +815,15 @@ impl Session {
     }
 
     /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
+    /// Per-tab session paths stay on the window. A `.grids` file is not tied to the place it was written.
     pub(crate) fn snapshot(&self) -> String {
         let mut c = self.clone();
         c.anchor();
         c.win = None;
         c.file.clear();
+        for t in &mut c.tabs {
+            t.session.clear();
+        }
         c.favs.clear();
         c.tree.clear();
         c.recent.clear();
@@ -957,6 +974,58 @@ fn order_moved(order: &[u8]) -> bool {
     order.iter().enumerate().any(|(k, &o)| k != o as usize)
 }
 
+fn pad_tab_slots(t: &mut Tab) {
+    t.paths.resize(MAXP, String::new());
+    t.views.resize(MAXP, (0, 0));
+    t.cols.resize(MAXP, String::new());
+    t.tints.resize(MAXP, 0);
+    t.pane_folders.resize(MAXP, Vec::new());
+    t.pane_cur.resize(MAXP, 0);
+    t.filters.resize(MAXP, String::new());
+    t.paths.truncate(MAXP);
+    t.views.truncate(MAXP);
+    t.cols.truncate(MAXP);
+    t.tints.truncate(MAXP);
+    t.pane_folders.truncate(MAXP);
+    t.pane_cur.truncate(MAXP);
+    t.filters.truncate(MAXP);
+}
+
+/// The active tab's clean grid follows a pane swap, the same way `swap_in` moves the old window baseline.
+/// Views and columns stay lined up, so the save dot is the permutation (`order`), not a false layout change.
+pub(crate) fn swap_tab_slots(t: &mut Tab, i: usize, j: usize) {
+    if i >= MAXP || j >= MAXP || i == j {
+        return;
+    }
+    pad_tab_slots(t);
+    t.paths.swap(i, j);
+    t.views.swap(i, j);
+    t.cols.swap(i, j);
+    t.tints.swap(i, j);
+    t.pane_folders.swap(i, j);
+    t.pane_cur.swap(i, j);
+    t.filters.swap(i, j);
+}
+
+/// `order[slot]` is the slot whose pane lands there. Same rule as `Session::reorder`.
+pub(crate) fn reorder_tab_slots(t: &mut Tab, order: &[u8]) {
+    if order.len() != MAXP || !order_moved(order) || order.iter().any(|&k| k as usize >= MAXP) {
+        return;
+    }
+    pad_tab_slots(t);
+    let old = t.clone();
+    for (i, &k) in order.iter().enumerate() {
+        let k = k as usize;
+        t.paths[i] = old.paths[k].clone();
+        t.views[i] = old.views[k];
+        t.cols[i] = old.cols[k].clone();
+        t.tints[i] = old.tints[k];
+        t.pane_folders[i] = old.pane_folders[k].clone();
+        t.pane_cur[i] = old.pane_cur[k];
+        t.filters[i] = old.filters[k].clone();
+    }
+}
+
 /// Panes i and j trade places in the current state and in the save baseline, so the two still line up.
 /// `order` notes the move, which the session file does not know about.
 pub(crate) fn swap_in(cur: &mut Session, base: Option<&mut Session>, i: usize, j: usize) {
@@ -994,6 +1063,256 @@ pub(crate) fn permute_in(cur: &mut Session, base: Option<&mut Session>, perm: &[
 /// The save dot: panes moved from where the session file has them, or a layout change.
 pub(crate) fn session_dirty(cur: &Session, base: Option<&Session>) -> bool {
     order_moved(&cur.order) || base.is_some_and(|b| layout_differs(cur, b))
+}
+
+/// Where Save writes for the tab on screen. `AskName` uses `ask_session_path`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SaveChoice<'a> {
+    Overwrite(&'a str),
+    AskName,
+}
+
+pub(crate) fn save_choice(tabs: &[Tab], active: usize) -> SaveChoice<'_> {
+    match tabs.get(active).map(|t| t.session.as_str()).filter(|p| !p.is_empty()) {
+        Some(p) => SaveChoice::Overwrite(p),
+        None => SaveChoice::AskName,
+    }
+}
+
+/// Legacy window path → the active tab only, when no tab has a path of its own yet.
+/// Then `file` mirrors the tab on screen. A later save or load touches only that tab.
+pub(crate) fn settle_sessions(s: &mut Session) {
+    let any = s.tabs.iter().any(|t| !t.session.is_empty());
+    if !any && !s.file.is_empty() && !s.tabs.is_empty() {
+        let i = s.tab.min(s.tabs.len() - 1);
+        s.tabs[i].session = std::mem::take(&mut s.file);
+    }
+    if !s.tabs.is_empty() {
+        let i = s.tab.min(s.tabs.len() - 1);
+        s.file = s.tabs[i].session.clone();
+    }
+}
+
+/// Point tab `i` at `path`. Every other tab keeps the path it had.
+pub(crate) fn bind_tab_session(s: &mut Session, i: usize, path: &str) -> bool {
+    let Some(t) = s.tabs.get_mut(i) else { return false };
+    t.session = path.to_string();
+    settle_sessions(s);
+    true
+}
+
+/// A whole-window load (startup, boot file, new window). Only the active tab is linked to `path`.
+pub(crate) fn link_loaded_window(s: &mut Session, path: &str) {
+    for t in &mut s.tabs {
+        t.session.clear();
+    }
+    if !s.tabs.is_empty() && !path.is_empty() {
+        let i = s.tab.min(s.tabs.len() - 1);
+        s.tabs[i].session = path.to_string();
+    }
+    s.file = path.to_string();
+    settle_sessions(s);
+}
+
+/// Put one saved grid on the live fields. The tab list, names, and session links stay put.
+pub(crate) fn apply_tab_grid(s: &mut Session, t: &Tab) {
+    let heights: Vec<usize> = t.heights.iter().copied().filter(|&n| n > 0).collect();
+    s.heights = if heights.is_empty() { vec![1] } else { heights };
+    s.colr = t.colr.clone();
+    s.rowr = t.rowr.clone();
+    let n = s.heights.iter().sum::<usize>().max(1);
+    s.active = t.active.min(n - 1);
+    let mut paths = t.paths.clone();
+    let mut views = t.views.clone();
+    let mut cols = t.cols.clone();
+    let mut tints = t.tints.clone();
+    paths.resize(MAXP, String::new());
+    views.resize(MAXP, (0, 0));
+    cols.resize(MAXP, String::new());
+    tints.resize(MAXP, 0);
+    paths.truncate(MAXP);
+    views.truncate(MAXP);
+    cols.truncate(MAXP);
+    tints.truncate(MAXP);
+    s.paths = paths;
+    s.views = views;
+    s.cols = cols;
+    s.tints = tints;
+    s.pane_folders = pad_pane_folders(t.pane_folders.clone());
+    s.pane_cur = pad_pane_cur(t.pane_cur.clone());
+}
+
+/// Load `incoming` into tab `i` and link that tab to `path`. Other tabs' links are unchanged.
+/// The loaded grid replaces the tab's panes. Its name, lock, and stripe stay.
+pub(crate) fn load_into_tab(s: &mut Session, i: usize, incoming: &Tab, path: &str) -> Vec<String> {
+    if s.tabs.is_empty() {
+        s.anchor();
+    }
+    if i >= s.tabs.len() {
+        return s.tabs.iter().map(|t| t.session.clone()).collect();
+    }
+    let (name, locked, color) = {
+        let t = &s.tabs[i];
+        (t.name.clone(), t.locked, t.color)
+    };
+    let others: Vec<(usize, String)> = s.tabs.iter().enumerate().filter(|(k, _)| *k != i).map(|(k, t)| (k, t.session.clone())).collect();
+    if i == s.tab.min(s.tabs.len() - 1) {
+        s.tabs[i].filters = pad_filters(incoming.filters.clone());
+        apply_tab_grid(s, incoming);
+        s.anchor();
+        if let Some(t) = s.tabs.get_mut(i) {
+            t.name = name;
+            t.locked = locked;
+            t.color = color;
+            t.session = path.to_string();
+        }
+    } else {
+        let mut t = incoming.clone();
+        t.name = name;
+        t.locked = locked;
+        t.color = color;
+        t.session = path.to_string();
+        t.filters = pad_filters(incoming.filters.clone());
+        s.tabs[i] = t;
+    }
+    for (k, sess) in others {
+        if let Some(t) = s.tabs.get_mut(k) {
+            t.session = sess;
+        }
+    }
+    settle_sessions(s);
+    s.tabs.iter().map(|t| t.session.clone()).collect()
+}
+
+/// A duplicate must not keep the source file, or Save on the copy would overwrite it.
+pub(crate) fn fork_tab(src: &Tab, name: String) -> Tab {
+    let mut t = src.clone();
+    t.name = name;
+    t.locked = false;
+    t.session.clear();
+    t
+}
+
+/// Tabs that still point at a deleted session lose that link.
+/// `linked[i]` was true when the delete began. A path that changed during the dialog stays.
+pub(crate) fn sessions_after_delete(before: &[String], now: &[String], linked: &[bool], deleted: bool) -> Option<Vec<String>> {
+    if !deleted {
+        return None;
+    }
+    let mut out = now.to_vec();
+    let mut hit = false;
+    for (i, p) in out.iter_mut().enumerate() {
+        let was = before.get(i).map(String::as_str).unwrap_or("");
+        if linked.get(i).copied().unwrap_or(false) && *p == was {
+            p.clear();
+            hit = true;
+        }
+    }
+    hit.then_some(out)
+}
+
+/// Same rule as delete: only a tab that still has the old path follows the rename.
+pub(crate) fn sessions_after_rename(before: &[String], now: &[String], linked: &[bool], new: &str) -> Option<Vec<String>> {
+    let mut out = now.to_vec();
+    let mut hit = false;
+    for (i, p) in out.iter_mut().enumerate() {
+        let was = before.get(i).map(String::as_str).unwrap_or("");
+        if linked.get(i).copied().unwrap_or(false) && !was.is_empty() && *p == was {
+            *p = new.to_string();
+            hit = true;
+        }
+    }
+    hit.then_some(out)
+}
+
+/// Clean grid of one tab, plus the pane permutation since that grid was saved. Parallel to `Session::tabs`.
+#[derive(Clone, Debug)]
+pub(crate) struct TabBase {
+    pub(crate) grid: Tab,
+    pub(crate) order: Vec<u8>,
+}
+
+/// Columns the view reported after the baseline was taken. An empty baseline column is not a change yet.
+pub(crate) fn absorb_cols(base: &mut Tab, live: &[String], n: usize) {
+    if base.cols.len() < MAXP {
+        base.cols.resize(MAXP, String::new());
+    }
+    for i in 0..n.min(MAXP) {
+        if base.cols[i].is_empty() {
+            if let Some(c) = live.get(i) {
+                base.cols[i] = c.clone();
+            }
+        }
+    }
+}
+
+fn tab_layout_differs(cur: &Session, saved: &Tab) -> bool {
+    let near = |x: &[f64], y: &[f64]| x.len() == y.len() && x.iter().zip(y).all(|(a, b)| (a - b).abs() < 0.005);
+    let n = cur.panes().min(MAXP);
+    let view_diff = (0..n).any(|i| match saved.views.get(i) {
+        Some(v) if v.0 != 0 => cur.views.get(i) != Some(v),
+        _ => false,
+    });
+    let col_diff = (0..n).any(|i| match saved.cols.get(i) {
+        Some(c) if !c.is_empty() => cur.cols.get(i).map(String::as_str) != Some(c.as_str()),
+        _ => false,
+    });
+    cur.heights != saved.heights
+        || !near(&cur.colr, &saved.colr)
+        || cur.rowr.len() != saved.rowr.len()
+        || cur.rowr.iter().zip(&saved.rowr).any(|(a, b)| !near(a, b))
+        || view_diff
+        || col_diff
+        || (0..n).any(|i| cur.tints.get(i) != saved.tints.get(i))
+}
+
+/// Save dot for the tab on screen. Another tab's grid, and which tab is selected, do not count.
+pub(crate) fn active_tab_dirty(cur: &Session, saved: Option<&Tab>, order: &[u8]) -> bool {
+    order_moved(order) || saved.is_some_and(|t| tab_layout_differs(cur, t))
+}
+
+/// Grid a tab is clean against. `file_tab` is the active tab of its `.grids` file, when that file was read.
+pub(crate) fn saved_grid(tab: &Tab, file_tab: Option<&Tab>) -> Tab {
+    let Some(src) = file_tab else { return tab.clone() };
+    let mut grid = tab.clone();
+    grid.heights = src.heights.clone();
+    grid.colr = src.colr.clone();
+    grid.rowr = src.rowr.clone();
+    grid.active = src.active;
+    grid.paths = src.paths.clone();
+    grid.views = src.views.clone();
+    grid.cols = src.cols.clone();
+    grid.tints = src.tints.clone();
+    grid.pane_folders = src.pane_folders.clone();
+    grid.pane_cur = src.pane_cur.clone();
+    grid.session = tab.session.clone();
+    grid
+}
+
+pub(crate) fn baseline_grid(tab: &Tab) -> Tab {
+    if tab.session.is_empty() {
+        return tab.clone();
+    }
+    let Ok(text) = std::fs::read_to_string(&tab.session) else { return tab.clone() };
+    let parsed = Session::parse(&text);
+    let tabs = parsed.view_tabs();
+    if tabs.is_empty() {
+        return tab.clone();
+    }
+    let at = parsed.tab.min(tabs.len() - 1);
+    saved_grid(tab, Some(&tabs[at]))
+}
+
+pub(crate) fn initial_tab_bases(s: &Session) -> Vec<TabBase> {
+    let shown = s.view_tabs();
+    if shown.is_empty() {
+        return Vec::new();
+    }
+    let active = s.tab.min(shown.len() - 1);
+    shown.into_iter().enumerate().map(|(i, t)| {
+        let order = if i == active { s.order.clone() } else { Vec::new() };
+        TabBase { grid: baseline_grid(&t), order }
+    }).collect()
 }
 
 /// Named-session text for one tab: its grid only.
@@ -1059,9 +1378,12 @@ pub(crate) fn tabs_json(tabs: &[Tab], active: usize) -> String {
             "layout": { "columns": t.heights, "colr": t.colr, "rowr": t.rowr, "active": t.active },
             "panes": pane_json(t),
         });
-        if let Some(c) = t.color {
-            if let Some(m) = obj.as_object_mut() {
+        if let Some(m) = obj.as_object_mut() {
+            if let Some(c) = t.color {
                 m.insert("color".into(), Value::String(format!("{c:06X}")));
+            }
+            if !t.session.is_empty() {
+                m.insert("session".into(), Value::String(t.session.clone()));
             }
         }
         obj
@@ -1077,6 +1399,7 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
     }
     let name = obj.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().to_string();
     let locked = obj.get("locked").and_then(|n| n.as_bool()).unwrap_or(false);
+    let session = obj.get("session").and_then(|n| n.as_str()).unwrap_or("").trim().to_string();
     let color = obj.get("color").and_then(|c| c.as_str()).and_then(parse_tab_color);
     let mut heights = vec![2, 2];
     let mut colr = Vec::new();
@@ -1148,7 +1471,7 @@ pub(crate) fn tab_from_value(v: &Value) -> Option<Tab> {
         }
     }
     let name = if name.is_empty() { "1".into() } else { name };
-    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints, pane_folders, pane_cur })
+    Some(Tab { name, locked, color, heights, colr, rowr, active, paths, views, cols, filters, tints, pane_folders, pane_cur, session })
 }
 
 pub(crate) fn tabs_from_json(v: &str) -> Option<(Vec<Tab>, usize)> {
@@ -1876,5 +2199,281 @@ mod ratio_tests {
         let mut s = crate::Session::default();
         s.set_heights(Vec::new());
         assert_eq!(s.heights, vec![1]);
+    }
+}
+
+#[cfg(test)]
+mod session_assoc_tests {
+    use super::*;
+
+    fn two_tabs() -> Session {
+        let mut s = Session::default();
+        s.paths[0] = r"C:\a".into();
+        s.anchor();
+        let mut second = s.tabs[0].clone();
+        second.name = "B".into();
+        second.paths[0] = r"D:\b".into();
+        second.session.clear();
+        s.tabs.push(second);
+        s.tab = 0;
+        settle_sessions(&mut s);
+        s
+    }
+
+    #[test]
+    fn save_uses_only_the_active_tabs_file() {
+        let mut s = two_tabs();
+        assert!(bind_tab_session(&mut s, 0, r"C:\s\a.grids"));
+        assert_eq!(save_choice(&s.tabs, 0), SaveChoice::Overwrite(r"C:\s\a.grids"));
+        assert_eq!(save_choice(&s.tabs, 1), SaveChoice::AskName);
+        assert_eq!(s.tabs[1].session, "");
+        assert_eq!(s.file, r"C:\s\a.grids");
+
+        s.tab = 1;
+        settle_sessions(&mut s);
+        assert_eq!(s.file, "");
+        assert_eq!(save_choice(&s.tabs, 1), SaveChoice::AskName);
+        assert!(bind_tab_session(&mut s, 1, r"D:\s\b.grids"));
+        assert_eq!(s.tabs[0].session, r"C:\s\a.grids");
+        assert_eq!(s.tabs[1].session, r"D:\s\b.grids");
+        assert_eq!(save_choice(&s.tabs, 1), SaveChoice::Overwrite(r"D:\s\b.grids"));
+        assert_eq!(save_choice(&s.tabs, 0), SaveChoice::Overwrite(r"C:\s\a.grids"));
+        assert_eq!(s.file, r"D:\s\b.grids");
+    }
+
+    #[test]
+    fn load_and_save_do_not_retarget_another_tab() {
+        let mut s = two_tabs();
+        bind_tab_session(&mut s, 0, r"C:\s\a.grids");
+        bind_tab_session(&mut s, 1, r"D:\s\b.grids");
+        let mut incoming = s.tabs[1].clone();
+        incoming.paths[0] = r"E:\loaded".into();
+        incoming.heights = vec![1];
+        let links = load_into_tab(&mut s, 1, &incoming, r"E:\s\new.grids");
+        assert_eq!(links, vec![r"C:\s\a.grids".to_string(), r"E:\s\new.grids".into()]);
+        assert_eq!(s.tabs[0].session, r"C:\s\a.grids");
+        assert_eq!(s.tabs[1].paths[0], r"E:\loaded");
+        assert_eq!(s.file, r"C:\s\a.grids"); // tab 0 is still on screen
+
+        s.tab = 1;
+        s.publish();
+        assert_eq!(s.paths[0], r"E:\loaded");
+        assert_eq!(s.file, r"E:\s\new.grids");
+        assert_eq!(s.tabs[0].session, r"C:\s\a.grids");
+
+        let links = load_into_tab(&mut s, 1, &incoming, r"E:\s\again.grids");
+        assert_eq!(links[0], r"C:\s\a.grids");
+        assert_eq!(links[1], r"E:\s\again.grids");
+        assert_eq!(s.tabs[0].paths[0], r"C:\a");
+    }
+
+    #[test]
+    fn old_window_session_lands_on_the_active_tab_only() {
+        let bare = serde_json::json!({
+            "name": "1",
+            "locked": false,
+            "layout": {"columns": [1], "active": 0},
+            "panes": [{"index": 0, "path": "C:\\Work"}]
+        });
+        let t = tab_from_value(&bare).unwrap();
+        assert!(t.session.is_empty());
+
+        let with = serde_json::json!({
+            "name": "Work",
+            "session": "C:\\s\\work.grids",
+            "layout": {"columns": [1]},
+            "panes": []
+        });
+        assert_eq!(tab_from_value(&with).unwrap().session, r"C:\s\work.grids");
+
+        let tabs = serde_json::json!([
+            {"name": "A", "layout": {"columns": [1]}, "panes": [{"index": 0, "path": "C:\\a"}]},
+            {"name": "B", "active": true, "layout": {"columns": [1]}, "panes": [{"index": 0, "path": "D:\\b"}]}
+        ]);
+        let old = format!("session=C:\\s\\win.grids\ntabs={tabs}\n");
+        let s = Session::parse(&old);
+        assert_eq!(s.tab, 1);
+        assert_eq!(s.tabs[1].session, r"C:\s\win.grids");
+        assert_eq!(s.tabs[0].session, "");
+        assert_eq!(s.file, r"C:\s\win.grids");
+        assert_eq!(s.paths[0], r"D:\b");
+
+        let text = s.to_ini();
+        let back = Session::parse(&text);
+        assert_eq!(back.tabs[0].session, "");
+        assert_eq!(back.tabs[1].session, r"C:\s\win.grids");
+        assert_eq!(back.file, r"C:\s\win.grids");
+        assert_eq!(back.tab, 1);
+
+        // Per-tab paths win over a stale window-level session= line.
+        let mut kept = s.clone();
+        kept.tabs[0].session = r"C:\s\a.grids".into();
+        kept.file = r"C:\s\stale.grids".into();
+        settle_sessions(&mut kept);
+        assert_eq!(kept.tabs[0].session, r"C:\s\a.grids");
+        assert_eq!(kept.tabs[1].session, r"C:\s\win.grids");
+        assert_eq!(kept.file, r"C:\s\win.grids");
+    }
+
+    #[test]
+    fn named_session_text_does_not_embed_the_path() {
+        let mut s = two_tabs();
+        bind_tab_session(&mut s, 0, r"C:\s\a.grids");
+        bind_tab_session(&mut s, 1, r"D:\s\b.grids");
+        let text = s.snapshot();
+        assert!(!text.contains("session="), "{text}");
+        assert!(!text.contains("a.grids"), "{text}");
+        assert!(!text.contains("b.grids"), "{text}");
+        let one = tab_session_text(&s, 1).unwrap();
+        assert!(!one.contains("b.grids"), "{one}");
+        assert!(one.contains(r"D:\b") || one.contains("D:\\\\b"), "{one}");
+    }
+
+    #[test]
+    fn dirty_follows_the_active_tab() {
+        let mut s = two_tabs();
+        s.publish();
+        let clean0 = s.tabs[0].clone();
+        let clean1 = s.tabs[1].clone();
+        assert!(!active_tab_dirty(&s, Some(&clean0), &[]));
+
+        // Folder changes do not light the dot. A layout change on this tab does.
+        s.paths[0] = r"C:\changed".into();
+        assert!(!active_tab_dirty(&s, Some(&clean0), &[]));
+        s.heights = vec![3];
+        assert!(active_tab_dirty(&s, Some(&clean0), &[]));
+        // Tab B's baseline still matches tab B, once that tab is on screen.
+        s.anchor();
+        s.tab = 1;
+        s.publish();
+        assert!(!active_tab_dirty(&s, Some(&clean1), &[]));
+        assert_eq!(s.tabs[0].heights, vec![3]);
+        assert_eq!(s.tabs[0].paths[0], r"C:\changed");
+
+        s.order = vec![1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert!(active_tab_dirty(&s, Some(&clean1), &s.order));
+        assert!(!active_tab_dirty(&s, Some(&clean1), &[]));
+    }
+
+    #[test]
+    fn fork_rename_and_delete_keep_other_links() {
+        let mut s = two_tabs();
+        bind_tab_session(&mut s, 0, r"C:\s\a.grids");
+        bind_tab_session(&mut s, 1, r"D:\s\b.grids");
+        let copy = fork_tab(&s.tabs[0], "A (2)".into());
+        assert_eq!(s.tabs[0].session, r"C:\s\a.grids");
+        assert!(copy.session.is_empty());
+        assert!(!copy.locked);
+        assert_eq!(copy.name, "A (2)");
+
+        let before = vec![s.tabs[0].session.clone(), s.tabs[1].session.clone()];
+        let now = before.clone();
+        let linked = vec![true, false];
+        let cleared = sessions_after_delete(&before, &now, &linked, true).unwrap();
+        assert_eq!(cleared, vec!["".to_string(), r"D:\s\b.grids".into()]);
+        assert!(sessions_after_delete(&before, &now, &linked, false).is_none());
+        // Dialog retargeted tab 0 before the delete finished.
+        let moved = vec![r"C:\s\other.grids".into(), before[1].clone()];
+        assert!(sessions_after_delete(&before, &moved, &linked, true).is_none());
+
+        let renamed = sessions_after_rename(&before, &now, &[false, true], r"D:\s\b2.grids").unwrap();
+        assert_eq!(renamed, vec![r"C:\s\a.grids".to_string(), r"D:\s\b2.grids".into()]);
+        // Tab 0 changed during the dialog and was not linked to B. Tab 1 still is, so only B follows the rename.
+        let followed = sessions_after_rename(&before, &moved, &[false, true], r"D:\s\b2.grids").unwrap();
+        assert_eq!(followed, vec![r"C:\s\other.grids".to_string(), r"D:\s\b2.grids".into()]);
+        // Tab 1 was pointed somewhere else while the dialog was up, so the rename leaves it.
+        let moved_b = vec![before[0].clone(), r"E:\s\elsewhere.grids".into()];
+        assert!(sessions_after_rename(&before, &moved_b, &[false, true], r"D:\s\b2.grids").is_none());
+    }
+
+    #[test]
+    fn link_loaded_window_binds_only_the_active_tab() {
+        let mut s = two_tabs();
+        bind_tab_session(&mut s, 0, r"C:\s\a.grids");
+        s.tab = 1;
+        link_loaded_window(&mut s, r"E:\s\boot.grids");
+        assert_eq!(s.tabs[0].session, "");
+        assert_eq!(s.tabs[1].session, r"E:\s\boot.grids");
+        assert_eq!(s.file, r"E:\s\boot.grids");
+        assert_eq!(save_choice(&s.tabs, 0), SaveChoice::AskName);
+        assert_eq!(save_choice(&s.tabs, 1), SaveChoice::Overwrite(r"E:\s\boot.grids"));
+    }
+
+    #[test]
+    fn window_snap_keeps_each_tabs_file_and_old_snaps_still_load() {
+        let mut s = two_tabs();
+        bind_tab_session(&mut s, 0, r"C:\s\a.grids");
+        bind_tab_session(&mut s, 1, r"D:\s\b.grids");
+        s.tab = 0;
+        settle_sessions(&mut s);
+        let back = crate::session_from_window(&crate::window_value(&s), &Session::default());
+        assert_eq!(back.tabs[0].session, r"C:\s\a.grids");
+        assert_eq!(back.tabs[1].session, r"D:\s\b.grids");
+        assert_eq!(back.file, r"C:\s\a.grids");
+        assert_eq!(back.tab, 0);
+
+        let old = serde_json::json!({
+            "session": "C:\\s\\win.grids",
+            "tabs": [
+                {"name": "A", "layout": {"columns": [1]}, "panes": [{"index": 0, "path": "C:\\a"}]},
+                {"name": "B", "active": true, "layout": {"columns": [1]}, "panes": [{"index": 0, "path": "D:\\b"}]}
+            ]
+        });
+        let back = crate::session_from_window(&old, &Session::default());
+        assert_eq!(back.tab, 1);
+        assert_eq!(back.tabs[0].session, "");
+        assert_eq!(back.tabs[1].session, r"C:\s\win.grids");
+        assert_eq!(back.file, r"C:\s\win.grids");
+        assert_eq!(back.paths[0], r"D:\b");
+    }
+
+    #[test]
+    fn baseline_comes_from_that_tabs_file() {
+        let dir = std::env::temp_dir().join(format!("panegrid-tab-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut saved = Session::default();
+        saved.paths[0] = r"C:\saved".into();
+        saved.heights = vec![1];
+        saved.anchor();
+        let path = dir.join("a.grids");
+        std::fs::write(&path, saved.snapshot()).unwrap();
+
+        let mut live = two_tabs();
+        bind_tab_session(&mut live, 0, &path.to_string_lossy());
+        live.tabs[0].paths[0] = r"C:\drift".into();
+        live.tabs[0].heights = vec![2];
+        live.tabs[1].session = dir.join("missing.grids").to_string_lossy().into_owned();
+        let bases = initial_tab_bases(&live);
+        assert_eq!(bases[0].grid.paths[0], r"C:\saved");
+        assert_eq!(bases[0].grid.heights, vec![1]);
+        assert_eq!(bases[0].grid.session, path.to_string_lossy());
+        // An unreadable file leaves the tab as it is, so the dot stays off.
+        assert_eq!(bases[1].grid.paths[0], r"D:\b");
+        assert_eq!(bases[1].grid.session, live.tabs[1].session);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_swap_does_not_look_like_a_layout_change() {
+        let mut cur = Session::default();
+        cur.views[0] = (4, 16);
+        cur.views[1] = (3, 16);
+        cur.cols[0] = "a".into();
+        cur.cols[1] = "b".into();
+        cur.anchor();
+        let mut grid = cur.tabs[0].clone();
+        swap_in(&mut cur, None, 0, 1);
+        swap_tab_slots(&mut grid, 0, 1);
+        cur.anchor();
+        assert!(!tab_layout_differs(&cur, &grid));
+        assert!(active_tab_dirty(&cur, Some(&grid), &cur.order));
+        swap_in(&mut cur, None, 0, 1);
+        swap_tab_slots(&mut grid, 0, 1);
+        cur.anchor();
+        assert!(cur.order.is_empty());
+        assert!(!active_tab_dirty(&cur, Some(&grid), &cur.order));
+        assert_eq!(cur.views[0], (4, 16));
+        assert_eq!(grid.cols[0], "a");
     }
 }
