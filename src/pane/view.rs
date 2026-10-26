@@ -59,6 +59,8 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let eb: IExplorerBrowser = CoCreateInstance(&ExplorerBrowser, None, CLSCTX_INPROC_SERVER)?;
     let site: IServiceProvider = Host(slot.clone()).into();
     IUnknown_SetSite(&eb, &site)?; // before Initialize, so the view picks up our ICommDlgBrowser
+    // Details is the starting mode. Columns for a folder with nothing remembered are applied
+    // on navigation: Name, Date modified, Size (see folderview::default_details_columns).
     let fs = FOLDERSETTINGS { ViewMode: FVM_DETAILS.0 as u32, fFlags: FWF_NOWEBVIEW.0 as u32 };
     eb.Initialize(h, &RECT::default(), Some(&fs))?;
     eb.SetOptions(EBO_NOBORDER)?;
