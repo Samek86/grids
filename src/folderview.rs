@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use windows::Win32::Foundation::PROPERTYKEY;
 
 use crate::settings::store::{self, write_atomic};
-use crate::{is_fs, parse_cols};
+use crate::{cols_text, is_fs, parse_cols};
 
 pub(crate) const FILE_NAME: &str = "folder-views.json";
 /// Oldest entries fall off once the file would grow past this.
@@ -195,6 +195,101 @@ pub(crate) fn columns_close(a: &str, b: &str) -> bool {
     let same = |x: &PROPERTYKEY, y: &PROPERTYKEY| x.fmtid == y.fmtid && x.pid == y.pid;
     ca.iter().zip(&cb).all(|(x, y)| same(&x.0, &y.0) && (x.1 as i32 - y.1 as i32).abs() <= WIDTH_SLOP)
         && sa.iter().zip(&sb).all(|(x, y)| same(&x.0, &y.0) && x.1 == y.1)
+}
+
+// Storage property set. Names are property keys, not the words Explorer paints
+// ("Name" / "이름" / "名前", "Date modified" / "수정한 날짜" / "更新日時", "Size" / "크기" / "サイズ").
+const STORAGE: windows::core::GUID = windows::core::GUID::from_u128(0xB725F130_47EF_101A_A5F1_02608C9EEBAC);
+
+/// System.ItemNameDisplay. The Details "Name" column in every language.
+#[allow(non_upper_case_globals)]
+pub(crate) const PKEY_ItemNameDisplay: PROPERTYKEY = PROPERTYKEY { fmtid: STORAGE, pid: 10 };
+/// System.DateModified. The Details "Date modified" column.
+#[allow(non_upper_case_globals)]
+pub(crate) const PKEY_DateModified: PROPERTYKEY = PROPERTYKEY { fmtid: STORAGE, pid: 14 };
+/// System.Size. The Details "Size" column.
+#[allow(non_upper_case_globals)]
+pub(crate) const PKEY_Size: PROPERTYKEY = PROPERTYKEY { fmtid: STORAGE, pid: 12 };
+/// System.ItemTypeText. The Details "Type" column ("종류", "種類"). Omitted from the built-in default.
+#[allow(non_upper_case_globals, dead_code)]
+pub(crate) const PKEY_ItemTypeText: PROPERTYKEY = PROPERTYKEY { fmtid: STORAGE, pid: 4 };
+
+/// Visible Details columns for a filesystem folder that has no remembered column list.
+/// Order is Name, Date modified, Size. Widths are a starting size; the shell may adjust them.
+/// No sort is included, so a folder's existing sort is left alone.
+pub(crate) fn default_details_columns() -> String {
+    cols_text(&[(PKEY_ItemNameDisplay, 280), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[])
+}
+
+pub(crate) fn is_builtin_default(columns: &str) -> bool {
+    columns == default_details_columns()
+}
+
+/// Polls to ignore after the built-in column set is applied. The shell rebuilds its own
+/// columns (including Type) for a short while after a folder opens.
+pub(crate) fn watch_quiet(columns: &str) -> u8 {
+    if is_builtin_default(columns) { 4 } else { 2 }
+}
+
+fn column_keys(text: &str) -> Vec<PROPERTYKEY> {
+    parse_cols(text).0.into_iter().map(|(k, _)| k).collect()
+}
+
+fn same_key(a: &PROPERTYKEY, b: &PROPERTYKEY) -> bool {
+    a.fmtid == b.fmtid && a.pid == b.pid
+}
+
+/// Same properties in the same order. Widths and sort are ignored.
+pub(crate) fn same_column_keys(a: &str, b: &str) -> bool {
+    let ka = column_keys(a);
+    let kb = column_keys(b);
+    !ka.is_empty() && ka.len() == kb.len() && ka.iter().zip(&kb).all(|(x, y)| same_key(x, y))
+}
+
+/// Columns to put on a folder as it opens.
+///
+/// `saved` is the column list from a per-folder view or the user's saved default view.
+/// `None` means no such view. `Some("")` means the view is remembered but stored no columns.
+/// `fallback` is the pane's own list (session restore, open in another pane); pass "" when a
+/// folder view exists so that list does not override it.
+/// `details` is the mode about to be shown (`FVM_DETAILS`, or unset, which starts as Details).
+/// `fs` is a filesystem folder. Shell places keep the columns Windows gave them.
+///
+/// A non-empty saved list always wins, including a list the user built that still has Type.
+pub(crate) fn pick_folder_columns(saved: Option<&str>, fallback: &str, details: bool, fs: bool) -> Option<String> {
+    if let Some(saved) = saved {
+        if !saved.is_empty() {
+            return Some(saved.to_string());
+        }
+        return (details && fs).then(default_details_columns);
+    }
+    if fs && !fallback.is_empty() {
+        return Some(fallback.to_string());
+    }
+    (details && fs).then(default_details_columns)
+}
+
+/// The built-in columns were just applied. The shell's own widths and sort are not a user edit.
+/// Returns true when the caller should put the column set on again: the live list is a different
+/// set (Type is still there). An empty read is the list still building, so it does not count.
+pub(crate) fn settle_builtin_columns(watch: &mut ViewWatch, live_columns: &str) -> bool {
+    if watch.baseline.is_some() || !is_builtin_default(&watch.applied.columns) {
+        return false;
+    }
+    if column_keys(live_columns).is_empty() {
+        return false;
+    }
+    if same_column_keys(&watch.applied.columns, live_columns) {
+        watch.applied.columns = live_columns.to_string();
+        return false;
+    }
+    if watch.quiet > 0 {
+        watch.quiet -= 1;
+        return true;
+    }
+    // Stop fighting this visit. The next open tries again, and nothing is written as a user edit.
+    watch.applied.columns = live_columns.to_string();
+    false
 }
 
 /// True when `live` is a user edit worth storing for this folder.
@@ -725,5 +820,87 @@ mod tests {
         assert!(!observe(&mut w, &filled));
         let grouped = ViewSnap { group: Some("g/4=1".into()), ..filled.clone() };
         assert!(observe(&mut w, &grouped));
+    }
+
+    #[test]
+    fn default_details_columns_are_name_date_and_size_in_every_language() {
+        let (cols, sort) = parse_cols(&default_details_columns());
+        assert!(sort.is_empty());
+        let keys: Vec<_> = cols.into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec![PKEY_ItemNameDisplay, PKEY_DateModified, PKEY_Size]);
+        assert!(keys.iter().all(|k| k.pid != PKEY_ItemTypeText.pid));
+        let text = default_details_columns();
+        assert!(!text.to_lowercase().contains("type"));
+        assert!(!text.contains("종류"));
+        assert!(!text.contains("種類"));
+        let back = cols_text(&[(PKEY_ItemNameDisplay, 280), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[]);
+        assert_eq!(back, text);
+        assert!(is_builtin_default(&text));
+        assert!(!is_builtin_default(&format!("{text}x")));
+    }
+
+    #[test]
+    fn remembered_columns_win_and_a_new_details_folder_gets_name_date_size() {
+        let custom = cols_text(&[(PKEY_ItemNameDisplay, 100), (PKEY_ItemTypeText, 80), (PKEY_Size, 90)], &[]);
+        assert_eq!(pick_folder_columns(Some(&custom), "pane", true, true).as_deref(), Some(custom.as_str()));
+        // A shell place with a saved list keeps it. With none, Windows keeps its own columns.
+        assert_eq!(pick_folder_columns(Some(&custom), "", true, false).as_deref(), Some(custom.as_str()));
+        assert_eq!(pick_folder_columns(None, "pane", true, false), None);
+        assert_eq!(pick_folder_columns(None, "", true, false), None);
+        // Pane/session columns, including an older list that still has Type, stay until the user clears them.
+        assert_eq!(pick_folder_columns(None, &custom, true, true).as_deref(), Some(custom.as_str()));
+        // Nothing remembered: filesystem Details gets the built-in three. Icons do not.
+        let fresh = pick_folder_columns(None, "", true, true).unwrap();
+        assert!(is_builtin_default(&fresh));
+        assert_eq!(pick_folder_columns(None, "", false, true), None);
+        // A remembered view with no column list (icon size only, or details before any column edit).
+        assert!(is_builtin_default(&pick_folder_columns(Some(""), "", true, true).unwrap()));
+        assert_eq!(pick_folder_columns(Some(""), "pane", true, true).as_deref(), Some(default_details_columns().as_str()));
+        assert_eq!(pick_folder_columns(Some(""), "", false, true), None);
+        assert_eq!(pick_folder_columns(Some(""), "", true, false), None);
+    }
+
+    #[test]
+    fn applying_the_builtin_columns_is_not_a_user_edit_and_type_coming_back_is_retried() {
+        let def = default_details_columns();
+        let mut w = watch(ViewSnap { mode: 4, icon: 16, columns: def.clone(), group: None });
+        w.quiet = 2;
+        assert!(!settle_builtin_columns(&mut w, ""));
+        assert_eq!(w.quiet, 2);
+        assert_eq!(w.applied.columns, def);
+        let with_type = cols_text(
+            &[(PKEY_ItemNameDisplay, 200), (PKEY_DateModified, 120), (PKEY_ItemTypeText, 100), (PKEY_Size, 90)],
+            &[],
+        );
+        assert!(settle_builtin_columns(&mut w, &with_type));
+        assert_eq!(w.quiet, 1);
+        assert_eq!(w.applied.columns, def);
+        // Same three properties, shell widths and a sort: accept, do not store.
+        let live = cols_text(&[(PKEY_ItemNameDisplay, 400), (PKEY_DateModified, 180), (PKEY_Size, 96)], &[(PKEY_ItemNameDisplay, 1)]);
+        assert!(!settle_builtin_columns(&mut w, &live));
+        assert_eq!(w.applied.columns, live);
+        let shown = ViewSnap { mode: 4, icon: 16, columns: live.clone(), group: None };
+        assert!(!observe(&mut w, &shown));
+        assert_eq!(w.baseline.as_ref().unwrap().columns, live);
+        // Adding Type after that is the user's edit.
+        assert!(observe(&mut w, &ViewSnap { columns: with_type, ..shown }));
+        // A folder that already has its own columns is not treated as the built-in set.
+        let mut kept = watch(snap(4, "user"));
+        kept.quiet = 2;
+        assert!(!settle_builtin_columns(&mut kept, &def));
+        assert_eq!(kept.applied.columns, "user");
+        assert_eq!(kept.quiet, 2);
+    }
+
+    #[test]
+    fn builtin_retries_stop_without_writing_a_different_set() {
+        let def = default_details_columns();
+        let mut w = watch(ViewSnap { mode: 4, icon: 16, columns: def.clone(), group: None });
+        w.quiet = 0;
+        let other = cols_text(&[(PKEY_ItemNameDisplay, 10), (PKEY_ItemTypeText, 10)], &[]);
+        assert!(!settle_builtin_columns(&mut w, &other));
+        assert_eq!(w.applied.columns, other);
+        assert!(w.baseline.is_none());
+        assert!(!observe(&mut w, &ViewSnap { mode: 4, icon: 16, columns: other, group: None }));
     }
 }
