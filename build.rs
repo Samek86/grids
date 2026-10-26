@@ -3,6 +3,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
     println!("cargo:rerun-if-changed=app.ico");
+    println!("cargo:rerun-if-changed=build.rs");
     let out = std::env::var("OUT_DIR").unwrap();
     let entry = |size: usize, typ: u16, id: u16, lang: u16| {
         let mut h = Vec::new();
@@ -131,13 +132,14 @@ fn version_info() -> Vec<u8> {
     let ver_text = env!("CARGO_PKG_VERSION");
     let strings = [
         version_string("CompanyName", "Samek86"),
-        version_string("FileDescription", "Panegrid"),
+        version_string("FileDescription", "Panegrid - multi-pane file manager for Windows"),
         version_string("ProductName", "Panegrid"),
         version_string("InternalName", "panegrid"),
         version_string("OriginalFilename", "panegrid.exe"),
         version_string("FileVersion", ver_text),
         version_string("ProductVersion", ver_text),
-        version_string("LegalCopyright", "Fork of efww/grids"),
+        version_string("Comments", "https://github.com/Samek86/panegrid"),
+        version_string("LegalCopyright", "Copyright (c) 2026 Samek86. Based on efww/grids, Copyright (c) 2026 efww. MIT License."),
     ];
     let table = version_node("040904B0", &[], 0, true, &strings);
     let string_file = version_node("StringFileInfo", &[], 0, true, &[table]);
