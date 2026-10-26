@@ -318,7 +318,7 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     }
     if let Some(i) = crate::keys::lookup(vk, ctrl, shift, alt, win) {
         let id = crate::keys::id_of(i);
-        if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather" | "file.mkdir") && m.lParam.0 & (1 << 30) != 0 {
+        if matches!(id, "app.keys" | "view.peek" | "app.front" | "view.gather" | "file.mkdir" | "file.winmerge") && m.lParam.0 & (1 << 30) != 0 {
             return true;
         }
         // Pane-tab chords stay out of the address bar (already returned) and out of every other focus,
@@ -472,6 +472,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "file.dir" => new_folder(a),
         "file.mkdir" if list => explorer_new_folder(a),
         "file.mkdir" => return shell(),
+        "file.winmerge" => crate::winmerge::run_folders(app(|x| x.main), None),
         "pane.tab.new" => {
             new_pane_tab(a);
             focus_view(a);
