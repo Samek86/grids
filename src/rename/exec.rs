@@ -1,7 +1,10 @@
 // IFileOperation on a worker thread, so the window stays up and Windows draws the progress.
 // Waves from `plan` run in order. A later wave that fails rolls the finished waves back.
 
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, Once};
+
+use serde::{Deserialize, Serialize};
 
 use crate::imports::*;
 
@@ -20,15 +23,106 @@ struct Done {
 }
 
 static DONE: Mutex<Option<Done>> = Mutex::new(None);
-static LAST_UNDO: Mutex<Option<Vec<(String, String, String)>>> = Mutex::new(None);
 
-pub(crate) fn last_undo() -> Option<Vec<(String, String, String)>> {
-    LAST_UNDO.lock().ok().and_then(|g| g.clone())
+const MAX_UNDO: usize = 20;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Entry {
+    dir: String,
+    now: String,
+    was: String,
 }
 
-pub(crate) fn clear_undo() {
-    if let Ok(mut g) = LAST_UNDO.lock() {
-        *g = None;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Batch {
+    entries: Vec<Entry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Disk {
+    batches: Vec<Batch>,
+}
+
+static HISTORY: Mutex<Vec<Batch>> = Mutex::new(Vec::new());
+static LOADED: Once = Once::new();
+
+pub(crate) fn undo_count() -> usize {
+    ensure_history();
+    HISTORY.lock().map(|g| g.len()).unwrap_or(0)
+}
+
+pub(crate) fn last_undo() -> Option<Vec<(String, String, String)>> {
+    ensure_history();
+    HISTORY.lock().ok().and_then(|g| g.last().map(pairs_of))
+}
+
+pub(crate) fn push_undo(pairs: Vec<(String, String, String)>) {
+    if pairs.is_empty() {
+        return;
+    }
+    ensure_history();
+    let Some(snap) = HISTORY.lock().ok().map(|mut g| {
+        push_batch(&mut g, Batch { entries: entries_of(&pairs) });
+        g.clone()
+    }) else {
+        return;
+    };
+    save_history(&undo_path(), &snap);
+}
+
+pub(crate) fn pop_undo() {
+    ensure_history();
+    let Some(snap) = HISTORY.lock().ok().map(|mut g| {
+        g.pop();
+        g.clone()
+    }) else {
+        return;
+    };
+    save_history(&undo_path(), &snap);
+}
+
+fn entries_of(pairs: &[(String, String, String)]) -> Vec<Entry> {
+    pairs.iter().map(|(dir, now, was)| Entry { dir: dir.clone(), now: now.clone(), was: was.clone() }).collect()
+}
+
+fn pairs_of(batch: &Batch) -> Vec<(String, String, String)> {
+    batch.entries.iter().map(|e| (e.dir.clone(), e.now.clone(), e.was.clone())).collect()
+}
+
+fn push_batch(hist: &mut Vec<Batch>, batch: Batch) {
+    if batch.entries.is_empty() {
+        return;
+    }
+    hist.push(batch);
+    while hist.len() > MAX_UNDO {
+        hist.remove(0);
+    }
+}
+
+fn undo_path() -> PathBuf {
+    crate::settings::store::config_dir().join("rename-undo.json")
+}
+
+fn ensure_history() {
+    LOADED.call_once(|| {
+        let loaded = load_history(&undo_path());
+        if let Ok(mut g) = HISTORY.lock() {
+            *g = loaded;
+        }
+    });
+}
+
+fn load_history(path: &Path) -> Vec<Batch> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    serde_json::from_str::<Disk>(&text).map(|d| d.batches).unwrap_or_default()
+}
+
+fn save_history(path: &Path, hist: &[Batch]) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_string_pretty(&Disk { batches: hist.to_vec() }) {
+        let _ = std::fs::write(path, body);
     }
 }
 
@@ -48,9 +142,7 @@ pub(crate) fn take_done() -> Option<Finished> {
     Some(Finished { ok, cancel, err })
 }
 
-/// `undo` is what a later Undo should run: `(dir, name-after, name-before)`.
-/// `record` stores it. An undo pass passes `record = false` and clears the last batch.
-pub(crate) unsafe fn start(notify: HWND, waves: Vec<Vec<Step>>, undo: Vec<(String, String, String)>, record: bool) {
+pub(crate) unsafe fn start(notify: HWND, waves: Vec<Vec<Step>>) {
     // HWND is a raw pointer. Pass the address as an integer so the worker can post back.
     let notify = notify.0 as isize;
     let job = std::thread::Builder::new().name("panegrid-rename".into()).spawn(move || {
@@ -58,19 +150,6 @@ pub(crate) unsafe fn start(notify: HWND, waves: Vec<Vec<Step>>, undo: Vec<(Strin
         let outcome = run_waves(&waves);
         if com {
             CoUninitialize();
-        }
-        let undo = match &outcome {
-            Outcome::Ok if record => undo,
-            Outcome::Ok => {
-                clear_undo();
-                Vec::new()
-            }
-            _ => Vec::new(),
-        };
-        if matches!(outcome, Outcome::Ok) && record {
-            if let Ok(mut g) = LAST_UNDO.lock() {
-                *g = Some(undo.clone());
-            }
         }
         if let Ok(mut g) = DONE.lock() {
             *g = Some(Done { outcome });
@@ -156,6 +235,30 @@ unsafe fn run_wave(wave: &[Step]) -> Wave {
 
 fn cancelled(e: &windows::core::Error) -> bool {
     e.code() == COPYENGINE_E_USER_CANCELLED || e.code() == ERROR_CANCELLED.to_hresult()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_caps_at_twenty_and_roundtrips() {
+        let mut hist = Vec::new();
+        for i in 0..25 {
+            push_batch(&mut hist, Batch { entries: vec![Entry { dir: r"C:\pics".into(), now: format!("n{i}"), was: format!("w{i}") }] });
+        }
+        assert_eq!(hist.len(), 20);
+        assert_eq!(hist[0].entries[0].now, "n5");
+        assert_eq!(hist[19].entries[0].now, "n24");
+        let folder = std::env::temp_dir().join(format!("panegrid-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let path = folder.join("rename-undo.json");
+        save_history(&path, &hist);
+        assert_eq!(load_history(&path), hist);
+        let _ = std::fs::remove_dir_all(&folder);
+        push_batch(&mut hist, Batch { entries: Vec::new() });
+        assert_eq!(hist.len(), 20);
+    }
 }
 
 fn rollback(done: &[Vec<Step>]) {

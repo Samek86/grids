@@ -166,27 +166,39 @@ fn join_name(stem: &str, ext: &str) -> String {
 
 struct Ready {
     rules: Vec<Rule>,
+    enabled: Vec<bool>,
     /// Parallel to `rules`. Set only for a regex rule that compiled.
     regexes: Vec<Option<regex::Regex>>,
     bad_regex: bool,
 }
 
-fn ready(rules: &[Rule]) -> Ready {
+fn ready(rules: &[Rule], enabled: &[bool]) -> Ready {
     let mut bad_regex = false;
     let regexes = rules
         .iter()
-        .map(|rule| match rule {
-            Rule::Regex { pattern, case_sensitive, .. } if !pattern.is_empty() => match compile_regex(pattern, *case_sensitive) {
-                Ok(re) => Some(re),
-                Err(_) => {
-                    bad_regex = true;
-                    None
-                }
-            },
-            _ => None,
+        .enumerate()
+        .map(|(i, rule)| {
+            if !rule_on(enabled, i) {
+                return None;
+            }
+            match rule {
+                Rule::Regex { pattern, case_sensitive, .. } if !pattern.is_empty() => match compile_regex(pattern, *case_sensitive) {
+                    Ok(re) => Some(re),
+                    Err(_) => {
+                        bad_regex = true;
+                        None
+                    }
+                },
+                _ => None,
+            }
         })
         .collect();
-    Ready { rules: rules.to_vec(), regexes, bad_regex }
+    let enabled = (0..rules.len()).map(|i| rule_on(enabled, i)).collect();
+    Ready { rules: rules.to_vec(), enabled, regexes, bad_regex }
+}
+
+fn rule_on(enabled: &[bool], i: usize) -> bool {
+    enabled.get(i).copied().unwrap_or(true)
 }
 
 fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<regex::Regex, regex::Error> {
@@ -195,12 +207,15 @@ fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<regex::Regex, re
 
 #[cfg(test)]
 fn apply_name(item: &BatchItem, rules: &[Rule], index: usize, tz_offset_secs: i32) -> String {
-    apply_ready(&ready(rules), item, index, tz_offset_secs)
+    apply_ready(&ready(rules, &[]), item, index, tz_offset_secs)
 }
 
 fn apply_ready(ready: &Ready, item: &BatchItem, index: usize, tz: i32) -> String {
     let mut name = item.name.clone();
-    for (rule, re) in ready.rules.iter().zip(ready.regexes.iter()) {
+    for (i, (rule, re)) in ready.rules.iter().zip(ready.regexes.iter()).enumerate() {
+        if !rule_on(&ready.enabled, i) {
+            continue;
+        }
         name = apply_one(&name, item, item.is_dir, rule, re.as_ref(), index, tz);
     }
     name
@@ -591,7 +606,7 @@ fn name_issues(dir: &str, name: &str) -> Vec<Issue> {
 /// Keys are `(dir_key, name_key)`.
 #[cfg(test)]
 fn preview(items: &[BatchItem], rules: &[Rule], existing: &HashSet<(String, String)>, tz_offset_secs: i32) -> Vec<PreviewRow> {
-    preview_filtered(items, rules, existing, tz_offset_secs, &Filter::default())
+    preview_filtered(items, rules, existing, tz_offset_secs, &Filter::default(), &[])
 }
 
 pub(crate) fn preview_filtered(
@@ -600,8 +615,9 @@ pub(crate) fn preview_filtered(
     existing: &HashSet<(String, String)>,
     tz_offset_secs: i32,
     filter: &Filter,
+    enabled: &[bool],
 ) -> Vec<PreviewRow> {
-    let ready = ready(rules);
+    let ready = ready(rules, enabled);
     let mut seq = 0usize;
     let mut planned = Vec::with_capacity(items.len());
     for it in items {
@@ -1157,7 +1173,7 @@ mod tests {
     fn filters_skip_rows_and_number_only_what_remains() {
         let files = Filter { files: true, folders: false, extensions: Vec::new() };
         let items = vec![item("a.txt"), dir_item("pics"), item("b.txt")];
-        let rows = preview_filtered(&items, &[Rule::Prefix { text: "n_".into() }], &keys(&["a.txt", "pics", "b.txt"]), 0, &files);
+        let rows = preview_filtered(&items, &[Rule::Prefix { text: "n_".into() }], &keys(&["a.txt", "pics", "b.txt"]), 0, &files, &[]);
         assert_eq!(rows[0].new_name, "n_a.txt");
         assert!(rows[1].skipped && rows[1].new_name == "pics");
         assert_eq!(rows[2].new_name, "n_b.txt");
@@ -1170,6 +1186,7 @@ mod tests {
             &keys(&["a.jpg", "b.png", "c.txt", "album"]),
             0,
             &jpg,
+            &[],
         );
         assert_eq!(rows[0].new_name, "a01.jpg");
         assert_eq!(rows[1].new_name, "b02.png");
@@ -1182,10 +1199,24 @@ mod tests {
             &keys(&["new.txt", "pics"]),
             0,
             &files,
+            &[],
         );
         assert!(held[1].skipped);
         assert_eq!(held[0].new_name, "pics");
         assert!(held[0].issues.contains(&Issue::Exists));
+    }
+
+    #[test]
+    fn a_disabled_rule_does_not_run_or_fail_the_batch() {
+        let rules = [
+            Rule::Prefix { text: "a_".into() },
+            Rule::Regex { pattern: "(".into(), replace: "x".into(), case_sensitive: true, include_ext: false },
+        ];
+        let rows = preview_filtered(&[item("cat.jpg")], &rules, &keys(&["cat.jpg"]), 0, &Filter::default(), &[true, false]);
+        assert_eq!(rows[0].new_name, "a_cat.jpg");
+        assert!(rows[0].issues.is_empty());
+        let broken = preview_filtered(&[item("cat.jpg")], &rules, &keys(&["cat.jpg"]), 0, &Filter::default(), &[true, true]);
+        assert!(broken[0].issues.contains(&Issue::BadPattern));
     }
 
 }

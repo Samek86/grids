@@ -42,6 +42,7 @@ const F_POS: i32 = 9;
 const F_C: i32 = 10;
 const F_SRC: i32 = 11;
 const F_AT: i32 = 12;
+const F_ON: i32 = 13;
 
 const CB_RESETCONTENT: u32 = 0x014B;
 const CB_ADDSTRING: u32 = 0x0143;
@@ -74,6 +75,7 @@ struct St {
     font: HFONT,
     small: HFONT,
     rules: Vec<Rule>,
+    enabled: Vec<bool>,
     items: Vec<BatchItem>,
     existing: HashSet<(String, String)>,
     rows: Vec<PreviewRow>,
@@ -86,6 +88,10 @@ struct St {
     pending: Vec<String>,
     pending_note: String,
     clear_rules_on_ok: bool,
+    pending_undo: Vec<(String, String, String)>,
+    drag_from: Option<usize>,
+    drag_to: usize,
+    hover: Option<usize>,
 }
 
 impl Default for St {
@@ -97,6 +103,7 @@ impl Default for St {
             font: HFONT::default(),
             small: HFONT::default(),
             rules: vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }],
+            enabled: vec![true],
             items: Vec::new(),
             existing: HashSet::new(),
             rows: Vec::new(),
@@ -108,6 +115,10 @@ impl Default for St {
             pending: Vec::new(),
             pending_note: String::new(),
             clear_rules_on_ok: false,
+            pending_undo: Vec::new(),
+            drag_from: None,
+            drag_to: 0,
+            hover: None,
         }
     }
 }
@@ -252,14 +263,45 @@ pub(crate) unsafe fn refresh() {
     }
 }
 
-/// Esc closes. Ctrl+Enter renames when the preview is clean. Anything else is typing.
-pub(crate) unsafe fn on_key(vk: u16, ctrl: bool, alt: bool, _shift: bool) -> bool {
-    if !ctrl && !alt && VIRTUAL_KEY(vk) == VK_ESCAPE {
+/// Esc closes. Ctrl+Enter renames. Ctrl+Z undoes the latest batch. Alt+Up/Down moves the focused rule.
+pub(crate) unsafe fn on_key(vk: u16, ctrl: bool, alt: bool, shift: bool) -> bool {
+    let key = VIRTUAL_KEY(vk);
+    if !ctrl && !alt && key == VK_ESCAPE {
         close();
         return true;
     }
-    if ctrl && !alt && VIRTUAL_KEY(vk) == VK_RETURN {
+    if ctrl && !alt && !shift && key == VK_RETURN {
         apply();
+        return true;
+    }
+    if ctrl && !alt && !shift && vk == 0x5A {
+        undo();
+        return true;
+    }
+    if alt && !ctrl && !shift && (key == VK_UP || key == VK_DOWN) {
+        if let Some(i) = focused_rule() {
+            let field = focused_field();
+            let dir = if key == VK_UP { -1 } else { 1 };
+            move_rule(i, dir);
+            let j = i as isize + dir;
+            let n = ST.with(|s| s.borrow().rules.len()) as isize;
+            if (0..n).contains(&j) {
+                if let Some(f) = field {
+                    let host = ST.with(|s| s.borrow().host);
+                    let _ = SetFocus(Some(ctl(host, id(j as usize, f))));
+                }
+            }
+            return true;
+        }
+    }
+    if !ctrl && !alt && matches!(key, VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT) && focused_rule().is_none() {
+        let dir = if key == VK_UP || key == VK_PRIOR { -1 } else { 1 };
+        let step = if key == VK_PRIOR || key == VK_NEXT { 8 } else { 1 };
+        let n = ST.with(|s| s.borrow().rows.len());
+        let max = preview_max(n);
+        let next = (ST.with(|s| s.borrow().preview_scroll) + dir * step).clamp(0, max);
+        ST.with(|s| s.borrow_mut().preview_scroll = next);
+        let _ = InvalidateRect(Some(hwnd()), None, false);
         return true;
     }
     false
@@ -338,6 +380,7 @@ unsafe extern "system" fn rename_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         }
         WM_COMMAND => on_command(h, (wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32),
         WM_MOUSEWHEEL => on_wheel(((wp.0 >> 16) as i16 as i32) / 120),
+        WM_MOUSEMOVE => hover_at(lp),
         exec::WM_RENAME_DONE => on_done(h),
         WM_DESTROY => {
             drop_fonts();
@@ -367,6 +410,15 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => return ctl_color(wp),
         WM_MOUSEWHEEL => {
             on_wheel(((wp.0 >> 16) as i16 as i32) / 120);
+            return LRESULT(0);
+        }
+        WM_LBUTTONDOWN => {
+            begin_drag(h, lp);
+            return LRESULT(0);
+        }
+        WM_MOUSEMOVE => drag_move(h, lp),
+        WM_LBUTTONUP => {
+            end_drag(h);
             return LRESULT(0);
         }
         _ => {}
@@ -483,6 +535,7 @@ unsafe fn make_rule_controls(host: HWND, i: usize, font: HFONT) {
     combo(F_MODE);
     combo(F_POS);
     combo(F_SRC);
+    check(F_ON, "");
     mini(F_UP, "↑");
     mini(F_DOWN, "↓");
     mini(F_DEL, "×");
@@ -561,6 +614,8 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
         let _ = SendMessageW(ctl(host, id(i, f)), BM_SETCHECK, Some(WPARAM(usize::from(on))), None);
     };
     select_combo(host, i, F_KIND, kind_index(rule));
+    let on = ST.with(|s| s.borrow().enabled.get(i).copied().unwrap_or(true));
+    set_check(F_ON, on);
     match rule {
         Rule::Replace { find, replace, case_sensitive, include_ext } => {
             set_edit(F_A, find);
@@ -821,6 +876,7 @@ unsafe fn on_command(_h: HWND, id: i32, code: u32) {
                 }
                 F_A | F_B | F_C | F_AT if code == EN_CHANGE => sync_rule(i),
                 F_CASE | F_EXT if code == BN_CLICKED => sync_rule(i),
+                F_ON if code == BN_CLICKED => toggle_rule(i),
                 _ => {}
             }
         }
@@ -867,6 +923,7 @@ unsafe fn add_rule() {
     ST.with(|s| {
         let mut st = s.borrow_mut();
         st.rules.push(Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false });
+        st.enabled.push(true);
         st.note.clear();
     });
     rebuild_rule_controls();
@@ -889,11 +946,212 @@ unsafe fn remove_rule(i: usize) {
         if i < st.rules.len() {
             st.rules.remove(i);
         }
+        if i < st.enabled.len() {
+            st.enabled.remove(i);
+        }
         st.note.clear();
     });
     rebuild_rule_controls();
     layout(hwnd());
     recompute();
+}
+
+unsafe fn rule_enabled(i: usize) -> bool {
+    let host = ST.with(|s| s.borrow().host);
+    let c = ctl(host, id(i, F_ON));
+    if c.0.is_null() {
+        return ST.with(|s| s.borrow().enabled.get(i).copied().unwrap_or(true));
+    }
+    SendMessageW(c, BM_GETCHECK, None, None).0 == 1
+}
+
+unsafe fn toggle_rule(i: usize) {
+    let on = rule_enabled(i);
+    ST.with(|s| {
+        let mut st = s.borrow_mut();
+        let n = st.rules.len();
+        if st.enabled.len() < n {
+            st.enabled.resize(n, true);
+        }
+        if let Some(slot) = st.enabled.get_mut(i) {
+            *slot = on;
+        }
+        st.note.clear();
+    });
+    recompute();
+}
+
+unsafe fn focused_rule() -> Option<usize> {
+    let focus = GetFocus();
+    if focus.0.is_null() {
+        return None;
+    }
+    let host = ST.with(|s| s.borrow().host);
+    if focus != host && !IsChild(host, focus).as_bool() {
+        return None;
+    }
+    let id = GetDlgCtrlID(focus);
+    if id < ID_BASE {
+        return None;
+    }
+    let i = ((id - ID_BASE) / STRIDE) as usize;
+    (i < ST.with(|s| s.borrow().rules.len())).then_some(i)
+}
+
+unsafe fn focused_field() -> Option<i32> {
+    let focus = GetFocus();
+    if focus.0.is_null() {
+        return None;
+    }
+    let id = GetDlgCtrlID(focus);
+    (id >= ID_BASE).then_some((id - ID_BASE) % STRIDE)
+}
+
+fn lp_point(lp: LPARAM) -> (i32, i32) {
+    ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32)
+}
+
+fn card_at_y(y: i32) -> Option<usize> {
+    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+    let scroll = ST.with(|s| s.borrow().rule_scroll);
+    let rules = ST.with(|s| s.borrow().rules.clone());
+    let mut top = -scroll;
+    for (i, rule) in rules.iter().enumerate() {
+        let stride = rule_stride(rule, dpi);
+        if y >= top && y < top + stride {
+            return Some(i);
+        }
+        top += stride;
+    }
+    None
+}
+
+fn insert_at_y(y: i32) -> usize {
+    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+    let scroll = ST.with(|s| s.borrow().rule_scroll);
+    let rules = ST.with(|s| s.borrow().rules.clone());
+    let mut top = -scroll;
+    for (i, rule) in rules.iter().enumerate() {
+        let stride = rule_stride(rule, dpi);
+        if y < top + stride / 2 {
+            return i;
+        }
+        top += stride;
+    }
+    rules.len()
+}
+
+unsafe fn begin_drag(h: HWND, lp: LPARAM) {
+    let (x, y) = lp_point(lp);
+    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+    if x > sc(dpi, 16) {
+        return;
+    }
+    let Some(i) = card_at_y(y) else { return };
+    ST.with(|s| {
+        let mut st = s.borrow_mut();
+        st.drag_from = Some(i);
+        st.drag_to = i;
+    });
+    let _ = SetCapture(h);
+}
+
+unsafe fn drag_move(h: HWND, lp: LPARAM) {
+    if ST.with(|s| s.borrow().drag_from.is_none()) {
+        return;
+    }
+    let (_, y) = lp_point(lp);
+    let to = insert_at_y(y);
+    let changed = ST.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.drag_to == to {
+            false
+        } else {
+            st.drag_to = to;
+            true
+        }
+    });
+    if changed {
+        let _ = InvalidateRect(Some(h), None, false);
+    }
+}
+
+unsafe fn end_drag(h: HWND) {
+    let (from, to) = ST.with(|s| {
+        let mut st = s.borrow_mut();
+        (st.drag_from.take(), st.drag_to)
+    });
+    let _ = ReleaseCapture();
+    if let Some(from) = from {
+        reorder_rule(from, to);
+    }
+    let _ = InvalidateRect(Some(h), None, false);
+}
+
+unsafe fn reorder_rule(from: usize, to: usize) {
+    let n = ST.with(|s| s.borrow().rules.len());
+    if from >= n || to > n || from == to || from + 1 == to {
+        return;
+    }
+    for i in 0..n {
+        if let Some(rule) = read_rule(i) {
+            let on = rule_enabled(i);
+            ST.with(|s| {
+                let mut st = s.borrow_mut();
+                if let Some(slot) = st.rules.get_mut(i) {
+                    *slot = rule;
+                }
+                let n = st.rules.len();
+                if st.enabled.len() < n {
+                    st.enabled.resize(n, true);
+                }
+                if let Some(slot) = st.enabled.get_mut(i) {
+                    *slot = on;
+                }
+            });
+        }
+    }
+    ST.with(|s| {
+        let mut st = s.borrow_mut();
+        let rule = st.rules.remove(from);
+        let on = if from < st.enabled.len() { st.enabled.remove(from) } else { true };
+        let dest = if to > from { to - 1 } else { to }.min(st.rules.len());
+        st.rules.insert(dest, rule);
+        let at = dest.min(st.enabled.len());
+        st.enabled.insert(at, on);
+        st.note.clear();
+    });
+    rebuild_rule_controls();
+    layout(hwnd());
+    recompute();
+}
+
+unsafe fn hover_at(lp: LPARAM) {
+    let (x, y) = lp_point(lp);
+    let g = geo_now();
+    let dpi = ST.with(|s| s.borrow().dpi.max(96));
+    let head = sc(dpi, 28);
+    let row_h = sc(dpi, 36).max(1);
+    let next = if x >= g.list.left && x < g.list.right && y >= g.list.top + head && y < g.list.bottom {
+        let scroll = ST.with(|s| s.borrow().preview_scroll);
+        let i = scroll + (y - g.list.top - head) / row_h;
+        let n = ST.with(|s| s.borrow().rows.len()) as i32;
+        (i >= 0 && i < n).then_some(i as usize)
+    } else {
+        None
+    };
+    let changed = ST.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.hover == next {
+            false
+        } else {
+            st.hover = next;
+            true
+        }
+    });
+    if changed {
+        let _ = InvalidateRect(Some(hwnd()), None, false);
+    }
 }
 
 unsafe fn move_rule(i: usize, dir: isize) {
@@ -910,9 +1168,20 @@ unsafe fn move_rule(i: usize, dir: isize) {
             }
         });
     }
+    let on_i = rule_enabled(i);
+    let on_j = rule_enabled(j as usize);
     ST.with(|s| {
         let mut st = s.borrow_mut();
+        if let Some(slot) = st.enabled.get_mut(i) {
+            *slot = on_i;
+        }
+        if let Some(slot) = st.enabled.get_mut(j as usize) {
+            *slot = on_j;
+        }
         st.rules.swap(i, j as usize);
+        if st.enabled.len() == st.rules.len() {
+            st.enabled.swap(i, j as usize);
+        }
         st.note.clear();
     });
     rebuild_rule_controls();
@@ -985,20 +1254,26 @@ unsafe fn launch(pairs: Vec<(String, String, String)>, pending: Vec<String>, not
         st.pending = pending;
         st.pending_note = note;
         st.clear_rules_on_ok = record;
+        st.pending_undo = undo;
     });
     sync_buttons();
-    exec::start(hwnd(), waves, undo, record);
+    exec::start(hwnd(), waves);
 }
 
 unsafe fn on_done(h: HWND) {
     let finished = exec::take_done();
-    let (pending, note, clear_rules) = ST.with(|s| {
+    let (pending, note, clear_rules, record, undo) = ST.with(|s| {
         let mut st = s.borrow_mut();
         st.busy = false;
-        (std::mem::take(&mut st.pending), st.pending_note.clone(), st.clear_rules_on_ok)
+        (std::mem::take(&mut st.pending), st.pending_note.clone(), st.clear_rules_on_ok, st.clear_rules_on_ok, std::mem::take(&mut st.pending_undo))
     });
     let ok = finished.as_ref().is_some_and(|f| f.ok);
     if ok {
+        if record {
+            exec::push_undo(undo);
+        } else {
+            exec::pop_undo();
+        }
         ST.with(|s| {
             let mut st = s.borrow_mut();
             for (it, name) in st.items.iter_mut().zip(pending.iter()) {
@@ -1006,6 +1281,7 @@ unsafe fn on_done(h: HWND) {
             }
             if clear_rules {
                 st.rules = vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }];
+                st.enabled = vec![true];
             }
             st.note.clone_from(&note);
         });
@@ -1093,7 +1369,8 @@ fn recompute_keep_note() {
         let st = s.borrow();
         (st.items.clone(), st.rules.clone(), st.existing.clone())
     });
-    let rows = engine::preview_filtered(&items, &rules, &existing, tz_offset_secs(), &current_filter());
+    let enabled = ST.with(|s| s.borrow().enabled.clone());
+    let rows = engine::preview_filtered(&items, &rules, &existing, tz_offset_secs(), &current_filter(), &enabled);
     let max = preview_max(rows.len());
     ST.with(|s| {
         let mut st = s.borrow_mut();
@@ -1133,9 +1410,12 @@ unsafe fn sync_buttons() {
         let st = s.borrow();
         (engine::error_count(&st.rows), engine::change_count(&st.rows), st.busy)
     });
-    let undo = exec::last_undo().is_some();
+    let undo_n = exec::undo_count();
+    let base = tx(s("Undo", "되돌리기", "元に戻す"));
+    let label = if undo_n == 0 { base.to_string() } else { format!("{base} ({undo_n})") };
+    set_btn(h, ID_UNDO, &label);
     let _ = EnableWindow(ctl(h, ID_APPLY), (errs == 0 && changes > 0 && !busy).into());
-    let _ = EnableWindow(ctl(h, ID_UNDO), (undo && !busy).into());
+    let _ = EnableWindow(ctl(h, ID_UNDO), (undo_n > 0 && !busy).into());
     let _ = EnableWindow(ctl(h, ID_SAVE), (!busy).into());
     let _ = EnableWindow(ctl(h, ID_DELPRE), (!busy).into());
     let _ = InvalidateRect(Some(ctl(h, ID_APPLY)), None, false);
@@ -1302,7 +1582,11 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
     let del = RECT { left: right - btn, top: row1, right, bottom: row1 + h };
     let down = RECT { left: del.left - gap - btn, top: row1, right: del.left - gap, bottom: row1 + h };
     let up = RECT { left: down.left - gap - btn, top: row1, right: down.left - gap, bottom: row1 + h };
-    let kind = RECT { left: card.left + sc(dpi, 10), top: row1, right: (card.left + sc(dpi, 180)).min(up.left - gap), bottom: row1 + h };
+    let grip = sc(dpi, 14);
+    let box_w = sc(dpi, 22);
+    put(host, id(i, F_ON), RECT { left: card.left + grip, top: row1, right: card.left + grip + box_w, bottom: row1 + h }, true);
+    let kind_left = card.left + grip + box_w + gap;
+    let kind = RECT { left: kind_left, top: row1, right: (kind_left + sc(dpi, 168)).min(up.left - gap), bottom: row1 + h };
     put(host, id(i, F_KIND), kind, true);
     put(host, id(i, F_UP), up, true);
     put(host, id(i, F_DOWN), down, true);
@@ -1314,7 +1598,7 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
         put(host, id(i, f), RECT::default(), false);
     }
 
-    let x = card.left + sc(dpi, 10);
+    let x = kind_left;
     let end = card.right - sc(dpi, 10);
     let edit_at = |field, left, top, right| {
         unsafe { put(host, id(i, field), RECT { left, top, right, bottom: top + h }, true); }
@@ -1492,6 +1776,9 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
         if i > 0 {
             crate::fill(dc, RECT { bottom: r.top + 1, top: r.top, ..r }, crate::pal().line);
         }
+        if ST.with(|s| s.borrow().hover) == Some(i) {
+            crate::fill(dc, RECT { left: r.left + 1, right: r.right - 1, top: r.top + 1, bottom: r.bottom - 1 }, crate::blend(crate::pal().card, crate::pal().text, 0.06));
+        }
         let old_r = RECT { left: r.left + sc(dpi, 12), right: split - sc(dpi, 8), ..r };
         let arrow = RECT { left: split, right: new_left, ..r };
         let new_r = RECT { left: new_left, right: r.right - err_w, ..r };
@@ -1551,6 +1838,13 @@ unsafe fn paint_host(h: HWND) {
                 continue;
             }
             rfill(dc, card, sc(dpi, 8), crate::pal().card, Some(crate::pal().line));
+            let gx = card.left + sc(dpi, 6);
+            let gy = card.top + (card.bottom - card.top) / 2;
+            let ink = crate::blend(crate::pal().card, crate::pal().text, 0.45);
+            for dy in [-4, 0, 4] {
+                crate::fill(dc, RECT { left: gx, top: gy + dy, right: gx + sc(dpi, 3), bottom: gy + dy + 2 }, ink);
+                crate::fill(dc, RECT { left: gx + sc(dpi, 5), top: gy + dy, right: gx + sc(dpi, 8), bottom: gy + dy + 2 }, ink);
+            }
             // Frames behind the borderless edits, slightly outside the control.
             for f in [F_A, F_B, F_C, F_AT] {
                 let c = ctl(h, id(i, f));
@@ -1565,6 +1859,18 @@ unsafe fn paint_host(h: HWND) {
                 let inf = sc(dpi, 3);
                 rfill(dc, RECT { left: wr.left - inf, top: wr.top - inf, right: wr.right + inf, bottom: wr.bottom + inf }, sc(dpi, 4), crate::pal().card, Some(crate::pal().line));
             }
+        }
+        if let Some(from) = ST.with(|s| s.borrow().drag_from) {
+            let to = ST.with(|s| s.borrow().drag_to);
+            let mut y = -scroll;
+            for (i, rule) in rules.iter().enumerate() {
+                if i == to {
+                    break;
+                }
+                y += rule_stride(rule, dpi);
+            }
+            let _ = from;
+            crate::fill(dc, RECT { left: sc(dpi, 8), top: y, right: width - sc(dpi, 8), bottom: y + sc(dpi, 2) }, chrome());
         }
         let content = rules_span(&rules, dpi);
         let view = rc.bottom - rc.top;
@@ -1790,8 +2096,10 @@ unsafe fn load_preset() {
     let rules = if preset.rules.is_empty() {
         vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }]
     } else {
-        preset.rules.into_iter().take(MAX_RULES).collect()
+        preset.rules.into_iter().take(MAX_RULES).collect::<Vec<_>>()
     };
+    let mut enabled = preset.enabled;
+    enabled.resize(rules.len(), true);
     let sel = if preset.files && !preset.folders {
         1
     } else if !preset.files && preset.folders {
@@ -1803,6 +2111,7 @@ unsafe fn load_preset() {
         let mut st = s.borrow_mut();
         st.filling = true;
         st.rules = rules;
+        st.enabled = enabled;
         st.note.clear();
         st.rule_scroll = 0;
     });
@@ -1826,14 +2135,20 @@ unsafe fn save_preset() {
     }
     let n = ST.with(|s| s.borrow().rules.len());
     let mut rules = Vec::with_capacity(n);
+    let mut enabled = Vec::with_capacity(n);
     for i in 0..n {
         if let Some(rule) = read_rule(i) {
             rules.push(rule);
+            enabled.push(rule_enabled(i));
         }
     }
-    ST.with(|s| s.borrow_mut().rules.clone_from(&rules));
+    ST.with(|s| {
+        let mut st = s.borrow_mut();
+        st.rules.clone_from(&rules);
+        st.enabled.clone_from(&enabled);
+    });
     let (files, folders) = filter_flags();
-    let preset = Preset { name: name.clone(), rules, files, folders, extensions: crate::text_of(ctl(h, ID_EXT)) };
+    let preset = Preset { name: name.clone(), rules, files, folders, extensions: crate::text_of(ctl(h, ID_EXT)), enabled };
     let note = match presets::save(&presets::dir(), &preset) {
         Ok(()) => {
             ST.with(|s| s.borrow_mut().filling = true);
