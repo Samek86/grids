@@ -672,20 +672,7 @@ fn clean_labels(map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<Str
         if id.is_empty() || id.len() > 96 {
             continue;
         }
-        let mut names = Vec::new();
-        for label in labels {
-            let label = label.trim();
-            if label.is_empty() || label.chars().count() > 80 {
-                continue;
-            }
-            if names.iter().any(|n: &String| n.eq_ignore_ascii_case(label)) {
-                continue;
-            }
-            names.push(label.to_string());
-            if names.len() >= 8 {
-                break;
-            }
-        }
+        let names = crate::shell::ctxmenu::cleaned_labels(labels);
         if !names.is_empty() {
             out.insert(id.to_string(), names);
         }
@@ -1036,6 +1023,17 @@ mod tests {
         assert_eq!(saved["ctx_labels"]["clsid:abc"], serde_json::json!(["반디집으로 압축하기", "SVN 업데이트"]));
         assert_eq!(adopt("{}").unwrap().ctx_off, Session::default().ctx_off);
         assert!(adopt("{}").unwrap().ctx_labels.is_empty());
+
+        let mut dirty = Session::default();
+        dirty.ctx_labels.insert(
+            "clsid:vs".into(),
+            vec!["Visual Studio で開く(V)".into(), "Visual Studio で開く".into(), "\"a.zip\" に圧縮".into(), "\"b.zip\" に圧縮".into()],
+        );
+        let cleaned = adopt(&sync_text(&dirty)).unwrap();
+        assert_eq!(
+            cleaned.ctx_labels.get("clsid:vs").map(Vec::as_slice),
+            Some(["Visual Studio で開く".to_string(), "\"…\" に圧縮".to_string()].as_slice())
+        );
     }
 
     #[test]

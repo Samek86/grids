@@ -571,11 +571,11 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 let _ = crate::wrap_text(dc, *r, tx(CTX_NOTE), sn.small, crate::pal().sub, false);
             }
             Item::CtxBar { .. } => {}
-            Item::CtxRow { id, rect, mark, chev, name, detail, raw, pending, off, chips, .. } => {
+            Item::CtxRow { id, rect, mark, chev, name, detail, raw, pending, tick, chips, .. } => {
                 let open = sn.ctx_open.iter().any(|x| x == id);
-                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *pending, *off, chips, open, sn, accent);
+                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *pending, *tick, chips, open, sn, accent);
             }
-            Item::CtxSub { rect, mark, bit, on, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *on, sn, accent),
+            Item::CtxSub { rect, mark, bit, tick, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *tick, sn, accent),
             Item::CtxEmpty(r) => crate::text(dc, *r, tx(CTX_EMPTY), sn.small, crate::pal().sub, DT_LEFT),
             Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
             Item::KeyHead(r) => {
@@ -795,11 +795,10 @@ unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent:
     }
 }
 
-unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, pending: bool, off: u8, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
+unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, pending: bool, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
-    let attached = chips.iter().fold(0u8, |a, (b, _)| a | *b);
-    draw_tick(dc, mark, crate::shell::ctxmenu::tick_of(off, attached), accent, dpi, sn.icon);
+    draw_tick(dc, mark, tick, accent, dpi, sn.icon);
     let chev_box = RECT { top: mark.top, bottom: mark.bottom, ..chev };
     crate::text(dc, chev_box, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
     let name_right = chips.first().map(|(_, r)| r.left - sc(dpi, 8)).unwrap_or(rect.right - sc(dpi, 12));
@@ -840,9 +839,8 @@ unsafe fn line_width(dc: HDC, s: &str, font: HFONT) -> i32 {
     r.right - r.left
 }
 
-unsafe fn draw_ctx_sub(dc: HDC, rect: RECT, mark: RECT, bit: u8, on: bool, sn: &Snap, accent: u32) {
+unsafe fn draw_ctx_sub(dc: HDC, rect: RECT, mark: RECT, bit: u8, tick: crate::shell::ctxmenu::Tick, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
-    let tick = if on { crate::shell::ctxmenu::Tick::On } else { crate::shell::ctxmenu::Tick::Off };
     draw_tick(dc, mark, tick, accent, dpi, sn.icon);
     crate::text(dc, RECT { left: mark.right + sc(dpi, 8), ..rect }, crate::shell::ctxmenu::target_label(bit), sn.font, crate::pal().text, DT_LEFT);
 }
@@ -1591,12 +1589,12 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                 return;
             }
         }
-        if let Item::CtxRow { id, rect, mark, targets, .. } = item {
+        if let Item::CtxRow { id, ids, scopes, rect, mark, .. } = item {
             if inside(*rect, x, y) {
                 if inside(*mark, x, y) {
-                    let id = id.clone();
-                    let targets = *targets;
-                    app(|a| crate::shell::ctxmenu::toggle_master(&mut a.s.ctx_off, &id, targets));
+                    let ids = ids.clone();
+                    let scopes = scopes.clone();
+                    app(|a| crate::shell::ctxmenu::toggle_ids_master(&mut a.s.ctx_off, &ids, &scopes));
                     crate::save_session();
                 } else {
                     let id = id.clone();
@@ -1614,12 +1612,12 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                 return;
             }
         }
-        if let Item::CtxSub { id, bit, attached, rect, .. } = item {
+        if let Item::CtxSub { ids, scopes, bit, rect, .. } = item {
             if inside(*rect, x, y) {
-                let id = id.clone();
+                let ids = ids.clone();
+                let scopes = scopes.clone();
                 let bit = *bit;
-                let attached = *attached;
-                app(|a| crate::shell::ctxmenu::toggle_target(&mut a.s.ctx_off, &id, bit, attached));
+                app(|a| crate::shell::ctxmenu::toggle_ids_target(&mut a.s.ctx_off, &ids, &scopes, bit));
                 crate::save_session();
                 layout(h);
                 let _ = InvalidateRect(Some(h), None, false);
