@@ -1763,7 +1763,14 @@ pub(crate) fn parse_cols(t: &str) -> (Vec<(PROPERTYKEY, u32)>, Vec<(PROPERTYKEY,
 }
 
 // Existing relative paths become absolute; shell names like ::{GUID} pass through.
+// A UNC path or a mapped drive is not probed. `exists` waits on a dead share (~45s) and this
+// runs in main() before any window. The pane resolves that path off the UI thread once it is up.
+// Saved sessions do not come through here: pane paths are copied as text, and `navigate` is what
+// opens them. That path must not stat a share either (free space, metadata).
 pub(crate) fn resolve(p: String) -> String {
+    if unsafe { crate::share_path(&p) } {
+        return p;
+    }
     match Path::new(&p).exists() {
         true => std::path::absolute(&p).map(|x| x.to_string_lossy().into_owned()).unwrap_or(p),
         false => p,
@@ -1851,7 +1858,7 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, same_type, Session};
+    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, resolve, same_type, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::MAXP;
     use crate::THIS_PC;
@@ -2084,6 +2091,16 @@ mod crumb_tests {
         assert!(!real_folder(SFGAO_FOLDER.0 | SFGAO_STREAM.0));
         assert!(!real_folder(SFGAO_STREAM.0));
         assert!(!real_folder(0));
+    }
+
+    #[test]
+    fn resolve_and_restore_leave_a_share_unprobed() {
+        // `exists` on a dead share blocks for the redirector timeout. These stay the typed text.
+        assert_eq!(resolve(r"\\10.255.255.2\x".into()), r"\\10.255.255.2\x");
+        assert_eq!(resolve(r"//10.255.255.2/x".into()), r"//10.255.255.2/x");
+        assert_eq!(resolve(r"\\?\UNC\server\share".into()), r"\\?\UNC\server\share");
+        let s = Session::parse("p0=\\\\10.255.255.2\\x\n");
+        assert_eq!(s.paths[0], r"\\10.255.255.2\x");
     }
 }
 
