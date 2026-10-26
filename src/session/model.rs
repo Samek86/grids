@@ -274,7 +274,8 @@ pub(crate) struct Session {
     /// Drive-letter buttons on the tab row. Off hides them and gives that width to the tabs. Missing means on.
     pub(crate) drive_buttons: bool,
     pub(crate) stat: bool,             // status line
-    pub(crate) view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (4 details, 3 list, 1 icons)
+    pub(crate) view_new: i32,          // FOLDERVIEWMODE for a pane that has none yet (see EXPLORER_VIEWS)
+    pub(crate) view_icon: i32,         // icon size beside view_new; 0 = that mode's usual size (large icons are 96)
     pub(crate) start_new: u8,          // 0 This PC, 1 Desktop, 2 start_path
     pub(crate) start_path: String,
     pub(crate) ext: bool,              // show file extensions (the Windows Explorer setting)
@@ -295,6 +296,60 @@ pub(crate) struct Session {
     pub(crate) dot: bool,              // green unsaved mark on the save button
     pub(crate) tabs: Vec<Tab>,         // every tab's grid; the active one's grid is also the fields above
     pub(crate) tab: usize,             // which tab is on screen
+}
+
+/// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
+/// Large and medium icons share mode 1; the size tells them apart. 96 is large.
+pub(crate) const EXPLORER_VIEWS: [(i32, i32, &str, &str, &str); 8] = [
+    (5, 256, "Extra large icons", "아주 큰 아이콘", "特大アイコン"),
+    (1, 96, "Large icons", "큰 아이콘", "大きなアイコン"),
+    (1, 48, "Medium icons", "보통 아이콘", "中アイコン"),
+    (2, 16, "Small icons", "작은 아이콘", "小アイコン"),
+    (3, 16, "List", "목록", "一覧"),
+    (4, 16, "Details", "자세히", "詳細"),
+    (6, 48, "Tiles", "타일", "タイル"),
+    (8, 32, "Content", "내용", "コンテンツ"),
+];
+
+/// Details, list, the four icon sizes, tiles, content. Anything else is details.
+pub(crate) fn known_view_mode(mode: i32) -> i32 {
+    match mode {
+        1 | 2 | 3 | 4 | 5 | 6 | 8 => mode,
+        _ => 4,
+    }
+}
+
+/// Icon size a new pane used before a size was stored next to the mode.
+pub(crate) fn historical_view_icon(mode: i32) -> i32 {
+    match known_view_mode(mode) {
+        1 => 96,
+        5 => 256,
+        6 => 48,
+        8 => 32,
+        _ => 16,
+    }
+}
+
+/// 0 when `icon` is the usual size for `mode`, so older settings files stay unchanged.
+pub(crate) fn stored_view_icon(mode: i32, icon: i32) -> i32 {
+    if icon > 0 && icon != historical_view_icon(mode) { icon } else { 0 }
+}
+
+/// Which Explorer view is on screen. Two presets that share a mode pick the nearer icon size.
+/// A missing size (0) keeps the first preset of that mode, which is the historical one.
+pub(crate) fn explorer_view_index(mode: i32, icon: i32) -> Option<usize> {
+    let mut best: Option<(usize, i32)> = None;
+    for (i, &(m, z, ..)) in EXPLORER_VIEWS.iter().enumerate() {
+        if m != mode {
+            continue;
+        }
+        let dist = if icon <= 0 { 0 } else { (icon - z).abs() };
+        match best {
+            Some((_, d)) if dist >= d => {}
+            _ => best = Some((i, dist)),
+        }
+    }
+    best.map(|(i, _)| i)
 }
 
 impl Default for Session {
@@ -340,6 +395,7 @@ impl Default for Session {
             drive_buttons: true,
             stat: true,
             view_new: 4,
+            view_icon: 0,
             start_new: 0,
             start_path: String::new(),
             ext: true,
@@ -406,6 +462,7 @@ impl PartialEq for Session {
             && self.drive_buttons == o.drive_buttons
             && self.stat == o.stat
             && self.view_new == o.view_new
+            && self.view_icon == o.view_icon
             && self.start_new == o.start_new
             && self.start_path == o.start_path
             && self.ext == o.ext
@@ -652,9 +709,10 @@ impl Session {
                 "drivebuttons" => s.drive_buttons = v.trim() != "0",
                 "stat" => s.stat = v.trim() != "0",
                 "viewnew" => s.view_new = match v.trim() {
-                    "3" | "list" => 3,
-                    "1" | "icon" => 1,
-                    _ => 4,
+                    "list" => 3,
+                    "icon" => 1,
+                    // The number is the same key grids.ini already had. No new key is written.
+                    other => known_view_mode(other.parse().unwrap_or(4)),
                 },
                 "start" => s.start_new = v.trim().parse::<u8>().unwrap_or(0).min(2),
                 "startp" => s.start_path = v.trim().to_string(),
@@ -820,11 +878,9 @@ impl Session {
     }
 
     pub(crate) fn default_view(&self) -> (i32, i32) {
-        match self.view_new {
-            3 => (3, 16),
-            1 => (1, 96),
-            _ => (4, 16),
-        }
+        let mode = known_view_mode(self.view_new);
+        let icon = if self.view_icon > 0 { self.view_icon } else { historical_view_icon(mode) };
+        (mode, icon)
     }
 
     /// What goes into a named session file: no window position, no pointer to itself, no favourites or recent folders.
@@ -2488,5 +2544,67 @@ mod session_assoc_tests {
         assert!(!active_tab_dirty(&cur, Some(&grid), &cur.order));
         assert_eq!(cur.views[0], (4, 16));
         assert_eq!(grid.cols[0], "a");
+    }
+}
+
+#[cfg(test)]
+mod view_menu_tests {
+    use super::*;
+
+    #[test]
+    fn explorer_presets_match_mode_and_icon_size() {
+        assert_eq!(explorer_view_index(5, 256), Some(0));
+        assert_eq!(explorer_view_index(1, 96), Some(1));
+        assert_eq!(explorer_view_index(1, 0), Some(1));
+        assert_eq!(explorer_view_index(1, 80), Some(1));
+        assert_eq!(explorer_view_index(1, 48), Some(2));
+        assert_eq!(explorer_view_index(1, 64), Some(2));
+        assert_eq!(explorer_view_index(2, 16), Some(3));
+        assert_eq!(explorer_view_index(3, 16), Some(4));
+        assert_eq!(explorer_view_index(4, 16), Some(5));
+        assert_eq!(explorer_view_index(4, 0), Some(5));
+        assert_eq!(explorer_view_index(6, 48), Some(6));
+        assert_eq!(explorer_view_index(8, 32), Some(7));
+        assert_eq!(explorer_view_index(7, 16), None);
+        assert_eq!(EXPLORER_VIEWS[0].2, "Extra large icons");
+        assert_eq!(EXPLORER_VIEWS[2].3, "보통 아이콘");
+        assert_eq!(EXPLORER_VIEWS[7].4, "コンテンツ");
+    }
+
+    #[test]
+    fn new_pane_default_keeps_old_modes_and_a_medium_icon_size() {
+        assert_eq!(Session::default().default_view(), (4, 16));
+        let mut s = Session::default();
+        s.view_new = 1;
+        assert_eq!(s.default_view(), (1, 96));
+        s.view_icon = 48;
+        assert_eq!(s.default_view(), (1, 48));
+        s.view_new = 6;
+        s.view_icon = 0;
+        assert_eq!(s.default_view(), (6, 48));
+        s.view_new = 8;
+        assert_eq!(s.default_view(), (8, 32));
+        s.view_new = 5;
+        assert_eq!(s.default_view(), (5, 256));
+        s.view_new = 2;
+        assert_eq!(s.default_view(), (2, 16));
+        assert_eq!(stored_view_icon(1, 96), 0);
+        assert_eq!(stored_view_icon(1, 48), 48);
+        assert_eq!(stored_view_icon(4, 16), 0);
+        assert_eq!(Session::parse("viewnew=list").view_new, 3);
+        assert_eq!(Session::parse("viewnew=icon").view_new, 1);
+        assert_eq!(Session::parse("viewnew=6").view_new, 6);
+        assert_eq!(Session::parse("viewnew=8").view_new, 8);
+        assert_eq!(Session::parse("viewnew=2").view_new, 2);
+        assert_eq!(Session::parse("viewnew=5").view_new, 5);
+        assert_eq!(Session::parse("viewnew=nope").view_new, 4);
+        s.view_new = 8;
+        s.view_icon = 0;
+        let ini = s.to_ini();
+        assert!(ini.contains("viewnew=8\n"));
+        assert!(!ini.contains("viewicon"));
+        assert!(!ini.contains("grids.ini"));
+        assert_eq!(Session::parse(&ini).view_new, 8);
+        assert_eq!(Session::parse(&ini).view_icon, 0);
     }
 }
