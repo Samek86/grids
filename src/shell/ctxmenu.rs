@@ -354,6 +354,10 @@ fn title_of(r: &Row) -> String {
     if let Some(t) = usable_title(&r.product) {
         return t;
     }
+    // A stored readable fallback may be the menu text ("Configure"). A placeholder still is not.
+    if kept_title(&r.product) {
+        return r.product.clone();
+    }
     // A static verb's `name` is the registry menu text used to delete the item. It is not a product.
     if r.verb.is_empty() {
         if let Some(t) = usable_title(&r.name) {
@@ -364,7 +368,7 @@ fn title_of(r: &Row) -> String {
         return t;
     }
     let raw = r.raw.trim();
-    if !raw.is_empty() && !menu_sentence(raw) {
+    if kept_title(raw) && !menu_sentence(raw) {
         raw.to_string()
     } else {
         String::new()
@@ -373,11 +377,16 @@ fn title_of(r: &Row) -> String {
 
 fn usable_title(s: &str) -> Option<String> {
     let t = s.trim();
-    if t.is_empty() || identifier_like(t) || menu_sentence(t) || parse_guid(t).is_some() {
+    if !kept_title(t) || menu_sentence(t) {
         None
     } else {
         Some(t.to_string())
     }
+}
+
+fn kept_title(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !title_junk(t) && !identifier_like(t) && parse_guid(t).is_none()
 }
 
 /// Empty titles stay separate. Two "Configure" verbs must not become one product.
@@ -1073,7 +1082,7 @@ fn pick_label(candidates: &[&str]) -> String {
     let mut cleaned = Vec::new();
     for s in candidates {
         let t = clean_label(s);
-        if t.is_empty() || parse_guid(&t).is_some() {
+        if t.is_empty() || parse_guid(&t).is_some() || title_junk(&t) {
             continue;
         }
         cleaned.push(t);
@@ -1100,15 +1109,59 @@ fn friendly_name(product: &str, desc: &str, fallbacks: &[&str]) -> String {
     if let Some(name) = known_product(&picked) {
         return name;
     }
-    if product_like(&picked) && !menu_sentence(&picked) { picked } else { String::new() }
+    if product_like(&picked) && !menu_sentence(&picked) && !title_junk(&picked) { picked } else { String::new() }
 }
 
 fn mapped_title(s: &str) -> Option<String> {
+    if title_junk(s) {
+        return None;
+    }
     let t = polish_name(s);
+    if title_junk(&t) {
+        return None;
+    }
     if let Some(name) = known_product(&t).or_else(|| known_product(s)) {
         return Some(name);
     }
     if product_like(&t) && !menu_sentence(&t) { Some(t) } else { None }
+}
+
+/// `%1`, `%*`, `%V`, `%L`, a path, or a command line. None of these is a product name.
+fn title_junk(s: &str) -> bool {
+    let t = s.trim().trim_matches('"').trim();
+    if t.is_empty() {
+        return false;
+    }
+    contains_placeholder(t) || looks_like_command(t)
+}
+
+fn contains_placeholder(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'%' {
+            let n = b[i + 1].to_ascii_lowercase();
+            if n == b'*' || b[i + 1].is_ascii_digit() || matches!(n, b'd' | b'i' | b'l' | b'u' | b'v' | b'w') {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn looks_like_command(s: &str) -> bool {
+    if s.contains(['\\', '/']) {
+        return true;
+    }
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return true;
+    }
+    s.split_whitespace().any(|w| {
+        let low = w.trim_matches('"').to_ascii_lowercase();
+        [".exe", ".dll", ".ocx", ".cpl", ".bat", ".cmd", ".com"].iter().any(|ext| low.ends_with(ext))
+    })
 }
 
 fn product_like(s: &str) -> bool {
@@ -1487,10 +1540,45 @@ fn known_product(s: &str) -> Option<String> {
 fn verb_raw(verb_key: &str, stem: &str) -> String {
     let key = component_raw(verb_key, "");
     let stem_raw = component_raw(stem, "");
-    if (key.is_empty() || menu_sentence(&key)) && !stem_raw.is_empty() && !menu_sentence(&stem_raw) {
-        stem_raw
+    let stem_ok = kept_title(&stem_raw) && !menu_sentence(&stem_raw);
+    let key_ok = kept_title(&key) && !menu_sentence(&key);
+    if !key_ok && stem_ok { stem_raw } else if key_ok { key } else { String::new() }
+}
+
+/// Product title for one static verb. Version info, then the ProgID's application, then a readable name.
+fn verb_product(product: &str, desc: &str, stem: &str, menu: &str, verb: &str, owner: &str) -> String {
+    let stem = if title_junk(stem) { "" } else { stem };
+    let mut title = friendly_name(product, desc, &[stem]);
+    if title_junk(&title) || menu_sentence(&title) {
+        title.clear();
+    }
+    if title.is_empty() {
+        if let Some(mapped) = known_product(menu).or_else(|| known_product(verb)) {
+            title = mapped;
+        }
+    }
+    if title.is_empty() {
+        let owner = polish_name(owner);
+        if kept_title(&owner) && !menu_sentence(&owner) {
+            title = known_product(&owner).unwrap_or(owner);
+        }
+    }
+    if title.is_empty() {
+        title = readable_fallback(menu, verb);
+    }
+    if title_junk(&title) { String::new() } else { title }
+}
+
+fn readable_fallback(menu: &str, verb: &str) -> String {
+    let menu_t = polish_name(menu);
+    if kept_title(&menu_t) {
+        return known_product(&menu_t).unwrap_or(menu_t);
+    }
+    let verb_t = polish_name(verb);
+    if kept_title(&verb_t) && !menu_sentence(&verb_t) {
+        known_product(&verb_t).unwrap_or(verb_t)
     } else {
-        key
+        String::new()
     }
 }
 
@@ -1522,9 +1610,9 @@ fn file_stem(path: &str) -> String {
     }
 }
 
-/// `rundll32.exe dll,Entry` is the DLL. Anything else is the executable.
+/// `rundll32.exe dll,Entry` is the DLL. A bare `%1` / `%*` is not a file.
 fn version_target(command: &str) -> String {
-    if command.is_empty() {
+    if command.trim().is_empty() {
         return String::new();
     }
     let expanded = if command.contains('%') { expand_env(command) } else { command.to_string() };
@@ -1532,11 +1620,18 @@ fn version_target(command: &str) -> String {
     let file = exe.rsplit(['\\', '/']).next().unwrap_or(&exe).to_ascii_lowercase();
     if file == "rundll32.exe" || file == "rundll32" {
         let dll = args.trim().trim_matches('"').split(',').next().unwrap_or("").trim().trim_matches('"');
-        if !dll.is_empty() {
-            return dll.to_string();
-        }
+        return if real_module(dll) { dll.to_string() } else { String::new() };
     }
-    exe.trim().trim_matches('"').to_string()
+    if real_module(&exe) { exe.trim().trim_matches('"').to_string() } else { String::new() }
+}
+
+fn real_module(s: &str) -> bool {
+    let t = s.trim().trim_matches('"');
+    if t.is_empty() || contains_placeholder(t) {
+        return false;
+    }
+    let low = t.to_ascii_lowercase();
+    [".exe", ".dll", ".ocx", ".cpl"].iter().any(|ext| low.ends_with(ext))
 }
 
 fn fold_menu(s: &str) -> String {
@@ -2129,6 +2224,53 @@ unsafe fn scan_handlers(root: HKEY, full: &str, rel: &str, targets: u8, rows: &m
     _ = RegCloseKey(key);
 }
 
+fn generic_class(rel: &str) -> bool {
+    let n = rel.trim().trim_matches('\\').to_ascii_lowercase();
+    matches!(n.as_str(), "*" | "directory" | "folder" | "drive" | "allfilesystemobjects" | "unknown")
+        || n.starts_with("systemfileassociations\\")
+        || n.ends_with("\\background")
+}
+
+/// The application that owns this ProgID: its open command's version info, or the ProgID's own name.
+unsafe fn owner_name(root: HKEY, full: &str, rel: &str, dlls: &mut HashMap<String, (String, String, String)>) -> String {
+    if generic_class(rel) {
+        return String::new();
+    }
+    if let Some((head, tail)) = rel.split_once('\\') {
+        if head.eq_ignore_ascii_case("Applications") {
+            let stem = file_stem(tail);
+            if kept_title(&stem) && !menu_sentence(&stem) {
+                return known_product(&stem).unwrap_or(stem);
+            }
+        }
+    }
+    let open = open_at(root, &format!(r"{full}\shell\open\command")).map(|ck| {
+        let command = key_sz(ck, PCWSTR::null());
+        _ = RegCloseKey(ck);
+        command
+    }).unwrap_or_default();
+    let target = version_target(&open);
+    if !target.is_empty() {
+        let (desc, product, _) = file_version(&target, dlls);
+        let stem_owned = file_stem(&target);
+        let stem = if title_junk(&stem_owned) { "" } else { stem_owned.as_str() };
+        let title = friendly_name(&product, &desc, &[stem]);
+        if kept_title(&title) && !menu_sentence(&title) {
+            return title;
+        }
+    }
+    if progid_like(rel) && !rel.contains('\\') {
+        if let Some(k) = open_at(root, full) {
+            let name = polish_name(&key_sz(k, PCWSTR::null()));
+            _ = RegCloseKey(k);
+            if kept_title(&name) && !menu_sentence(&name) {
+                return known_product(&name).unwrap_or(name);
+            }
+        }
+    }
+    String::new()
+}
+
 unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut Vec<Row>, dlls: &mut HashMap<String, (String, String, String)>, clsids: &mut HashMap<String, (String, String, String)>) {
     let path = format!(r"{full}\shell");
     let Some(key) = open_at(root, &path) else { return };
@@ -2180,8 +2322,8 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
             file_version(&target, dlls)
         };
         let stem = file_stem(&target);
-        let product_title = friendly_name(&product, &desc, &[&stem, &friendly, &name]);
-        let product_title = if product_like(&product_title) && !menu_sentence(&product_title) { product_title } else { String::new() };
+        let owner = owner_name(root, full, rel, dlls);
+        let product_title = verb_product(&product, &desc, &stem, &friendly, &name, &owner);
         let mut static_labels = Vec::new();
         push_unique(&mut static_labels, &[menu_label(&mui), friendly.clone()]);
         push_unique(&mut static_labels, &cascade_labels(root, &sub));
@@ -2267,7 +2409,8 @@ fn upsert(rows: &mut Vec<Row>, incoming: Row) {
             have.clsid = incoming.clsid;
         }
         let incoming_better = !incoming.name.is_empty()
-            && (have.name.is_empty() || parse_guid(&have.name).is_some() || (identifier_like(&have.name) && !identifier_like(&incoming.name)));
+            && !title_junk(&incoming.name)
+            && (have.name.is_empty() || title_junk(&have.name) || parse_guid(&have.name).is_some() || (identifier_like(&have.name) && !identifier_like(&incoming.name)));
         if incoming_better {
             have.name = incoming.name;
         }
@@ -2292,7 +2435,21 @@ fn upsert(rows: &mut Vec<Row>, incoming: Row) {
 }
 
 fn better_title(have: &str, incoming: &str) -> bool {
-    !incoming.is_empty() && (have.is_empty() || parse_guid(have).is_some() || (identifier_like(have) && !identifier_like(incoming)))
+    if !kept_title(incoming) {
+        return false;
+    }
+    if !kept_title(have) {
+        return true;
+    }
+    let have_menu = menu_sentence(have);
+    let incoming_menu = menu_sentence(incoming);
+    if have_menu && !incoming_menu {
+        return true;
+    }
+    if !have_menu && incoming_menu {
+        return false;
+    }
+    parse_guid(have).is_some() || (identifier_like(have) && !identifier_like(incoming))
 }
 
 fn specificity(class: &str) -> u8 {
@@ -3116,6 +3273,35 @@ mod tests {
             static_labels: vec!["Configure".into()],
         };
         assert_eq!(title_of(&configure), "");
+        assert!(title_junk("%1"));
+        assert!(title_junk("%*"));
+        assert!(title_junk("%V"));
+        assert!(title_junk("%L"));
+        assert!(title_junk(r#""C:\App\a.exe" "%1""#));
+        assert!(title_junk(r"C:\Windows\notepad.exe"));
+        assert!(!title_junk("Configure"));
+        assert!(!title_junk("구성"));
+        assert!(!title_junk("Microsoft Office"));
+        assert!(!title_junk("한글(Hwp)"));
+        assert_eq!(version_target("%1"), "");
+        assert_eq!(version_target("%*"), "");
+        assert_eq!(version_target(r#""C:\App\a.exe" "%1""#), r"C:\App\a.exe");
+        assert_eq!(version_target(r"rundll32.exe %1"), "");
+        assert_eq!(version_target(r#"C:\Windows\System32\rundll32.exe "C:\App\a.dll",Entry %1"#), r"C:\App\a.dll");
+        assert_eq!(friendly_name("", "", &["%1", "Configure"]), "");
+        assert_eq!(verb_product("", "", "%1", "Configure", "config", ""), "Configure");
+        assert_eq!(verb_product("", "", "%1", "구성", "config", ""), "구성");
+        assert_eq!(verb_product("", "", "%1", "Open in Excel", "config", ""), "Microsoft Office");
+        assert_eq!(verb_product("", "", "%1", "Configure", "config", "LockHunter"), "LockHunter");
+        assert_eq!(verb_product("Bandizip", "", "%1", "Configure", "config", ""), "Bandizip");
+        assert!(better_title("%1", "Bandizip"));
+        assert!(better_title("Configure", "Bandizip"));
+        assert!(!better_title("Bandizip", "Configure"));
+        assert!(!better_title("Bandizip", "%1"));
+        let placeholder = Row { product: "%1".into(), raw: "%1".into(), ..configure.clone() };
+        assert_eq!(title_of(&placeholder), "");
+        let named = Row { product: "Configure".into(), ..configure };
+        assert_eq!(title_of(&named), "Configure");
         crate::UI.store(1, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(known_product("wscript").as_deref(), Some("Windows 스크립트 호스트"));
         assert_eq!(known_product("Hwp").as_deref(), Some("한글(Hwp)"));
