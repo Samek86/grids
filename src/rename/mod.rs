@@ -3,6 +3,7 @@
 
 mod engine;
 mod exec;
+mod presets;
 mod win;
 
 pub(crate) use win::{captures, menu_label, on_key, open_active, open_paths, refresh};
