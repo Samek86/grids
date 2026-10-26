@@ -31,6 +31,7 @@ const S_FACE: i32 = 28;
 const S_FV_DEF: i32 = 33;
 const S_FV_RESET: i32 = 34;
 const S_FV_CLEAR: i32 = 35;
+pub(crate) const S_CTX_RESET: i32 = 36;
 const S_LAYOUT: i32 = 29;
 const S_WM: i32 = 30;
 const S_WM_BROWSE: i32 = 31;
@@ -125,7 +126,10 @@ const FIND: [&str; 3] = s("Find a setting", "설정 검색", "設定を検索");
 const NONE: [&str; 3] = s("No matches", "결과 없음", "一致なし");
 /// Content shown when the nav query matches no page. Distinct from `NONE`, which is the nav label and an empty shortcut row.
 const NO_RESULTS: [&str; 3] = s("No results", "검색 결과 없음", "検索結果なし");
-const PAGES: [[&str; 3]; 9] = [
+pub(crate) const PAGE_N: usize = 10;
+/// Right-click menu page. About stays last so earlier page numbers do not move.
+pub(crate) const CTX_PAGE: usize = 8;
+const PAGES: [[&str; 3]; PAGE_N] = [
     s("General", "일반", "一般"),
     s("Appearance", "모양", "外観"),
     s("Panes & view", "패널·보기", "ペインと表示"),
@@ -134,8 +138,17 @@ const PAGES: [[&str; 3]; 9] = [
     s("Shortcuts", "단축키", "ショートカット"),
     s("Sessions", "세션", "セッション"),
     s("Advanced", "고급", "詳細"),
+    s("Right-click menu items", "우클릭 메뉴 항목", "右クリックメニュー項目"),
     s("About", "정보", "情報"),
 ];
+
+const CTX_NOTE: [&str; 3] = s(
+    "These items appear in Panegrid's right-click menu. Windows items such as Open, Copy and Properties stay. A new item starts on. Explorer is unchanged.",
+    "Panegrid의 우클릭 메뉴에 나오는 항목이에요. 열기, 복사, 속성 같은 Windows 항목은 그대로예요. 새 항목은 켜진 채로 시작해요. 탐색기는 바뀌지 않아요.",
+    "Panegrid の右クリックメニューに出る項目です。開く、コピー、プロパティなどの Windows の項目はそのままです。新しい項目はオンで始まります。エクスプローラーは変わりません。",
+);
+const CTX_RESET_L: [&str; 3] = s("Reset to all enabled", "모두 사용", "すべて有効に戻す");
+const CTX_EMPTY: [&str; 3] = s("No third-party menu items", "타사 메뉴 항목이 없어요", "サードパーティの項目はありません");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ctl {
@@ -256,7 +269,7 @@ fn page_cards(p: usize) -> &'static [Spec] {
         3 => FILE,
         6 => SESS,
         7 => ADV,
-        8 => ABOUT,
+        9 => ABOUT,
         _ => &[],
     }
 }
@@ -287,6 +300,9 @@ fn page_match(q: &str, page: usize) -> bool {
     }
     if page == 5 {
         return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
+    }
+    if page == CTX_PAGE {
+        return has(tx(CTX_NOTE), q) || has(tx(CTX_RESET_L), q) || has(tx(CTX_EMPTY), q) || crate::shell::ctxmenu::name_hit(q);
     }
     false
 }
@@ -351,6 +367,8 @@ struct St {
     drag: Option<i32>,
     /// Tree id of the favourites row being dragged. Indices shift as the node moves.
     fav_drag: Option<Vec<usize>>,
+    /// Handler ids expanded on the right-click menu page.
+    ctx_open: Vec<String>,
 }
 
 impl Default for St {
@@ -375,6 +393,7 @@ impl Default for St {
             thumb_h: 0,
             drag: None,
             fav_drag: None,
+            ctx_open: Vec::new(),
         }
     }
 }
@@ -396,6 +415,7 @@ struct Snap {
     title_font: HFONT,
     mono: HFONT,
     icon: HFONT,
+    ctx_open: Vec<String>,
 }
 
 fn snap() -> Snap {
@@ -413,6 +433,7 @@ fn snap() -> Snap {
             title_font: st.title_font,
             mono: st.mono,
             icon: st.icon,
+            ctx_open: st.ctx_open.clone(),
         }
     })
 }
@@ -436,6 +457,20 @@ enum Item {
     FavHead(RECT),
     FavRow { i: usize, rect: RECT, rename: RECT, btn: RECT },
     Note(RECT, [&'static str; 3]),
+    CtxNote(RECT),
+    CtxBar { reset: RECT },
+    CtxRow {
+        id: String,
+        rect: RECT,
+        mark: RECT,
+        chev: RECT,
+        name: String,
+        targets: u8,
+        off: u8,
+        chips: Vec<(u8, RECT)>,
+    },
+    CtxSub { id: String, bit: u8, attached: u8, rect: RECT, mark: RECT, on: bool },
+    CtxEmpty(RECT),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
     KeyRow { i: usize, rect: RECT, change: RECT, reset: RECT },
@@ -443,8 +478,8 @@ enum Item {
 
 struct Geo {
     nav_w: i32,
-    nav: [RECT; 9],
-    show: [bool; 9],
+    nav: [RECT; PAGE_N],
+    show: [bool; PAGE_N],
     search: RECT,
     content: RECT,
     title: RECT,
@@ -491,10 +526,10 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
     let close = right_box(footer, sc(dpi, 88), sc(dpi, 32), sc(dpi, 16));
     let hint = RECT { left: sc(dpi, 16), top: footer.top, right: close.left - sc(dpi, 8), bottom: footer.bottom };
     let q = sn.query.as_str();
-    let mut show = [false; 9];
-    let mut nav = [RECT::default(); 9];
+    let mut show = [false; PAGE_N];
+    let mut nav = [RECT::default(); PAGE_N];
     let mut y = search.bottom + sc(dpi, 8);
-    for i in 0..9 {
+    for i in 0..PAGE_N {
         show[i] = page_match(q, i);
         if !show[i] {
             continue;
@@ -608,7 +643,97 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     if page == 5 {
         y = key_items(g, sn, left, right, y, rq);
     }
+    if page == CTX_PAGE {
+        y = ctx_items(g, sn, left, right, y, rq);
+    }
     (y + sn.scroll) - start + sc(dpi, 16)
+}
+
+fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
+    let dpi = sn.dpi.max(96);
+    if rq.is_empty() || has(tx(CTX_NOTE), rq) {
+        let h = sc(dpi, 72);
+        g.items.push(Item::CtxNote(RECT { left, top: y, right, bottom: y + h }));
+        y += h + sc(dpi, 8);
+    }
+    let off = app(|a| a.s.ctx_off.clone());
+    let rows = crate::shell::ctxmenu::ui_rows(&off, rq);
+    let bw = sc(dpi, 220);
+    let bh = sc(dpi, 32);
+    let reset = RECT { left: (right - bw).max(left), top: y, right, bottom: y + bh };
+    g.items.push(Item::CtxBar { reset });
+    y += bh + sc(dpi, 12);
+    if rows.is_empty() {
+        g.items.push(Item::CtxEmpty(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }));
+        return y + sc(dpi, 44);
+    }
+    for row in rows {
+        let h = sc(dpi, 48);
+        let rect = RECT { left, top: y, right, bottom: y + h };
+        let mark = RECT { left: left + sc(dpi, 14), top: y + (h - sc(dpi, 16)) / 2, right: left + sc(dpi, 30), bottom: y + (h + sc(dpi, 16)) / 2 };
+        let chev = RECT { left: mark.right + sc(dpi, 2), top: y, right: mark.right + sc(dpi, 26), bottom: y + h };
+        let chips = ctx_chips(row.targets, rect, dpi);
+        let open = sn.ctx_open.iter().any(|id| id == &row.id);
+        g.items.push(Item::CtxRow {
+            id: row.id.clone(),
+            rect,
+            mark,
+            chev,
+            name: row.name,
+            targets: row.targets,
+            off: row.off,
+            chips,
+        });
+        y += h;
+        if open {
+            for bit in crate::shell::ctxmenu::target_bits() {
+                if row.targets & bit == 0 {
+                    continue;
+                }
+                let sh = sc(dpi, 36);
+                let sub = RECT { left: left + sc(dpi, 36), top: y, right, bottom: y + sh };
+                let sbox = RECT {
+                    left: sub.left + sc(dpi, 14),
+                    top: y + (sh - sc(dpi, 16)) / 2,
+                    right: sub.left + sc(dpi, 30),
+                    bottom: y + (sh + sc(dpi, 16)) / 2,
+                };
+                g.items.push(Item::CtxSub {
+                    id: row.id.clone(),
+                    bit,
+                    attached: row.targets,
+                    rect: sub,
+                    mark: sbox,
+                    on: crate::shell::ctxmenu::target_enabled(row.off, bit),
+                });
+                y += sh;
+            }
+        }
+        y += sc(dpi, 6);
+    }
+    y
+}
+
+fn ctx_chips(targets: u8, rect: RECT, dpi: i32) -> Vec<(u8, RECT)> {
+    let mut x = rect.right - sc(dpi, 12);
+    let mut out = Vec::new();
+    for bit in crate::shell::ctxmenu::target_bits().into_iter().rev() {
+        if targets & bit == 0 {
+            continue;
+        }
+        let label = crate::shell::ctxmenu::target_label(bit);
+        // Hangul and kana are about twice an ASCII cell. A flat 7px count clips "드라이브" to "드라…".
+        let mut text_w = 0i32;
+        for ch in label.chars() {
+            text_w += if ch.is_ascii() { sc(dpi, 7) } else { sc(dpi, 14) };
+        }
+        let w = sc(dpi, 20) + text_w;
+        let r = RECT { left: x - w, top: rect.top + sc(dpi, 14), right: x, bottom: rect.top + sc(dpi, 34) };
+        x = r.left - sc(dpi, 6);
+        out.push((bit, r));
+    }
+    out.reverse();
+    out
 }
 
 fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
@@ -843,6 +968,7 @@ mod tests {
             title_font: HFONT::default(),
             mono: HFONT::default(),
             icon: HFONT::default(),
+            ctx_open: Vec::new(),
         }
     }
 
@@ -868,12 +994,12 @@ mod tests {
         // "Ag" matches only Shortcuts: chord text is "Ctrl+PageUp" / "Ctrl+PageDown".
         // "Agy" matches nothing. Keeping the page a prefix opened is what showed the empty table.
         assert!(page_match("Ag", 5));
-        assert_eq!((0..9).find(|&p| page_match("Ag", p)), Some(5));
+        assert_eq!((0..PAGES.len()).find(|&p| page_match("Ag", p)), Some(5));
         assert!(search_miss("Agy"));
-        assert!((0..9).all(|p| !page_match("Agy", p)));
+        assert!((0..PAGES.len()).all(|p| !page_match("Agy", p)));
 
         crate::UI.store(2, Ordering::Relaxed);
-        assert_eq!((0..9).find(|&p| page_match("Ag", p)), Some(5));
+        assert_eq!((0..PAGES.len()).find(|&p| page_match("Ag", p)), Some(5));
         assert!(search_miss("Agy"));
         crate::UI.store(1, Ordering::Relaxed);
 
@@ -1017,5 +1143,54 @@ mod tests {
         let body = geo(client(), &shot(0, "language"));
         assert!(body.show[0]);
         assert!(!body.items.is_empty());
+    }
+
+    #[test]
+    fn right_click_menu_page_is_found_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        assert_eq!(CTX_PAGE, 8);
+        assert_eq!(PAGES.len(), PAGE_N);
+        assert_eq!(tx(PAGES[CTX_PAGE]), "Right-click menu items");
+        assert_eq!(tx(CTX_RESET_L), "Reset to all enabled");
+        let (anchor, page) = commit_search(0, 0, "Right-click menu");
+        assert_eq!((anchor, page), (0, CTX_PAGE));
+        let g = geo(client(), &shot(page, "Right-click menu"));
+        assert!(g.show[CTX_PAGE]);
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxBar { .. })));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        assert_eq!(tx(PAGES[CTX_PAGE]), "우클릭 메뉴 항목");
+        assert_eq!(tx(CTX_RESET_L), "모두 사용");
+        assert_eq!(tx(CTX_EMPTY), "타사 메뉴 항목이 없어요");
+        let (_, page) = commit_search(0, 0, "우클릭 메뉴 항목");
+        assert_eq!(page, CTX_PAGE);
+        let g = geo(client(), &shot(page, "우클릭"));
+        assert!(g.show[CTX_PAGE]);
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxBar { .. })));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        assert_eq!(tx(PAGES[CTX_PAGE]), "右クリックメニュー項目");
+        assert_eq!(tx(CTX_RESET_L), "すべて有効に戻す");
+        assert_eq!(tx(CTX_NOTE), CTX_NOTE[2]);
+        let (_, page) = commit_search(0, 0, "右クリックメニュー");
+        assert_eq!(page, CTX_PAGE);
+        let g = geo(client(), &shot(page, "右クリック"));
+        assert!(g.show[CTX_PAGE]);
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
+    }
+
+    #[test]
+    fn drive_chip_fits_the_korean_label() {
+        let _lock = ui_lock();
+        let _keep = lang(1);
+        let bits = crate::shell::ctxmenu::FILE | crate::shell::ctxmenu::FOLDER | crate::shell::ctxmenu::BACKGROUND | crate::shell::ctxmenu::DRIVE;
+        let chips = ctx_chips(bits, RECT { left: 0, top: 0, right: 900, bottom: 48 }, 96);
+        assert_eq!(chips.len(), 4);
+        let (_, r) = chips.iter().find(|(b, _)| *b == crate::shell::ctxmenu::DRIVE).copied().unwrap();
+        let w = r.right - r.left;
+        assert!(w >= 18 + 13 * 4, "drive chip width {w}");
+        assert_eq!(crate::shell::ctxmenu::target_label(crate::shell::ctxmenu::DRIVE), "드라이브");
     }
 }
