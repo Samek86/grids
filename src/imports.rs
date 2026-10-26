@@ -31,6 +31,6 @@ pub(crate) use windows::Win32::UI::Controls::{
 };
 pub(crate) use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
 pub(crate) use windows::Win32::UI::Input::KeyboardAndMouse::*;
-pub(crate) use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST, STRRET};
+pub(crate) use windows::Win32::UI::Shell::Common::{ITEMIDLIST, STRRET};
 pub(crate) use windows::Win32::UI::Shell::*;
 pub(crate) use windows::Win32::UI::WindowsAndMessaging::*;

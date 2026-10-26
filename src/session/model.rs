@@ -1404,12 +1404,17 @@ pub(crate) fn apply_args(s: &mut Session, args: Vec<String>) {
     s.anchor();
 }
 
+/// %APPDATA%\\Panegrid\\panegrid-sessions (next to the exe in portable mode). Created when missing.
+/// The first time, sessions from the old folders next to the exe are copied in; the old files stay.
 pub(crate) fn sessions_dir() -> PathBuf {
-    let exe = store::exe_dir();
-    let dir = exe.join("panegrid-sessions");
-    let old = exe.join("sessions");
-    if !dir.exists() && old.exists() && std::fs::create_dir_all(&dir).is_ok() {
-        copy_old_sessions(&old, &dir);
+    let dir = store::config_dir().join("panegrid-sessions");
+    if !dir.exists() && std::fs::create_dir_all(&dir).is_ok() {
+        let exe = store::exe_dir();
+        for old in [exe.join("panegrid-sessions"), exe.join("sessions")] {
+            if old != dir && old.is_dir() {
+                copy_old_sessions(&old, &dir);
+            }
+        }
     }
     dir
 }
