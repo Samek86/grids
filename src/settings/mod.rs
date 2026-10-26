@@ -219,9 +219,9 @@ const LIST_H: [&str; 3] = s("List", "목록", "一覧");
 const ABOUT: &[Spec] = &[Spec {
     title: s("Panegrid", "Panegrid", "Panegrid"),
     desc: s(
-        "Panegrid is a fork of efww/grids by efww · fork Samek86/grids",
-        "Panegrid는 efww의 efww/grids 포크입니다 · 포크 Samek86/grids",
-        "Panegrid は efww による efww/grids のフォークです · フォーク Samek86/grids",
+        "Panegrid is a fork of efww/grids by efww · fork Samek86/panegrid",
+        "Panegrid는 efww의 efww/grids 포크입니다 · 포크 Samek86/panegrid",
+        "Panegrid は efww による efww/grids のフォークです · フォーク Samek86/panegrid",
     ),
     live: true,
     ctl: Ctl::About,

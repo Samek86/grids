@@ -857,9 +857,9 @@ pub(crate) unsafe fn about(owner: HWND) {
         env!("CARGO_PKG_VERSION"),
         tr("Fast multi-pane file manager for Windows", "Windows용 빠른 다중 패널 파일 관리자", "Windows 向けの高速マルチペイン ファイル マネージャー"),
         tr(
-            "Panegrid is a fork of efww/grids by efww\nfork Samek86/grids",
-            "Panegrid는 efww의 efww/grids 포크입니다\n포크 Samek86/grids",
-            "Panegrid は efww による efww/grids のフォークです\nフォーク Samek86/grids",
+            "Panegrid is a fork of efww/grids by efww\nfork Samek86/panegrid",
+            "Panegrid는 efww의 efww/grids 포크입니다\n포크 Samek86/panegrid",
+            "Panegrid は efww による efww/grids のフォークです\nフォーク Samek86/panegrid",
         ),
         tr("MIT License · © 2026 efww", "MIT 라이선스 · © 2026 efww", "MIT ライセンス · © 2026 efww"),
         tr("Open the project page?", "프로젝트 페이지를 열까요?", "プロジェクト ページを開きますか?"),
