@@ -365,10 +365,12 @@ impl Store {
         self.default.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.map.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, path: &str) -> bool {
         normalize_folder_key(path).is_some_and(|k| self.map.contains_key(&k))
     }
