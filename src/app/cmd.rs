@@ -173,6 +173,10 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return false;
     }
+    // Batch rename is its own window. Esc closes it; Ctrl+Enter applies. Other keys are the edits.
+    if crate::rename::captures(m.hwnd) {
+        return crate::rename::on_key(vk, ctrl, alt, shift);
+    }
     // The favourites window: Esc closes, Enter opens the selected item, arrows move through it.
     if fav_manager_captures(m.hwnd) {
         return fav_manager_on_key(vk, ctrl, alt);
@@ -463,6 +467,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
             }
             copy_paths(a);
         }
+        "file.rename" => crate::rename::open_active(),
         "file.new" => new_file(a),
         "file.dir" => new_folder(a),
         "file.mkdir" if list => explorer_new_folder(a),
