@@ -622,6 +622,9 @@ mod tests {
             assert_eq!((r.right - r.left, r.bottom - r.top), (s(16), s(16)));
             assert_eq!(crumb_field(wide, dpi).left, wide.left + s(26));
             assert_eq!(crumb_field(wide, dpi).left, crumb_field(wide, dpi).left);
+            let note = crate::net_note_rect(wide, dpi);
+            assert_eq!((note.left, note.right, note.top, note.bottom), (wide.left + s(8), wide.right - s(8), wide.top, wide.bottom));
+            assert!(note.right - note.left > crumb_field(wide, dpi).right - crumb_field(wide, dpi).left);
         }
     }
 

@@ -453,6 +453,13 @@ pub(crate) fn addr_icon(addr: RECT, dpi: i32) -> Option<RECT> {
     Some(RECT { left, top, right: left + s(16), bottom: top + s(16) })
 }
 
+/// Connecting / unreachable line. The whole address pill: this is not a path, so it does not
+/// keep the icon gutter or a breadcrumb segment.
+pub(crate) fn net_note_rect(addr: RECT, dpi: i32) -> RECT {
+    let pad = 8 * dpi / 96;
+    RECT { left: addr.left + pad, right: (addr.right - pad).max(addr.left + pad), ..addr }
+}
+
 /// Where crumbs sit in the address pill: the edit's horizontal span, a little inside the pill vertically.
 pub(crate) fn crumb_field(addr: RECT, dpi: i32) -> RECT {
     let s = |v: i32| v * dpi / 96;
@@ -920,54 +927,46 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 frame(dc, p, 1, if active { ink } else { accent });
             }
         }
-        if let Some(n) = link.as_ref() {
-            // Network glyph in the slot the folder icon left. Not a shell lookup: that would touch the share.
-            if let Some(r) = addr_icon(pg.addr, dpi) {
-                let glyph = if n.bad { "\u{E783}" } else { "\u{E774}" };
-                text(dc, r, glyph, icon_font, pal().sub, DT_CENTER);
-            }
-        } else if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
-            if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
-                _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
-                _ = DestroyIcon(icon);
+        if link.is_none() {
+            if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
+                if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
+                    _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
+                    _ = DestroyIcon(icon);
+                }
             }
         }
-        if let Some(i) = i.filter(|_| crumbs_on) {
-            if let Some(n) = link {
-                let label = net_bar_text(n.bad);
-                let field = crumb_field(pg.addr, dpi);
-                let ink = if n.bad { pal().sub } else { pal().text };
-                text(dc, RECT { left: field.left + s(4), right: field.right - s(4), ..field }, label, font, ink, DT_LEFT);
-            } else {
-                for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
-                    let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
-                    if wait {
-                        fill(dc, r, blend(pal().pill, accent, 0.25));
-                    } else if hot == Some(k) {
-                        fill(dc, r, blend(pal().pill, pal().text, 0.08));
-                    }
-                    if matches!(c, Crumb::Kids(..)) {
-                        if wait {
-                            // `…` is a little wider than the `›` slot, so it reaches into the neighbours' padding.
-                            let mut w: Vec<u16> = "…".encode_utf16().collect();
-                            let mut rr = r;
-                            let old = SelectObject(dc, font.into());
-                            SetBkMode(dc, TRANSPARENT);
-                            SetTextColor(dc, cref(pal().sub));
-                            DrawTextW(dc, &mut w, &mut rr, DT_CENTER | DT_NOCLIP | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-                            SelectObject(dc, old);
-                        } else {
-                            text(dc, r, &label, font, pal().sub, DT_CENTER);
-                        }
-                        continue;
-                    }
-                    if matches!(c, Crumb::More(_)) {
-                        text(dc, r, &label, font, pal().sub, DT_CENTER);
-                        continue;
-                    }
-                    let ink = if c == Crumb::Here { pal().text } else { pal().sub };
-                    text(dc, RECT { left: r.left + s(4), right: r.right - s(4), ..r }, &label, font, ink, DT_LEFT);
+        if let Some(n) = link.filter(|_| crumbs_on) {
+            let ink = if n.bad { pal().sub } else { pal().text };
+            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(n.bad), font, ink, DT_LEFT);
+        } else if let Some(i) = i.filter(|_| crumbs_on) {
+            for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
+                let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
+                if wait {
+                    fill(dc, r, blend(pal().pill, accent, 0.25));
+                } else if hot == Some(k) {
+                    fill(dc, r, blend(pal().pill, pal().text, 0.08));
                 }
+                if matches!(c, Crumb::Kids(..)) {
+                    if wait {
+                        // `…` is a little wider than the `›` slot, so it reaches into the neighbours' padding.
+                        let mut w: Vec<u16> = "…".encode_utf16().collect();
+                        let mut rr = r;
+                        let old = SelectObject(dc, font.into());
+                        SetBkMode(dc, TRANSPARENT);
+                        SetTextColor(dc, cref(pal().sub));
+                        DrawTextW(dc, &mut w, &mut rr, DT_CENTER | DT_NOCLIP | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                        SelectObject(dc, old);
+                    } else {
+                        text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    }
+                    continue;
+                }
+                if matches!(c, Crumb::More(_)) {
+                    text(dc, r, &label, font, pal().sub, DT_CENTER);
+                    continue;
+                }
+                let ink = if c == Crumb::Here { pal().text } else { pal().sub };
+                text(dc, RECT { left: r.left + s(4), right: r.right - s(4), ..r }, &label, font, ink, DT_LEFT);
             }
         }
         if pg.tabs.bottom > pg.tabs.top {
