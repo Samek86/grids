@@ -5,7 +5,7 @@ use crate::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
-use windows::Win32::System::Com::Urlmon::URLDownloadToFileW;
+use windows::Win32::Networking::WinHttp::*;
 
 /// Test builds can point at a local mock or pretend to be older; release builds use the real values.
 const API: &str = match option_env!("PANEGRID_UPDATE_API") {
@@ -61,12 +61,97 @@ pub(crate) fn parse_release(json: &str) -> Option<Release> {
     })
 }
 
+/// Largest body the updater reads (release JSON or zip).
+const BODY_MAX: usize = 128 << 20;
+
+/// Closes a WinHTTP handle when dropped.
+struct Hnd(*mut core::ffi::c_void);
+impl Drop for Hnd {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { _ = WinHttpCloseHandle(self.0); }
+        }
+    }
+}
+
+/// One GET over WinHTTP (no cache layer; redirects followed). Some(body) only on HTTP 200.
+/// Blocking: callers run it on the update worker thread.
+fn http_get(url: &str) -> Option<Vec<u8>> {
+    let wide: Vec<u16> = url.encode_utf16().collect();
+    let mut host = [0u16; 256];
+    let mut path = vec![0u16; 4096];
+    let mut uc = URL_COMPONENTS {
+        dwStructSize: std::mem::size_of::<URL_COMPONENTS>() as u32,
+        lpszHostName: PWSTR(host.as_mut_ptr()),
+        dwHostNameLength: host.len() as u32,
+        lpszUrlPath: PWSTR(path.as_mut_ptr()),
+        dwUrlPathLength: path.len() as u32,
+        dwSchemeLength: 1,
+        dwExtraInfoLength: 1,
+        ..Default::default()
+    };
+    unsafe {
+        WinHttpCrackUrl(&wide, 0, &mut uc).ok()?;
+        // Path and query are cracked separately; the request needs both.
+        let mut object: Vec<u16> = path[..uc.dwUrlPathLength as usize].to_vec();
+        if !uc.lpszExtraInfo.is_null() {
+            object.extend_from_slice(std::slice::from_raw_parts(uc.lpszExtraInfo.0, uc.dwExtraInfoLength as usize));
+        }
+        object.push(0);
+        host[uc.dwHostNameLength as usize] = 0;
+        let secure = uc.nScheme == WINHTTP_INTERNET_SCHEME_HTTPS;
+        let ua = HSTRING::from(format!("Panegrid/{APP_VERSION}"));
+        let ses = Hnd(WinHttpOpen(&ua, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0));
+        if ses.0.is_null() {
+            return None;
+        }
+        _ = WinHttpSetTimeouts(ses.0, 10_000, 15_000, 30_000, 60_000);
+        let con = Hnd(WinHttpConnect(ses.0, PCWSTR(host.as_ptr()), uc.nPort, 0));
+        if con.0.is_null() {
+            return None;
+        }
+        let flags = if secure { WINHTTP_FLAG_SECURE } else { WINHTTP_OPEN_REQUEST_FLAGS(0) };
+        let req = Hnd(WinHttpOpenRequest(con.0, w!("GET"), PCWSTR(object.as_ptr()), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), flags));
+        if req.0.is_null() {
+            return None;
+        }
+        let hdr: Vec<u16> = "Cache-Control: no-cache\r\nPragma: no-cache\r\n".encode_utf16().collect();
+        WinHttpSendRequest(req.0, Some(&hdr), None, 0, 0, 0).ok()?;
+        WinHttpReceiveResponse(req.0, std::ptr::null_mut()).ok()?;
+        let mut status = 0u32;
+        let mut len = 4u32;
+        WinHttpQueryHeaders(
+            req.0,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR::null(),
+            Some(&mut status as *mut u32 as *mut _),
+            &mut len,
+            std::ptr::null_mut(),
+        )
+        .ok()?;
+        if status != 200 {
+            return None;
+        }
+        let mut body = Vec::new();
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            let mut got = 0u32;
+            WinHttpReadData(req.0, buf.as_mut_ptr() as *mut _, buf.len() as u32, &mut got).ok()?;
+            if got == 0 {
+                break;
+            }
+            body.extend_from_slice(&buf[..got as usize]);
+            if body.len() > BODY_MAX {
+                return None;
+            }
+        }
+        Some(body)
+    }
+}
+
 fn download(url: &str, dest: &Path) -> bool {
     _ = std::fs::remove_file(dest);
-    unsafe {
-        _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        URLDownloadToFileW(None, &HSTRING::from(url), &HSTRING::from(dest.as_os_str()), 0, None).is_ok()
-    }
+    http_get(url).is_some_and(|b| std::fs::write(dest, b).is_ok())
 }
 
 fn exe_path() -> Option<PathBuf> {
@@ -89,14 +174,8 @@ pub(crate) fn startup(main: HWND, check: bool) {
         if !check {
             return;
         }
-        let tmp = std::env::temp_dir().join(format!("panegrid-latest-{}.json", std::process::id()));
-        // A changing query keeps the URL cache from answering with an old release.
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let sep = if API.contains('?') { '&' } else { '?' };
-        let ok = download(&format!("{API}{sep}t={stamp}"), &tmp);
-        let text = std::fs::read_to_string(&tmp).unwrap_or_default();
-        _ = std::fs::remove_file(&tmp);
-        let Some(rel) = ok.then(|| parse_release(&text)).flatten() else { return };
+        let text = http_get(API).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let Some(rel) = parse_release(&text) else { return };
         if is_newer(&rel.tag, APP_VERSION) {
             *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(rel);
             unsafe { _ = PostMessageW(Some(HWND(h as _)), WM_UPDATE, WPARAM(0), LPARAM(0)); }
