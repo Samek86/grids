@@ -13,7 +13,8 @@ use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
 /// How long a UNC or mapped drive may block a worker before the pane gives up.
 /// A dead share's redirector timeout is ~45s; the UI thread never waits that out.
-pub(crate) const NET_WAIT_MS: u32 = 3000;
+/// The breadcrumb `›` list uses the same wait.
+pub(crate) const NET_WAIT_MS: u32 = 8000;
 const NET_CAP: usize = 4;
 
 fn slash(c: u8) -> bool {
@@ -90,26 +91,35 @@ pub(crate) fn edit_target<'a>(typed: &'a str, full: Option<&'a str>, share: bool
     }
 }
 
-pub(crate) fn net_wait_text(path: &str) -> String {
-    match ui() {
-        1 => format!("{path} 연결 중…"),
-        2 => format!("{path} に接続中…"),
-        _ => format!("Connecting to {path}…"),
-    }
+/// Status line while a share is in flight. Same words as the address pill.
+pub(crate) fn net_wait_text() -> &'static str {
+    net_bar_text(false)
 }
 
-pub(crate) fn net_fail_text(path: &str) -> String {
-    match ui() {
-        1 => format!("{path}에 연결할 수 없음"),
-        2 => format!("{path} に接続できません"),
-        _ => format!("Can't reach {path}"),
+/// Status line when the share did not answer. Same words as the address pill.
+pub(crate) fn net_fail_text() -> &'static str {
+    net_bar_text(true)
+}
+
+/// Address-bar line while a share is in flight or has failed. The pill is narrow, so this
+/// stays the short phrase and does not repeat the path.
+pub(crate) fn net_bar_text(bad: bool) -> &'static str {
+    if bad {
+        tr("Can't reach", "연결할 수 없음", "接続できません")
+    } else {
+        tr("Connecting…", "연결 중…", "接続中…")
     }
 }
 
 fn clear_net_notes(a: &mut App, path: &str) {
-    let wait = net_wait_text(path);
-    let fail = net_fail_text(path);
-    if a.note.as_ref().is_some_and(|(t, _)| t == &wait || t == &fail) {
+    let wait = net_wait_text();
+    let fail = net_fail_text();
+    // Another pane may still be on the same short line. Leave it until that pane finishes.
+    let other = a.panes.iter().flatten().any(|p| p.net.as_ref().is_some_and(|n| n.path != path));
+    if other {
+        return;
+    }
+    if a.note.as_ref().is_some_and(|(t, _)| t == wait || t == fail) {
         a.note = None;
     }
 }
@@ -288,16 +298,28 @@ unsafe fn show_link(i: usize, h: HWND, id: usize, path: &str) {
             _ = ShowWindow(e, SW_HIDE);
         }
     }
-    app(|a| {
-        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
-            if p.hwnd == h {
-                p.net = Some(NetUi { id, path: path.to_string(), bad: false });
-            }
+    let armed = app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return false };
+        if p.hwnd != h {
+            return false;
         }
+        p.net = Some(NetUi { id, path: path.to_string(), bad: false });
+        // The folder we were in stays painted until a new icon arrives. Drop it for the wait.
+        retire_folder_icon(p);
         a.lost = 0;
-        a.note = Some((net_wait_text(path), Instant::now() + std::time::Duration::from_secs(8)));
+        a.note = Some((net_wait_text().to_string(), Instant::now() + std::time::Duration::from_millis(u64::from(NET_WAIT_MS) + 1000)));
+        true
     });
+    if armed {
+        drop_icon_request(h);
+    }
     repaint_link(h);
+}
+
+/// The shell icon of the folder we left. A late lookup for it must not land during the wait.
+fn retire_folder_icon(p: &mut Pane) {
+    p.icon = -1;
+    p.ticket = next_ticket(&ICON_TICKET);
 }
 
 unsafe fn clear_link(i: usize, h: HWND, id: usize, path: &str) {
@@ -330,11 +352,13 @@ unsafe fn show_link_fail(i: usize, h: HWND, id: usize, path: &str) {
             Some(_) => return false,
             None => p.net = Some(NetUi { id, path: path.to_string(), bad: true }),
         }
+        retire_folder_icon(p);
         a.lost = 0;
-        a.note = Some((net_fail_text(path), Instant::now() + std::time::Duration::from_secs(8)));
+        a.note = Some((net_fail_text().to_string(), Instant::now() + std::time::Duration::from_secs(8)));
         true
     });
     if shown {
+        drop_icon_request(h);
         repaint_link(h);
     }
 }
@@ -1936,7 +1960,7 @@ impl IDropTarget_Impl for PaneDrop_Impl {
 
 #[cfg(test)]
 mod missing_tests {
-    use super::{drive_root, edit_cur_ok, edit_target, near_dir, net_fail_text, net_wait_text, rec_step, share_kind, unc_path, Nav, NetBook, NetOpen, NetWait};
+    use super::{drive_root, edit_cur_ok, edit_target, near_dir, net_bar_text, net_fail_text, net_wait_text, rec_step, share_kind, unc_path, Nav, NetBook, NetOpen, NetWait, NET_WAIT_MS};
     use crate::i18n::UI;
     use std::io;
     use std::path::Path;
@@ -2016,14 +2040,17 @@ mod missing_tests {
     fn net_text_follows_the_language() {
         let prev = UI.load(Ordering::Relaxed);
         UI.store(0, Ordering::Relaxed);
-        assert_eq!(net_wait_text(r"\\s\x"), r"Connecting to \\s\x…");
-        assert_eq!(net_fail_text(r"\\s\x"), r"Can't reach \\s\x");
+        assert_eq!(NET_WAIT_MS, 8000);
+        assert_eq!(net_wait_text(), "Connecting…");
+        assert_eq!(net_fail_text(), "Can't reach");
+        assert_eq!(net_bar_text(false), net_wait_text());
+        assert_eq!(net_bar_text(true), net_fail_text());
         UI.store(1, Ordering::Relaxed);
-        assert_eq!(net_wait_text(r"\\s\x"), r"\\s\x 연결 중…");
-        assert_eq!(net_fail_text(r"\\s\x"), r"\\s\x에 연결할 수 없음");
+        assert_eq!(net_wait_text(), "연결 중…");
+        assert_eq!(net_fail_text(), "연결할 수 없음");
         UI.store(2, Ordering::Relaxed);
-        assert_eq!(net_wait_text(r"\\s\x"), r"\\s\x に接続中…");
-        assert_eq!(net_fail_text(r"\\s\x"), r"\\s\x に接続できません");
+        assert_eq!(net_wait_text(), "接続中…");
+        assert_eq!(net_fail_text(), "接続できません");
         UI.store(prev, Ordering::Relaxed);
     }
 
@@ -2031,7 +2058,7 @@ mod missing_tests {
     fn stale_share_result_is_dropped() {
         let mut b = NetBook { slots: Vec::new() };
         let t0 = Instant::now();
-        let wait = std::time::Duration::from_secs(3);
+        let wait = std::time::Duration::from_millis(u64::from(NET_WAIT_MS));
         let id = 7usize;
         assert!(b.begin(open(1, id, r"\\s\x", None, None, false, t0)).is_none());
         assert!(matches!(b.poll(1, id, t0, wait), NetWait::Early(_)));
