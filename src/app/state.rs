@@ -11,6 +11,14 @@ use crate::session::*;
 
 static NEXT_WIN: AtomicUsize = AtomicUsize::new(1);
 
+/// A UNC or mapped-drive navigation still resolving off the UI thread.
+#[derive(Clone)]
+pub(crate) struct NetUi {
+    pub(crate) id: usize,
+    pub(crate) path: String,
+    pub(crate) bad: bool, // timed out or the share did not answer; the address shows the error
+}
+
 pub(crate) struct Pane {
     pub(crate) hwnd: HWND,
     pub(crate) eb: IExplorerBrowser,
@@ -23,6 +31,8 @@ pub(crate) struct Pane {
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
     pub(crate) icon: i32,   // current folder in the system image list, -1 = none yet
     pub(crate) ticket: u32, // that lookup; 0 = none asked
+    /// UNC or mapped drive being resolved off this thread. Local folders leave it empty.
+    pub(crate) net: Option<NetUi>,
     /// Where this browser sits now. Swap updates it; the Explorer callbacks read it.
     pub(crate) slot: std::sync::Arc<AtomicUsize>,
 }

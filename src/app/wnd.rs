@@ -508,6 +508,9 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_MOUSELEAVE => crumb_hover(h, None),
             WM_KIDS => kids_show(h, wp.0),
+            WM_NET => net_done(h, wp.0),
+            WM_TIMER if wp.0 == TIMER_NET => net_timeout(h),
+            WM_TIMER if wp.0 == TIMER_KIDS => kids_timeout(h),
             WM_LBUTTONDOWN => {
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
@@ -607,7 +610,13 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
             WM_PANE_ICON => {
                 let (changed, dpi) = app(|a| {
                     let p = a.panes.iter_mut().flatten().find(|p| p.hwnd == h);
-                    let new = p.and_then(|p| take_icon(p.ticket, wp.0 as u32, lp.0 as i32).filter(|&n| n != p.icon).map(|n| p.icon = n));
+                    // A share wait owns the address icon. The previous folder's lookup must not put it back.
+                    let new = p.and_then(|p| {
+                        if p.net.is_some() {
+                            return None;
+                        }
+                        take_icon(p.ticket, wp.0 as u32, lp.0 as i32).filter(|&n| n != p.icon).map(|n| p.icon = n)
+                    });
                     (new.is_some(), a.dpi)
                 });
                 if let Some(r) = addr_icon(addr_rect(h, dpi), dpi).filter(|_| changed) {

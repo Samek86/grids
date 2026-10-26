@@ -453,6 +453,13 @@ pub(crate) fn addr_icon(addr: RECT, dpi: i32) -> Option<RECT> {
     Some(RECT { left, top, right: left + s(16), bottom: top + s(16) })
 }
 
+/// Connecting / unreachable line. The whole address pill: this is not a path, so it does not
+/// keep the icon gutter or a breadcrumb segment.
+pub(crate) fn net_note_rect(addr: RECT, dpi: i32) -> RECT {
+    let pad = 8 * dpi / 96;
+    RECT { left: addr.left + pad, right: (addr.right - pad).max(addr.left + pad), ..addr }
+}
+
 /// Where crumbs sit in the address pill: the edit's horizontal span, a little inside the pill vertically.
 pub(crate) fn crumb_field(addr: RECT, dpi: i32) -> RECT {
     let s = |v: i32| v * dpi / 96;
@@ -572,7 +579,10 @@ pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
             focus_view(i);
             let Some((ph, path, dpi)) = app(|a| Some((a.panes[i].as_ref()?.hwnd, a.s.paths[i].clone(), a.dpi))) else { return };
             let id = want_kids(ph, &dir, hidden());
-            app(|a| a.kids = Some(KidsAsk { id, hwnd: ph, i, path, gen: gen(), dir, next }));
+            app(|a| a.kids = Some(KidsAsk { id, hwnd: ph, i, path, gen: gen(), dir, next, at: Instant::now() }));
+            if kids_job().net_wait(id) {
+                SetTimer(Some(ph), TIMER_KIDS, NET_WAIT_MS, None);
+            }
             _ = InvalidateRect(Some(ph), Some(&addr_rect(ph, dpi)), false);
             return;
         }
@@ -599,6 +609,7 @@ pub(crate) struct KidsAsk {
     pub(crate) gen: usize,
     pub(crate) dir: String, // folder being listed
     pub(crate) next: Option<String>,
+    pub(crate) at: Instant, // when the click was accepted; a share list is given up after NET_WAIT_MS
 }
 
 impl KidsAsk {
@@ -612,18 +623,21 @@ pub(crate) type KidsList = std::result::Result<(Vec<String>, bool), ()>; // (nam
 
 /// One worker, newest request only. `id` moves on every ask or cancel. A result is kept
 /// only for the current id, and handed out only to that id.
-/// One worker: a dead share's `read_dir` holds up the next `›`, which stays in the waiting mark.
+/// A UNC or mapped drive is not read here. `read_dir` on a dead share would block this
+/// thread, and the next local `›` would wait behind it. Those lists run beside the worker
+/// and are given up after `NET_WAIT_MS`.
 pub(crate) struct KidsJob {
     pub(crate) id: usize,
     pub(crate) hwnd: isize,
     pub(crate) dir: String,
     pub(crate) hidden: bool,
+    pub(crate) net: bool,
     pub(crate) result: Option<(usize, KidsList)>,
 }
 
 impl KidsJob {
-    pub(crate) fn ask(&mut self, hwnd: isize, dir: &str, hidden: bool) -> usize {
-        (self.id, self.hwnd, self.dir, self.hidden, self.result) = (self.id + 1, hwnd, dir.to_string(), hidden, None);
+    pub(crate) fn ask(&mut self, hwnd: isize, dir: &str, hidden: bool, net: bool) -> usize {
+        (self.id, self.hwnd, self.dir, self.hidden, self.net, self.result) = (self.id + 1, hwnd, dir.to_string(), hidden, net, None);
         self.id
     }
 
@@ -639,49 +653,120 @@ impl KidsJob {
         self.result.take_if(|(k, _)| *k == id).map(|(_, r)| r)
     }
 
+    /// This id is still the share list the worker handed off, and nothing has arrived.
+    pub(crate) fn net_wait(&self, id: usize) -> bool {
+        self.id == id && self.net && self.result.is_none()
+    }
+
+    /// The wait is over. A result that already arrived is left for `take`. Later reads are dropped.
+    pub(crate) fn fail(&mut self, id: usize) -> bool {
+        if self.id != id || self.result.is_some() {
+            return false;
+        }
+        self.id += 1;
+        self.dir.clear();
+        self.net = false;
+        self.result = Some((id, Err(())));
+        true
+    }
+
     pub(crate) fn cancel(&mut self) {
         (self.id, self.result) = (self.id + 1, None);
         self.dir.clear();
+        self.net = false;
     }
 }
 
-pub(crate) static KIDS: Mutex<KidsJob> = Mutex::new(KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None });
+pub(crate) static KIDS: Mutex<KidsJob> = Mutex::new(KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, net: false, result: None });
 pub(crate) static KIDS_WAKE: Condvar = Condvar::new();
 pub(crate) const KIDS_MAX: usize = 500;
+const KIDS_NET_CAP: usize = 2;
+static KIDS_NET: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn kids_job() -> std::sync::MutexGuard<'static, KidsJob> {
     KIDS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(crate) fn want_kids(h: HWND, dir: &str, hidden: bool) -> usize {
-    let id = kids_job().ask(h.0 as isize, dir, hidden);
+    let net = unsafe { share_path(dir) };
+    let id = kids_job().ask(h.0 as isize, dir, hidden, net);
     static WORKER: Once = Once::new();
     WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-kids".into()).spawn(kids_worker));
     KIDS_WAKE.notify_one();
     id
 }
 
+fn read_kids(dir: &str, hidden: bool) -> KidsList {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            let named = rd.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), e.metadata().ok()?.file_attributes())));
+            kid_names(named, hidden)
+        })
+        .map_err(|_| ())
+}
+
+/// A share list does not occupy the worker. At most `KIDS_NET_CAP` of them run at once;
+/// past that the click fails immediately instead of queueing behind a dead share.
+fn spawn_kids_net(id: usize, hwnd: isize, dir: String, hidden: bool) -> bool {
+    if KIDS_NET.fetch_add(1, Ordering::Relaxed) >= KIDS_NET_CAP {
+        KIDS_NET.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    let spawned = std::thread::Builder::new().name("panegrid-kids-net".into()).spawn(move || {
+        let current = kids_job().id == id;
+        let r = if current { read_kids(&dir, hidden) } else { Err(()) };
+        if current && kids_job().publish(id, r) {
+            unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_KIDS, WPARAM(id), LPARAM(0)) };
+        }
+        KIDS_NET.fetch_sub(1, Ordering::Relaxed);
+    });
+    if spawned.is_err() {
+        KIDS_NET.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
 /// Lives until the process ends. The lock is never held across the directory read.
 pub(crate) fn kids_worker() {
-    use std::os::windows::fs::MetadataExt;
     let mut seen = 0usize;
     loop {
-        let (id, hwnd, dir, hidden) = {
+        let (id, hwnd, dir, hidden, net) = {
             let mut j = kids_job();
             while j.id == seen || j.dir.is_empty() {
                 j = KIDS_WAKE.wait(j).unwrap_or_else(|e| e.into_inner());
             }
-            (j.id, j.hwnd, j.dir.clone(), j.hidden)
+            (j.id, j.hwnd, j.dir.clone(), j.hidden, j.net)
         };
         seen = id;
-        let read = std::fs::read_dir(&dir).map_err(|_| ());
-        let r = read.map(|rd| {
-            let named = rd.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), e.metadata().ok()?.file_attributes())));
-            kid_names(named, hidden)
-        });
+        if net {
+            if !spawn_kids_net(id, hwnd, dir, hidden) && kids_job().publish(id, Err(())) {
+                unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_KIDS, WPARAM(id), LPARAM(0)) };
+            }
+            continue;
+        }
+        let r = read_kids(&dir, hidden);
         if kids_job().publish(id, r) {
             unsafe { _ = PostMessageW(Some(HWND(hwnd as _)), WM_KIDS, WPARAM(id), LPARAM(0)) };
         }
+    }
+}
+
+/// The share list did not come back. A newer click, or a result already in, is left alone.
+pub(crate) unsafe fn kids_timeout(h: HWND) {
+    _ = KillTimer(Some(h), TIMER_KIDS);
+    let Some((id, at)) = app(|a| a.kids.as_ref().filter(|k| k.hwnd == h).map(|k| (k.id, k.at))) else { return };
+    if !kids_job().net_wait(id) {
+        return;
+    }
+    let age = at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+    if age < NET_WAIT_MS {
+        SetTimer(Some(h), TIMER_KIDS, (NET_WAIT_MS - age).max(1), None);
+        return;
+    }
+    if kids_job().fail(id) {
+        kids_show(h, id);
     }
 }
 
@@ -708,6 +793,7 @@ pub(crate) fn kids_anchor(items: &[(RECT, String, Crumb)], dir: &str) -> Option<
 /// A click, a key, a resize, or a DPI change drops a waiting `›` list.
 pub(crate) unsafe fn kids_cancel() {
     let Some((h, dpi)) = app(|a| a.kids.take().map(|k| (k.hwnd, a.dpi))) else { return };
+    _ = KillTimer(Some(h), TIMER_KIDS);
     kids_job().cancel();
     _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
 }
@@ -716,6 +802,7 @@ pub(crate) unsafe fn kids_cancel() {
 /// the same folder, nothing is being resized, Panegrid is in front, and the `›` is still laid out
 /// where it is now.
 pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
+    _ = KillTimer(Some(h), TIMER_KIDS);
     if !app(|a| a.kids.as_ref().is_some_and(|k| k.owns(id, h))) {
         return;
     }
@@ -789,15 +876,17 @@ pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
 
 // One white plate per pane: a single accent border when active, flat fields in the top bar.
 pub(crate) unsafe fn paint_pane(h: HWND) {
-    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting) = app(|a| {
+    let (active, i, dpi, icon_font, small_font, font, accent, hot, tint, folder, waiting, link) = app(|a| {
         let i = a.panes.iter().position(|p| p.as_ref().is_some_and(|p| p.hwnd == h));
         // a drop target-to-be looks active too
         let active = a.panes[a.s.active].as_ref().is_some_and(|p| p.hwnd == h) || a.drop_hover == h;
         let hot = a.crumb_hot.filter(|(w, _)| *w == h).map(|(_, k)| k);
         let tint = i.and_then(|i| tint_color(a.s.tints.get(i).copied().unwrap_or(0)));
-        let folder = i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon);
+        let link = i.and_then(|i| a.panes[i].as_ref()).and_then(|p| p.net.clone());
+        // While a share is unresolved the previous folder's icon stays out of the pill.
+        let folder = if link.is_some() { -1 } else { i.and_then(|i| a.panes[i].as_ref()).map_or(-1, |p| p.icon) };
         let waiting = a.kids.as_ref().filter(|k| k.hwnd == h).map(|k| k.dir.clone());
-        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting)
+        (active, i, a.dpi, a.icon_font, a.small_font, a.font, a.s.accent_now(), hot, tint, folder, waiting, link)
     });
     let ilist = match app(|a| a.ilist.clone()) {
         None if folder >= 0 => {
@@ -838,13 +927,18 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 frame(dc, p, 1, if active { ink } else { accent });
             }
         }
-        if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
-            if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
-                _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
-                _ = DestroyIcon(icon);
+        if link.is_none() {
+            if let (Some(il), Some(r), true) = (&ilist, addr_icon(pg.addr, dpi), folder >= 0) {
+                if let Ok(icon) = il.GetIcon(folder, ILD_NORMAL.0) {
+                    _ = DrawIconEx(dc, r.left, r.top, icon, r.right - r.left, r.bottom - r.top, 0, None, DI_NORMAL);
+                    _ = DestroyIcon(icon);
+                }
             }
         }
-        if let Some(i) = i.filter(|_| crumbs_on) {
+        if let Some(n) = link.filter(|_| crumbs_on) {
+            let ink = if n.bad { pal().sub } else { pal().text };
+            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(n.bad), font, ink, DT_LEFT);
+        } else if let Some(i) = i.filter(|_| crumbs_on) {
             for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
                 let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
                 if wait {
@@ -919,19 +1013,27 @@ mod kids_tests {
 
     #[test]
     fn kids_late_results_dropped() {
-        let mut j = KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, result: None };
-        let a = j.ask(1, r"C:\Users", false);
+        let mut j = KidsJob { id: 0, hwnd: 0, dir: String::new(), hidden: false, net: false, result: None };
+        let a = j.ask(1, r"C:\Users", false, false);
         assert!(j.publish(a, Ok((vec!["A".into()], false))));
-        let b = j.ask(1, r"C:\", false);
+        let b = j.ask(1, r"C:\", false, false);
         assert!(!j.publish(a, Ok((vec!["A".into()], false))));
         assert!(j.take(a).is_none() && j.take(b).is_none());
         assert!(j.publish(b, Err(())));
         assert!(j.take(b).is_some() && j.take(b).is_none());
         let w = HWND(1 as _);
-        let ask = KidsAsk { id: b, hwnd: w, i: 0, path: r"C:\Users\Public".into(), gen: 0, dir: r"C:\".into(), next: None };
+        let ask = KidsAsk { id: b, hwnd: w, i: 0, path: r"C:\Users\Public".into(), gen: 0, dir: r"C:\".into(), next: None, at: Instant::now() };
         assert!(!ask.owns(a, w) && ask.owns(b, w) && !ask.owns(b, HWND(2 as _)));
         j.cancel();
         assert!(!j.publish(b, Err(())) && j.dir.is_empty());
+        let net = j.ask(1, r"\\dead\share", false, true);
+        assert!(j.net_wait(net) && j.fail(net) && !j.net_wait(net));
+        assert!(!j.publish(net, Ok((vec!["A".into()], false))));
+        assert!(matches!(j.take(net), Some(Err(()))));
+        let kept = j.ask(1, r"C:\", false, false);
+        assert!(j.publish(kept, Ok((vec!["A".into()], false))));
+        assert!(!j.fail(kept));
+        assert!(matches!(j.take(kept), Some(Ok(_))));
     }
 
     #[test]

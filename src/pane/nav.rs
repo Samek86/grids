@@ -11,11 +11,548 @@ use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
 // ---------- navigation ----------
 
+/// How long a UNC or mapped drive may block a worker before the pane gives up.
+/// A dead share's redirector timeout is ~45s; the UI thread never waits that out.
+/// The breadcrumb `›` list uses the same wait.
+pub(crate) const NET_WAIT_MS: u32 = 8000;
+const NET_CAP: usize = 4;
+
+fn slash(c: u8) -> bool {
+    c == b'\\' || c == b'/'
+}
+
+/// `\\server\share`, `//server/share`, and `\\?\UNC\...`. `\\?\C:\` and `\\.\` are not shares.
+pub(crate) fn unc_path(path: &str) -> bool {
+    let p = path.trim();
+    let b = p.as_bytes();
+    if b.len() < 2 || !slash(b[0]) || b[0] != b[1] {
+        return false;
+    }
+    if b.len() >= 4 && (b[2] == b'?' || b[2] == b'.') && slash(b[3]) {
+        if b[2] != b'?' {
+            return false;
+        }
+        let r = p[4..].as_bytes();
+        return r.len() >= 4 && r[..3].eq_ignore_ascii_case(b"UNC") && slash(r[3]);
+    }
+    true
+}
+
+/// `C:\foo` and `\\?\D:\foo` → `C:\` / `D:\`. A UNC path has no drive root.
+pub(crate) fn drive_root(path: &str) -> Option<String> {
+    let p = path.trim();
+    let b = p.as_bytes();
+    let rest = if b.len() >= 4 && slash(b[0]) && b[0] == b[1] && b[2] == b'?' && slash(b[3]) {
+        let r = &p[4..];
+        let rb = r.as_bytes();
+        if rb.len() >= 4 && rb[..3].eq_ignore_ascii_case(b"UNC") && slash(rb[3]) {
+            return None;
+        }
+        r
+    } else if b.len() >= 2 && slash(b[0]) && b[0] == b[1] {
+        return None;
+    } else {
+        p
+    };
+    let rb = rest.as_bytes();
+    if rb.len() >= 2 && rb[1] == b':' && rb[0].is_ascii_alphabetic() {
+        Some(format!("{}:\\", (rb[0] as char).to_ascii_uppercase()))
+    } else {
+        None
+    }
+}
+
+/// Drive type 4 is `DRIVE_REMOTE`. Callers pass `None` when the path has no drive letter.
+pub(crate) fn share_kind(unc: bool, drive_type: Option<u32>) -> bool {
+    unc || drive_type == Some(4)
+}
+
+/// UNC, or a mapped network drive. `GetDriveTypeW` is only asked about a drive root:
+/// calling it on `\\server\share` itself can sit on the redirector.
+pub(crate) unsafe fn share_path(path: &str) -> bool {
+    if unc_path(path) {
+        return true;
+    }
+    let kind = drive_root(path).map(|root| GetDriveTypeW(&HSTRING::from(root)));
+    share_kind(false, kind)
+}
+
+/// The address bar may treat `path` as the current folder. A share skips the stat.
+pub(crate) fn edit_cur_ok(fs: bool, share: bool, is_dir: Option<bool>) -> bool {
+    fs && (share || is_dir == Some(true))
+}
+
+/// Path the address bar opens. A share uses `full` without a stat. A local `full` is
+/// used only when `exists`, which is what `metadata` used to decide.
+pub(crate) fn edit_target<'a>(typed: &'a str, full: Option<&'a str>, share: bool, exists: bool) -> &'a str {
+    match full {
+        Some(f) if share || exists => f,
+        _ => typed,
+    }
+}
+
+/// Status line while a share is in flight. Same words as the address pill.
+pub(crate) fn net_wait_text() -> &'static str {
+    net_bar_text(false)
+}
+
+/// Status line when the share did not answer. Same words as the address pill.
+pub(crate) fn net_fail_text() -> &'static str {
+    net_bar_text(true)
+}
+
+/// Address-bar line while a share is in flight or has failed. The pill is shared with the
+/// buttons, so the failure line stays a few words and does not repeat the path.
+pub(crate) fn net_bar_text(bad: bool) -> &'static str {
+    if bad {
+        tr("Unreachable", "연결 실패", "接続失敗")
+    } else {
+        tr("Connecting…", "연결 중…", "接続中…")
+    }
+}
+
+fn clear_net_notes(a: &mut App, path: &str) {
+    let wait = net_wait_text();
+    let fail = net_fail_text();
+    // Another pane may still be on the same short line. Leave it until that pane finishes.
+    let other = a.panes.iter().flatten().any(|p| p.net.as_ref().is_some_and(|n| n.path != path));
+    if other {
+        return;
+    }
+    if a.note.as_ref().is_some_and(|(t, _)| t == wait || t == fail) {
+        a.note = None;
+    }
+}
+
+/// What the address bar asked to do if the name is not on the share.
+pub(crate) struct NetOpen {
+    pub(crate) hwnd: isize,
+    pub(crate) id: usize,
+    pub(crate) path: String,
+    pub(crate) edit: bool,
+    pub(crate) run: Option<(String, String)>,
+    pub(crate) dir: Option<String>,
+    pub(crate) dir_share: bool,
+    pub(crate) at: Instant,
+}
+
+struct NetSlot {
+    open: NetOpen,
+    pidl: usize,
+    sfgao: u32,
+    ready: bool,
+}
+
+pub(crate) struct NetStop {
+    pub(crate) path: String,
+    pub(crate) run: Option<(String, String)>,
+    /// Local directory only. A share is not handed to `ShellExecute` from a timeout.
+    pub(crate) dir: Option<String>,
+}
+
+pub(crate) struct NetDone {
+    pub(crate) path: String,
+    pub(crate) edit: bool,
+    pub(crate) run: Option<(String, String)>,
+    pub(crate) dir: Option<String>,
+    pub(crate) pidl: usize,
+    pub(crate) sfgao: u32,
+}
+
+pub(crate) enum NetWait {
+    Idle,
+    Early(u32),
+    Ready,
+    Stop(NetStop),
+}
+
+/// One in-flight resolve per pane window. A newer request drops the previous id,
+/// so a late PIDL cannot browse somewhere the user has already left.
+pub(crate) struct NetBook {
+    slots: Vec<NetSlot>,
+}
+
+impl NetBook {
+    pub(crate) fn begin(&mut self, open: NetOpen) -> Option<usize> {
+        let hwnd = open.hwnd;
+        let old = self.slots.iter().position(|s| s.open.hwnd == hwnd).map(|i| self.slots.remove(i).pidl).filter(|p| *p != 0);
+        self.slots.push(NetSlot { open, pidl: 0, sfgao: 0, ready: false });
+        old
+    }
+
+    /// False when this id is no longer the pane's request. The caller frees `pidl`.
+    pub(crate) fn publish(&mut self, hwnd: isize, id: usize, pidl: usize, sfgao: u32) -> bool {
+        let Some(s) = self.slots.iter_mut().find(|s| s.open.hwnd == hwnd && s.open.id == id && !s.ready) else {
+            return false;
+        };
+        s.pidl = pidl;
+        s.sfgao = sfgao;
+        s.ready = true;
+        true
+    }
+
+    pub(crate) fn take(&mut self, hwnd: isize, id: usize) -> Option<NetDone> {
+        let i = self.slots.iter().position(|s| s.open.hwnd == hwnd && s.open.id == id && s.ready)?;
+        let s = self.slots.remove(i);
+        Some(NetDone { path: s.open.path, edit: s.open.edit, run: s.open.run, dir: s.open.dir, pidl: s.pidl, sfgao: s.sfgao })
+    }
+
+    pub(crate) fn poll(&mut self, hwnd: isize, id: usize, now: Instant, wait: std::time::Duration) -> NetWait {
+        let Some(i) = self.slots.iter().position(|s| s.open.hwnd == hwnd && s.open.id == id) else {
+            return NetWait::Idle;
+        };
+        if self.slots[i].ready {
+            return NetWait::Ready;
+        }
+        let elapsed = now.saturating_duration_since(self.slots[i].open.at);
+        if elapsed < wait {
+            let left = (wait - elapsed).as_millis().min(60_000) as u32;
+            return NetWait::Early(left.max(1));
+        }
+        let s = self.slots.remove(i);
+        let dir = if s.open.dir_share { None } else { s.open.dir };
+        NetWait::Stop(NetStop { path: s.open.path, run: s.open.run, dir })
+    }
+
+    /// The worker never started (too many shares already stuck). Same shape as a timeout.
+    pub(crate) fn force_stop(&mut self, hwnd: isize, id: usize) -> Option<NetStop> {
+        let i = self.slots.iter().position(|s| s.open.hwnd == hwnd && s.open.id == id && !s.ready)?;
+        let s = self.slots.remove(i);
+        let dir = if s.open.dir_share { None } else { s.open.dir };
+        Some(NetStop { path: s.open.path, run: s.open.run, dir })
+    }
+
+    pub(crate) fn cancel(&mut self, hwnd: isize) -> Option<usize> {
+        let i = self.slots.iter().position(|s| s.open.hwnd == hwnd)?;
+        let pidl = self.slots.remove(i).pidl;
+        (pidl != 0).then_some(pidl)
+    }
+}
+
+static NET: Mutex<NetBook> = Mutex::new(NetBook { slots: Vec::new() });
+static NET_ID: AtomicUsize = AtomicUsize::new(1);
+static NET_BUSY: AtomicUsize = AtomicUsize::new(0);
+
+fn net_book() -> std::sync::MutexGuard<'static, NetBook> {
+    NET.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn next_net_id() -> usize {
+    loop {
+        let id = NET_ID.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+    }
+}
+
+fn free_pidl(p: usize) {
+    if p != 0 {
+        unsafe { ILFree(Some(p as *const ITEMIDLIST)) };
+    }
+}
+
+/// Posted when a share resolve finishes. wParam is the request id. The PIDL stays in `NET`
+/// until the UI thread takes it, so a stale message frees nothing that is still in use.
+pub(crate) const WM_NET: u32 = WM_APP + 55;
+
+unsafe fn pane_hwnd(i: usize) -> Option<HWND> {
+    app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd))
+}
+
+unsafe fn repaint_link(h: HWND) {
+    let dpi = app(|a| a.dpi);
+    _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
+    update_status();
+}
+
+/// Drop a share resolve for this pane. A local navigation, Back, or a destroyed pane.
+pub(crate) unsafe fn end_share(i: usize, h: HWND) {
+    _ = KillTimer(Some(h), TIMER_NET);
+    let pidl = net_book().cancel(h.0 as isize);
+    free_pidl(pidl.unwrap_or(0));
+    let cleared = app(|a| {
+        let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
+        if p.hwnd != h {
+            return None;
+        }
+        let n = p.net.take()?;
+        clear_net_notes(a, &n.path);
+        Some(())
+    });
+    if cleared.is_some() {
+        repaint_link(h);
+    }
+}
+
+unsafe fn show_link(i: usize, h: HWND, id: usize, path: &str) {
+    // The address edit stays up while its text isn't the folder on display. Put the current
+    // folder back first, so hiding it (and the focus loss that follows) does not pop it open
+    // again over the "Connecting…" line.
+    let disp = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).filter(|p| p.hwnd == h).map(|p| p.disp.clone())).unwrap_or_default();
+    if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
+        if text_of(e) != disp {
+            _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+        }
+        if IsWindowVisible(e).as_bool() {
+            _ = ShowWindow(e, SW_HIDE);
+        }
+    }
+    let armed = app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return false };
+        if p.hwnd != h {
+            return false;
+        }
+        p.net = Some(NetUi { id, path: path.to_string(), bad: false });
+        // The folder we were in stays painted until a new icon arrives. Drop it for the wait.
+        retire_folder_icon(p);
+        a.lost = 0;
+        a.note = Some((net_wait_text().to_string(), Instant::now() + std::time::Duration::from_millis(u64::from(NET_WAIT_MS) + 1000)));
+        true
+    });
+    if armed {
+        drop_icon_request(h);
+    }
+    repaint_link(h);
+}
+
+/// The shell icon of the folder we left. A late lookup for it must not land during the wait.
+fn retire_folder_icon(p: &mut Pane) {
+    p.icon = -1;
+    p.ticket = next_ticket(&ICON_TICKET);
+}
+
+unsafe fn clear_link(i: usize, h: HWND, id: usize, path: &str) {
+    let on = app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return false };
+        if p.hwnd != h || p.net.as_ref().is_some_and(|n| n.id != id) {
+            // A newer resolve owns the pane. Still drop this path's note when it is showing.
+            clear_net_notes(a, path);
+            return false;
+        }
+        p.net = None;
+        clear_net_notes(a, path);
+        true
+    });
+    if on {
+        repaint_link(h);
+    } else {
+        update_status();
+    }
+}
+
+unsafe fn show_link_fail(i: usize, h: HWND, id: usize, path: &str) {
+    let shown = app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return false };
+        if p.hwnd != h {
+            return false;
+        }
+        match p.net.as_mut() {
+            Some(n) if n.id == id => n.bad = true,
+            Some(_) => return false,
+            None => p.net = Some(NetUi { id, path: path.to_string(), bad: true }),
+        }
+        retire_folder_icon(p);
+        a.lost = 0;
+        a.note = Some((net_fail_text().to_string(), Instant::now() + std::time::Duration::from_secs(8)));
+        true
+    });
+    if shown {
+        drop_icon_request(h);
+        repaint_link(h);
+    }
+}
+
+unsafe fn run_cmd(prog: &str, args: &str, dir: Option<&str>) -> bool {
+    let dir = dir.map(HSTRING::from);
+    let prog = HSTRING::from(prog);
+    let args = HSTRING::from(args);
+    let mut sei = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI,
+        lpFile: PCWSTR(prog.as_ptr()),
+        lpParameters: PCWSTR(args.as_ptr()),
+        lpDirectory: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    ShellExecuteExW(&mut sei).is_ok()
+}
+
+unsafe fn open_idlist(pidl: *mut ITEMIDLIST) -> bool {
+    let mut sei = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI,
+        lpIDList: pidl as _,
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    ShellExecuteExW(&mut sei).is_ok()
+}
+
+unsafe fn finish_stop(h: HWND, id: usize, stop: NetStop) {
+    let Some(i) = pane_of(h) else { return };
+    if let Some((prog, args)) = stop.run {
+        let ok = run_cmd(&prog, &args, stop.dir.as_deref());
+        clear_link(i, h, id, &stop.path);
+        if ok {
+            if let Some(e) = pane_ctl(i, ID_EDIT) {
+                addr_reset(i, e);
+            }
+        } else {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+        return;
+    }
+    show_link_fail(i, h, id, &stop.path);
+}
+
+/// `SHParseDisplayName` off the UI thread. The PIDL is cloned (`ILClone`) before it is posted,
+/// so the worker can drop COM. The UI thread browses only after that clone is in hand.
+unsafe fn resolve_share(hwnd: isize, id: usize, path: &str) {
+    let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+    let mut pidl = std::ptr::null_mut();
+    let mut sfgao = 0u32;
+    let parsed = com && SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() && !pidl.is_null();
+    let owned = if parsed {
+        let cloned = ILClone(pidl);
+        CoTaskMemFree(Some(pidl as _));
+        cloned as usize
+    } else {
+        if !pidl.is_null() {
+            CoTaskMemFree(Some(pidl as _));
+        }
+        0
+    };
+    let flags = if owned == 0 { 0 } else { sfgao };
+    if net_book().publish(hwnd, id, owned, flags) {
+        _ = PostMessageW(Some(HWND(hwnd as _)), WM_NET, WPARAM(id), LPARAM(0));
+    } else {
+        free_pidl(owned);
+    }
+    if com {
+        CoUninitialize();
+    }
+}
+
+fn spawn_share(hwnd: isize, id: usize, path: String) -> bool {
+    if NET_BUSY.fetch_add(1, Ordering::Relaxed) >= NET_CAP {
+        NET_BUSY.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    let spawned = std::thread::Builder::new().name("panegrid-net".into()).spawn(move || {
+        unsafe { resolve_share(hwnd, id, &path) };
+        NET_BUSY.fetch_sub(1, Ordering::Relaxed);
+    });
+    if spawned.is_err() {
+        NET_BUSY.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+/// Start a share resolve. True when the pane is showing the wait (or the immediate error).
+unsafe fn start_share(i: usize, path: &str, edit: bool, run: Option<(String, String)>, dir: Option<String>, dir_share: bool) -> bool {
+    let Some(h) = pane_hwnd(i) else { return false };
+    let id = next_net_id();
+    let old = net_book().begin(NetOpen {
+        hwnd: h.0 as isize,
+        id,
+        path: path.to_string(),
+        edit,
+        run,
+        dir,
+        dir_share,
+        at: Instant::now(),
+    });
+    free_pidl(old.unwrap_or(0));
+    show_link(i, h, id, path);
+    SetTimer(Some(h), TIMER_NET, NET_WAIT_MS, None);
+    if spawn_share(h.0 as isize, id, path.to_string()) {
+        return true;
+    }
+    _ = KillTimer(Some(h), TIMER_NET);
+    if let Some(stop) = net_book().force_stop(h.0 as isize, id) {
+        finish_stop(h, id, stop);
+    }
+    true
+}
+
+/// Give up the share named by the pane's current wait. A result that already arrived is left for `WM_NET`.
+pub(crate) unsafe fn net_timeout(h: HWND) {
+    _ = KillTimer(Some(h), TIMER_NET);
+    let Some(id) = app(|a| a.panes.iter().find_map(|p| p.as_ref().filter(|p| p.hwnd == h).and_then(|p| p.net.as_ref())).map(|n| n.id)) else {
+        return;
+    };
+    let wait = std::time::Duration::from_millis(u64::from(NET_WAIT_MS));
+    match net_book().poll(h.0 as isize, id, Instant::now(), wait) {
+        NetWait::Early(ms) => {
+            SetTimer(Some(h), TIMER_NET, ms, None);
+        }
+        NetWait::Stop(stop) => finish_stop(h, id, stop),
+        NetWait::Idle | NetWait::Ready => {}
+    }
+}
+
+/// `WM_NET`. A mismatched id (the user moved on, or the timer won) is ignored.
+pub(crate) unsafe fn net_done(h: HWND, id: usize) {
+    _ = KillTimer(Some(h), TIMER_NET);
+    let Some(done) = net_book().take(h.0 as isize, id) else { return };
+    let Some(i) = pane_of(h) else {
+        free_pidl(done.pidl);
+        return;
+    };
+    if done.pidl == 0 {
+        if let Some((prog, args)) = done.run {
+            let ok = run_cmd(&prog, &args, done.dir.as_deref());
+            clear_link(i, h, id, &done.path);
+            if ok {
+                if let Some(e) = pane_ctl(i, ID_EDIT) {
+                    addr_reset(i, e);
+                }
+            } else {
+                _ = MessageBeep(MB_ICONWARNING);
+            }
+            return;
+        }
+        show_link_fail(i, h, id, &done.path);
+        return;
+    }
+    let pidl = done.pidl as *mut ITEMIDLIST;
+    clear_link(i, h, id, &done.path);
+    if done.edit && done.sfgao & SFGAO_FOLDER.0 == 0 {
+        let ok = open_idlist(pidl);
+        free_pidl(done.pidl);
+        if ok {
+            if let Some(e) = pane_ctl(i, ID_EDIT) {
+                addr_reset(i, e);
+            }
+        } else {
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+        return;
+    }
+    let ok = eb_of(i).is_some_and(|eb| eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok());
+    free_pidl(done.pidl);
+    if ok {
+        focus_view(i);
+    } else {
+        show_link_fail(i, h, id, &done.path);
+    }
+}
+
 pub(crate) unsafe fn navigate(i: usize, path: &str) -> bool {
     go_near(i, path)
 }
 
 pub(crate) unsafe fn try_nav(i: usize, path: &str) -> Result<()> {
+    if share_path(path) {
+        // Accepted: BrowseToIDList runs on WM_NET, after the worker has a PIDL or the wait ends.
+        return if start_share(i, path, false, None, None, false) { Ok(()) } else { Err(Error::from(E_FAIL)) };
+    }
+    if let Some(h) = pane_hwnd(i) {
+        end_share(i, h);
+    }
     let eb = eb_of(i).ok_or_else(|| Error::from(E_FAIL))?;
     let mut pidl = std::ptr::null_mut();
     SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None)?;
@@ -61,7 +598,8 @@ pub(crate) fn rec_step(rec: &mut Option<(String, String)>, ev: Nav, path: &str) 
 }
 
 /// A local folder that is confirmed missing opens its nearest existing parent.
-/// The status line says so once that parent has opened. Shares are not probed on this thread.
+/// The status line says so once that parent has opened. A share returns as soon as the
+/// off-thread resolve has started; this thread does not stat it or walk its parents.
 pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
     let Err(e) = try_nav(i, path) else { return true };
     if !gone(e.code()) {
@@ -137,12 +675,18 @@ pub(crate) unsafe fn rec_event(i: usize, ev: Nav, pidl: *const ITEMIDLIST) {
 }
 
 pub(crate) unsafe fn browse(i: usize, flags: u32) {
+    if let Some(h) = pane_hwnd(i) {
+        end_share(i, h);
+    }
     if let Some(eb) = eb_of(i) {
         _ = eb.BrowseToIDList(std::ptr::null(), flags);
     }
 }
 
 pub(crate) unsafe fn browse_item(i: usize, si: &IShellItem) {
+    if let Some(h) = pane_hwnd(i) {
+        end_share(i, h);
+    }
     let Some(eb) = eb_of(i) else { return };
     if let Ok(pidl) = SHGetIDListFromObject(si) {
         _ = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
@@ -243,10 +787,15 @@ pub(crate) unsafe fn go_edit(i: usize) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     };
-    // none inside a zip or in a shell place; metadata (not GetFileAttributes) also takes a bare \\server\share
-    let cur = app(|a| a.s.paths[i].clone());
-    let cur = (is_fs(&cur) && std::fs::metadata(&cur).is_ok_and(|m| m.is_dir())).then_some(cur);
-    let dir = cur.as_deref().map(HSTRING::from);
+    // A zip or a shell place is not a directory. metadata on a share blocks for the
+    // redirector's timeout, so a UNC or mapped drive is not stat'd on this thread.
+    let cur_raw = app(|a| a.s.paths[i].clone());
+    let cur_share = share_path(&cur_raw);
+    let is_dir = (is_fs(&cur_raw) && !cur_share).then(|| std::fs::metadata(&cur_raw).is_ok_and(|m| m.is_dir()));
+    let cur = edit_cur_ok(is_fs(&cur_raw), cur_share, is_dir).then_some(cur_raw);
+    // ShellExecute's working directory. A share is left out here: a dead one would freeze the window.
+    // The share is passed only after an off-thread resolve has already returned.
+    let dir = cur.as_deref().filter(|_| !cur_share).map(HSTRING::from);
     let run = |mut sei: SHELLEXECUTEINFOW| {
         sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
         sei.lpDirectory = dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr()));
@@ -259,7 +808,32 @@ pub(crate) unsafe fn go_edit(i: usize) {
         if let Some(p) = path {
             // std::path::absolute is GetFullPathNameW: folds `..` and `.`
             let full = cur.as_ref().filter(|_| is_rel(p)).and_then(|c| std::path::absolute(Path::new(c).join(p)).ok());
-            let target = full.filter(|f| std::fs::metadata(f).is_ok()).map_or(p.to_string(), |f| f.to_string_lossy().into_owned());
+            let full_owned = full.as_ref().map(|f| f.to_string_lossy().into_owned());
+            let full_share = match full_owned.as_deref() {
+                Some(f) => share_path(f),
+                None => false,
+            };
+            let exists = full.as_ref().is_some_and(|f| !full_share && std::fs::metadata(f).is_ok());
+            let target = edit_target(p, full_owned.as_deref(), full_share, exists).to_string();
+            if share_path(&target) {
+                // A bare `cmd` while this pane is on a share still runs if the name is not a file there.
+                let bare = is_rel(p) && !p.contains(['\\', '/']);
+                let run = cmd.filter(|_| bare).map(|(prog, args)| {
+                    let wt = prog.eq_ignore_ascii_case("wt") || prog.eq_ignore_ascii_case("wt.exe");
+                    let args = if wt && args.is_empty() && cur.is_some() && !cur_share { "-d ." } else { args };
+                    (prog.to_string(), args.to_string())
+                });
+                let cwd = cur.clone();
+                if start_share(i, &target, true, run, cwd, cur_share || full_share) {
+                    resolved = true;
+                    break 'go Some(true);
+                }
+                resolved = true;
+                break 'go None;
+            }
+            if let Some(h) = pane_hwnd(i) {
+                end_share(i, h);
+            }
             let (mut pidl, mut sfgao) = (std::ptr::null_mut(), 0u32);
             if SHParseDisplayName(&HSTRING::from(target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() {
                 let r = if sfgao & SFGAO_FOLDER.0 != 0 {
@@ -1198,6 +1772,10 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
         let i = self.0.load(Ordering::SeqCst);
         unsafe {
+            // The shell is browsing. A share resolve still out for this pane is stale.
+            if let Some(h) = pane_hwnd(i) {
+                end_share(i, h);
+            }
             rec_event(i, Nav::Pending, pidl);
             save_view(i);
         }
@@ -1382,9 +1960,12 @@ impl IDropTarget_Impl for PaneDrop_Impl {
 
 #[cfg(test)]
 mod missing_tests {
-    use super::{near_dir, rec_step, Nav};
+    use super::{drive_root, edit_cur_ok, edit_target, near_dir, net_bar_text, net_fail_text, net_wait_text, rec_step, share_kind, unc_path, Nav, NetBook, NetOpen, NetWait, NET_WAIT_MS};
+    use crate::i18n::UI;
     use std::io;
     use std::path::Path;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
 
     #[test]
     fn nearest_existing_parent() {
@@ -1403,6 +1984,110 @@ mod missing_tests {
             }
         };
         assert_eq!(near_dir(r"C:\a\b", denied), None);
+    }
+
+    fn open(hwnd: isize, id: usize, path: &str, run: Option<(&str, &str)>, dir: Option<&str>, dir_share: bool, at: Instant) -> NetOpen {
+        NetOpen {
+            hwnd,
+            id,
+            path: path.to_string(),
+            edit: run.is_some(),
+            run: run.map(|(p, a)| (p.to_string(), a.to_string())),
+            dir: dir.map(str::to_string),
+            dir_share,
+            at,
+        }
+    }
+
+    #[test]
+    fn unc_and_drive_roots() {
+        assert!(unc_path(r"\\10.255.255.2\x"));
+        assert!(unc_path(r"\\server\share"));
+        assert!(unc_path("//server/share/a"));
+        assert!(unc_path(r"\\?\UNC\server\share"));
+        assert!(unc_path(r"\\?\unc\Server\Share\"));
+        assert!(!unc_path(r"\\?\C:\Windows"));
+        assert!(!unc_path(r"\\.\PIPE\x"));
+        assert!(!unc_path(r"C:\Windows"));
+        assert!(!unc_path(r"C:/Windows"));
+        assert!(!unc_path(r"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
+        assert!(!unc_path(r"\server\share"));
+        assert_eq!(drive_root(r"C:\a").as_deref(), Some(r"C:\"));
+        assert_eq!(drive_root("d:/x").as_deref(), Some(r"D:\"));
+        assert_eq!(drive_root(r"\\?\C:\Windows").as_deref(), Some(r"C:\"));
+        assert_eq!(drive_root(r"\\server\share"), None);
+        assert_eq!(drive_root(r"\\?\UNC\server\share"), None);
+        assert!(share_kind(true, None));
+        assert!(share_kind(false, Some(4)));
+        assert!(!share_kind(false, Some(3)));
+        assert!(!share_kind(false, Some(2)));
+        assert!(!share_kind(false, None));
+    }
+
+    #[test]
+    fn edit_target_skips_the_stat_on_a_share() {
+        assert!(!edit_cur_ok(false, false, None));
+        assert!(edit_cur_ok(true, true, None));
+        assert!(edit_cur_ok(true, false, Some(true)));
+        assert!(!edit_cur_ok(true, false, Some(false)));
+        assert_eq!(edit_target("docs", Some(r"\\s\share\docs"), true, false), r"\\s\share\docs");
+        assert_eq!(edit_target("docs", Some(r"C:\a\docs"), false, true), r"C:\a\docs");
+        assert_eq!(edit_target("docs", Some(r"C:\a\docs"), false, false), "docs");
+        assert_eq!(edit_target(r"\\s\x", None, false, false), r"\\s\x");
+    }
+
+    #[test]
+    fn net_text_follows_the_language() {
+        let prev = UI.load(Ordering::Relaxed);
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(NET_WAIT_MS, 8000);
+        assert_eq!(net_wait_text(), "Connecting…");
+        assert_eq!(net_fail_text(), "Unreachable");
+        assert_eq!(net_bar_text(false), net_wait_text());
+        assert_eq!(net_bar_text(true), net_fail_text());
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(net_wait_text(), "연결 중…");
+        assert_eq!(net_fail_text(), "연결 실패");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(net_wait_text(), "接続中…");
+        assert_eq!(net_fail_text(), "接続失敗");
+        UI.store(prev, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn stale_share_result_is_dropped() {
+        let mut b = NetBook { slots: Vec::new() };
+        let t0 = Instant::now();
+        let wait = std::time::Duration::from_millis(u64::from(NET_WAIT_MS));
+        let id = 7usize;
+        assert!(b.begin(open(1, id, r"\\s\x", None, None, false, t0)).is_none());
+        assert!(matches!(b.poll(1, id, t0, wait), NetWait::Early(_)));
+        assert!(b.publish(1, id, 0x100, 0));
+        assert!(matches!(b.poll(1, id, t0 + wait, wait), NetWait::Ready));
+        assert!(!b.publish(1, id, 0x200, 0));
+        let got = b.take(1, id).unwrap();
+        assert_eq!(got.pidl, 0x100);
+        assert!(b.take(1, id).is_none());
+        let id2 = 8usize;
+        b.begin(open(1, id2, r"\\s\y", Some(("cmd", "")), Some(r"\\s\y"), true, t0));
+        assert!(!b.publish(1, id, 0x100, 0));
+        match b.poll(1, id2, t0 + wait, wait) {
+            NetWait::Stop(s) => {
+                assert_eq!(s.path, r"\\s\y");
+                assert_eq!(s.run.unwrap().0, "cmd");
+                assert!(s.dir.is_none());
+            }
+            _ => panic!("timeout should stop the wait"),
+        }
+        assert!(!b.publish(1, id2, 0x300, 0));
+        assert!(matches!(b.poll(1, id2, t0 + wait, wait), NetWait::Idle));
+        let id3 = 9usize;
+        b.begin(open(2, id3, r"Z:\a", None, Some(r"C:\"), false, t0));
+        match b.force_stop(2, id3) {
+            Some(s) => assert_eq!(s.dir.as_deref(), Some(r"C:\")),
+            None => panic!("force stop"),
+        }
+        assert!(b.force_stop(2, id3).is_none());
     }
 
     #[test]
