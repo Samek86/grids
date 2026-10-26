@@ -620,10 +620,13 @@ pub(crate) fn apply_drop(tree: &mut Vec<FavNode>, from: &[usize], onto: &[usize]
     if from[..from.len() - 1] == parent[..] && from[from.len() - 1] < index {
         index -= 1;
     }
-    let Some(node) = take_node(tree, from) else { return None };
+    // Work on a copy so a stale id cannot drop the taken node on the floor.
+    let mut next = tree.clone();
+    let node = take_node(&mut next, from)?;
     let parent = adjust(&parent, from).unwrap_or(parent);
-    let index = index.min(child_len(tree, &parent));
-    insert_child(tree, &parent, index, node)?;
+    let index = index.min(child_len(&next, &parent));
+    insert_child(&mut next, &parent, index, node)?;
+    *tree = next;
     let mut id = parent;
     id.push(index);
     Some(id)
@@ -1135,5 +1138,13 @@ mod tests {
         assert_eq!(side_act(RowKind::Files, false, true, false, RowKind::Tree), SideAct::Copy);
         assert_eq!(side_act(RowKind::Files, false, true, false, RowKind::Pins), SideAct::None);
         assert_eq!(side_act(RowKind::Tree, false, true, true, RowKind::Files), SideAct::None, "a file with no path is refused");
+    }
+
+    #[test]
+    fn stale_drop_keeps_the_node() {
+        let mut t = vec![FavNode::leaf("C:\\a", "a", false), FavNode::leaf("C:\\b", "b", false)];
+        let before = t.len();
+        assert!(apply_drop(&mut t, &[0], &[7, 3], 1).is_none());
+        assert_eq!(t.len(), before);
     }
 }
