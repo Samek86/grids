@@ -1767,9 +1767,25 @@ unsafe fn refill_presets(select: Option<&str>) {
     }
 }
 
+unsafe fn picked_text(c: HWND, sel: usize) -> String {
+    let n = SendMessageW(c, CB_GETLBTEXTLEN, Some(WPARAM(sel)), None).0;
+    if n <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; n as usize + 1];
+    let got = SendMessageW(c, CB_GETLBTEXT, Some(WPARAM(sel)), Some(LPARAM(buf.as_mut_ptr() as isize))).0;
+    if got <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buf[..(got as usize).min(n as usize)])
+}
+
 unsafe fn load_preset() {
     let h = hwnd();
-    let name = crate::text_of(ctl(h, ID_PRESET));
+    // During CBN_SELCHANGE the edit still holds the old text. Read the picked list item.
+    let c = ctl(h, ID_PRESET);
+    let sel = SendMessageW(c, CB_GETCURSEL, None, None).0;
+    let name = if sel < 0 { crate::text_of(c) } else { picked_text(c, sel as usize) };
     let Some(preset) = presets::list(&presets::dir()).into_iter().find(|p| p.name == name) else { return };
     let rules = if preset.rules.is_empty() {
         vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }]
