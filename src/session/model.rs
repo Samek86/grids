@@ -470,8 +470,9 @@ pub(crate) fn fix(r: Vec<f64>, n: usize) -> Vec<f64> {
 
 // "2 × 2" for an even grid, "1 | 3" when the columns differ.
 pub(crate) fn layout_label(h: &[usize]) -> String {
-    match h.iter().all(|&n| n == h[0]) {
-        true => format!("{} × {}", h[0], h.len()),
+    let Some(&first) = h.first() else { return String::new() };
+    match h.iter().all(|&n| n == first) {
+        true => format!("{} × {}", first, h.len()),
         false => h.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" | "),
     }
 }
@@ -552,6 +553,9 @@ impl Session {
 
     /// New layout with even splits. The active pane stays inside the new grid.
     pub(crate) fn set_heights(&mut self, h: Vec<usize>) {
+        // An empty or zero column would make panes() 0 and underflow below; keep at least one pane.
+        let h: Vec<usize> = h.into_iter().filter(|&n| n > 0).collect();
+        let h = if h.is_empty() { vec![1] } else { h };
         self.colr = even(h.len());
         self.rowr = h.iter().map(|&n| even(n)).collect();
         self.heights = h;
@@ -1851,5 +1855,13 @@ mod ratio_tests {
         assert_eq!(fix(vec![f64::INFINITY, 1.0], 2), vec![0.5, 0.5]);
         assert_eq!(fix(vec![1e308, 1e308], 2), vec![0.5, 0.5]);
         assert_eq!(fix(vec![1.0, 3.0], 2), vec![0.25, 0.75]);
+    }
+
+    #[test]
+    fn empty_heights_are_safe() {
+        assert_eq!(layout_label(&[]), "");
+        let mut s = Session::default();
+        s.set_heights(Vec::new());
+        assert_eq!(s.heights, vec![1]);
     }
 }
