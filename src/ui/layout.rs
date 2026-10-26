@@ -270,13 +270,30 @@ pub(crate) fn filter_icon_rect(filt: RECT, s24: i32) -> Option<RECT> {
     (r.right > r.left).then_some(r)
 }
 
-/// Colour-label strip along the pane's top edge: inside the border, in the gap above the buttons.
-pub(crate) fn tint_band(w: i32, dpi: i32, active: bool) -> RECT {
-    let s = |v: i32| v * dpi / 96;
-    let inset = if active { s(2) } else { 1 };
-    let top = pane_geo(w, s(100), dpi, false).num.top;
-    let thick = s(3).min((top - inset).max(0));
-    RECT { left: inset, top: inset, right: w - inset, bottom: inset + thick }
+/// Share of a colour label kept on an inactive pane. The active pane uses the solid preset,
+/// the way the accent fills an active header; this mix into the card is the quieter one.
+const LABEL_INACTIVE: f32 = 0.55;
+
+pub(crate) struct PaneChrome {
+    pub(crate) head: u32,
+    pub(crate) ink: u32,
+    pub(crate) border: u32,
+}
+
+/// Header and border colours.
+/// A colour label fills both the way the accent fills an active pane: solid while this pane is
+/// active, the same colour mixed into the card while it is not. Ink is `on_color` of that fill.
+/// Without a label, the accent fills the active header and, when `edge` is on, the active border.
+/// The painter uses 2px for that emphasised border and 1px otherwise.
+pub(crate) fn pane_chrome(accent: u32, label: Option<u32>, active: bool, edge: bool, p: &Palette) -> PaneChrome {
+    if let Some(c) = label {
+        let head = if active { c } else { blend(p.card, c, LABEL_INACTIVE) };
+        return PaneChrome { head, ink: on_color(head), border: if active { c } else { head } };
+    }
+    if active {
+        return PaneChrome { head: accent, ink: on_color(accent), border: if edge { accent } else { p.line } };
+    }
+    PaneChrome { head: p.card, ink: p.text, border: p.line }
 }
 
 /// A pane's colour label in the current theme: one of the selection-colour presets. 0 is none.
@@ -536,6 +553,7 @@ pub(crate) extern "system" fn grid_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{blend, on_color};
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -607,15 +625,44 @@ mod tests {
         assert!(filter_icon_rect(RECT { left: 10, right: 10, ..wide }, 24).is_none());
     }
 
+    fn contrast(a: u32, b: u32) -> f32 {
+        let chan = |c: u32| {
+            let f = c as f32 / 255.0;
+            if f <= 0.04045 { f / 12.92 } else { ((f + 0.055) / 1.055).powf(2.4) }
+        };
+        let rel = |rgb: u32| 0.2126 * chan(rgb >> 16) + 0.7152 * chan(rgb >> 8 & 0xFF) + 0.0722 * chan(rgb & 0xFF);
+        let (x, y) = (rel(a), rel(b));
+        let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    fn dist(a: u32, b: u32) -> u32 {
+        let d = |s: u32| (a >> s & 0xFF).abs_diff(b >> s & 0xFF) as u32;
+        d(16) + d(8) + d(0)
+    }
+
     #[test]
-    fn tint_strip_sits_above_the_buttons() {
-        for dpi in [96, 120, 144, 192] {
-            for w in [120, 400] {
-                for active in [false, true] {
-                    let (b, top) = (tint_band(w, dpi, active), pane_geo(w, 300, dpi, false).num.top);
-                    let border = if active { 2 * dpi / 96 } else { 1 };
-                    assert!(b.top >= border && b.bottom <= top && b.bottom - b.top >= 2, "{dpi} {w} {active}");
-                }
+    fn label_fills_header_and_border_like_the_accent() {
+        let accent = 0x112233u32;
+        for p in [&crate::LIGHT, &crate::DARK] {
+            let bare_on = pane_chrome(accent, None, true, true, p);
+            assert_eq!((bare_on.head, bare_on.ink, bare_on.border), (accent, on_color(accent), accent));
+            let bare_thin = pane_chrome(accent, None, true, false, p);
+            assert_eq!((bare_thin.head, bare_thin.border), (accent, p.line));
+            let bare_off = pane_chrome(accent, None, false, true, p);
+            assert_eq!((bare_off.head, bare_off.ink, bare_off.border), (p.card, p.text, p.line));
+            for (_, c) in p.accents {
+                let on = pane_chrome(accent, Some(c), true, true, p);
+                let on_thin = pane_chrome(0xAABBCC, Some(c), true, false, p);
+                let off = pane_chrome(accent, Some(c), false, false, p);
+                assert_eq!((on.head, on.ink, on.border), (c, on_color(c), c));
+                // Thickness follows the active-border setting; the colour does not.
+                assert_eq!((on_thin.head, on_thin.border), (c, c));
+                let quiet = blend(p.card, c, super::LABEL_INACTIVE);
+                assert_eq!((off.head, off.ink, off.border), (quiet, on_color(quiet), quiet));
+                assert!(dist(off.head, p.card) < dist(on.head, p.card), "{c:06X}");
+                assert!(contrast(on.head, on.ink) >= 4.0, "{c:06X} {}", contrast(on.head, on.ink));
+                assert!(contrast(off.head, off.ink) >= contrast(on.head, on.ink), "{c:06X}");
             }
         }
     }
