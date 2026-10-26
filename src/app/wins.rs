@@ -659,8 +659,25 @@ pub(crate) unsafe fn move_tab_to_window(i: usize, dest_tabs: HWND, at: usize) {
     note_save();
 }
 
+/// Position of a top-level window in the z-order, 0 = frontmost.
+unsafe fn z_rank(h: HWND) -> usize {
+    let root = GetAncestor(h, GA_ROOT);
+    let mut w = GetTopWindow(None).unwrap_or_default();
+    let mut k = 0;
+    while !w.0.is_null() {
+        if w == root {
+            return k;
+        }
+        k += 1;
+        w = GetWindow(w, GW_HWNDNEXT).unwrap_or_default();
+    }
+    usize::MAX
+}
+
+/// The tab strip under `screen`. When windows overlap, the frontmost one wins.
 pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
     let n = window_count();
+    let mut hits: Vec<(HWND, usize)> = Vec::new();
     for i in 0..n {
         let (hwnd, dpi, locked, scroll, bar, drives) = app(|a| {
             let d = &a.desks[i];
@@ -683,9 +700,12 @@ pub(crate) unsafe fn tab_strip_at(screen: POINT) -> Option<(HWND, usize)> {
         _ = ScreenToClient(hwnd, &mut pt);
         let lay = tab_lay(tab_area_width(client.right.max(1), dpi, bar, drives), locked.len().max(1), &locked, dpi, scroll);
         let at = lay.insert_at(pt.x);
-        return Some((hwnd, at));
+        hits.push((hwnd, at));
     }
-    None
+    if hits.len() > 1 {
+        hits.sort_by_key(|&(h, _)| z_rank(h));
+    }
+    hits.into_iter().next()
 }
 
 pub(crate) unsafe fn finish_tab_drag(strip: HWND, index: usize) {
