@@ -602,7 +602,9 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.peek_doc = None;
         a.s.accent = fresh.accent;
         a.s.accent_dark = fresh.accent_dark;
+        a.s.winmerge_path.clear();
     });
+    crate::winmerge::forget_status();
     set_language(fresh.lang);
     crate::keys::reset_all();
     relayout();

@@ -28,10 +28,12 @@ const S_ADV_IM: i32 = 25;
 const S_ADV_RESET: i32 = 26;
 const S_EV: i32 = 27;
 const S_FACE: i32 = 28;
-const S_FV_DEF: i32 = 30;
-const S_FV_RESET: i32 = 31;
-const S_FV_CLEAR: i32 = 32;
+const S_FV_DEF: i32 = 33;
+const S_FV_RESET: i32 = 34;
+const S_FV_CLEAR: i32 = 35;
 const S_LAYOUT: i32 = 29;
+const S_WM: i32 = 30;
+const S_WM_BROWSE: i32 = 31;
 const S_FAV0: i32 = 20000;
 /// Delete buttons are S_FAV0 + i, rename buttons S_REN0 + i. Control ids stay under 0x8000.
 const FAV_MAX: i32 = 4096;
@@ -153,6 +155,8 @@ enum Ctl {
     AdvReset,
     EvStatus,
     EvAct,
+    WmStatus,
+    WmPath,
     Toggle(u8),
     FolderDefault,
     FolderReset,
@@ -178,9 +182,12 @@ const GEN: &[Spec] = &[
     Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), live: true, ctl: Ctl::EvStatus },
     Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), live: true, ctl: Ctl::Toggle(TG_EV) },
     Spec { title: s("Get Everything", "Everything 준비", "Everything の準備"), desc: s("Start it when it is installed. Install uses winget when that is available, otherwise the voidtools download page opens.", "설치되어 있으면 시작해요. 설치는 winget이 있으면 winget을 쓰고, 없으면 voidtools 다운로드 페이지를 열어요.", "インストール済みなら起動します。インストールは winget があれば winget、なければ voidtools のダウンロードページを開きます。"), live: true, ctl: Ctl::EvAct },
+    Spec { title: s("Auto-detect", "자동 감지", "自動検出"), desc: s("WinMerge", "WinMerge", "WinMerge"), live: true, ctl: Ctl::WmStatus },
+    Spec { title: s("WinMerge path", "WinMerge 경로", "WinMerge のパス"), desc: s("Empty uses auto-detect. A folder or WinMergeU.exe both work.", "비우면 자동으로 찾아요. 폴더나 WinMergeU.exe 모두 돼요.", "空なら自動検出です。フォルダーでも WinMergeU.exe でも構いません。"), live: true, ctl: Ctl::WmPath },
 ];
 
 const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
+const WM_HEAD: [&str; 3] = s("WinMerge", "WinMerge", "WinMerge");
 const PREVIEW_HEAD: [&str; 3] = s("Preview", "미리보기", "プレビュー");
 const LOOK: &[Spec] = &[
     Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), live: true, ctl: Ctl::Theme },
@@ -460,7 +467,9 @@ fn right_box(card: RECT, w: i32, h: i32, pad: i32) -> RECT {
 fn card_h(spec: &Spec, dpi: i32) -> i32 {
     // 12px vertical padding, 14px label, optional 12px description.
     // The settings-file card adds a line for the live path.
-    if spec.ctl == Ctl::Adv || spec.ctl == Ctl::EvStatus || spec.ctl == Ctl::EvAct {
+    if spec.ctl == Ctl::WmPath {
+        sc(dpi, 120)
+    } else if spec.ctl == Ctl::Adv || spec.ctl == Ctl::EvStatus || spec.ctl == Ctl::EvAct || spec.ctl == Ctl::WmStatus {
         sc(dpi, 84)
     } else if spec.desc[0].is_empty() {
         sc(dpi, 48)
@@ -558,6 +567,7 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     let rq = row_q(&sn.query, page);
     let gap = sc(dpi, 4);
     let mut ev_head = false;
+    let mut wm_head = false;
     let mut preview_head = false;
     for spec in page_cards(page) {
         if !rq.is_empty() && !card_hit(spec, rq) {
@@ -568,6 +578,13 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
                 g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, EV_HEAD));
                 y += sc(dpi, 28);
                 ev_head = true;
+            }
+        }
+        if is_wm_card(spec) {
+            if !wm_head {
+                g.items.push(Item::Head(RECT { left, top: y, right, bottom: y + sc(dpi, 28) }, WM_HEAD));
+                y += sc(dpi, 28);
+                wm_head = true;
             }
         }
         if is_preview_card(spec) {
@@ -597,8 +614,15 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
     let mut adv = [RECT::default(); 4];
     let ctl = match spec.ctl {
         Ctl::Toggle(_) => right_box(rect, sc(dpi, 40), sc(dpi, 20), pad),
-        Ctl::EvStatus => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.bottom },
+        Ctl::EvStatus | Ctl::WmStatus => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.bottom },
         Ctl::EvAct => right_box(rect, sc(dpi, 200), sc(dpi, 32), pad),
+        Ctl::WmPath => {
+            let bw = sc(dpi, 108);
+            let top = rect.top + sc(dpi, 12);
+            adv[0] = RECT { left: rect.right - pad - bw, top, right: rect.right - pad, bottom: top + sc(dpi, 32) };
+            let eh = sc(dpi, 32);
+            RECT { left: rect.left + pad, top: rect.bottom - sc(dpi, 12) - eh, right: rect.right - pad, bottom: rect.bottom - sc(dpi, 12) }
+        }
         Ctl::CopyEng => right_box(rect, sc(dpi, 140), sc(dpi, 22), pad),
         Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout => {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
@@ -721,6 +745,10 @@ fn key_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
 
 fn is_ev_card(spec: &Spec) -> bool {
     matches!(spec.ctl, Ctl::EvStatus | Ctl::EvAct | Ctl::Toggle(TG_EV))
+}
+
+fn is_wm_card(spec: &Spec) -> bool {
+    matches!(spec.ctl, Ctl::WmStatus | Ctl::WmPath)
 }
 
 fn is_preview_card(spec: &Spec) -> bool {
