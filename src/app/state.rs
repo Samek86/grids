@@ -520,10 +520,13 @@ pub(crate) unsafe fn across_windows(mut f: impl FnMut()) {
         return;
     }
     let _guard = AcrossGuard;
-    let (n, cur) = app(|a| (a.desks.len(), a.cur));
-    for i in 0..n {
+    let cur = app(|a| a.cur);
+    // Re-read the count each pass: `f` may close a window and shrink the list.
+    let mut i = 0;
+    while i < app(|a| a.desks.len()) {
         bind_index(i);
         f();
+        i += 1;
     }
     if cur < app(|a| a.desks.len()) {
         bind_index(cur);
