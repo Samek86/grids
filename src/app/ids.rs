@@ -62,6 +62,7 @@ pub(crate) const TIMER_FIND: usize = 12; // hide the search list after the filte
 pub(crate) const TIMER_PEEK_ZOOM: usize = 13; // peek: re-render PDF pages after the wheel settles
 pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
 pub(crate) const WM_EV: u32 = WM_APP + 51; // Everything status changed in the settings window
+pub(crate) const WM_UPDATE: u32 = WM_APP + 60; // update worker: wParam 0 found, 1 installed, 2 failed
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;
