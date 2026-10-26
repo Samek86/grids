@@ -513,6 +513,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.favs = src.favs.clone();
     dst.tree = src.tree.clone();
     dst.recent = src.recent.clone();
+    dst.ctx_off = src.ctx_off.clone();
 }
 
 /// Copy process-wide preferences from the current window onto the others.

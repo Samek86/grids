@@ -2,6 +2,7 @@
 // Named .grids sessions stay in the ini shape. Missing panegrid.json is copied from grids.json, else read once from grids.ini or qdir.ini; the source file is left untouched.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -291,6 +292,10 @@ struct SettingsFile {
     keybindings: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     favorites_tree: Vec<Value>,
+    /// Third-party context-menu targets turned off in Panegrid. Omitted when every handler is on.
+    /// A .grids file does not store this.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ctx_menu: BTreeMap<String, Vec<String>>,
     #[serde(default, flatten)]
     extra: Map<String, Value>,
 }
@@ -359,6 +364,7 @@ impl SettingsFile {
             windows: Vec::new(),
             keybindings: Map::new(),
             favorites_tree: Vec::new(),
+            ctx_menu: BTreeMap::new(),
             extra: Map::new(),
         }
     }
@@ -448,6 +454,7 @@ impl SettingsFile {
             windows: crate::take_snaps(),
             keybindings: crate::keys::bindings_json(),
             favorites_tree: crate::tree_to_values(&tree),
+            ctx_menu: clean_ctx(&s.ctx_off),
             extra: Map::new(),
         }
     }
@@ -485,6 +492,7 @@ impl SettingsFile {
         self.extra.remove("peek_wheel_nav");
         self.extra.remove("remember_folder_view");
         self.extra.remove("layout_new");
+        self.extra.remove("ctx_menu");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
     }
@@ -578,6 +586,7 @@ impl SettingsFile {
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
         s.winmerge_path = self.winmerge_path.trim().to_string();
+        s.ctx_off = clean_ctx(&self.ctx_menu);
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -624,6 +633,29 @@ fn forget_missing_face(s: &mut Session) {
     }
     s.font_face.clear();
     SETTINGS_KEEP.with(|k| k.borrow_mut().font_face.clear());
+}
+
+fn clean_ctx(map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+    const NAMES: [&str; 4] = ["file", "folder", "background", "drive"];
+    let mut out = BTreeMap::new();
+    for (id, targets) in map {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let mut names = Vec::new();
+        for t in targets {
+            let t = t.trim().to_ascii_lowercase();
+            if NAMES.contains(&t.as_str()) && !names.iter().any(|n: &String| n == &t) {
+                names.push(t);
+            }
+        }
+        names.sort();
+        if !names.is_empty() {
+            out.insert(id.to_string(), names);
+        }
+    }
+    out
 }
 
 fn parse_color(v: &str) -> Option<u32> {
@@ -943,6 +975,26 @@ mod tests {
         let ini = import_text(&parsed.to_ini()).unwrap();
         assert_eq!(ini, parsed);
         assert!(import_text("{").is_err());
+    }
+
+    #[test]
+    fn ctx_menu_lives_in_json_and_stays_out_of_grids_ini() {
+        let mut s = Session::default();
+        s.ctx_off.insert("clsid:abc".into(), vec!["nope".into(), "File".into(), "drive".into(), "file".into()]);
+        let text = sync_text(&s);
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["ctx_menu"]["clsid:abc"], serde_json::json!(["drive", "file"]));
+        assert!(!s.to_ini().contains("ctx_menu"));
+        assert!(!s.to_ini().contains("clsid:abc"));
+        let back = adopt(&text).unwrap();
+        assert_eq!(back.ctx_off.get("clsid:abc").map(Vec::as_slice), Some(["drive".to_string(), "file".to_string()].as_slice()));
+        assert_eq!(Session::parse(&s.to_ini()).ctx_off, Session::default().ctx_off);
+
+        s.ctx_off.clear();
+        let cleared = sync_text(&s);
+        let saved: Value = serde_json::from_str(&cleared).unwrap();
+        assert!(saved.get("ctx_menu").is_none(), "{cleared}");
+        assert_eq!(adopt("{}").unwrap().ctx_off, Session::default().ctx_off);
     }
 
     #[test]

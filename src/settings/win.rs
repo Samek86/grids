@@ -189,12 +189,13 @@ unsafe fn build_children(h: HWND) {
     btn(S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う")), true);
     btn(S_FV_RESET, tx(s("Reset", "지우기", "消す")), true);
     btn(S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す")), true);
+    btn(S_CTX_RESET, tx(CTX_RESET_L), true);
     child_at(h, w!("EDIT"), "", 0x80 | tab, S_WM, font);
     btn(S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…")), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_WM, S_WM_BROWSE];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -266,6 +267,7 @@ unsafe fn fill_strings(h: HWND) {
         (S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う"))),
         (S_FV_RESET, tx(s("Reset", "지우기", "消す"))),
         (S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す"))),
+        (S_CTX_RESET, tx(CTX_RESET_L)),
         (S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…"))),
     ];
     BUSY.with(|b| b.set(true));
@@ -386,7 +388,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_WM, S_WM_BROWSE] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -438,6 +440,9 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                     move_to(ctl(h, S_WM_BROWSE), c.adv[0], intersects(c.adv[0], content));
                     crate::place_edit(ctl(h, S_WM), inset(c.ctl, sc(sn.dpi, FIELD_INSET_DIP)), intersects(c.ctl, content));
                 }
+            }
+            Item::CtxBar { reset } => {
+                move_to(ctl(h, S_CTX_RESET), *reset, intersects(*reset, content));
             }
             Item::KeyBar { edit, reset } => {
                 crate::place_edit(ctl(h, S_KEYQ), inset(*edit, sc(sn.dpi, FIELD_INSET_DIP)), intersects(*edit, content));
@@ -501,7 +506,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     if !g.show.iter().any(|s| *s) {
         crate::text(dc, RECT { left: sc(dpi, 16), top: g.search.bottom + sc(dpi, 12), right: g.nav_w - sc(dpi, 8), bottom: g.search.bottom + sc(dpi, 40) }, tx(NONE), sn.font, crate::pal().sub, DT_LEFT);
     }
-    for i in 0..9 {
+    for i in 0..PAGE_N {
         if !g.show[i] {
             continue;
         }
@@ -548,6 +553,16 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 draw_fav_row(dc, row, *rect, sn, empty);
             }
             Item::Note(r, t) => crate::text(dc, *r, tx(*t), sn.small, crate::pal().sub, DT_LEFT),
+            Item::CtxNote(r) => {
+                let _ = crate::wrap_text(dc, *r, tx(CTX_NOTE), sn.small, crate::pal().sub, false);
+            }
+            Item::CtxBar { .. } => {}
+            Item::CtxRow { id, rect, mark, chev, name, off, chips, .. } => {
+                let open = sn.ctx_open.iter().any(|x| x == id);
+                draw_ctx_row(dc, *rect, *mark, *chev, name, *off, chips, open, sn, accent);
+            }
+            Item::CtxSub { rect, mark, bit, on, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *on, sn, accent),
+            Item::CtxEmpty(r) => crate::text(dc, *r, tx(CTX_EMPTY), sn.small, crate::pal().sub, DT_LEFT),
             Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
@@ -748,6 +763,43 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         }
         _ => {}
     }
+}
+
+unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent: u32, dpi: i32, icon: HFONT) {
+    let rad = sc(dpi, 3);
+    match tick {
+        crate::shell::ctxmenu::Tick::On => {
+            rfill(dc, r, rad, accent, Some(accent));
+            crate::text(dc, r, "\u{E73E}", icon, on_chrome(accent), DT_CENTER);
+        }
+        crate::shell::ctxmenu::Tick::Mixed => {
+            rfill(dc, r, rad, crate::pal().card, Some(accent));
+            let mid = (r.top + r.bottom) / 2;
+            crate::fill(dc, RECT { left: r.left + sc(dpi, 3), top: mid - sc(dpi, 1), right: r.right - sc(dpi, 3), bottom: mid + sc(dpi, 1) }, accent);
+        }
+        crate::shell::ctxmenu::Tick::Off => rfill(dc, r, rad, crate::pal().card, Some(crate::pal().line)),
+    }
+}
+
+unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, off: u8, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
+    let dpi = sn.dpi.max(96);
+    rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
+    let attached = chips.iter().fold(0u8, |a, (b, _)| a | *b);
+    draw_tick(dc, mark, crate::shell::ctxmenu::tick_of(off, attached), accent, dpi, sn.icon);
+    crate::text(dc, chev, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
+    let name_right = chips.first().map(|(_, r)| r.left - sc(dpi, 8)).unwrap_or(rect.right - sc(dpi, 12));
+    crate::text(dc, RECT { left: chev.right, right: name_right, ..rect }, name, sn.font, crate::pal().text, DT_LEFT);
+    for (bit, r) in chips {
+        rfill(dc, *r, sc(dpi, 4), crate::blend(crate::pal().card, crate::pal().text, 0.06), Some(crate::pal().line));
+        crate::text(dc, *r, crate::shell::ctxmenu::target_label(*bit), sn.small, crate::pal().sub, DT_CENTER);
+    }
+}
+
+unsafe fn draw_ctx_sub(dc: HDC, rect: RECT, mark: RECT, bit: u8, on: bool, sn: &Snap, accent: u32) {
+    let dpi = sn.dpi.max(96);
+    let tick = if on { crate::shell::ctxmenu::Tick::On } else { crate::shell::ctxmenu::Tick::Off };
+    draw_tick(dc, mark, tick, accent, dpi, sn.icon);
+    crate::text(dc, RECT { left: mark.right + sc(dpi, 8), ..rect }, crate::shell::ctxmenu::target_label(bit), sn.font, crate::pal().text, DT_LEFT);
 }
 
 unsafe fn draw_toggle(dc: HDC, r: RECT, on: bool, enabled: bool, accent: u32, dpi: i32) {
@@ -1180,6 +1232,12 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         S_ADV_RESET => reset_ini(h),
         S_FV_DEF => crate::set_default_folder_view(),
         S_FV_RESET => crate::reset_active_folder_view(),
+        S_CTX_RESET => {
+            app(|a| crate::shell::ctxmenu::clear_off(&mut a.s.ctx_off));
+            crate::save_session();
+            layout(h);
+            let _ = InvalidateRect(Some(h), None, false);
+        }
         S_FV_CLEAR => {
             let q = tx(s(
                 "Forget the saved view of every folder? The default view stays.",
@@ -1462,8 +1520,11 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
             return;
         }
     }
-    for i in 0..9 {
+    for i in 0..PAGE_N {
         if g.show[i] && inside(g.nav[i], x, y) {
+            if i == CTX_PAGE {
+                crate::shell::ctxmenu::invalidate();
+            }
             ST.with(|s| {
                 let mut st = s.borrow_mut();
                 st.page = i;
@@ -1482,6 +1543,41 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                     ST.with(|s| s.borrow_mut().fav_drag = Some(row.id));
                     let _ = SetCapture(h);
                 }
+                return;
+            }
+        }
+        if let Item::CtxRow { id, rect, mark, targets, .. } = item {
+            if inside(*rect, x, y) {
+                if inside(*mark, x, y) {
+                    let id = id.clone();
+                    let targets = *targets;
+                    app(|a| crate::shell::ctxmenu::toggle_master(&mut a.s.ctx_off, &id, targets));
+                    crate::save_session();
+                } else {
+                    let id = id.clone();
+                    ST.with(|s| {
+                        let mut st = s.borrow_mut();
+                        if let Some(at) = st.ctx_open.iter().position(|x| x == &id) {
+                            st.ctx_open.remove(at);
+                        } else {
+                            st.ctx_open.push(id);
+                        }
+                    });
+                }
+                layout(h);
+                let _ = InvalidateRect(Some(h), None, false);
+                return;
+            }
+        }
+        if let Item::CtxSub { id, bit, attached, rect, .. } = item {
+            if inside(*rect, x, y) {
+                let id = id.clone();
+                let bit = *bit;
+                let attached = *attached;
+                app(|a| crate::shell::ctxmenu::toggle_target(&mut a.s.ctx_off, &id, bit, attached));
+                crate::save_session();
+                layout(h);
+                let _ = InvalidateRect(Some(h), None, false);
                 return;
             }
         }
@@ -1649,7 +1745,7 @@ extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     let mut rc = RECT::default();
                     let _ = GetClientRect(h, &mut rc);
                     let g = geo(rc, &sn);
-                    let hot = (0..9).find(|&i| g.show[i] && inside(g.nav[i], x, y));
+                    let hot = (0..PAGE_N).find(|&i| g.show[i] && inside(g.nav[i], x, y));
                     let changed = ST.with(|s| {
                         let mut st = s.borrow_mut();
                         if st.hot != hot {
