@@ -426,14 +426,13 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
     let targets = super::ctxmenu::click_targets(background, &items);
     // Same shell menu as an unfiltered click. Disabled commands are removed afterwards.
-    let _probe = if super::ctxmenu::needs_filter(targets) {
+    // The probe is also how a handler's own menu strings are learned. It is not shown.
+    let _probe = view_of::<IFolderView2>(i)
+        .and_then(|fv| fv.GetFolder::<IShellFolder>().ok())
+        .map(|folder| super::ctxmenu::arm_probe(owner, &folder, &refs));
+    if super::ctxmenu::needs_filter(targets) {
         super::ctxmenu::arm_strip(targets);
-        view_of::<IFolderView2>(i)
-            .and_then(|fv| fv.GetFolder::<IShellFolder>().ok())
-            .map(|folder| super::ctxmenu::arm_probe(owner, &folder, &refs))
-    } else {
-        None
-    };
+    }
     let cm = if background {
         sv.GetItemObject::<IContextMenu>(SVGIO_BACKGROUND).ok()
     } else if let Some(folder) = view_of::<IFolderView2>(i).and_then(|fv| fv.GetFolder::<IShellFolder>().ok()) {
@@ -468,12 +467,10 @@ pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POIN
     }
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let targets = super::ctxmenu::click_targets(false, items);
-    let _probe = if super::ctxmenu::needs_filter(targets) {
+    let _probe = super::ctxmenu::arm_probe_paths(owner, items);
+    if super::ctxmenu::needs_filter(targets) {
         super::ctxmenu::arm_strip(targets);
-        super::ctxmenu::arm_probe_paths(owner, items)
-    } else {
-        None
-    };
+    }
     let Some(cm) = menu_for_paths(&paths) else {
         let _ = super::ctxmenu::take_strip();
         return false;
@@ -517,6 +514,9 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         _ = DestroyMenu(menu);
         return false;
     }
+    // Read labels before anything is deleted, and do not change this menu while doing it.
+    let targets = super::ctxmenu::click_targets(background, items);
+    super::ctxmenu::observe_menu(menu, &cm, targets);
     let strip = super::ctxmenu::take_strip();
     if strip != 0 {
         let t_strip = std::time::Instant::now();
