@@ -174,7 +174,8 @@ fn registry_exes() -> Vec<String> {
     let mut out = Vec::new();
     for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         for sub in [REG_SUB, r"Software\WOW6432Node\Thingamahoochie\WinMerge"] {
-            let v = reg_sz(root, sub, w!("Executable"));
+            let name: Vec<u16> = REG_VALUE.encode_utf16().chain(std::iter::once(0)).collect();
+            let v = reg_sz(root, sub, PCWSTR(name.as_ptr()));
             if let Some(p) = clean_exe(&v) {
                 push_unique_raw(&mut out, &p);
             }
