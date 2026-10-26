@@ -148,16 +148,10 @@ pub(crate) unsafe fn apply_font_all() {
 
 pub(crate) unsafe fn apply_font() {
     let dpi = app(|a| a.dpi);
-    // Empty stays on the language default and does not look up a face. A missing name is cleared.
+    // Empty stays on the language default and does not look up a face. A missing name falls back
+    // to the default for drawing but stays saved, so it comes back once the font is installed again.
     let stored = app(|a| if a.s.font_face.is_empty() { None } else { Some(a.s.font_face.clone()) });
-    let custom = match stored.as_deref() {
-        Some(name) if face_installed(name) => true,
-        Some(_) => {
-            app(|a| a.s.font_face.clear());
-            false
-        }
-        None => false,
-    };
+    let custom = stored.as_deref().is_some_and(|name| face_installed(name));
     let slot = stored.as_deref().unwrap_or("");
     let list = [slot];
     let none: &[&str] = &[];
