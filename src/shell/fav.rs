@@ -250,6 +250,7 @@ pub(crate) fn ctx_surface(h: HWND) -> bool {
 pub(crate) const CTX_SUB: usize = 4;
 pub(crate) const ID_CTX_FAV: u32 = 0x8000; // outside the id range handed to IContextMenu::QueryContextMenu
 pub(crate) const ID_CTX_PROPS: u32 = 0x8001; // folder Properties, added when the background menu has none (Windows 10)
+pub(crate) const ID_CTX_BATCH: u32 = 0x8002; // batch rename, also outside the shell id range
 
 pub(crate) struct MenuBridge {
     pub(crate) cm3: Option<IContextMenu3>,
@@ -422,7 +423,7 @@ pub(crate) unsafe fn show_ctx(i: usize, pt: POINT) -> bool {
     }
     let Some(cm) = cm else { return false };
     let props = if background { app(|a| a.s.paths.get(i).cloned().unwrap_or_default()) } else { String::new() };
-    popup_ctx(owner, cm, &paths, &items, background, &props, pt)
+    popup_ctx(owner, cm, &paths, &items, background, true, &props, pt)
 }
 
 /// Explorer menu for files that are not the pane's current selection (search results, by full path).
@@ -442,7 +443,7 @@ pub(crate) unsafe fn show_paths_ctx(i: usize, items: &[(String, bool)], pt: POIN
     }
     let paths: Vec<String> = items.iter().map(|(p, _)| p.clone()).collect();
     let Some(cm) = menu_for_paths(&paths) else { return false };
-    popup_ctx(owner, cm, &paths, items, false, "", pt)
+    popup_ctx(owner, cm, &paths, items, false, false, "", pt)
 }
 
 unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
@@ -464,7 +465,7 @@ unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
     menu
 }
 
-unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, props_folder: &str, pt: POINT) -> bool {
+unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, pane_selection: bool, props_folder: &str, pt: POINT) -> bool {
     let Ok(menu) = CreatePopupMenu() else { return false };
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
     if !background {
@@ -501,13 +502,26 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
         insert_fav(menu, at, ID_CTX_FAV as usize, fav_menu_label(&paths));
     }
+    // Above the shell items, so it stays visible on a long menu. Background clicks have nothing to rename.
+    if !background && !paths.is_empty() {
+        let label = HSTRING::from(crate::rename::menu_label());
+        _ = InsertMenuW(menu, 0, MF_STRING | MF_BYPOSITION, ID_CTX_BATCH as usize, &label);
+        _ = InsertMenuW(menu, 1, MF_SEPARATOR | MF_BYPOSITION, 0, PCWSTR::null());
+    }
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
     });
     CTX_MENU.with(|m| m.set(menu.0 as isize));
     let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, owner, None).0;
     MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
-    if cmd == ID_CTX_FAV as i32 {
+    if cmd == ID_CTX_BATCH as i32 {
+        // The pane's own menu can re-read the selection in view order. Search results pass their paths.
+        if pane_selection {
+            crate::rename::open_active();
+        } else {
+            crate::rename::open_paths(owner, items);
+        }
+    } else if cmd == ID_CTX_FAV as i32 {
         let remove = app(|a| paths.iter().all(|p| a.s.is_fav(p)));
         set_entries(items, !remove);
     } else if add_props && cmd == ID_CTX_PROPS as i32 {

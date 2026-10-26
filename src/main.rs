@@ -13,6 +13,7 @@ mod session;
 mod shell;
 mod settings;
 mod everything;
+mod rename;
 
 use imports::*;
 
