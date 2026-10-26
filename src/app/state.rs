@@ -383,6 +383,10 @@ fn desk_owns(d: &Desk, h: HWND) -> bool {
     if !d.fav_mgr.0.is_null() && unsafe { IsChild(d.fav_mgr, h).as_bool() } {
         return true;
     }
+    // The peek popup's preview host is its child, not the main window's.
+    if !d.peek.0.is_null() && unsafe { IsChild(d.peek, h).as_bool() } {
+        return true;
+    }
     unsafe { IsChild(d.main, h).as_bool() }
 }
 
