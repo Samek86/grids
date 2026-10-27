@@ -43,6 +43,8 @@ fn main() -> Result<()> {
         folderapp::repair_moved_exe();
         let mut raw: Vec<String> = std::env::args().skip(1).collect();
         wait_for_previous(&mut raw);
+        // A theme restart asks for the tabs just saved, not the startup-mode layout.
+        let keep_tabs = take_keep_tabs(&mut raw);
         let args: Vec<String> = raw.into_iter().map(resolve).collect();
         // shell: and CLSID paths are not filesystem folders. Explorer opens those; this process
         // does not start a window just to hold them.
@@ -84,12 +86,13 @@ fn main() -> Result<()> {
         }
         let boot = s.boot;
         let restore = session_arg(&args).is_none() && args.is_empty();
-        if restore {
+        // `--keep-tabs` is a theme restart: the file already has the windows the user was looking at.
+        if restore && !keep_tabs {
             apply_boot(&mut s);
         }
         // Extra windows belong to "restore last state". A session file, paths, or another startup mode do not.
-        // Single-window mode never opens the other saved windows.
-        if !restore || boot != 0 || !allows_another_window(s.one_window) {
+        // Single-window mode never opens the other saved windows. A theme restart brings back every window that was open.
+        if !keep_tabs && (!restore || boot != 0 || !allows_another_window(s.one_window)) {
             stash_windows(Vec::new());
         }
         s.dark = resolve_dark(s.theme);
@@ -227,7 +230,7 @@ fn main() -> Result<()> {
         shell::blockext::apply(&s.blocked_shell_extensions);
         let main = open_window(s)?;
         apply_ext(app(|a| a.s.ext));
-        if restore && boot != 0 {
+        if restore && boot != 0 && !keep_tabs {
             save_session();
         }
         // Other saved windows open after this one is on screen, so the first paint is one window.
