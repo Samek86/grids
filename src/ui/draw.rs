@@ -543,14 +543,26 @@ pub(crate) unsafe fn crumb_at(h: HWND, i: usize, x: i32, y: i32) -> Option<Optio
 }
 
 /// The address edit shows only while it is focused or its text is not the folder on display.
+/// After a share failure it stays up with the path that failed, so the bar does not go empty.
 pub(crate) unsafe fn sync_addr(h: HWND) {
     let Ok(e) = GetDlgItem(Some(h), ID_EDIT) else { return };
-    let disp = app(|a| {
+    let failed = app(|a| {
         if a.crumb_hot.is_some_and(|(w, _)| w == h) {
             a.crumb_hot = None;
         }
-        a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone())
+        a.panes.iter().flatten().find(|p| p.hwnd == h).and_then(|p| p.net.as_ref()).filter(|n| n.bad).map(|n| n.path.clone())
     });
+    if let Some(path) = failed {
+        if let Some(keep) = addr_keep(&path, &text_of(e), GetFocus() == e) {
+            _ = SetWindowTextW(e, &HSTRING::from(keep));
+        }
+        if !IsWindowVisible(e).as_bool() {
+            _ = ShowWindow(e, SW_SHOWNA);
+        }
+        _ = InvalidateRect(Some(h), None, false);
+        return;
+    }
+    let disp = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone()));
     let show = GetFocus() == e || text_of(e) != disp.unwrap_or_default();
     _ = ShowWindow(e, if show { SW_SHOWNA } else { SW_HIDE });
     _ = InvalidateRect(Some(h), None, false);
@@ -935,9 +947,9 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 }
             }
         }
-        if let Some(n) = link.filter(|_| crumbs_on) {
-            let ink = if n.bad { pal().sub } else { pal().text };
-            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(n.bad), font, ink, DT_LEFT);
+        // Connecting replaces the crumbs. A failure keeps the path in the edit, so it is not painted here.
+        if link.as_ref().is_some_and(|n| !n.bad) && crumbs_on {
+            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(false), font, pal().text, DT_LEFT);
         } else if let Some(i) = i.filter(|_| crumbs_on) {
             for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
                 let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));
