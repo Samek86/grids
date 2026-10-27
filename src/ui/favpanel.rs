@@ -261,7 +261,9 @@ pub(crate) unsafe fn paint_side(h: HWND) {
             }
             let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
             let label_font = if f.group { bold } else { font };
-            text(dc, RECT { left: label_left, right: rc.right - s(6), ..r }, &label, label_font, pal().text, DT_LEFT);
+            // A path the background check (or a click) has found gone is drawn in the secondary colour.
+            let ink = if !f.group && known_missing(&f.path) { pal().sub } else { pal().text };
+            text(dc, RECT { left: label_left, right: rc.right - s(6), ..r }, &label, label_font, ink, DT_LEFT);
         }
         if !list.iter().any(|f| f.in_tree()) {
             let y = list.len() as i32 * rh - scroll + s(8);
@@ -450,7 +452,7 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
     };
     if !row.in_tree() {
         match cmd {
-            4 => open_fav_target(&row.path, row.file),
+            4 => open_fav_row(&row),
             5 if row.file => {
                 if let Some(parent) = parent_of(&row.path) {
                     let i = active_pane();
@@ -477,7 +479,7 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
             });
             changed();
         }
-        4 => open_fav_target(&row.path, row.file),
+        4 => open_fav_row(&row),
         6 => unpin_path(&row.path, row.kind == RowKind::Files),
         5 => {
             if let Some(parent) = parent_of(&row.path) {
@@ -880,7 +882,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     if row.group {
                         toggle_row(&row);
                     } else {
-                        open_fav_target(&row.path, row.file);
+                        open_fav_row(&row);
                     }
                 }
             }
@@ -914,7 +916,7 @@ pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         if row.group {
                             toggle_row(&row);
                         } else {
-                            open_fav_target(&row.path, row.file);
+                            open_fav_row(&row);
                         }
                     }
                 }

@@ -3,7 +3,7 @@
 // Explorer pins and favourite files lead the list, with the same labels and collapse as the left panel.
 
 use crate::app::{app, bind_hwnd};
-use crate::open_fav_target;
+use crate::open_fav_row;
 use crate::i18n::tr;
 use crate::imports::*;
 use crate::session::*;
@@ -514,14 +514,14 @@ unsafe fn activate_row(row: &FavRow) {
         }
         return;
     }
-    let (path, file) = (row.path.clone(), row.file);
+    let row = row.clone();
     let moved = finish_drag();
     let _ = ReleaseCapture();
     if moved {
         commit();
     }
     close_fav_manager();
-    open_fav_target(&path, file);
+    open_fav_row(&row);
 }
 
 unsafe fn fav_manager_delete_sel() {
