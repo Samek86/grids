@@ -311,7 +311,8 @@ pub(crate) fn column_write(want: &str, live: &str) -> ColumnWrite {
 }
 
 /// `writes` is how many times this navigation has already called `SetColumns` or `SetViewModeAndIconSize`.
-/// One is the cap. A later look, even at different columns, writes nothing.
+/// One is the cap. A later look does not call either again, even when the columns still differ.
+/// Saved widths are not part of that cap: the first look is often stale, and `apply_saved_widths` puts them once.
 pub(crate) fn shell_write(writes: u8, want_mode: i32, want_icon: i32, live_mode: i32, live_icon: i32, want_cols: &str, live_cols: &str) -> ShellWrite {
     if writes >= 1 {
         return ShellWrite { mode: false, columns: false, sort: false, widths: false };
@@ -319,15 +320,62 @@ pub(crate) fn shell_write(writes: u8, want_mode: i32, want_icon: i32, live_mode:
     let mode = mode_needs_set(want_mode, want_icon, live_mode, live_icon);
     let (columns, sort, widths) = match column_write(want_cols, live_cols) {
         ColumnWrite::Columns => (true, false, false),
-        ColumnWrite::Sort => (false, true, false),
+        // Sort does not carry the widths. A saved Name width still has to be put.
+        ColumnWrite::Sort => (false, true, widths_differ(want_cols, live_cols)),
         ColumnWrite::Widths => (false, false, true),
         ColumnWrite::None => (false, false, false),
     };
     ShellWrite { mode, columns, sort, widths }
 }
 
+/// Shared columns whose widths differ by more than the shell's own noise.
+/// An extra column (Type coming back) or a different sort does not hide that.
+/// An empty read is the list still building, so it is not a difference to apply.
+pub(crate) fn widths_differ(want: &str, live: &str) -> bool {
+    let (wc, _) = parse_cols(want);
+    let (lc, _) = parse_cols(live);
+    if wc.is_empty() || lc.is_empty() {
+        return false;
+    }
+    let same = |a: &PROPERTYKEY, b: &PROPERTYKEY| a.fmtid == b.fmtid && a.pid == b.pid;
+    wc.iter().any(|(k, w)| lc.iter().any(|(lk, lw)| same(k, lk) && (*w as i32 - *lw as i32).abs() > WIDTH_SLOP))
+}
+
 pub(crate) fn widths_need_put(want: &str, live: &str) -> bool {
-    matches!(column_write(want, live), ColumnWrite::Widths)
+    widths_differ(want, live)
+}
+
+/// One `LVM_SETCOLUMNWIDTH` pass per navigation. `puts` is how many have already run.
+/// The cap is separate from `shell_write`'s SetColumns cap: that first look is often the
+/// previous folder or a list that has not published columns yet.
+pub(crate) fn apply_saved_widths(puts: u8, want: &str, live: &str) -> bool {
+    puts < 1 && widths_need_put(want, live)
+}
+
+/// Column text to store after the user finishes a header drag.
+/// Widths move onto `stored`'s own columns, so a shell-added Type column is not saved with them.
+/// None when `live` is empty or no width moved by more than a few pixels.
+/// An empty `stored` keeps `live` as the first layout.
+pub(crate) fn capture_columns(stored: &str, live: &str) -> Option<String> {
+    let (lc, _) = parse_cols(live);
+    if lc.is_empty() {
+        return None;
+    }
+    let (mut sc, ss) = parse_cols(stored);
+    if sc.is_empty() {
+        return Some(live.to_string());
+    }
+    let same = |a: &PROPERTYKEY, b: &PROPERTYKEY| a.fmtid == b.fmtid && a.pid == b.pid;
+    let mut changed = false;
+    for (k, w) in sc.iter_mut() {
+        if let Some((_, lw)) = lc.iter().find(|(lk, _)| same(k, lk)) {
+            if *lw > 0 && (*w as i32 - *lw as i32).abs() > WIDTH_SLOP {
+                *w = *lw;
+                changed = true;
+            }
+        }
+    }
+    changed.then(|| cols_text(&sc, &ss))
 }
 
 /// `None` means grouping was not part of this view, so the shell is left alone.
@@ -1008,7 +1056,9 @@ mod tests {
         let widths = shell_write(0, 4, 16, 4, 16, &want, &wider);
         assert_eq!(widths, ShellWrite { mode: false, columns: false, sort: false, widths: true });
         assert!(widths_need_put(&want, &wider));
-        assert!(!widths_need_put(&want, &with_type));
+        // Type is back and Name is a different width. SetColumns is the first write, above.
+        // The later width put still sees Name; Type must not make that put look unnecessary.
+        assert!(widths_need_put(&want, &with_type));
         // Sort only. SetSortColumns, not SetColumns.
         let sort = shell_write(0, 4, 16, 4, 16, &sorted, &want);
         assert_eq!(sort, ShellWrite { mode: false, columns: false, sort: true, widths: false });
@@ -1027,6 +1077,58 @@ mod tests {
         assert!(group_needs_set(&Some(String::new()), &None));
         assert!(!group_needs_set(&Some(String::new()), &Some(String::new())));
         assert!(group_needs_set(&Some("g".into()), &Some(String::new())));
+    }
+
+    #[test]
+    fn a_user_column_width_is_saved_and_applied_once() {
+        let stored = default_details_columns();
+        let dragged = cols_text(&[(PKEY_ItemNameDisplay, 450), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[]);
+        let noise = cols_text(&[(PKEY_ItemNameDisplay, 282), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[]);
+        let with_type = cols_text(
+            &[(PKEY_ItemNameDisplay, 450), (PKEY_DateModified, 160), (PKEY_ItemTypeText, 100), (PKEY_Size, 90)],
+            &[],
+        );
+        let type_default = cols_text(
+            &[(PKEY_ItemNameDisplay, 280), (PKEY_DateModified, 160), (PKEY_ItemTypeText, 100), (PKEY_Size, 90)],
+            &[],
+        );
+        let sorted = cols_text(
+            &[(PKEY_ItemNameDisplay, 200), (PKEY_DateModified, 160), (PKEY_Size, 90)],
+            &[(PKEY_ItemNameDisplay, 1)],
+        );
+        let kept = capture_columns(&stored, &dragged).unwrap();
+        assert_eq!(width_of(&kept, PKEY_ItemNameDisplay.pid), Some(450));
+        assert!(same_column_keys(&kept, &stored));
+        assert_eq!(parse_cols(&kept).1.len(), 0);
+        // A few pixels, or a list that is not up yet, is not a new width.
+        assert!(capture_columns(&stored, &noise).is_none());
+        assert!(capture_columns(&stored, "").is_none());
+        // Type was on screen during the drag. The saved layout stays Name, Date modified, Size.
+        let patched = capture_columns(&stored, &with_type).unwrap();
+        assert!(same_column_keys(&patched, &stored));
+        assert!(!same_column_keys(&patched, &with_type));
+        assert_eq!(width_of(&patched, PKEY_ItemNameDisplay.pid), Some(450));
+        assert_eq!(width_of(&patched, PKEY_DateModified.pid), Some(160));
+        // Nothing stored yet: the list the user left is the first memory.
+        assert_eq!(capture_columns("", &dragged).as_deref(), Some(dragged.as_str()));
+        // Coming back: put the saved Name width once, even if the shell added a sort or Type.
+        assert!(apply_saved_widths(0, &kept, &stored));
+        assert!(apply_saved_widths(0, &kept, &sorted));
+        assert!(apply_saved_widths(0, &kept, &type_default));
+        assert!(!apply_saved_widths(1, &kept, &stored));
+        assert!(!apply_saved_widths(0, &kept, &dragged));
+        assert!(!apply_saved_widths(0, &kept, ""));
+        assert!(!apply_saved_widths(0, &stored, &noise));
+        // Sort and the width go together on the first look. A second SetColumns does not.
+        let plan = shell_write(0, 4, 16, 4, 16, &kept, &sorted);
+        assert_eq!(plan, ShellWrite { mode: false, columns: false, sort: true, widths: true });
+        let again = shell_write(1, 4, 16, 4, 16, &kept, &sorted);
+        assert_eq!(again, ShellWrite { mode: false, columns: false, sort: false, widths: false });
+        assert!(apply_saved_widths(0, &kept, &sorted));
+    }
+
+    fn width_of(text: &str, pid: u32) -> Option<u32> {
+        parse_cols(text).0.into_iter().find(|(k, _)| k.pid == pid).map(|(_, w)| w)
     }
 
     #[test]

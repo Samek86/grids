@@ -1873,6 +1873,99 @@ pub(crate) unsafe fn apply_filter(i: usize) {
 
 thread_local! {
     pub(crate) static KEEP_VIEWS: Cell<bool> = const { Cell::new(false) };
+    static CAPTURE_WIDTH: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The header drag just ended (or the pane is leaving). Store the widths the user set.
+/// Quiet polls and the one-shot settle used to treat that width as the shell's own layout and drop it.
+unsafe fn capture_user_width(i: usize) {
+    if CAPTURE_WIDTH.with(|c| c.replace(true)) {
+        return;
+    }
+    let live = view_of::<IFolderView2>(i).and_then(|fv| read_cols(&fv, view_list(&fv)));
+    let Some(live) = live else {
+        CAPTURE_WIDTH.with(|c| c.set(false));
+        return;
+    };
+    let (remember, path, stored) = app(|a| {
+        let remember = a.s.remember_views;
+        let path = a.s.paths.get(i).cloned().unwrap_or_default();
+        let stored = if remember {
+            a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| {
+                p.view_watch.as_ref().map(|w| w.applied.columns.clone()).or_else(|| p.settle.as_ref().map(|(c, _)| c.clone()))
+            })
+        } else {
+            a.s.cols.get(i).cloned()
+        };
+        (remember, path, stored.unwrap_or_default())
+    });
+    let Some(columns) = crate::folderview::capture_columns(&stored, &live) else {
+        if !parse_cols(&live).0.is_empty() {
+            app(|a| {
+                if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                    p.user_width = false;
+                }
+            });
+        }
+        CAPTURE_WIDTH.with(|c| c.set(false));
+        return;
+    };
+    if !remember {
+        let fs = is_fs(&path);
+        app(|a| {
+            if fs {
+                if let Some(c) = a.s.cols.get_mut(i) {
+                    *c = columns.clone();
+                }
+            }
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.user_width = false;
+                if let Some(s) = p.settle.as_mut() {
+                    s.0 = columns;
+                }
+            }
+        });
+        note_save();
+        CAPTURE_WIDTH.with(|c| c.set(false));
+        return;
+    }
+    let Some(key) = crate::folderview::normalize_folder_key(&path) else {
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.user_width = false;
+            }
+        });
+        CAPTURE_WIDTH.with(|c| c.set(false));
+        return;
+    };
+    let mut snap = app(|a| {
+        a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.view_watch.as_ref()).filter(|w| w.key == key).map(|w| w.applied.clone())
+    })
+    .unwrap_or(crate::folderview::ViewSnap { mode: 4, icon: 16, columns: String::new(), group: None });
+    snap.columns = columns.clone();
+    let remembered = crate::folderview::remember(&path, snap.clone());
+    app(|a| {
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return };
+        p.user_width = false;
+        if let Some(s) = p.settle.as_mut() {
+            s.0 = columns.clone();
+        }
+        if let Some(w) = p.view_watch.as_mut().filter(|w| w.key == key) {
+            w.applied.columns = columns;
+            w.quiet = 0;
+            // The screen may still show Type or the shell's sort. That is not a second edit.
+            let mut seen = snap;
+            seen.columns = live;
+            match w.baseline.as_mut() {
+                Some(b) => b.columns = seen.columns,
+                None => w.baseline = Some(seen),
+            }
+        }
+    });
+    if remembered {
+        note_folder_views();
+    }
+    CAPTURE_WIDTH.with(|c| c.set(false));
 }
 
 // View mode and columns (order, widths, sort). With per-folder memory off, they stick to the pane:
@@ -1883,8 +1976,24 @@ pub(crate) unsafe fn save_view(i: usize) {
     if KEEP_VIEWS.with(|c| c.get()) {
         return;
     }
-    if app(|a| a.panes[i].as_ref().is_none_or(|p| p.pending.is_some() || p.settle.is_some())) {
-        return; // columns are about to be put on, or still settling: don't overwrite them
+    let (pending, settling, user_width) = match app(|a| {
+        a.panes.get(i).and_then(|p| p.as_ref()).map(|p| (p.pending.is_some(), p.settle.is_some(), p.user_width))
+    }) {
+        Some(v) => v,
+        None => return,
+    };
+    if pending {
+        return; // columns are about to be put on: don't overwrite them
+    }
+    // A finished header drag is stored even while the one width check is still waiting.
+    // Returning here used to drop it, so the width was gone on the way back.
+    if user_width {
+        capture_user_width(i);
+        if settling {
+            return;
+        }
+    } else if settling {
+        return;
     }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let lv = view_list(&fv);
@@ -2213,7 +2322,22 @@ unsafe fn list_floor_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: 
         }
         return LRESULT(0);
     }
-    DefSubclassProc(h, msg, wp, lp)
+    let ended = msg == WM_NOTIFY && {
+        let code = (*(lp.0 as *const NMHDR)).code;
+        code == HDN_ENDTRACKW || code == HDN_DIVIDERDBLCLICKW
+    };
+    let r = DefSubclassProc(h, msg, wp, lp);
+    if ended {
+        if let Some(i) = pane_of(h) {
+            app(|a| {
+                if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                    p.user_width = true;
+                }
+            });
+            capture_user_width(i);
+        }
+    }
+    r
 }
 
 pub(crate) const WM_NARROW_AGAIN: u32 = WM_APP + 41;
@@ -2286,10 +2410,13 @@ unsafe fn apply_planned(fv: &IFolderView2, writes: u8, mode: i32, icon: i32, col
     }
     if plan.columns {
         apply_cols(fv, cols, lv);
-    } else if plan.sort {
-        apply_sort(fv, cols);
-    } else if plan.widths {
-        put_widths(fv, cols, lv);
+    } else {
+        if plan.sort {
+            apply_sort(fv, cols);
+        }
+        if plan.widths {
+            put_widths(fv, cols, lv);
+        }
     }
     if plan.mode || plan.columns { 1 } else { writes }
 }
@@ -2323,19 +2450,34 @@ pub(crate) unsafe fn apply_cols(fv: &IFolderView2, text: &str, lv: HWND) {
 pub(crate) unsafe fn settle_cols(h: HWND) {
     _ = KillTimer(Some(h), TIMER_SETTLE);
     let Some(i) = pane_of(h) else { return };
-    let Some((cols, _)) = app(|a| {
+    let Some((cols, left)) = app(|a| {
         let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
         p.settle.take()
     }) else {
         return;
     };
+    let mut again = false;
     if let Some(fv) = view_of::<IFolderView2>(i) {
         let lv = view_list(&fv);
         free_min_widths(lv);
         let live = read_cols(&fv, lv).unwrap_or_default();
-        if crate::folderview::widths_need_put(&cols, &live) {
+        if parse_cols(&live).0.is_empty() && left > 0 {
+            // The list has not published columns yet. Looking now would treat that as "already applied".
+            again = true;
+        } else if crate::folderview::apply_saved_widths(0, &cols, &live) {
             put_widths(&fv, &cols, lv);
         }
+    } else if left > 0 {
+        again = true;
+    }
+    if again {
+        app(|a| {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                p.settle = Some((cols, left - 1));
+            }
+        });
+        SetTimer(Some(h), TIMER_SETTLE, 200, None);
+        return;
     }
     note_save();
 }
@@ -2520,6 +2662,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
                 if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
                     p.settle = None;
                     p.view_writes = 0;
+                    p.user_width = false;
                 }
             });
         }
