@@ -280,6 +280,7 @@ pub(crate) struct Session {
     pub(crate) start_path: String,
     pub(crate) ext: bool,              // show file extensions (the Windows Explorer setting)
     pub(crate) tree_on: bool,          // left panel open
+    pub(crate) fav_top: bool,          // favourites above the folder tree; false puts the tree on top
     pub(crate) side_split: f64,        // folder tree's share of the left panel; favourites take the rest
     pub(crate) pins_open: bool,        // Explorer pins group expanded; the rows are not saved
     pub(crate) files_open: bool,       // Explorer favourite-files group expanded; hidden when empty; rows are not saved
@@ -412,6 +413,7 @@ impl Default for Session {
             start_path: String::new(),
             ext: true,
             tree_on: true,
+            fav_top: true,
             side_split: 0.5,
             pins_open: true,
             files_open: true,
@@ -483,6 +485,7 @@ impl PartialEq for Session {
             && self.start_path == o.start_path
             && self.ext == o.ext
             && self.tree_on == o.tree_on
+            && self.fav_top == o.fav_top
             && self.side_split == o.side_split
             && self.pins_open == o.pins_open
             && self.files_open == o.files_open
@@ -738,6 +741,8 @@ impl Session {
                 "startp" => s.start_path = v.trim().to_string(),
                 "ext" => s.ext = v.trim() != "0",
                 "tree" => s.tree_on = v.trim() != "0",
+                // Omitted, or any value other than tree: favourites on top. The source grids.ini is never rewritten.
+                "sideorder" => s.fav_top = v.trim() != "tree",
                 "edge" => s.edge = v.trim() != "0",
                 "confirm" => s.confirm = v.trim() != "0",
                 "del" => s.del = if v.trim() == "1" { 1 } else { 0 },
@@ -845,6 +850,10 @@ impl Session {
             o += &format!("startp={}\n", self.start_path);
         }
         o += &format!("ext={}\ntree={}\nedge={}\n", self.ext as u8, self.tree_on as u8, self.edge as u8);
+        // Default (favourites on top) adds no line, so an imported grids.ini is not given a new key.
+        if !self.fav_top {
+            o += "sideorder=tree\n";
+        }
         o += &format!("confirm={}\ndel={}\n", self.confirm as u8, self.del);
         if !self.new_name.is_empty() {
             o += &format!("newname={}\n", self.new_name);

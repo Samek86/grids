@@ -47,7 +47,7 @@ pub(crate) struct Desk {
     pub(crate) main: HWND,
     pub(crate) tree: Option<INameSpaceTreeControl>,
     pub(crate) tree_hwnd: HWND,
-    pub(crate) side_hwnd: HWND, // favourites list, bottom of the left panel
+    pub(crate) side_hwnd: HWND, // favourites list in the left panel
     pub(crate) side_hot: Option<usize>,
     pub(crate) side_sel: Option<usize>,
     pub(crate) side_scroll: i32,
@@ -490,6 +490,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.start_path = src.start_path.clone();
     dst.ext = src.ext;
     dst.tree_on = src.tree_on;
+    dst.fav_top = src.fav_top;
     dst.pins_open = src.pins_open;
     dst.files_open = src.files_open;
     dst.edge = src.edge;
