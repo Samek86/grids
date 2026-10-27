@@ -38,17 +38,19 @@ Every pane is a real Windows Explorer view: the full right-click menu, drag and 
 
 Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and save the current tab — layout, folders, columns, and colour labels — as a named session. Opening one adds a new tab beside the current one.
 
+With a single pane, the ⇄ button splits the tab: the selected folder (or the current one, if nothing or only files are selected) opens in a new right pane with the same columns and view. With two or more panes, ⇄ keeps its menu.
+
 <table><tr><td><img alt="layout" src="docs/images/layout.png"></td><td><img alt="sessions" src="docs/images/sessions.png"></td></tr></table>
 
 ### 🗂️ Tabs that name themselves
 
-Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (path in the tooltip); double-click or right-click → Rename to pin your own name, and pick a tab colour.
+Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (path in the tooltip); double-click or right-click → Rename to pin your own name, lock a tab, duplicate it (Ctrl+Alt+K), move it to a new window, save it as a session, and pick a tab colour. Window tabs are wider by default (135 px), so more of the name shows.
 
 <p align="center"><img width="560" alt="tabs" src="docs/images/tabs.png"></p>
 
 ### ⭐ Favourites popup with Explorer pins
 
-The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-access pins at the top, then your own groups, with nesting and drag to reorder. Ctrl+B opens the quick favourites list.
+The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-access pins at the top, then your own groups, with nesting and drag to reorder. Hover a row to see its full location, and drop files or folders from a pane or Explorer onto the panel to add them as favourites. Ctrl+B opens the quick favourites list.
 
 <p align="center"><img width="760" alt="favorites" src="docs/images/favorites.png"></p>
 
@@ -69,6 +71,14 @@ Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Ev
 The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
 
 <p align="center"><img width="760" alt="explorer" src="docs/images/explorer.png"></p>
+
+### ⚡ Small details
+
+- **Full path on hover.** When a pane's address bar is too narrow and shows `…`, hover it to see the whole path.
+- **Mouse side buttons everywhere.** Back and forward work in folder panes, also over Remote Desktop.
+- **Right-click menu without the first-click lag.** Shell context menus are warmed up in the background after launch and after a long idle.
+- **Column widths are remembered** when you come back to a folder.
+- **Crash report on the next launch.** If a third-party shell extension takes Panegrid down, the report names it, and you can block that DLL inside Panegrid only (`blocked_shell_extensions` in `panegrid.json`).
 
 ### 🎨 Themes & accent
 
