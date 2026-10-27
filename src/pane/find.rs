@@ -1069,8 +1069,8 @@ unsafe fn text_px(dc: HDC, font: HFONT, s: &str) -> i32 {
 /// A failed measure falls back to the old fixed text widths so the controls stay clickable.
 unsafe fn header_now(h: HWND, dc: Option<HDC>, dpi: i32, header_h: i32, width: i32, recursive: bool, all: bool) -> HeaderGeom {
     let font = app(|a| a.font);
-    let sub = tr("Subfolders", "하위 폴더", "サブフォルダー");
-    let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
+    let sub = tr(crate::Key::Subfolders);
+    let scope = if all { tr(crate::Key::AllDrives) } else { tr(crate::Key::ThisFolder) };
     let (release, dc) = match dc {
         Some(dc) => (false, dc),
         None => (true, GetDC(Some(h))),
@@ -1196,19 +1196,19 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         if recursive {
             text(dc, mark, "\u{E73E}", icon_font, on_color(accent), DT_CENTER);
         }
-        let sub_label = tr("Subfolders", "하위 폴더", "サブフォルダー");
+        let sub_label = tr(crate::Key::Subfolders);
         text(dc, RECT { left: s(26), right: g.sub.right, ..head }, sub_label, font, pal().text, DT_LEFT);
         if let Some(pill) = g.scope {
             fill(dc, pill, pal().card);
             frame(dc, pill, 1, if all { accent } else { pal().line });
-            let scope = if all { tr("All drives", "모든 드라이브", "すべてのドライブ") } else { tr("This folder", "이 폴더", "このフォルダー") };
+            let scope = if all { tr(crate::Key::AllDrives) } else { tr(crate::Key::ThisFolder) };
             text(dc, pill, scope, font, if all { accent } else { pal().text }, DT_CENTER);
         }
         let status = find_status(running, hits.len(), more, engine, all && engine == FindEngine::Everything);
         text(dc, RECT { left: g.status_left, right: rc.right - s(8), ..head }, &status, font, pal().sub, DT_RIGHT);
         let mut y = rh - scroll;
         if hits.is_empty() && !running {
-            text(dc, RECT { left: s(8), top: rh, right: rc.right - s(8), bottom: rh + rh }, tr("No matches", "결과 없음", "一致なし"), font, pal().sub, DT_LEFT);
+            text(dc, RECT { left: s(8), top: rh, right: rc.right - s(8), bottom: rh + rh }, tr(crate::Key::NoMatches), font, pal().sub, DT_LEFT);
         }
         for (i, hit) in hits.iter().enumerate() {
             let r = RECT { left: 0, top: y, right: rc.right, bottom: y + rh };
@@ -1225,24 +1225,24 @@ unsafe fn paint_find(h: HWND, pane: HWND) {
         }
         if more {
             let r = RECT { left: s(8), top: y, right: rc.right - s(8), bottom: y + rh };
-            text(dc, r, tr("More results are not shown", "나머지는 표시하지 않아요", "これ以上は表示していません"), font, pal().sub, DT_LEFT);
+            text(dc, r, tr(crate::Key::MoreResultsAreNotShown), font, pal().sub, DT_LEFT);
         }
     });
 }
 
 fn find_status(running: bool, n: usize, more: bool, engine: FindEngine, everywhere: bool) -> String {
     let engine = match engine {
-        FindEngine::Everything if everywhere => tr("Everything · all drives", "Everything · 모든 드라이브", "Everything · すべてのドライブ"),
+        FindEngine::Everything if everywhere => tr(crate::Key::EverythingAllDrives),
         FindEngine::Everything => "Everything",
-        FindEngine::Walk => tr("Folders", "폴더", "フォルダー"),
+        FindEngine::Walk => tr(crate::Key::Folders),
     };
     if running && n == 0 {
-        return format!("{engine} · {}", tr("Searching…", "검색 중…", "検索中…"));
+        return format!("{engine} · {}", tr(crate::Key::Searching));
     }
-    let mut s = format!("{engine} · {n} {}", tr("results", "개 결과", "件"));
+    let mut s = format!("{engine} · {n} {}", tr(crate::Key::Results));
     if more {
         s.push_str(" · ");
-        s.push_str(tr("more", "더 있음", "続きあり"));
+        s.push_str(tr(crate::Key::More));
     } else if running {
         s.push('…');
     }
@@ -1463,11 +1463,7 @@ unsafe fn ask_install_everything_once(owner: HWND) {
     }
     app(|a| a.s.ev_asked = true);
     crate::save_session();
-    let q = tr(
-        "Install Everything to make subfolder search much faster?\n\nThis is asked only once. You can install it later from Settings.",
-        "Everything을 설치하면 하위 폴더 검색이 훨씬 빨라져요. 설치할까요?\n\n이 질문은 한 번만 합니다. 나중에 설정 화면에서 설치할 수 있어요.",
-        "Everything をインストールすると、サブフォルダー検索がずっと速くなります。インストールしますか？\n\nこの質問は一度だけです。あとで設定画面からインストールできます。",
-    );
+    let q = tr(crate::Key::InstallEverythingMakeSubfolderSearchMuch);
     if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
         everything::install_async();
     }

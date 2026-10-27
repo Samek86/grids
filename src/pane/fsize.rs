@@ -78,13 +78,13 @@ pub(crate) fn view_selection(parts: &[Option<FolderStat>], file_bytes: u64, file
 }
 
 pub(crate) fn folder_size_text(pending: bool, bytes: u64, files: u64, partial: bool) -> String {
-    let label = tr("Folder size", "폴더 크기", "フォルダーのサイズ");
+    let label = tr(crate::Key::FolderSize);
     if pending {
-        return format!("{label}: {}", tr("calculating…", "계산 중…", "計算中…"));
+        return format!("{label}: {}", tr(crate::Key::Calculating));
     }
     let n = files_phrase(files);
     if partial {
-        format!("{label}: {} ({n}, {})", human(bytes), tr("partial", "일부만", "一部のみ"))
+        format!("{label}: {} ({n}, {})", human(bytes), tr(crate::Key::Partial))
     } else {
         format!("{label}: {} ({n})", human(bytes))
     }
@@ -100,12 +100,8 @@ pub(crate) fn view_text(v: SizeView) -> Option<String> {
 
 fn files_phrase(n: u64) -> String {
     let g = grouped(n);
-    match ui() {
-        1 => format!("{g}개 파일"),
-        2 => format!("{g} ファイル"),
-        _ if n == 1 => format!("{g} file"),
-        _ => format!("{g} files"),
-    }
+    let key = if n == 1 { Key::OneFile } else { Key::NFiles };
+    tf(key, &[("g", &g)])
 }
 
 pub(crate) fn grouped(n: u64) -> String {

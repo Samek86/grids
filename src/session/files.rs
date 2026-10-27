@@ -229,21 +229,17 @@ pub(crate) unsafe fn ask_session_path(title: &str) -> Option<PathBuf> {
         match session_target(&dir, &name) {
             Err(e) => {
                 let why = match e {
-                    NameErr::Invalid => tr(
-                        "That name can't be used. Leave out \\ / : * ? \" < > | and don't end it with a dot.",
-                        "이 이름은 쓸 수 없어요. \\ / : * ? \" < > | 는 빼고, 점으로 끝내지 마세요.",
-                        "この名前は使えません。\\ / : * ? \" < > | を除き、末尾をドットにしないでください。",
-                    ),
-                    NameErr::TooLong => tr("That name is too long.", "이름이 너무 길어요.", "名前が長すぎます。"),
+                    NameErr::Invalid => tr(crate::Key::ThatNameCanTBeUsedLeave),
+                    NameErr::TooLong => tr(crate::Key::ThatNameIsTooLong),
                 };
                 MessageBoxW(Some(main), &HSTRING::from(why), &caption, MB_OK | MB_ICONWARNING);
             }
             Ok((path, true)) => {
                 let q = format!(
                     "{} \"{}\"\n{}",
-                    tr("A session with this name already exists:", "같은 이름의 세션이 이미 있어요:", "同じ名前のセッションがあります:"),
+                    tr(crate::Key::SessionWithThisNameAlreadyExists),
                     name.trim(),
-                    tr("Replace it?", "바꿀까요?", "置き換えますか?")
+                    tr(crate::Key::ReplaceIt)
                 );
                 if MessageBoxW(Some(main), &HSTRING::from(q), &caption, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES {
                     return Some(path);
@@ -255,7 +251,7 @@ pub(crate) unsafe fn ask_session_path(title: &str) -> Option<PathBuf> {
 }
 
 pub(crate) unsafe fn save_session_as() -> Result<()> {
-    if let Some(path) = ask_session_path(tr("Save this tab", "이 탭 저장", "このタブを保存")) {
+    if let Some(path) = ask_session_path(tr(crate::Key::SaveThisTab)) {
         write_session(&path);
     }
     Ok(())
@@ -267,7 +263,7 @@ pub(crate) unsafe fn save_tab_as_session(i: usize) {
     if app(|a| i >= a.s.tabs.len()) {
         return;
     }
-    let Some(path) = ask_session_path(tr("Save this tab", "이 탭 저장", "このタブを保存")) else { return };
+    let Some(path) = ask_session_path(tr(crate::Key::SaveThisTab)) else { return };
     write_tab_session(i, &path);
 }
 

@@ -169,9 +169,9 @@ pub(crate) fn net_fail_text() -> &'static str {
 /// Address-bar line while a share is in flight. A failure keeps the path in the edit instead.
 pub(crate) fn net_bar_text(bad: bool) -> &'static str {
     if bad {
-        tr("Unreachable", "연결 실패", "接続失敗")
+        tr(crate::Key::Unreachable)
     } else {
-        tr("Connecting…", "연결 중…", "接続中…")
+        tr(crate::Key::Connecting)
     }
 }
 
@@ -183,19 +183,16 @@ pub(crate) fn net_wait_secs() -> u32 {
 /// Sentence for the in-pane error. `secs` is set only when the wait ran out.
 pub(crate) fn net_fail_message(path: &str, secs: Option<u32>) -> String {
     let n = secs.unwrap_or(0);
-    match (ui(), secs) {
-        (1, Some(_)) => format!("{path}에 연결하지 못했습니다 (시간 초과 {n}초)"),
-        (2, Some(_)) => format!("{path} に接続できませんでした（タイムアウト {n}秒）"),
-        (_, Some(_)) => format!("Couldn't connect to {path} (timed out after {n} seconds)"),
-        (1, None) => format!("{path}에 연결하지 못했습니다"),
-        (2, None) => format!("{path} に接続できませんでした"),
-        _ => format!("Couldn't connect to {path}"),
+    let n = n.to_string();
+    match secs {
+        Some(_) => tf(Key::NetConnectTimeout, &[("path", path), ("n", &n)]),
+        None => tf(Key::NetConnectFail, &[("path", path)]),
     }
 }
 
 /// [Retry] and [Previous folder], in the UI language.
 pub(crate) fn net_fail_buttons() -> (&'static str, &'static str) {
-    (tr("Retry", "다시 시도", "再試行"), tr("Previous folder", "이전 폴더로", "前のフォルダー"))
+    (tr(crate::Key::Retry), tr(crate::Key::PreviousFolder))
 }
 
 /// Path a Retry or F5 opens. An empty address falls back to the path that failed.
@@ -1168,13 +1165,10 @@ pub(crate) fn gone_note(a: &mut App, missing: &str, opened: &str) {
     let live = a.lost > 0 && a.note.as_ref().is_some_and(|(_, t)| Instant::now() < *t);
     a.lost = if live { a.lost + 1 } else { 1 };
     let n = a.lost;
-    let text = match (ui(), n) {
-        (_, 1) if ui() == 1 => format!("없는 폴더: {missing} · {opened} 엶"),
-        (_, 1) if ui() == 2 => format!("見つかりません: {missing} · {opened} を開きました"),
-        (_, 1) => format!("Not found: {missing} · opened {opened}"),
-        (1, n) => format!("저장된 폴더 {n}개가 없어 가장 가까운 상위 폴더를 엶"),
-        (2, n) => format!("保存されたフォルダー {n} 件が見つからず、最も近い上位フォルダーを開きました"),
-        (_, n) => format!("{n} saved folders were missing · opened the nearest parent folders"),
+    let text = if n == 1 {
+        tf(Key::GoneOne, &[("missing", missing), ("opened", opened)])
+    } else {
+        tf(Key::GoneMany, &[("n", &n.to_string())])
     };
     a.note = Some((text, Instant::now() + std::time::Duration::from_secs(8)));
 }
@@ -1643,13 +1637,13 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     });
     let label = |k: usize, t: u8, disp: &str| {
         let tag = if t == 0 { String::new() } else { format!(" ({})", tint_name(t)) };
-        HSTRING::from(format!("{} {}{tag}    {disp}", tr("Pane", "패널", "ペイン"), k + 1))
+        HSTRING::from(format!("{} {}{tag}    {disp}", tr(crate::Key::Pane), k + 1))
     };
     let arr = view_of::<IFolderView2>(src).and_then(|fv| fv.GetSelection(false).ok());
     let count = arr.as_ref().and_then(|a| a.GetCount().ok()).unwrap_or(0);
     let picked = collect_all(count, |k| unsafe { arr.as_ref()?.GetItemAt(k).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)) });
     let Ok(menu) = CreatePopupMenu() else { return };
-    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Open the selected folder (or this one) in:", "선택한 폴더(없으면 현재 폴더)를 열 패널:", "選択したフォルダー（なければ現在のフォルダー）を開くペイン:")));
+    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr(crate::Key::OpenSelectedFolderOrThisOneIn)));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     for (k, disp, _, t) in &items {
         _ = AppendMenuW(menu, MF_STRING, k + 1, &label(*k, *t, disp));
@@ -1663,7 +1657,7 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
             menu,
             flags,
             sub.0 as usize,
-            &HSTRING::from(tr("Swap places with\tCtrl+Alt+Shift+arrows", "자리 바꾸기\tCtrl+Alt+Shift+방향키", "入れ替え\tCtrl+Alt+Shift+方向キー")),
+            &HSTRING::from(tr(crate::Key::SwapPlacesWithCtrlAltShiftArrows)),
         );
     }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -1671,8 +1665,8 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
         Ok(srcs) => {
             let n = srcs.len();
             let titles = [
-                (false, 101, tr("Copy {n} selected items to", "선택한 {n}개 복사", "選択した {n} 個をコピー").replace("{n}", &n.to_string())),
-                (true, 201, tr("Move {n} selected items to", "선택한 {n}개 이동", "選択した {n} 個を移動").replace("{n}", &n.to_string())),
+                (false, 101, tr(crate::Key::CopyNSelectedItems).replace("{n}", &n.to_string())),
+                (true, 201, tr(crate::Key::MoveNSelectedItems).replace("{n}", &n.to_string())),
             ];
             let dropm = app(|a| a.s.dropm);
             for (mv, base, title) in titles {
@@ -1690,9 +1684,9 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
         }
         Err(why) => {
             let text = match why {
-                Pick::TooMany => tr("Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V", "복사·이동: 선택이 10,000개를 넘습니다 — Ctrl+C / Ctrl+V를 쓰세요", "コピー / 移動: 選択が 10,000 個を超えています — Ctrl+C / Ctrl+V を使ってください"),
-                Pick::Unreadable => tr("Copy / move: some selected items aren't regular files", "복사·이동: 일반 파일이 아닌 항목이 섞여 있습니다", "コピー / 移動: 通常のファイルでない項目が含まれています"),
-                Pick::Empty => tr("Copy / move: select files first", "복사·이동: 먼저 파일을 고르세요", "コピー / 移動: 先にファイルを選択してください"),
+                Pick::TooMany => tr(crate::Key::CopyMoveMoreThan10000Selected),
+                Pick::Unreadable => tr(crate::Key::CopyMoveSomeSelectedItemsArenT),
+                Pick::Empty => tr(crate::Key::CopyMoveSelectFilesFirst),
             };
             _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(text));
         }
@@ -1732,20 +1726,20 @@ pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
     let live = pane_mode_icon(i);
     let checked = live.and_then(|(m, z)| explorer_view_index(m, z));
     let Ok(menu) = CreatePopupMenu() else { return };
-    for (k, &(_, _, en, ko, ja)) in EXPLORER_VIEWS.iter().enumerate() {
-        _ = AppendMenuW(menu, MF_STRING, VIEW_CMD + k, &HSTRING::from(tr(en, ko, ja)));
+    for (k, &(_, _, label)) in EXPLORER_VIEWS.iter().enumerate() {
+        _ = AppendMenuW(menu, MF_STRING, VIEW_CMD + k, &HSTRING::from(tr(label)));
     }
     if let Some(k) = checked {
         _ = CheckMenuRadioItem(menu, VIEW_CMD as u32, (VIEW_CMD + EXPLORER_VIEWS.len() - 1) as u32, (VIEW_CMD + k) as u32, MF_BYCOMMAND.0);
     }
     let save_flags = if checked.is_some() { MF_STRING } else { MF_STRING | MF_GRAYED };
-    _ = AppendMenuW(menu, save_flags, SAVE_VIEW_CMD, &HSTRING::from(tr("Save as default view", "기본 보기 방식으로 저장", "既定の表示として保存")));
+    _ = AppendMenuW(menu, save_flags, SAVE_VIEW_CMD, &HSTRING::from(tr(crate::Key::SaveAsDefaultView)));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("Pane colour", "패널 색", "ペインの色")));
+    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr(crate::Key::PaneColour)));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     for k in 0..=6u8 {
         let flags = if k == cur { MF_STRING | MF_CHECKED } else { MF_STRING };
-        let name = if k == 0 { tr("None", "없음", "なし") } else { tint_name(k) };
+        let name = if k == 0 { tr(crate::Key::None) } else { tint_name(k) };
         _ = AppendMenuW(menu, flags, k as usize + 1, &HSTRING::from(name));
     }
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
@@ -1905,7 +1899,7 @@ pub(crate) unsafe fn recent_menu(i: usize) {
     let items = app(|a| recent_items(&a.s.recent, &a.s.paths[i]));
     let Ok(menu) = CreatePopupMenu() else { return };
     if items.is_empty() {
-        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr("No recent folders yet", "최근 폴더가 아직 없습니다", "最近のフォルダーはまだありません")));
+        _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr(crate::Key::NoRecentFoldersYet)));
     }
     for (k, p) in items.iter().enumerate() {
         // "name<tab>parent"; drive roots and share roots show whole
@@ -1933,13 +1927,13 @@ pub(crate) unsafe fn recent_menu(i: usize) {
 
 /// Filter icon and Alt+↓ while the filter has focus. Pictures, video, music, documents, archives, programs.
 /// "Same type as the selected file" only when exactly one file is selected.
-pub(crate) const FILE_KINDS: [(&str, &str, &str, &str); 6] = [
-    ("Pictures", "사진", "画像", "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.heic;*.tif;*.tiff;*.svg;*.ico"),
-    ("Videos", "동영상", "動画", "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm;*.m4v"),
-    ("Music", "음악", "音楽", "*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"),
-    ("Documents", "문서", "文書", "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.hwp;*.hwpx;*.txt;*.md;*.csv;*.rtf;*.odt"),
-    ("Archives", "압축", "アーカイブ", "*.zip;*.7z;*.rar;*.tar;*.gz;*.iso"),
-    ("Programs", "프로그램", "プログラム", "*.exe;*.msi;*.bat;*.cmd;*.ps1"),
+pub(crate) const FILE_KINDS: [(crate::Key, &str); 6] = [
+    (crate::Key::KindPictures, "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.heic;*.tif;*.tiff;*.svg;*.ico"),
+    (crate::Key::KindVideos, "*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm;*.m4v"),
+    (crate::Key::KindMusic, "*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"),
+    (crate::Key::KindDocuments, "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.hwp;*.hwpx;*.txt;*.md;*.csv;*.rtf;*.odt"),
+    (crate::Key::KindArchives, "*.zip;*.7z;*.rar;*.tar;*.gz;*.iso"),
+    (crate::Key::KindPrograms, "*.exe;*.msi;*.bat;*.cmd;*.ps1"),
 ];
 
 pub(crate) unsafe fn kind_menu(i: usize) {
@@ -1952,19 +1946,19 @@ pub(crate) unsafe fn kind_menu(i: usize) {
         same_type(&pwstr(it.GetDisplayName(SIGDN_PARENTRELATIVEPARSING).ok()?), dir)
     });
     let Ok(menu) = CreatePopupMenu() else { return };
-    for (k, (en, ko, ja, spec)) in FILE_KINDS.iter().enumerate() {
+    for (k, (label, spec)) in FILE_KINDS.iter().enumerate() {
         let flags = if cur == *spec { MF_STRING | MF_CHECKED } else { MF_STRING };
         let shown = spec.split(';').take(2).collect::<Vec<_>>().join(", ");
-        _ = AppendMenuW(menu, flags, k + 1, &HSTRING::from(format!("{}\t{shown}, …", tr(en, ko, ja))));
+        _ = AppendMenuW(menu, flags, k + 1, &HSTRING::from(format!("{}\t{shown}, …", tr(*label))));
     }
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    let same_label = tr("Same type as the selected file", "선택한 파일과 같은 형식", "選択したファイルと同じ種類");
+    let same_label = tr(crate::Key::SameTypeAsSelectedFile);
     match &same {
         Some(s) => _ = AppendMenuW(menu, MF_STRING, 100, &HSTRING::from(format!("{same_label} ({})", s.replace('&', "&&")))),
         None => _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 100, &HSTRING::from(same_label)),
     }
     let clear = if cur.is_empty() && text_of(f).is_empty() { MF_STRING | MF_GRAYED } else { MF_STRING };
-    _ = AppendMenuW(menu, clear, 101, &HSTRING::from(tr("Clear filter", "필터 지우기", "フィルターをクリア")));
+    _ = AppendMenuW(menu, clear, 101, &HSTRING::from(tr(crate::Key::ClearFilter)));
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
     let pg = pane_geo_of(h, rc.right, rc.bottom, app(|a| a.dpi));
@@ -1973,7 +1967,7 @@ pub(crate) unsafe fn kind_menu(i: usize) {
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
     _ = DestroyMenu(menu);
     let spec = match pick {
-        1..=6 => Some(FILE_KINDS[pick - 1].3.to_string()),
+        1..=6 => Some(FILE_KINDS[pick - 1].1.to_string()),
         100 => same,
         101 => Some(String::new()),
         _ => None,
@@ -2674,7 +2668,7 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         clear_theme_keep(i);
         app(|a| {
             a.note = Some((
-                tr("This folder could not be shown", "이 폴더를 표시할 수 없습니다", "このフォルダーを表示できません").to_string(),
+                tr(crate::Key::ThisFolderCouldNotBeShown).to_string(),
                 Instant::now() + std::time::Duration::from_secs(8),
             ));
         });

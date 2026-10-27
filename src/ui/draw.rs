@@ -311,14 +311,12 @@ pub(crate) unsafe fn refresh_save_button() {
     let (main, tip, file, dirty) = app(|a| (a.main, a.tip, a.s.file.clone(), a.dirty));
     let Ok(b) = GetDlgItem(Some(main), ID_TB_SAVE) else { return };
     _ = InvalidateRect(Some(b), None, false);
-    let mut hint = match (ui(), Path::new(&file).file_stem()) {
-        (_, None) => tr("Save this tab (Ctrl+S)", "이 탭 저장 (Ctrl+S)", "このタブを保存 (Ctrl+S)").into(),
-        (1, Some(n)) => format!("'{}'에 이 탭 저장 (Ctrl+S)", n.to_string_lossy()),
-        (2, Some(n)) => format!("'{}' にこのタブを保存 (Ctrl+S)", n.to_string_lossy()),
-        (_, Some(n)) => format!("Save this tab to '{}' (Ctrl+S)", n.to_string_lossy()),
+    let mut hint = match Path::new(&file).file_stem() {
+        None => tr(crate::Key::SaveThisTabCtrlS).into(),
+        Some(n) => tf(crate::Key::SaveTabTo, &[("name", &n.to_string_lossy())]),
     };
     if dirty {
-        hint += tr(" · unsaved layout changes", " · 저장 안 된 배치 변경", " · 未保存のレイアウト変更");
+        hint += tr(crate::Key::UnsavedLayoutChanges);
     }
     let hint = HSTRING::from(hint);
     let ti = TTTOOLINFOW {
@@ -492,7 +490,7 @@ unsafe fn crumb_metrics(dc: HDC, font: HFONT, dpi: i32, parse: &str, disp: &str)
     let mut items = crumbs(parse);
     let fs = !items.is_empty();
     if items.is_empty() {
-        let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp.to_string() };
+        let name = if disp.is_empty() { tr(crate::Key::ThisPc).to_string() } else { disp.to_string() };
         items.push((name, String::new()));
     }
     let old = SelectObject(dc, font.into());
@@ -867,12 +865,12 @@ pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
             if *cut {
                 gray("…");
             } else if names.is_empty() {
-                gray(tr("No subfolders", "하위 폴더 없음", "サブフォルダーなし"));
+                gray(tr(crate::Key::NoSubfolders));
             }
             names.as_slice()
         }
         Err(()) => {
-            gray(tr("Can't open this folder", "이 폴더를 열 수 없음", "このフォルダーを開けません"));
+            gray(tr(crate::Key::CanTOpenThisFolder));
             &[]
         }
     };

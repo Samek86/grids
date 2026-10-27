@@ -136,7 +136,7 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
     }
     let heavy = HANDLED.contains(&e) || OFFICE_ZIP.contains(&e) || matches!(e, "pdf" | "eml" | "hwp" | "hwpx" | "hwpt" | "psd" | "psb");
     if heavy && meta.as_ref().is_some_and(|m| m.len() > HEAVY_MAX) {
-        let note = (tr("Preview", "미리보기", "プレビュー").to_string(), tr("Skipped: larger than 10 MB", "10 MB보다 커서 생략", "10 MB を超えるので省略").to_string());
+        let note = (tr(crate::Key::Preview).to_string(), tr(crate::Key::SkippedLargerThan10Mb).to_string());
         return card(path, &[note]);
     }
     if !req.plain && HANDLED.contains(&e) {
@@ -155,7 +155,7 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
         e if PLAIN.contains(&e) => text_body(path, TextKind::Plain),
         e if CODE.contains(&e) => text_body(path, TextKind::Code),
         "html" | "htm" | "xhtml" => read_head(path, TEXT_MAX).map(|(b, cut)| Body::Text { text: html_text(&decode_text(&b)), kind: TextKind::Plain, cut }),
-        "eml" => read_head(path, 4 << 20).map(|(b, cut)| Body::Text { text: eml_text(&b, ui()), kind: TextKind::Plain, cut }),
+        "eml" => read_head(path, 4 << 20).map(|(b, cut)| Body::Text { text: eml_text(&b), kind: TextKind::Plain, cut }),
         "url" | "website" => url_card(path),
         "lnk" => Some(lnk_card(path)),
         "hwp" => hwp_preview(path, req),
@@ -352,7 +352,6 @@ pub(crate) unsafe fn meta(path: &str, body: &Body) -> (i32, Vec<String>) {
     if !t.is_empty() {
         out.push(t);
     }
-    let lang = ui();
     let e = ext_of(path);
     let ps = SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(&HSTRING::from(path), None, GPS_DEFAULT).ok();
     match body {
@@ -366,21 +365,9 @@ pub(crate) unsafe fn meta(path: &str, body: &Body) -> (i32, Vec<String>) {
             }
         }
         Body::Pic(_) => out.extend(ps.as_ref().and_then(|ps| prop(ps, &PKEY_Image_Dimensions)).map(|d| d.replace(" x ", " × "))),
-        Body::Pages { total, .. } => out.push(match lang {
-            1 => format!("{total}쪽"),
-            2 => format!("{total} ページ"),
-            _ => format!("{total} pages"),
-        }),
-        Body::Text { text, .. } => out.push(match lang {
-            1 => format!("{}줄", text.lines().count()),
-            2 => format!("{} 行", text.lines().count()),
-            _ => format!("{} lines", text.lines().count()),
-        }),
-        Body::Table { rows, .. } => out.push(match lang {
-            1 => format!("{}행", rows.len()),
-            2 => format!("{} 行", rows.len()),
-            _ => format!("{} rows", rows.len()),
-        }),
+        Body::Pages { total, .. } => out.push(tf(crate::Key::PagesN, &[("total", &total.to_string())])),
+        Body::Text { text, .. } => out.push(tf(crate::Key::LinesN, &[("n", &text.lines().count().to_string())])),
+        Body::Table { rows, .. } => out.push(tf(crate::Key::RowsN, &[("n", &rows.len().to_string())])),
         Body::List { head, .. } => out.push(head.clone()),
         _ => {}
     }
@@ -397,7 +384,7 @@ pub(crate) unsafe fn meta(path: &str, body: &Body) -> (i32, Vec<String>) {
 
 fn folder_list(path: &str) -> Body {
     let Ok(rd) = std::fs::read_dir(path) else {
-        return Body::List { head: tr("can't open", "열 수 없음", "開けません").into(), rows: Vec::new() };
+        return Body::List { head: tr(crate::Key::CanTOpen).into(), rows: Vec::new() };
     };
     let mut dirs = Vec::new();
     let mut files = Vec::new();
@@ -412,12 +399,8 @@ fn folder_list(path: &str) -> Body {
     dirs.sort_by_key(|n| n.to_lowercase());
     files.sort_by_key(|(n, _)| n.to_lowercase());
     let total: u64 = files.iter().map(|(_, s)| s).sum();
-    let head = match ui() {
-        1 => format!("폴더 {}개, 파일 {}개, {}", dirs.len(), files.len(), human(total)),
-        2 => format!("フォルダー {} 個、ファイル {} 個、{}", dirs.len(), files.len(), human(total)),
-        _ => format!("{} folders, {} files, {}", dirs.len(), files.len(), human(total)),
-    };
-    let folder = tr("folder", "폴더", "フォルダー");
+    let head = tf(crate::Key::FolderListHead, &[("dirs", &dirs.len().to_string()), ("files", &files.len().to_string()), ("size", &human(total))]);
+    let folder = tr(crate::Key::Folder);
     let rows = dirs.into_iter().map(|d| (d, folder.to_string())).chain(files.into_iter().map(|(n, s)| (n, human(s)))).take(2000).collect();
     Body::List { head, rows }
 }
@@ -427,11 +410,7 @@ fn zip_list(path: &str) -> Option<Body> {
     let es = zip_entries(&mut f)?;
     let files: Vec<&ZipEntry> = es.iter().filter(|e| !e.is_dir()).collect();
     let total: u64 = files.iter().map(|e| e.size).sum();
-    let head = match ui() {
-        1 => format!("파일 {}개, 풀면 {}", files.len(), human(total)),
-        2 => format!("ファイル {} 個、展開後 {}", files.len(), human(total)),
-        _ => format!("{} files, {} unpacked", files.len(), human(total)),
-    };
+    let head = tf(crate::Key::ZipListHead, &[("files", &files.len().to_string()), ("size", &human(total))]);
     Some(Body::List { head, rows: files.iter().take(5000).map(|e| (e.name.clone(), human(e.size))).collect() })
 }
 
@@ -463,7 +442,7 @@ fn office_text(path: &str, ext: &str) -> Option<Body> {
                 })
                 .collect();
             slides.sort();
-            let label = tr("Slide", "슬라이드", "スライド");
+            let label = tr(crate::Key::Slide);
             let mut out = String::new();
             for (n, name) in slides.iter().take(300) {
                 let t = text(part(name).unwrap_or_default(), &["a:t"], &["a:p"]);
@@ -558,23 +537,23 @@ pub(crate) fn group_digits(n: u64) -> String {
 // Media and document properties Windows knows, in the shell's own wording ("3:25", "320kbps").
 unsafe fn props(path: &str) -> Vec<(String, String)> {
     let Ok(ps) = SHGetPropertyStoreFromParsingName::<_, _, IPropertyStore>(&HSTRING::from(path), None, GPS_DEFAULT) else { return Vec::new() };
-    let keys: [(&str, &str, &str, PROPERTYKEY); 8] = [
-        ("Title", "제목", "タイトル", PKEY_Title),
-        ("Artist", "음악가", "アーティスト", PKEY_Music_Artist),
-        ("Album", "앨범", "アルバム", PKEY_Music_AlbumTitle),
-        ("Length", "길이", "長さ", PKEY_Media_Duration),
-        ("Bit rate", "비트 전송률", "ビットレート", PKEY_Audio_EncodingBitrate),
-        ("Dimensions", "크기(픽셀)", "サイズ (ピクセル)", PKEY_Image_Dimensions),
-        ("Author", "만든 이", "作成者", PKEY_Author),
-        ("Pages", "페이지", "ページ", PKEY_Document_PageCount),
+    let keys: [(crate::Key, PROPERTYKEY); 8] = [
+        (crate::Key::PropTitle, PKEY_Title),
+        (crate::Key::PropArtist, PKEY_Music_Artist),
+        (crate::Key::PropAlbum, PKEY_Music_AlbumTitle),
+        (crate::Key::PropLength, PKEY_Media_Duration),
+        (crate::Key::PropBitrate, PKEY_Audio_EncodingBitrate),
+        (crate::Key::PropDimensions, PKEY_Image_Dimensions),
+        (crate::Key::PropAuthor, PKEY_Author),
+        (crate::Key::PropPages, PKEY_Document_PageCount),
     ];
     let mut out = Vec::new();
-    for (en, ko, ja, k) in keys {
+    for (label, k) in keys {
         let Ok(v) = ps.GetValue(&k) else { continue };
         if let Ok(s) = PSFormatForDisplayAlloc(&k, &v, PDFF_DEFAULT) {
             let s = pwstr(s);
             if !s.trim().is_empty() {
-                out.push((tr(en, ko, ja).to_string(), s));
+                out.push((tr(label).to_string(), s));
             }
         }
     }
@@ -582,9 +561,9 @@ unsafe fn props(path: &str) -> Vec<(String, String)> {
 }
 
 fn image_fail(path: &str, msg: &str) -> Body {
-    let mut rows = vec![(tr("Preview", "미리보기", "プレビュー").to_string(), msg.to_string())];
+    let mut rows = vec![(tr(crate::Key::Preview).to_string(), msg.to_string())];
     if let Ok(m) = std::fs::metadata(path) {
-        rows.push((tr("Size", "크기", "サイズ").into(), format!("{} B", group_digits(m.len()))));
+        rows.push((tr(crate::Key::Size).into(), format!("{} B", group_digits(m.len()))));
     }
     Body::Card { icon: None, rows }
 }
@@ -598,13 +577,13 @@ pub(crate) unsafe fn card(path: &str, extra: &[(String, String)]) -> Body {
     let mut rows: Vec<(String, String)> = extra.to_vec();
     rows.extend(props(path));
     if let Ok(m) = std::fs::metadata(path) {
-        rows.push((tr("Size", "크기", "サイズ").into(), format!("{} B", group_digits(m.len()))));
+        rows.push((tr(crate::Key::Size).into(), format!("{} B", group_digits(m.len()))));
         if let Some(t) = when(m.created()) {
-            rows.push((tr("Created", "만든 날짜", "作成日時").into(), t));
+            rows.push((tr(crate::Key::Created).into(), t));
         }
     }
     if let Some(dir) = Path::new(path).parent() {
-        rows.push((tr("Folder", "위치", "場所").into(), dir.display().to_string()));
+        rows.push((tr(crate::Key::Folder2).into(), dir.display().to_string()));
     }
     Body::Card { icon, rows }
 }
@@ -624,19 +603,19 @@ unsafe fn lnk_card(path: &str) -> Body {
             let mut buf = [0u16; 1024];
             let s = |b: &[u16]| String::from_utf16_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]);
             if link.GetPath(&mut buf, std::ptr::null_mut(), 0).is_ok() && buf[0] != 0 {
-                rows.push((tr("Target", "대상", "リンク先").into(), s(&buf)));
+                rows.push((tr(crate::Key::Target).into(), s(&buf)));
             }
             buf[0] = 0;
             if link.GetArguments(&mut buf).is_ok() && buf[0] != 0 {
-                rows.push((tr("Arguments", "인수", "引数").into(), s(&buf)));
+                rows.push((tr(crate::Key::Arguments).into(), s(&buf)));
             }
             buf[0] = 0;
             if link.GetWorkingDirectory(&mut buf).is_ok() && buf[0] != 0 {
-                rows.push((tr("Start in", "시작 위치", "作業フォルダー").into(), s(&buf)));
+                rows.push((tr(crate::Key::StartIn).into(), s(&buf)));
             }
             buf[0] = 0;
             if link.GetDescription(&mut buf).is_ok() && buf[0] != 0 {
-                rows.push((tr("Comment", "설명", "コメント").into(), s(&buf)));
+                rows.push((tr(crate::Key::Comment).into(), s(&buf)));
             }
         }
     }
@@ -667,16 +646,16 @@ pub(crate) unsafe fn version_rows(path: &str) -> Vec<(String, String)> {
         _ => "040904b0".into(),
     };
     let mut rows = Vec::new();
-    for (key, en, ko, ja) in [
-        ("FileDescription", "Description", "설명", "説明"),
-        ("ProductName", "Product", "제품", "製品"),
-        ("CompanyName", "Company", "회사", "会社"),
-        ("FileVersion", "Version", "버전", "バージョン"),
+    for (key, label) in [
+        ("FileDescription", crate::Key::VerDescription),
+        ("ProductName", crate::Key::VerProduct),
+        ("CompanyName", crate::Key::VerCompany),
+        ("FileVersion", crate::Key::VerVersion),
     ] {
         if let Some((p, len)) = query(&format!("\\StringFileInfo\\{lang}\\{key}")).filter(|(_, l)| *l > 1) {
             let v = String::from_utf16_lossy(std::slice::from_raw_parts(p as *const u16, len as usize - 1));
             if !v.trim().is_empty() {
-                rows.push((tr(en, ko, ja).to_string(), v.trim().to_string()));
+                rows.push((tr(label).to_string(), v.trim().to_string()));
             }
         }
     }

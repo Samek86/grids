@@ -4,6 +4,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod imports;
+mod langkey;
 mod i18n;
 mod keys;
 mod app;
@@ -223,7 +224,8 @@ fn main() -> Result<()> {
             lpszClassName: w!("PanegridTabs"),
             ..Default::default()
         });
-        UI.store(s.lang.resolve(), Ordering::Relaxed);
+        install_languages();
+        apply(s.lang);
         // After COM is up and before the hosted Explorer view is created, so a listed DLL
         // is not loaded into this process. The registry is not written.
         crash::show_previous();

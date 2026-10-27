@@ -198,26 +198,26 @@ fn read_prefix(path: &str, max: usize) -> Option<Vec<u8>> {
 }
 
 fn msg_empty() -> String {
-    tr("The file is empty", "파일이 비어 있습니다", "ファイルが空です").into()
+    tr(crate::Key::FileIsEmpty).into()
 }
 fn msg_huge() -> String {
-    tr("The picture is too large", "그림이 너무 큽니다", "画像が大きすぎます").into()
+    tr(crate::Key::PictureIsTooLarge).into()
 }
 fn msg_big() -> String {
-    tr("Skipped: larger than 80 MB", "80 MB보다 커서 생략", "80 MB を超えるので省略").into()
+    tr(crate::Key::SkippedLargerThan80Mb).into()
 }
 fn msg_bad() -> String {
-    tr("The picture could not be read", "그림을 읽지 못했습니다", "画像を読めませんでした").into()
+    tr(crate::Key::PictureCouldNotBeRead).into()
 }
 fn msg_slow() -> String {
-    tr("The picture took too long", "그림이 너무 오래 걸립니다", "画像の処理に時間がかかりすぎました").into()
+    tr(crate::Key::PictureTookTooLong).into()
 }
 fn msg_open() -> String {
-    tr("The file could not be opened", "파일을 열지 못했습니다", "ファイルを開けませんでした").into()
+    tr(crate::Key::FileCouldNotBeOpened).into()
 }
 fn msg_spawn() -> String {
-    tr("Could not start the picture decoder", "그림 디코더를 시작하지 못했습니다", "画像デコーダーを開始できませんでした").into()
+    tr(crate::Key::CouldNotStartPictureDecoder).into()
 }
 fn msg_stop(code: &str) -> String {
-    format!("{} ({code})", tr("The decoder stopped", "디코더가 멈췄습니다", "デコーダーが停止しました"))
+    format!("{} ({code})", tr(crate::Key::DecoderStopped))
 }

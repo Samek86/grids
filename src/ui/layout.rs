@@ -400,7 +400,7 @@ pub(crate) fn tint_color(k: u8) -> Option<u32> {
 
 pub(crate) fn tint_name(k: u8) -> &'static str {
     let i = (k as usize).saturating_sub(1).min(5);
-    tr(ACCENT_EN[i], LIGHT.accents[i].0, ACCENT_JA[i])
+    crate::accent_name(i)
 }
 
 /// A `t` px line down the middle of splitter `d`. None when that splitter is not on screen.
@@ -542,13 +542,9 @@ pub(crate) unsafe fn paint_grid(h: HWND) {
             }
         }
         let label = if preview.iter().all(|&n| n == preview[0]) {
-            match ui() {
-                1 => format!("{}행 × {}열", preview[0], preview.len()),
-                2 => format!("{} 行 × {} 列", preview[0], preview.len()),
-                _ => format!("{} × {}", preview[0], preview.len()),
-            }
+            tf(crate::Key::GridEven, &[("rows", &preview[0].to_string()), ("cols", &preview.len().to_string())])
         } else {
-            format!("{}  {}", tr("Per column", "열마다", "列ごと"), layout_label(&preview))
+            format!("{}  {}", tr(crate::Key::PerColumn), layout_label(&preview))
         };
         text(dc, g.label, &label, font, pal().text, DT_CENTER);
         // preset thumbnails: the panes of each layout on a tile

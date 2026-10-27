@@ -160,8 +160,7 @@ pub(crate) unsafe fn apply_font() {
     let custom = stored.as_deref().is_some_and(|name| face_installed(name));
     let slot = stored.as_deref().unwrap_or("");
     let list = [slot];
-    let none: &[&str] = &[];
-    let face = if custom { resolve_face(slot, ui(), &list) } else { resolve_face("", ui(), none) };
+    let face = if custom { resolve_face(slot, ui(), &list) } else { ui_face() };
     let mut ncm = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
     let sys = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, ncm.cbSize, Some(&mut ncm as *mut _ as _), 0, dpi as u32);
     let mut lf = if sys.is_ok() { ncm.lfMessageFont } else { logfont(ui_face(), 12 * dpi / 96) };

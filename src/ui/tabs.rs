@@ -19,15 +19,15 @@ pub(crate) const ICON_CLOSE: &str = "\u{E711}";
 pub(crate) const ICON_PLUS: &str = "\u{E710}";
 pub(crate) const ICON_CHEVRON_DOWN: &str = "\u{E70D}";
 /// Tab stripe colours, 0xRRGGBB. Chosen so a thin bar and a light tint read on both themes.
-pub(crate) const TAB_COLORS: [(u32, &str, &str, &str); 8] = [
-    (0xE15A4A, "Red", "빨강", "赤"),
-    (0xE8943A, "Orange", "주황", "オレンジ"),
-    (0xC49212, "Yellow", "노랑", "黄"),
-    (0x3EAE6E, "Green", "초록", "緑"),
-    (0x2A9D9A, "Teal", "청록", "ティール"),
-    (0x3D7EE0, "Blue", "파랑", "青"),
-    (0x8A5CD0, "Purple", "보라", "紫"),
-    (0xD45A8C, "Pink", "분홍", "ピンク"),
+pub(crate) const TAB_COLORS: [(u32, crate::Key); 8] = [
+    (0xE15A4A, crate::Key::ColorRed),
+    (0xE8943A, crate::Key::ColorOrange),
+    (0xC49212, crate::Key::ColorYellow),
+    (0x3EAE6E, crate::Key::ColorGreen),
+    (0x2A9D9A, crate::Key::ColorTeal),
+    (0x3D7EE0, crate::Key::ColorBlue),
+    (0x8A5CD0, crate::Key::ColorPurple),
+    (0xD45A8C, crate::Key::ColorPink),
 ];
 pub(crate) const CLOSED_KEEP: usize = 10;
 pub(crate) const ID_TAB_EDIT: i32 = 208;
@@ -802,7 +802,7 @@ pub(crate) unsafe fn begin_rename(i: usize) {
     }
     // Empty when the tab is automatic, so confirming without typing leaves the folder name in charge.
     let initial = custom_tab_name(&prev).unwrap_or("").to_string();
-    let title = tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更");
+    let title = tr(crate::Key::RenameTab);
     let Some(text) = crate::settings::ask(owner, title, &initial) else { return };
     let next = stored_tab_name(&text);
     if stored_tab_name(&prev) == next {
@@ -850,18 +850,18 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
         let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
         _ = AppendMenuW(menu, flags, id, &HSTRING::from(text));
     };
-    add(1, tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更"), true);
-    add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
+    add(1, tr(crate::Key::RenameTab), true);
+    add(2, if locked { tr(crate::Key::UnlockTab) } else { tr(crate::Key::LockTab) }, true);
     let dup_key = crate::keys::index("tab.dup").map(crate::keys::chord_text).unwrap_or_default();
     let dup = if dup_key.is_empty() {
-        tr("Duplicate tab", "탭 복제", "タブを複製").to_string()
+        tr(crate::Key::DuplicateTab).to_string()
     } else {
-        format!("{}\t{dup_key}", tr("Duplicate tab", "탭 복제", "タブを複製"))
+        format!("{}\t{dup_key}", tr(crate::Key::DuplicateTab))
     };
     add(3, &dup, true);
-    add(6, tr("Move to new window", "새 창으로 이동", "新しいウィンドウへ移動"), true);
-    add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
-    add(5, tr("Save this tab…", "이 탭 저장…", "このタブを保存…"), true);
+    add(6, tr(crate::Key::MoveNewWindow), true);
+    add(4, tr(crate::Key::CloseOtherTabs), others);
+    add(5, tr(crate::Key::SaveThisTab3), true);
     let Ok(colors) = CreatePopupMenu() else {
         _ = DestroyMenu(menu);
         return;
@@ -871,14 +871,14 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
             _ = CheckMenuItem(menu, id as u32, (MF_BYCOMMAND | MF_CHECKED).0);
         }
     };
-    _ = AppendMenuW(colors, MF_STRING, 19, &HSTRING::from(tr("None", "없음", "なし")));
+    _ = AppendMenuW(colors, MF_STRING, 19, &HSTRING::from(tr(crate::Key::None)));
     mark(colors, 19, color.is_none());
-    for (k, &(c, en, ko, ja)) in TAB_COLORS.iter().enumerate() {
+    for (k, &(c, label)) in TAB_COLORS.iter().enumerate() {
         let id = 20 + k;
-        _ = AppendMenuW(colors, MF_STRING, id, &HSTRING::from(tr(en, ko, ja)));
+        _ = AppendMenuW(colors, MF_STRING, id, &HSTRING::from(tr(label)));
         mark(colors, id, color == Some(c));
     }
-    _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, &HSTRING::from(tr("Tab color", "탭 색 지정", "タブの色")));
+    _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, &HSTRING::from(tr(crate::Key::TabColor)));
     let mut pt = POINT { x, y };
     _ = ClientToScreen(hwnd, &mut pt);
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, hwnd, None).0 as usize;
@@ -987,7 +987,7 @@ pub(crate) unsafe fn open_tab_list() {
     for (i, name) in names.iter().enumerate() {
         let shown = name.replace('&', "&&");
         let label = if locked.get(i).copied().unwrap_or(false) {
-            format!("{shown} — {}", tr("locked", "잠김", "ロック"))
+            format!("{shown} — {}", tr(crate::Key::Locked))
         } else {
             shown
         };
@@ -1034,11 +1034,11 @@ fn tab_text(a: &App, i: usize) -> (String, String) {
     };
     let path = paths.get(active).map(String::as_str).unwrap_or("");
     let label = if custom_tab_name(&name).is_none() && path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
-        tr("This PC", "내 PC", "PC").into()
+        tr(crate::Key::ThisPc).into()
     } else {
         tab_label(&name, path)
     };
-    let pc: String = tr("This PC", "내 PC", "PC").into();
+    let pc: String = tr(crate::Key::ThisPc).into();
     let shown: Vec<String> = paths.iter().take(n).map(|p| if p.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") { pc.clone() } else { p.clone() }).collect();
     let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
     (label, tab_tip_text(&refs))
@@ -1131,7 +1131,7 @@ unsafe fn lock_tooltip(show: bool) {
     if tip.0.is_null() || tabs.0.is_null() {
         return;
     }
-    let label = HSTRING::from(tr("Locked", "잠김", "ロック中"));
+    let label = HSTRING::from(tr(crate::Key::Locked2));
     let ti = TTTOOLINFOW {
         cbSize: size_of::<TTTOOLINFOW>() as u32,
         uFlags: TTF_TRACK | TTF_ABSOLUTE,

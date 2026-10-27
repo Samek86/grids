@@ -418,8 +418,8 @@ pub(crate) unsafe fn paint_side(h: HWND) {
         let list_bottom = rc.bottom - note_band();
         fill(dc, rc, side_ground());
         if list.is_empty() {
-            text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
-            text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
+            text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr(crate::Key::NoFavouritesYet), font, pal().sub, DT_LEFT);
+            text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr(crate::Key::RightClickAddGroup), font, pal().sub, DT_LEFT);
             paint_pin_note(dc, rc, font, dpi);
             return;
         }
@@ -476,8 +476,8 @@ pub(crate) unsafe fn paint_side(h: HWND) {
         }
         if !list.iter().any(|f| f.in_tree()) {
             let y = list.len() as i32 * rh - scroll + s(8);
-            text(dc, RECT { left: s(12), top: y, right: rc.right - s(8), bottom: y + s(22) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
-            text(dc, RECT { left: s(12), top: y + s(20), right: rc.right - s(8), bottom: y + s(44) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
+            text(dc, RECT { left: s(12), top: y, right: rc.right - s(8), bottom: y + s(22) }, tr(crate::Key::NoFavouritesYet), font, pal().sub, DT_LEFT);
+            text(dc, RECT { left: s(12), top: y + s(20), right: rc.right - s(8), bottom: y + s(44) }, tr(crate::Key::RightClickAddGroup), font, pal().sub, DT_LEFT);
         }
         if let Some((row, zone)) = drop {
             if zone != 1 {
@@ -573,7 +573,7 @@ fn changed() {
 }
 
 fn new_group(parent: &[usize]) {
-    let name = tr("Group", "그룹", "グループ").to_string();
+    let name = tr(crate::Key::Group).to_string();
     app(|a| {
         a.s.ensure_fav_tree();
         if !parent.is_empty() {
@@ -631,23 +631,23 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
     let pin_leaf = row.as_ref().is_some_and(|r| r.kind == RowKind::Pins && !r.group);
     let file_leaf = row.as_ref().is_some_and(|r| r.kind == RowKind::Files && !r.group);
     if pin_leaf {
-        add(6, tr("Unpin from Explorer", "탐색기에서 고정 해제", "エクスプローラーからピン留めを外す"));
-        add(4, tr("Open", "열기", "開く"));
+        add(6, tr(crate::Key::UnpinFromExplorer));
+        add(4, tr(crate::Key::Open));
     } else if file_leaf {
-        add(6, tr("Remove from Explorer favourites", "탐색기 즐겨찾기에서 빼기", "エクスプローラーのお気に入りから削除"));
-        add(4, tr("Open", "열기", "開く"));
-        add(5, tr("Reveal", "위치 표시", "場所を表示"));
+        add(6, tr(crate::Key::RemoveFromExplorerFavourites));
+        add(4, tr(crate::Key::Open));
+        add(5, tr(crate::Key::Reveal));
     } else {
-        add(1, tr("New group", "새 그룹", "新しいグループ"));
+        add(1, tr(crate::Key::NewGroup));
         if row.is_some() {
-            add(2, tr("Rename", "이름 변경", "名前の変更"));
-            add(3, tr("Delete", "삭제", "削除"));
+            add(2, tr(crate::Key::Rename2));
+            add(3, tr(crate::Key::Delete));
         }
         if row.as_ref().is_some_and(|r| !r.group) {
-            add(4, tr("Open", "열기", "開く"));
+            add(4, tr(crate::Key::Open));
         }
         if row.as_ref().is_some_and(|r| r.file) {
-            add(5, tr("Reveal", "위치 표시", "場所を表示"));
+            add(5, tr(crate::Key::Reveal));
         }
     }
     let mut pt = POINT { x, y };

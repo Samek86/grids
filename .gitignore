@@ -2,6 +2,7 @@
 /build/
 *.exe
 *.ini
+!lang/*.ini
 sessions/
 
 # Video production materials (keep local only)

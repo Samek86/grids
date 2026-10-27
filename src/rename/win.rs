@@ -12,6 +12,7 @@ use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 use crate::imports::*;
+use crate::tf;
 use crate::tr;
 
 use super::engine::{self, BatchItem, CaseMode, DatePos, DateSrc, Issue, NumPos, PreviewRow, Rule, TrimEdge};
@@ -77,12 +78,8 @@ fn sc(dpi: i32, v: i32) -> i32 {
     v * dpi.max(96) / 96
 }
 
-fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static str; 3] {
-    [en, ko, ja]
-}
-
-fn tx(t: [&'static str; 3]) -> &'static str {
-    tr(t[0], t[1], t[2])
+fn tx(t: crate::Key) -> &'static str {
+    tr(t)
 }
 
 struct St {
@@ -159,7 +156,7 @@ pub(crate) unsafe fn open_paths(_owner: HWND, items: &[(String, bool)]) {
 }
 
 pub(crate) fn menu_label() -> String {
-    let name = tr("Batch rename…", "일괄 이름 바꾸기…", "一括リネーム…");
+    let name = tr(crate::Key::BatchRename2);
     let chord = crate::keys::index("file.rename").map(crate::keys::chord_text).unwrap_or_default();
     if chord.is_empty() {
         name.to_string()
@@ -202,7 +199,7 @@ unsafe fn open_items(items: Vec<BatchItem>) {
     let h = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         w!("PanegridRename"),
-        &HSTRING::from(tx(s("Batch rename", "일괄 이름 바꾸기", "一括リネーム"))),
+        &HSTRING::from(tx(crate::Key::BatchRename)),
         style,
         x,
         y,
@@ -250,17 +247,17 @@ pub(crate) unsafe fn refresh() {
     if !host.0.is_null() {
         apply_font(host, font);
     }
-    let _ = SetWindowTextW(h, &HSTRING::from(tx(s("Batch rename", "일괄 이름 바꾸기", "一括リネーム"))));
-    set_btn(h, ID_ADD, tx(s("Add rule", "규칙 추가", "ルールを追加")));
-    set_btn(h, ID_CLOSE, tx(s("Close", "닫기", "閉じる")));
-    set_btn(h, ID_APPLY, tx(s("Rename", "이름 바꾸기", "名前の変更")));
-    set_btn(h, ID_UNDO, tx(s("Undo", "되돌리기", "元に戻す")));
-    set_btn(h, ID_SAVE, tx(s("Save", "저장", "保存")));
-    set_btn(h, ID_DELPRE, tx(s("Delete preset", "프리셋 삭제", "プリセットを削除")));
+    let _ = SetWindowTextW(h, &HSTRING::from(tx(crate::Key::BatchRename)));
+    set_btn(h, ID_ADD, tx(crate::Key::AddRule));
+    set_btn(h, ID_CLOSE, tx(crate::Key::Close));
+    set_btn(h, ID_APPLY, tx(crate::Key::Rename));
+    set_btn(h, ID_UNDO, tx(crate::Key::Undo));
+    set_btn(h, ID_SAVE, tx(crate::Key::Save));
+    set_btn(h, ID_DELPRE, tx(crate::Key::DeletePreset));
     ST.with(|s| s.borrow_mut().filling = true);
     refill_filter();
     cue(ctl(h, ID_EXT), "jpg, png");
-    cue(ctl(h, ID_PRESET), tx(s("Preset name", "프리셋 이름", "プリセット名")));
+    cue(ctl(h, ID_PRESET), tx(crate::Key::PresetName));
     let n = ST.with(|s| s.borrow().rules.len());
     ST.with(|s| s.borrow_mut().filling = true);
     for i in 0..n {
@@ -467,12 +464,12 @@ unsafe fn build_shell(h: HWND) {
         theme_btn(c);
         c
     };
-    btn(ID_ADD, tx(s("Add rule", "규칙 추가", "ルールを追加")));
-    btn(ID_CLOSE, tx(s("Close", "닫기", "閉じる")));
-    btn(ID_APPLY, tx(s("Rename", "이름 바꾸기", "名前の変更")));
-    btn(ID_UNDO, tx(s("Undo", "되돌리기", "元に戻す")));
-    btn(ID_SAVE, tx(s("Save", "저장", "保存")));
-    btn(ID_DELPRE, tx(s("Delete preset", "프리셋 삭제", "プリセットを削除")));
+    btn(ID_ADD, tx(crate::Key::AddRule));
+    btn(ID_CLOSE, tx(crate::Key::Close));
+    btn(ID_APPLY, tx(crate::Key::Rename));
+    btn(ID_UNDO, tx(crate::Key::Undo));
+    btn(ID_SAVE, tx(crate::Key::Save));
+    btn(ID_DELPRE, tx(crate::Key::DeletePreset));
     let list = |id| {
         let c = child(h, w!("COMBOBOX"), "", 3 | 0x200 | 0x00200000 | tab, id, font);
         theme_ctl(c);
@@ -492,7 +489,7 @@ unsafe fn build_shell(h: HWND) {
     refill_filter();
     refill_presets(None);
     cue(ext, "jpg, png");
-    cue(ctl(h, ID_PRESET), tx(s("Preset name", "프리셋 이름", "プリセット名")));
+    cue(ctl(h, ID_PRESET), tx(crate::Key::PresetName));
     let host = child(h, w!("PanegridRenameRules"), "", 0x02000000 | 0x04000000, 50, font);
     ST.with(|s| s.borrow_mut().host = host);
 }
@@ -554,8 +551,8 @@ unsafe fn make_rule_controls(host: HWND, i: usize, font: HFONT) {
     edit(F_B);
     edit(F_C);
     edit(F_AT);
-    check(F_CASE, tx(s("Match case", "대소문자 구분", "大文字と小文字を区別")));
-    check(F_EXT, tx(s("Include extension", "확장자 포함", "拡張子を含める")));
+    check(F_CASE, tx(crate::Key::MatchCase));
+    check(F_EXT, tx(crate::Key::IncludeExtension));
     combo(F_MODE);
     combo(F_POS);
     combo(F_SRC);
@@ -574,17 +571,17 @@ unsafe fn refill_kind(i: usize) {
     let cur = SendMessageW(c, CB_GETCURSEL, None, None).0;
     let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
     for label in [
-        tx(s("Replace text", "텍스트 바꾸기", "テキストを置換")),
-        tx(s("Add prefix", "접두사 추가", "接頭辞を追加")),
-        tx(s("Add suffix", "접미사 추가", "接尾辞を追加")),
-        tx(s("Change case", "대소문자 변경", "大文字と小文字")),
-        tx(s("Change extension", "확장자 변경", "拡張子を変更")),
-        tx(s("Number", "번호", "連番")),
-        tx(s("Date", "날짜", "日付")),
-        tx(s("Insert", "삽입", "挿入")),
-        tx(s("Delete characters", "글자 삭제", "文字を削除")),
-        tx(s("Trim", "다듬기", "トリム")),
-        tx(s("Regular expression", "정규식", "正規表現")),
+        tx(crate::Key::ReplaceText),
+        tx(crate::Key::AddPrefix),
+        tx(crate::Key::AddSuffix),
+        tx(crate::Key::ChangeCase),
+        tx(crate::Key::ChangeExtension),
+        tx(crate::Key::Number),
+        tx(crate::Key::EmlDate),
+        tx(crate::Key::Insert),
+        tx(crate::Key::DeleteCharacters),
+        tx(crate::Key::Trim),
+        tx(crate::Key::RegularExpression),
     ] {
         let hs = HSTRING::from(label);
         let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
@@ -602,10 +599,10 @@ unsafe fn refill_mode(i: usize) {
     }
     let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
     for label in [
-        tx(s("lowercase", "소문자", "小文字")),
-        tx(s("UPPERCASE", "대문자", "大文字")),
-        tx(s("Title Case", "단어 첫 글자", "単語の先頭")),
-        tx(s("Sentence", "문장", "文頭のみ")),
+        tx(crate::Key::Lowercase),
+        tx(crate::Key::Uppercase),
+        tx(crate::Key::TitleCase),
+        tx(crate::Key::Sentence),
     ] {
         let hs = HSTRING::from(label);
         let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
@@ -646,24 +643,24 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
             set_edit(F_B, replace);
             set_check(F_CASE, *case_sensitive);
             set_check(F_EXT, *include_ext);
-            cue(ctl(host, id(i, F_A)), tx(s("Find", "찾을 내용", "検索")));
-            cue(ctl(host, id(i, F_B)), tx(s("Replace with", "바꿀 내용", "置換")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Find));
+            cue(ctl(host, id(i, F_B)), tx(crate::Key::ReplaceWith));
         }
         Rule::Regex { pattern, replace, case_sensitive, include_ext } => {
             set_edit(F_A, pattern);
             set_edit(F_B, replace);
             set_check(F_CASE, *case_sensitive);
             set_check(F_EXT, *include_ext);
-            cue(ctl(host, id(i, F_A)), tx(s("Pattern", "패턴", "パターン")));
-            cue(ctl(host, id(i, F_B)), tx(s("Replace ($1)", "바꾸기 ($1)", "置換 ($1)")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Pattern));
+            cue(ctl(host, id(i, F_B)), tx(crate::Key::Replace1));
         }
         Rule::Prefix { text } => {
             set_edit(F_A, text);
-            cue(ctl(host, id(i, F_A)), tx(s("Prefix", "접두사", "接頭辞")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Prefix));
         }
         Rule::Suffix { text } => {
             set_edit(F_A, text);
-            cue(ctl(host, id(i, F_A)), tx(s("Suffix", "접미사", "接尾辞")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Suffix));
         }
         Rule::Case { mode, include_ext } => {
             select_combo(host, i, F_MODE, mode_index(*mode));
@@ -671,19 +668,19 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
         }
         Rule::Extension { ext } => {
             set_edit(F_A, ext);
-            cue(ctl(host, id(i, F_A)), tx(s("New extension", "새 확장자", "新しい拡張子")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::NewExtension));
         }
         Rule::Number { start, step, pad, pos } => {
             set_edit(F_A, &start.to_string());
             set_edit(F_B, &step.to_string());
             set_edit(F_C, &pad.to_string());
-            cue(ctl(host, id(i, F_A)), tx(s("Start", "시작", "開始")));
-            cue(ctl(host, id(i, F_B)), tx(s("Step", "간격", "間隔")));
-            cue(ctl(host, id(i, F_C)), tx(s("Digits", "자릿수", "桁数")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Start));
+            cue(ctl(host, id(i, F_B)), tx(crate::Key::Step));
+            cue(ctl(host, id(i, F_C)), tx(crate::Key::Digits));
             fill_combo(host, i, F_POS, &[
-                tx(s("Before name", "이름 앞", "名前の前")),
-                tx(s("After name", "이름 뒤", "名前の後")),
-                tx(s("At position", "위치 지정", "位置を指定")),
+                tx(crate::Key::BeforeName),
+                tx(crate::Key::AfterName),
+                tx(crate::Key::AtPosition),
             ]);
             let (sel, at) = match pos {
                 NumPos::Prefix => (0, String::new()),
@@ -692,13 +689,13 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
             };
             select_combo(host, i, F_POS, sel);
             set_edit(F_AT, &at);
-            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
+            cue(ctl(host, id(i, F_AT)), tx(crate::Key::K0Start1End));
         }
         Rule::Date { src, pattern, pos } => {
             fill_combo(host, i, F_SRC, &[
-                tx(s("Modified", "수정한 날짜", "更新日時")),
-                tx(s("Created", "만든 날짜", "作成日時")),
-                tx(s("Accessed", "연 날짜", "アクセス日時")),
+                tx(crate::Key::Modified),
+                tx(crate::Key::Created),
+                tx(crate::Key::Accessed),
             ]);
             select_combo(host, i, F_SRC, match src {
                 DateSrc::Modified => 0,
@@ -708,9 +705,9 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
             set_edit(F_A, pattern);
             cue(ctl(host, id(i, F_A)), "YYYY-MM-DD hh:mm:ss");
             fill_combo(host, i, F_POS, &[
-                tx(s("Before name", "이름 앞", "名前の前")),
-                tx(s("After name", "이름 뒤", "名前の後")),
-                tx(s("Replace name", "이름 대신", "名前を置換")),
+                tx(crate::Key::BeforeName),
+                tx(crate::Key::AfterName),
+                tx(crate::Key::ReplaceName),
             ]);
             select_combo(host, i, F_POS, match pos {
                 DatePos::Prefix => 0,
@@ -721,22 +718,22 @@ unsafe fn write_rule(i: usize, rule: &Rule) {
         Rule::Insert { text, at } => {
             set_edit(F_A, text);
             set_edit(F_AT, &at.to_string());
-            cue(ctl(host, id(i, F_A)), tx(s("Text", "텍스트", "テキスト")));
-            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::Text));
+            cue(ctl(host, id(i, F_AT)), tx(crate::Key::K0Start1End));
         }
         Rule::Delete { at, len } => {
             set_edit(F_AT, &at.to_string());
             set_edit(F_C, &len.to_string());
-            cue(ctl(host, id(i, F_AT)), tx(s("0 = start, -1 = end", "0 = 앞, -1 = 끝", "0 = 先頭、-1 = 末尾")));
-            cue(ctl(host, id(i, F_C)), tx(s("Length", "길이", "長さ")));
+            cue(ctl(host, id(i, F_AT)), tx(crate::Key::K0Start1End));
+            cue(ctl(host, id(i, F_C)), tx(crate::Key::PropLength));
         }
         Rule::Trim { chars, edge } => {
             set_edit(F_A, chars);
-            cue(ctl(host, id(i, F_A)), tx(s("Characters (empty = spaces)", "지울 문자 (비우면 공백)", "文字（空なら空白）")));
+            cue(ctl(host, id(i, F_A)), tx(crate::Key::CharactersEmptySpaces));
             fill_combo(host, i, F_POS, &[
-                tx(s("Both ends", "양쪽", "両端")),
-                tx(s("Left", "왼쪽", "左")),
-                tx(s("Right", "오른쪽", "右")),
+                tx(crate::Key::BothEnds),
+                tx(crate::Key::Left),
+                tx(crate::Key::Right),
             ]);
             select_combo(host, i, F_POS, match edge {
                 TrimEdge::Both => 0,
@@ -1317,13 +1314,13 @@ unsafe fn on_done(h: HWND) {
     } else {
         reconcile(&pending);
         let msg = if finished.as_ref().is_some_and(|f| f.cancel) {
-            tr("Cancelled. Finished steps were put back.", "취소했습니다. 끝난 단계는 되돌렸습니다.", "キャンセルしました。済んだ手順は戻しました。").to_string()
+            tr(crate::Key::CancelledFinishedStepsWerePutBack).to_string()
         } else {
             let err = finished.map(|f| f.err).unwrap_or_default();
-            format!("{}{err}", tr("Rename failed: ", "이름을 바꾸지 못했습니다: ", "名前を変更できませんでした: "))
+            format!("{}{err}", tr(crate::Key::RenameFailed))
         };
         ST.with(|s| s.borrow_mut().note.clone_from(&msg));
-        let cancelled = msg.starts_with(tr("Cancelled", "취소", "キャンセル"));
+        let cancelled = msg.starts_with(tr(crate::Key::Cancelled));
         if !cancelled {
             let _ = MessageBoxW(Some(h), &HSTRING::from(&msg), w!("Panegrid"), MB_ICONWARNING);
         }
@@ -1437,7 +1434,7 @@ unsafe fn sync_buttons() {
         (engine::error_count(&st.rows), engine::change_count(&st.rows), st.busy)
     });
     let undo_n = exec::undo_count();
-    let base = tx(s("Undo", "되돌리기", "元に戻す"));
+    let base = tx(crate::Key::Undo);
     let label = if undo_n == 0 { base.to_string() } else { format!("{base} ({undo_n})") };
     set_btn(h, ID_UNDO, &label);
     let _ = EnableWindow(ctl(h, ID_APPLY), (errs == 0 && changes > 0 && !busy).into());
@@ -1878,15 +1875,15 @@ unsafe fn paint(h: HWND) {
     crate::buffered(h, |dc, rc| {
         let g = geo(rc, dpi);
         crate::fill(dc, rc, crate::pal().bg);
-        crate::text(dc, g.rules_lbl, tx(s("Rules", "규칙", "ルール")), font, crate::pal().text, DT_LEFT);
-        let hint = tx(s("Top to bottom", "위에서 아래 순서로", "上から順に"));
+        crate::text(dc, g.rules_lbl, tx(crate::Key::Rules), font, crate::pal().text, DT_LEFT);
+        let hint = tx(crate::Key::TopBottom);
         crate::text(dc, RECT { left: g.rules_lbl.left + sc(dpi, 70), ..g.rules_lbl }, hint, small, crate::pal().sub, DT_LEFT);
         paint_field_frame(dc, tool_rects(g.tools, dpi).ext, dpi, crate::pal().card);
         if g.list.left > g.host.right {
             let x = g.host.right + (g.list.left - g.host.right) / 2;
             crate::fill(dc, RECT { left: x, top: g.rules_lbl.top, right: x + 1, bottom: g.host.bottom }, crate::pal().line);
         }
-        crate::text(dc, g.prev_lbl, tx(s("Preview", "미리보기", "プレビュー")), font, crate::pal().text, DT_LEFT);
+        crate::text(dc, g.prev_lbl, tx(crate::Key::Preview), font, crate::pal().text, DT_LEFT);
         let note = ST.with(|s| s.borrow().note.clone());
         let rows = ST.with(|s| s.borrow().rows.clone());
         let summary = if note.is_empty() {
@@ -1911,8 +1908,8 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
     let new_left = split + sc(dpi, 28);
     let err_w = sc(dpi, 168);
     let head_r = RECT { bottom: list.top + head, ..list };
-    crate::text(dc, RECT { left: list.left + sc(dpi, 12), right: split, ..head_r }, tx(s("Current", "현재 이름", "現在の名前")), small, crate::pal().sub, DT_LEFT);
-    crate::text(dc, RECT { left: new_left, right: list.right - err_w, ..head_r }, tx(s("New name", "새 이름", "新しい名前")), small, crate::pal().sub, DT_LEFT);
+    crate::text(dc, RECT { left: list.left + sc(dpi, 12), right: split, ..head_r }, tx(crate::Key::Current), small, crate::pal().sub, DT_LEFT);
+    crate::text(dc, RECT { left: new_left, right: list.right - err_w, ..head_r }, tx(crate::Key::NewName), small, crate::pal().sub, DT_LEFT);
     crate::fill(dc, RECT { top: head_r.bottom - 1, bottom: head_r.bottom, ..list }, crate::pal().line);
     let _ = SaveDC(dc);
     let _ = IntersectClipRect(dc, list.left + 1, head_r.bottom, list.right - 1, list.bottom - 1);
@@ -1945,7 +1942,7 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
         if row.skipped {
             crate::text(dc, old_r, &row.old_name, font, crate::pal().sub, DT_LEFT);
             crate::text(dc, new_r, &row.new_name, font, crate::pal().sub, DT_LEFT);
-            crate::text(dc, err_r, tx(s("Skipped", "제외", "対象外")), small, crate::pal().sub, DT_RIGHT);
+            crate::text(dc, err_r, tx(crate::Key::Skipped), small, crate::pal().sub, DT_RIGHT);
         } else if row.issues.is_empty() {
             paint_marked(dc, old_r, &row.old_name, row.old_span, font, crate::pal().text, wash, accent);
             paint_marked(dc, new_r, &row.new_name, row.new_span, font, crate::pal().text, wash, accent);
@@ -1981,7 +1978,7 @@ unsafe fn paint_host(h: HWND) {
         let rules = ST.with(|s| s.borrow().rules.clone());
         if rules.is_empty() {
             let r = RECT { left: sc(dpi, 8), top: sc(dpi, 12), right: rc.right - sc(dpi, 8), bottom: sc(dpi, 48) };
-            crate::text(dc, r, tx(s("Add a rule. Names stay as they are until you do.", "규칙을 추가하세요. 그 전까지 이름은 그대로입니다.", "ルールを追加してください。それまでは名前はそのままです。")), font, crate::pal().sub, DT_LEFT);
+            crate::text(dc, r, tx(crate::Key::AddRuleNamesStayAsTheyAre), font, crate::pal().sub, DT_LEFT);
             return;
         }
         let scroll = ST.with(|s| s.borrow().rule_scroll);
@@ -2187,9 +2184,9 @@ unsafe fn refill_filter() {
     let cur = SendMessageW(c, CB_GETCURSEL, None, None).0;
     let _ = SendMessageW(c, CB_RESETCONTENT, None, None);
     for label in [
-        tx(s("All items", "모든 항목", "すべての項目")),
-        tx(s("Files only", "파일만", "ファイルのみ")),
-        tx(s("Folders only", "폴더만", "フォルダーのみ")),
+        tx(crate::Key::AllItems),
+        tx(crate::Key::FilesOnly),
+        tx(crate::Key::FoldersOnly),
     ] {
         let hs = HSTRING::from(label);
         let _ = SendMessageW(c, CB_ADDSTRING, None, Some(LPARAM(hs.as_ptr() as isize)));
@@ -2293,13 +2290,9 @@ unsafe fn save_preset() {
             ST.with(|s| s.borrow_mut().filling = true);
             refill_presets(Some(&name));
             ST.with(|s| s.borrow_mut().filling = false);
-            match crate::ui() {
-                1 => format!("'{name}' 프리셋을 저장했습니다"),
-                2 => format!("プリセット「{name}」を保存しました"),
-                _ => format!("Saved preset \"{name}\""),
-            }
+            tf(crate::Key::SavedPreset, &[("name", &name)])
         }
-        Err(e) => format!("{}{e}", tr("Could not save the preset: ", "프리셋을 저장하지 못했습니다: ", "プリセットを保存できませんでした: ")),
+        Err(e) => format!("{}{e}", tr(crate::Key::CouldNotSavePreset)),
     };
     ST.with(|s| s.borrow_mut().note = note);
     let _ = InvalidateRect(Some(h), None, false);
@@ -2321,63 +2314,46 @@ unsafe fn delete_preset() {
             refill_presets(None);
             let _ = SetWindowTextW(ctl(h, ID_PRESET), &HSTRING::from(""));
             ST.with(|s| s.borrow_mut().filling = false);
-            match crate::ui() {
-                1 => format!("'{name}' 프리셋을 지웠습니다"),
-                2 => format!("プリセット「{name}」を削除しました"),
-                _ => format!("Deleted preset \"{name}\""),
-            }
+            tf(crate::Key::DeletedPreset, &[("name", &name)])
         }
-        Err(e) => format!("{}{e}", tr("Could not delete the preset: ", "프리셋을 지우지 못했습니다: ", "プリセットを削除できませんでした: ")),
+        Err(e) => format!("{}{e}", tr(crate::Key::CouldNotDeletePreset)),
     };
     ST.with(|s| s.borrow_mut().note = note);
     let _ = InvalidateRect(Some(h), None, false);
 }
 
 fn summary_text(n: usize, changes: usize, errors: usize, skipped: usize) -> String {
-    let base = match (crate::ui(), errors) {
-        (1, 0) => format!("{n}개 · 변경 {changes}"),
-        (1, e) => format!("{n}개 · 변경 {changes} · 오류 {e}"),
-        (2, 0) => format!("{n} 件 · 変更 {changes}"),
-        (2, e) => format!("{n} 件 · 変更 {changes} · エラー {e}"),
-        (_, 0) => format!("{n} items · {changes} changes"),
-        (_, e) => format!("{n} items · {changes} changes · {e} errors"),
+    let n = n.to_string();
+    let changes = changes.to_string();
+    let base = if errors == 0 {
+        tf(crate::Key::SummaryOk, &[("n", &n), ("changes", &changes)])
+    } else {
+        tf(crate::Key::SummaryErr, &[("n", &n), ("changes", &changes), ("e", &errors.to_string())])
     };
     if skipped == 0 {
         return base;
     }
-    match crate::ui() {
-        1 => format!("{base} · 제외 {skipped}"),
-        2 => format!("{base} · 対象外 {skipped}"),
-        _ => format!("{base} · skipped {skipped}"),
-    }
+    format!("{base}{}", tf(crate::Key::SummarySkipped, &[("skipped", &skipped.to_string())]))
 }
 
 fn renamed_note(n: usize) -> String {
-    match crate::ui() {
-        1 => format!("{n}개 항목의 이름을 바꿨습니다"),
-        2 => format!("{n} 件の名前を変更しました"),
-        _ => format!("Renamed {n} items"),
-    }
+    tf(crate::Key::RenamedN, &[("n", &n.to_string())])
 }
 
 fn undone_note(n: usize) -> String {
-    match crate::ui() {
-        1 => format!("{n}개 항목을 되돌렸습니다"),
-        2 => format!("{n} 件を元に戻しました"),
-        _ => format!("Undid {n} items"),
-    }
+    tf(crate::Key::UndoneN, &[("n", &n.to_string())])
 }
 
 fn issue_text(issue: Issue) -> &'static str {
     match issue {
-        Issue::Empty => tr("Empty name", "이름이 비어 있습니다", "名前が空です"),
-        Issue::InvalidChars => tr("Invalid character", "사용할 수 없는 문자", "使えない文字"),
-        Issue::Reserved => tr("Reserved name", "예약된 이름", "予約された名前"),
-        Issue::Trailing => tr("Ends with space or dot", "공백이나 점으로 끝남", "末尾が空白かドット"),
-        Issue::TooLong => tr("Path too long", "경로가 너무 깁니다", "パスが長すぎます"),
-        Issue::Duplicate => tr("Duplicate name", "이름이 겹칩니다", "名前が重複"),
-        Issue::Exists => tr("Already exists", "이미 있는 이름", "既に存在します"),
-        Issue::BadPattern => tr("Invalid pattern", "정규식이 잘못되었습니다", "正規表現が不正です"),
+        Issue::Empty => tr(crate::Key::EmptyName),
+        Issue::InvalidChars => tr(crate::Key::InvalidCharacter),
+        Issue::Reserved => tr(crate::Key::ReservedName),
+        Issue::Trailing => tr(crate::Key::EndsWithSpaceOrDot),
+        Issue::TooLong => tr(crate::Key::PathTooLong),
+        Issue::Duplicate => tr(crate::Key::DuplicateName),
+        Issue::Exists => tr(crate::Key::AlreadyExists),
+        Issue::BadPattern => tr(crate::Key::InvalidPattern),
     }
 }
 
