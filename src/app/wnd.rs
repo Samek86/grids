@@ -131,6 +131,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_WINS);
                 open_stashed();
             }
+            WM_TIMER if wp.0 == TIMER_CTX_WARM => crate::shell::warmup::on_timer(h),
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
                     return DefWindowProcW(h, msg, wp, lp);
@@ -311,13 +312,13 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     return LRESULT(0);
                 }
                 // copy first: the sender's buffer is only valid during this call
-                let args = if cd.cb == 0 || cd.lp.is_null() {
-                    Vec::new()
+                let (parent, args) = if cd.cb == 0 || cd.lp.is_null() {
+                    (0, Vec::new())
                 } else {
                     let text = String::from_utf16_lossy(std::slice::from_raw_parts(cd.lp as *const u16, cd.cb as usize / 2));
-                    text.split('\n').filter(|s| !s.is_empty()).map(String::from).collect()
+                    crate::folderapp::parse_handoff(&text)
                 };
-                open_in_new_window(args);
+                open_forwarded(parent, args);
                 return LRESULT(1);
             }
             WM_ACTIVATE => {
@@ -327,6 +328,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 if state != WA_INACTIVE {
                     app(|a| a.last_front = a.cur);
                     request_pins(false);
+                    crate::shell::warmup::on_activate();
                 }
                 // Keyboard activation restores focus at once. A click waits until that click is handled.
                 if state == WA_INACTIVE {
@@ -404,6 +406,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_FVIEWS);
                 _ = KillTimer(Some(h), TIMER_WINS);
+                crate::shell::warmup::disarm(h);
                 flush_folder_views();
                 if app(|a| a.s.autosave) {
                     autosave_associated_tabs();
@@ -428,6 +431,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_STATUS);
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
+                crate::shell::warmup::disarm(h);
                 // A window that was not the last one already left the desk list in WM_CLOSE.
                 if bind_hwnd(h) {
                     destroy_every_pane();

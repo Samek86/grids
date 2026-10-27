@@ -1,5 +1,6 @@
 pub(crate) mod ctxmenu;
 pub(crate) mod blockext;
+pub(crate) mod warmup;
 mod fav;
 mod fileop;
 mod gather;
