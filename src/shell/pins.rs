@@ -1,5 +1,9 @@
 // Explorer's pinned folders and favourite files, shown as virtual groups above favourites.
 // One Quick Access read on a background thread returns both. Neither list is part of favorites_tree.
+//
+// A favourite file is a Windows 11 Home Favourites item. `unpinfromhome` only changes a
+// Quick Access folder pin: it can return success and leave the file in Home, so the row
+// must stay until a later Home read no longer lists it.
 
 use std::time::{Duration, Instant};
 
@@ -47,6 +51,20 @@ const PKEY_HOME_ISPINNED: PROPERTYKEY = PROPERTYKEY {
     pid: 4,
 };
 
+const GPS_HANDLERPROPERTIESONLY: u32 = 0x1;
+const GPS_READWRITE: u32 = 0x2;
+const GPS_VOLATILEPROPERTIES: u32 = 0x800;
+const GPS_VOLATILEPROPERTIESONLY: u32 = 0x1000;
+/// `CMINVOKECOMMANDINFOEX.lpVerbW`. The windows crate does not export the flag.
+const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
+const CMIC_MASK_FLAG_NO_UI: u32 = 0x400;
+/// First command id passed to QueryContextMenu. The invoke offset is `id - CMD_FIRST`.
+const CMD_FIRST: u32 = 1;
+/// Wait, then read Home again, then once more so a row that only blinks off is not treated as gone.
+const VERIFY_WAIT: Duration = Duration::from_millis(400);
+/// `favorite-remove.log` stays small: one older file is kept when this fills.
+const FAV_LOG_MAX: u64 = 32 * 1024;
+
 pub(crate) const PIN_WAIT: Duration = Duration::from_secs(2);
 pub(crate) const WM_PINS: u32 = WM_APP + 44;
 const PIN_CAP: usize = 256;
@@ -63,6 +81,9 @@ struct PinState {
     fresh_file: Vec<(String, Instant)>,
     /// Paths just unpinned, hidden if a read still lists them.
     gone: Vec<(String, Instant)>,
+    /// Favourite file that was still listed after a removal, and the panel message.
+    note_path: String,
+    note: String,
 }
 
 const HOLD: Duration = Duration::from_secs(3);
@@ -83,6 +104,8 @@ fn state() -> std::sync::MutexGuard<'static, PinState> {
                 fresh_dir: Vec::new(),
                 fresh_file: Vec::new(),
                 gone: Vec::new(),
+                note_path: String::new(),
+                note: String::new(),
             })
         })
         .lock()
@@ -108,6 +131,11 @@ pub(crate) fn pin_list() -> Vec<Pinned> {
 
 pub(crate) fn pin_files() -> Vec<Pinned> {
     state().files.clone()
+}
+
+/// Shown at the bottom of the favourites panel when a file is still in Home after removal.
+pub(crate) fn pin_file_note() -> String {
+    state().note.clone()
 }
 
 pub(crate) fn pins_loaded() -> bool {
@@ -271,25 +299,222 @@ pub(crate) fn shell_home_verb(path: &str, pin: bool) -> bool {
     unsafe { quick_access_child(&path).is_some_and(|item| item_verb(&item, "unpinfromhome")) }
 }
 
-/// Take a file out of Explorer Home's Favourites.
-/// `unpinfromhome` only unpins a Quick Access folder. On a favourite file it does not
-/// change the list, so the row hid for the 3s hold and the next read put it back.
-pub(crate) fn shell_unfavorite_file(path: &str) -> bool {
+/// Take a file out of Windows 11 Home's Favourites. The row is hidden only after a later
+/// read no longer lists it.
+///
+/// Explorer's own item is 「お気に入りから削除」 / "Remove from Favorites" /
+/// "즐겨찾기에서 제거", on the Home namespace child
+/// (`shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}`), not `unpinfromhome` on the Quick
+/// Access child. That folder verb returns success and leaves the file in place, so a
+/// guessed name that returns S_OK hid the row for the 3s hold and the next read put it back.
+///
+/// The Home item's menu is built with `QueryContextMenu(CMF_NORMAL | CMF_EXTENDEDVERBS)`,
+/// matched by `GetCommandString(GCS_VERBW)` or by that localized label, and invoked by
+/// command id. If the file is still there, `System.Home.IsPinned` is set false through
+/// the item's writable property store and committed. That is the write Explorer's command
+/// uses to update Home. The jump list `f01b4d95cf55d32a.automaticDestinations-ms` is the
+/// on-disk favorites store; it is not edited from here because Explorer keeps it mapped.
+/// Verbs, ids, and HRESULTs are appended to `favorite-remove.log` next to panegrid.json.
+pub(crate) fn shell_unfavorite_file(path: &str) {
     let path = tidy_path(path);
     if path.is_empty() {
+        return;
+    }
+    {
+        let mut s = state();
+        if s.note_path.eq_ignore_ascii_case(&path) {
+            s.note.clear();
+            s.note_path.clear();
+        }
+    }
+    let worker_path = path.clone();
+    let started = std::thread::Builder::new().name("fav-remove".into()).spawn(move || unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let uninit = hr.is_ok();
+        if hr.is_err() {
+            diag(&format!("CoInitializeEx {:#010x}", hr.0 as u32));
+        }
+        remove_home_favorite(&worker_path);
+        if uninit {
+            CoUninitialize();
+        }
+    });
+    if started.is_err() {
+        diag("result=still_present spawn-failed");
+        fail_remove(&path);
+    }
+}
+
+/// What a Home or Quick Access re-read said about the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listed {
+    Absent,
+    Present,
+    /// The namespace did not enumerate, so removal is not confirmed.
+    Unread,
+}
+
+/// Hide the row only when both reads actually omitted the file.
+fn removal_persisted(home: Listed, quick: Listed) -> bool {
+    home == Listed::Absent && quick == Listed::Absent
+}
+
+fn canonical_verb(verb: &str) -> String {
+    verb.chars().filter(|c| *c != '&' && !c.is_whitespace()).collect::<String>().to_ascii_lowercase()
+}
+
+/// Verbs that mean "take this file out of Home Favourites". `unpinfromhome` and a bare
+/// `remove` are not here: both return success without editing that list.
+fn is_remove_favorite_verb(verb: &str) -> bool {
+    matches!(
+        canonical_verb(verb).as_str(),
+        "removefromfavorites"
+            | "removefromfavourite"
+            | "removefromfavourites"
+            | "unpinfromfavorites"
+            | "unpinfromfavourites"
+            | "deletefromfavorites"
+            | "deletefromfavourites"
+    )
+}
+
+/// Menu text with accelerators removed: `&Favorites` → `Favorites`, `削除(&R)` → `削除`.
+fn menu_label(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            if chars.peek() == Some(&'&') {
+                chars.next();
+                out.push('&');
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    let label = out.trim();
+    let open = label.rfind(['(', '（']);
+    if let Some(open) = open {
+        if open > 0 {
+            let inner = label[open..].trim_start_matches(['(', '（']).trim_end_matches([')', '）']).trim();
+            let tail = label[open..].chars().last();
+            if (tail == Some(')') || tail == Some('）')) && inner.chars().count() == 1 {
+                return label[..open].trim().to_string();
+            }
+        }
+    }
+    label.to_string()
+}
+
+/// Explorer's own label, in the languages this panel ships, plus the British spelling.
+fn is_remove_favorite_text(raw: &str) -> bool {
+    let label = menu_label(raw);
+    if label.is_empty() {
         return false;
     }
-    unsafe { unfavorite_file(&path) }
+    if label.contains("お気に入りから削除") || label.contains("즐겨찾기에서 제거") {
+        return true;
+    }
+    let low = label.to_lowercase();
+    let fav = low.contains("favorite") || low.contains("favourite");
+    fav && (low.contains("remove from") || low.contains("unpin from"))
 }
 
-/// Favourite-file verbs, best first. Each one is tried on the Home item before the same
-/// verb is tried on Quick Access, so `unpinfromhome` cannot run first and report a no-op.
-fn file_unpin_passes() -> &'static [&'static str] {
-    &["removefromfavorites", "unpinfromhome", "removefromhome"]
+struct MenuCmd {
+    verb: String,
+    text: String,
+    id: u32,
+    offset: usize,
+    gcs: u32,
 }
 
-fn same_verb(present: &str, want: &str) -> bool {
-    present.trim().trim_matches('&').eq_ignore_ascii_case(want)
+fn cmd_log(cmd: &MenuCmd) -> String {
+    format!("cmd id={} off={} verb={:?} gcs={:#010x} text={:?}", cmd.id, cmd.offset, cmd.verb, cmd.gcs, cmd.text)
+}
+
+/// Prefer the command whose label is the one Explorer shows. A canonical verb with no
+/// label still counts. `delete` / `削除` does not.
+fn pick_remove<'a>(cmds: &'a [MenuCmd]) -> Option<&'a MenuCmd> {
+    let mut best: Option<(u8, usize)> = None;
+    for (i, cmd) in cmds.iter().enumerate() {
+        let text = is_remove_favorite_text(&cmd.text);
+        let verb = is_remove_favorite_verb(&cmd.verb);
+        if !text && !verb {
+            continue;
+        }
+        let name = canonical_verb(&cmd.verb);
+        let primary = name == "removefromfavorites" || name == "removefromfavourites";
+        let rank = if text && primary {
+            0
+        } else if text {
+            1
+        } else if primary {
+            2
+        } else {
+            3
+        };
+        if best.map(|(r, _)| rank < r).unwrap_or(true) {
+            best = Some((rank, i));
+        }
+    }
+    best.map(|(_, i)| &cmds[i])
+}
+
+/// `VT_BOOL` / `VARIANT_FALSE`. Explorer writes this, not an integer zero of another type.
+fn unpinned_variant() -> (u16, i16) {
+    (VT_BOOL.0, 0)
+}
+
+fn store_flag_sets() -> &'static [u32] {
+    &[
+        GPS_READWRITE | GPS_HANDLERPROPERTIESONLY | GPS_VOLATILEPROPERTIES,
+        GPS_READWRITE | GPS_HANDLERPROPERTIESONLY,
+        GPS_READWRITE | GPS_VOLATILEPROPERTIESONLY,
+        GPS_READWRITE,
+    ]
+}
+
+fn remove_failed_text() -> String {
+    crate::tr(
+        "Could not remove this file from Explorer favourites",
+        "탐색기 즐겨찾기에서 이 파일을 빼지 못했어요",
+        "エクスプローラーのお気に入りからこのファイルを削除できませんでした",
+    )
+    .to_string()
+}
+
+fn fail_remove(path: &str) {
+    {
+        let mut s = state();
+        s.note_path = tidy_path(path);
+        s.note = remove_failed_text();
+    }
+    post_pins();
+    unsafe { _ = MessageBeep(MB_ICONWARNING) };
+}
+
+fn succeed_remove(path: &str) {
+    diag("result=removed");
+    forget_pinned(path);
+    {
+        let mut s = state();
+        s.note.clear();
+        s.note_path.clear();
+    }
+    post_pins();
+    kick_reread();
+}
+
+fn kick_reread() {
+    let v = SIDES.lock().unwrap_or_else(|e| e.into_inner());
+    for id in v.iter() {
+        let h = HWND(*id as *mut core::ffi::c_void);
+        unsafe {
+            if IsWindow(Some(h)).as_bool() {
+                _ = SetTimer(Some(h), TIMER_PINS, 700, None);
+            }
+        }
+    }
 }
 
 /// The Quick Access child whose filesystem path is `path`.
@@ -330,166 +555,518 @@ unsafe fn invoke_named(cm: &IContextMenu, verb: &str) -> bool {
     cm.InvokeCommand(&ici).is_ok()
 }
 
-/// Command offset form. Offset 0 is a null verb pointer, so the caller uses the name instead.
-unsafe fn invoke_offset(cm: &IContextMenu, offset: usize) -> bool {
-    let ici = CMINVOKECOMMANDINFO {
-        cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
-        fMask: 0x400, // CMIC_MASK_FLAG_NO_UI
-        lpVerb: PCSTR(offset as *const u8),
-        nShow: SW_HIDE.0,
-        ..Default::default()
-    };
-    cm.InvokeCommand(&ici).is_ok()
+struct NsWalk {
+    items: Vec<IShellItem>,
+    /// Root or a path-less group did not enumerate, and nothing matched.
+    failed: bool,
+    notes: Vec<String>,
 }
 
-struct VerbMenu {
+struct HeldMenu {
     cm: IContextMenu,
     menu: HMENU,
-    verbs: Vec<(String, usize)>,
+    _folder: Option<IShellFolder>,
+    rel: *mut ITEMIDLIST,
+    cmds: Vec<MenuCmd>,
 }
 
-impl Drop for VerbMenu {
+impl Drop for HeldMenu {
     fn drop(&mut self) {
-        unsafe { _ = DestroyMenu(self.menu) };
-    }
-}
-
-impl VerbMenu {
-    fn lists(&self, verb: &str) -> bool {
-        self.verbs.iter().any(|(name, _)| same_verb(name, verb))
-    }
-
-    unsafe fn invoke(&self, verb: &str) -> bool {
-        if let Some(&offset) = self.verbs.iter().find(|(name, _)| same_verb(name, verb)).map(|(_, offset)| offset) {
-            if offset > 0 && invoke_offset(&self.cm, offset) {
-                return true;
+        unsafe {
+            _ = DestroyMenu(self.menu);
+            if !self.rel.is_null() {
+                ILFree(Some(self.rel as *const ITEMIDLIST));
             }
         }
-        invoke_named(&self.cm, verb)
     }
 }
 
-unsafe fn verb_menu(item: &IShellItem) -> Option<VerbMenu> {
-    let cm = item.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject).ok()?;
-    let menu = CreatePopupMenu().ok()?;
-    if cm.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL).is_err() {
-        _ = DestroyMenu(menu);
+unsafe fn remove_home_favorite(path: &str) {
+    diag(&format!("remove begin path={path}"));
+    diag("store=Home IContextMenu then System.Home.IsPinned; f01b4d95cf55d32a.automaticDestinations-ms is not edited");
+    let owner = side_owner();
+    let invoked = invoke_matching(path, owner);
+    if invoked {
+        notify_path(path);
+        if !still_there(path) {
+            succeed_remove(path);
+            return;
+        }
+        diag("menu command did not persist");
+    }
+    let committed = clear_matching(path);
+    if committed {
+        notify_path(path);
+    }
+    if !still_there(path) {
+        succeed_remove(path);
+    } else {
+        diag(&format!("result=still_present invoked={} committed={}", u8::from(invoked), u8::from(committed)));
+        fail_remove(path);
+    }
+}
+
+fn side_owner() -> HWND {
+    let v = SIDES.lock().unwrap_or_else(|e| e.into_inner());
+    for id in v.iter() {
+        let h = HWND(*id as *mut core::ffi::c_void);
+        unsafe {
+            if IsWindow(Some(h)).as_bool() {
+                return h;
+            }
+        }
+    }
+    HWND::default()
+}
+
+/// Invoke the enumerated Home command. Shell objects are dropped before the caller re-reads.
+unsafe fn invoke_matching(path: &str, owner: HWND) -> bool {
+    let found = {
+        let walk = walk_namespace(HOME, path, true);
+        for note in &walk.notes {
+            diag(note);
+        }
+        diag(&format!("home matches={} enum_failed={}", walk.items.len(), u8::from(walk.failed)));
+        let mut ok = false;
+        for item in &walk.items {
+            if invoke_item(item, owner) {
+                ok = true;
+                break;
+            }
+        }
+        ok
+    };
+    if found {
+        return true;
+    }
+    diag("file-menu");
+    let Ok(file) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(path), None) else {
+        diag("file-menu parse failed");
+        return false;
+    };
+    invoke_item(&file, owner)
+}
+
+unsafe fn invoke_item(item: &IShellItem, owner: HWND) -> bool {
+    let Some(menu) = item_menu(item, owner) else {
+        diag("menu missing");
+        return false;
+    };
+    let Some(cmd) = pick_remove(&menu.cmds) else {
+        diag("no matching command");
+        return false;
+    };
+    invoke_id(&menu.cm, cmd, owner) == 0
+}
+
+unsafe fn clear_matching(path: &str) -> bool {
+    let cleared = {
+        let walk = walk_namespace(HOME, path, false);
+        let mut ok = false;
+        for item in &walk.items {
+            if clear_ispinned(item, "home") {
+                ok = true;
+                break;
+            }
+        }
+        ok
+    };
+    if cleared {
+        return true;
+    }
+    let Ok(file) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(path), None) else {
+        diag("property file parse failed");
+        return false;
+    };
+    clear_ispinned(&file, "file")
+}
+
+/// True when the file is still listed, or Home could not be read. Two passes catch a row that only blinks off.
+unsafe fn still_there(path: &str) -> bool {
+    std::thread::sleep(VERIFY_WAIT);
+    let (home, quick) = read_presence(path);
+    diag(&format!("verify home={home:?} quick={quick:?}"));
+    if !removal_persisted(home, quick) {
+        return true;
+    }
+    std::thread::sleep(VERIFY_WAIT);
+    let (home2, quick2) = read_presence(path);
+    diag(&format!("verify2 home={home2:?} quick={quick2:?}"));
+    !removal_persisted(home2, quick2)
+}
+
+unsafe fn read_presence(path: &str) -> (Listed, Listed) {
+    let home = listed(&walk_namespace(HOME, path, false));
+    let quick = quick_file_listed(path);
+    (home, quick)
+}
+
+fn listed(walk: &NsWalk) -> Listed {
+    if !walk.items.is_empty() {
+        Listed::Present
+    } else if walk.failed {
+        Listed::Unread
+    } else {
+        Listed::Absent
+    }
+}
+
+unsafe fn notify_path(path: &str) {
+    let mut wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, Some(wide.as_ptr() as _), None);
+    if let Some(parent) = super::parent_of(path) {
+        wide = parent.encode_utf16().chain(std::iter::once(0)).collect();
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, Some(wide.as_ptr() as _), None);
+    }
+}
+
+fn fs_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+unsafe fn shell_fs_path(item: &IShellItem) -> String {
+    if let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) {
+        let t = tidy_path(&pwstr(p));
+        if fs_path(&t) {
+            return t;
+        }
+    }
+    if let Ok(p) = item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+        let t = tidy_path(&pwstr(p));
+        if fs_path(&t) {
+            return t;
+        }
+    }
+    String::new()
+}
+
+/// Home children whose filesystem path is `path`, including two levels of path-less groups
+/// (Home → Favourites → file). `failed` is set when an enumeration returns no children and errors.
+unsafe fn walk_namespace(parsing: &str, path: &str, log_children: bool) -> NsWalk {
+    let mut walk = NsWalk { items: Vec::new(), failed: false, notes: Vec::new() };
+    let root = match SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(parsing), None) {
+        Ok(root) => root,
+        Err(e) => {
+            walk.failed = true;
+            walk.notes.push(format!("parse hr={:#010x}", e.code().0 as u32));
+            return walk;
+        }
+    };
+    walk_children(&root, path, 0, log_children, &mut walk);
+    walk
+}
+
+unsafe fn walk_children(root: &IShellItem, path: &str, depth: u8, log_children: bool, walk: &mut NsWalk) {
+    if walk.items.len() >= 4 {
+        return;
+    }
+    let items = match root.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) {
+        Ok(items) => items,
+        Err(e) => {
+            walk.failed = true;
+            walk.notes.push(format!("enum depth={depth} hr={:#010x}", e.code().0 as u32));
+            return;
+        }
+    };
+    let mut groups = Vec::new();
+    let mut produced = 0u32;
+    for _ in 0..PIN_CAP {
+        if walk.items.len() >= 4 {
+            break;
+        }
+        let mut slot = [None];
+        let hr = items.Next(&mut slot, None);
+        let Some(child) = slot[0].take() else {
+            if hr.is_err() && produced == 0 {
+                walk.failed = true;
+                let code = hr.unwrap_err().code().0 as u32;
+                walk.notes.push(format!("next depth={depth} hr={code:#010x}"));
+            }
+            break;
+        };
+        produced += 1;
+        let fs = shell_fs_path(&child);
+        let name = child.GetDisplayName(SIGDN_NORMALDISPLAY).ok().map(|p| pwstr(p)).unwrap_or_default();
+        if !fs.is_empty() && fs.eq_ignore_ascii_case(path) {
+            if log_children {
+                walk.notes.push(format!("match depth={depth} fs={fs} name={name}"));
+            }
+            walk.items.push(child);
+            continue;
+        }
+        if log_children && walk.notes.len() < 24 {
+            walk.notes.push(format!("child depth={depth} fs={fs} name={name}"));
+        }
+        if depth < 2 && fs.is_empty() && groups.len() < 8 && child.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.contains(SFGAO_FOLDER)) {
+            groups.push(child);
+        }
+    }
+    drop(items);
+    if depth < 2 {
+        for group in groups {
+            walk_children(&group, path, depth + 1, log_children, walk);
+        }
+    }
+}
+
+unsafe fn quick_file_listed(path: &str) -> Listed {
+    let root = match SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(QUICK_ACCESS), None) {
+        Ok(root) => root,
+        Err(e) => {
+            diag(&format!("quick parse hr={:#010x}", e.code().0 as u32));
+            return Listed::Unread;
+        }
+    };
+    let items = match root.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) {
+        Ok(items) => items,
+        Err(e) => {
+            diag(&format!("quick enum hr={:#010x}", e.code().0 as u32));
+            return Listed::Unread;
+        }
+    };
+    let folder = root.BindToHandler::<_, IShellFolder2>(None, &BHID_SFObject).ok();
+    let mut produced = 0u32;
+    for _ in 0..PIN_CAP {
+        let mut slot = [None];
+        let hr = items.Next(&mut slot, None);
+        let Some(child) = slot[0].take() else {
+            if hr.is_err() && produced == 0 {
+                diag(&format!("quick next hr={:#010x}", hr.unwrap_err().code().0 as u32));
+                return Listed::Unread;
+            }
+            return Listed::Absent;
+        };
+        produced += 1;
+        let fs = shell_fs_path(&child);
+        if fs.is_empty() || !fs.eq_ignore_ascii_case(path) {
+            continue;
+        }
+        let (pinned, _) = item_is_pinned(&child, folder.as_ref());
+        let is_folder = child.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM).is_ok_and(shell_is_folder);
+        if pinned && !is_folder {
+            return Listed::Present;
+        }
+    }
+    Listed::Absent
+}
+
+unsafe fn item_menu(item: &IShellItem, owner: HWND) -> Option<HeldMenu> {
+    if let Some(menu) = menu_from_parent(item, owner) {
+        return Some(menu);
+    }
+    let cm = match item.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject) {
+        Ok(cm) => cm,
+        Err(e) => {
+            diag(&format!("BindToHandler IContextMenu hr={:#010x}", e.code().0 as u32));
+            return None;
+        }
+    };
+    finish_menu(cm, None, std::ptr::null_mut(), "bind")
+}
+
+/// The menu Explorer shows for this view. Binding the child alone follows the file and
+/// omits 「お気に入りから削除」.
+unsafe fn menu_from_parent(item: &IShellItem, owner: HWND) -> Option<HeldMenu> {
+    let pai = item.cast::<IParentAndItem>().ok()?;
+    let mut folder: Option<IShellFolder> = None;
+    let mut rel: *mut ITEMIDLIST = std::ptr::null_mut();
+    if pai.GetParentAndItem(None, Some(&mut folder), Some(&mut rel)).is_err() || folder.is_none() || rel.is_null() {
+        if !rel.is_null() {
+            ILFree(Some(rel as *const ITEMIDLIST));
+        }
         return None;
     }
-    let verbs = menu_verbs(menu, &cm);
-    Some(VerbMenu { cm, menu, verbs })
+    let folder = folder.unwrap();
+    let refs = [rel as *const ITEMIDLIST];
+    let cm = match folder.GetUIObjectOf::<IContextMenu>(owner, &refs, None) {
+        Ok(cm) => cm,
+        Err(e) => {
+            diag(&format!("GetUIObjectOf hr={:#010x}", e.code().0 as u32));
+            ILFree(Some(rel as *const ITEMIDLIST));
+            return None;
+        }
+    };
+    finish_menu(cm, Some(folder), rel, "parent")
 }
 
-unsafe fn menu_verbs(menu: HMENU, cm: &IContextMenu) -> Vec<(String, usize)> {
+unsafe fn finish_menu(cm: IContextMenu, folder: Option<IShellFolder>, rel: *mut ITEMIDLIST, source: &str) -> Option<HeldMenu> {
+    let menu = match CreatePopupMenu() {
+        Ok(menu) => menu,
+        Err(e) => {
+            diag(&format!("CreatePopupMenu source={source} hr={:#010x}", e.code().0 as u32));
+            if !rel.is_null() {
+                ILFree(Some(rel as *const ITEMIDLIST));
+            }
+            return None;
+        }
+    };
+    let flags = CMF_NORMAL | CMF_EXTENDEDVERBS;
+    let queried = cm.QueryContextMenu(menu, 0, CMD_FIRST, 0x7FFF, flags);
+    if queried.is_err() {
+        diag(&format!("QueryContextMenu source={source} flags=CMF_NORMAL|CMF_EXTENDEDVERBS hr={:#010x}", queried.0 as u32));
+        _ = DestroyMenu(menu);
+        if !rel.is_null() {
+            ILFree(Some(rel as *const ITEMIDLIST));
+        }
+        return None;
+    }
+    let cmds = collect_cmds(menu, &cm);
+    diag(&format!("menu source={source} flags=CMF_NORMAL|CMF_EXTENDEDVERBS query=ok cmds={}", cmds.len()));
+    for cmd in &cmds {
+        diag(&cmd_log(cmd));
+    }
+    Some(HeldMenu { cm, menu, _folder: folder, rel, cmds })
+}
+
+unsafe fn collect_cmds(menu: HMENU, cm: &IContextMenu) -> Vec<MenuCmd> {
     let mut out = Vec::new();
-    collect_verbs(menu, cm, &mut out, 0);
+    collect_cmds_at(menu, cm, &mut out, 0);
     out
 }
 
-unsafe fn collect_verbs(menu: HMENU, cm: &IContextMenu, out: &mut Vec<(String, usize)>, depth: u8) {
+unsafe fn collect_cmds_at(menu: HMENU, cm: &IContextMenu, out: &mut Vec<MenuCmd>, depth: u8) {
     let n = GetMenuItemCount(Some(menu));
     if n <= 0 {
         return;
     }
     for i in 0..n as u32 {
-        if out.len() >= 64 {
+        if out.len() >= 48 {
             return;
         }
         let id = GetMenuItemID(menu, i as i32);
-        if (1..=0x7FFF).contains(&id) {
-            let name = command_verb(cm, (id - 1) as usize);
-            if !name.is_empty() {
-                out.push((name, (id - 1) as usize));
-            }
+        if (CMD_FIRST..=0x7FFF).contains(&id) {
+            let offset = (id - CMD_FIRST) as usize;
+            let (verb, gcs) = command_verb(cm, offset);
+            let text = menu_item_text(menu, i);
+            out.push(MenuCmd { verb, text, id, offset, gcs });
             continue;
         }
         if depth < 1 {
             let sub = GetSubMenu(menu, i as i32);
             if !sub.0.is_null() {
-                collect_verbs(sub, cm, out, depth + 1);
+                collect_cmds_at(sub, cm, out, depth + 1);
             }
         }
     }
 }
 
-unsafe fn command_verb(cm: &IContextMenu, offset: usize) -> String {
-    let mut buf = [0u16; 80];
-    if cm.GetCommandString(offset, GCS_VERBW, None, PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32).is_err() {
+/// Wide verb first. An ANSI-only handler still yields a name; `gcs` stays the wide HRESULT.
+unsafe fn command_verb(cm: &IContextMenu, offset: usize) -> (String, u32) {
+    let mut buf = [0u16; 128];
+    let hr = cm.GetCommandString(offset, GCS_VERBW, None, PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32);
+    if hr.is_ok() {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        return (String::from_utf16_lossy(&buf[..end]), 0);
+    }
+    let wide = hr.unwrap_err().code().0 as u32;
+    let mut ansi = [0u8; 128];
+    let hr_a = cm.GetCommandString(offset, GCS_VERBA, None, PSTR(ansi.as_mut_ptr()), ansi.len() as u32);
+    if hr_a.is_ok() {
+        let end = ansi.iter().position(|&c| c == 0).unwrap_or(ansi.len());
+        return (String::from_utf8_lossy(&ansi[..end]).into_owned(), wide);
+    }
+    (String::new(), wide)
+}
+
+unsafe fn menu_item_text(menu: HMENU, pos: u32) -> String {
+    let mut buf = [0u16; 256];
+    let mut info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_STRING,
+        dwTypeData: PWSTR(buf.as_mut_ptr()),
+        cch: buf.len() as u32,
+        ..Default::default()
+    };
+    if GetMenuItemInfoW(menu, pos, true, &mut info).is_err() {
         return String::new();
     }
-    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    String::from_utf16_lossy(&buf[..end])
+    let n = (info.cch as usize).min(buf.len());
+    String::from_utf16_lossy(&buf[..n]).trim_end_matches('\0').to_string()
 }
 
-/// `removefromfavorites` on every matching Home / Quick Access child, then the other unpin verbs.
-/// A Quick Access `unpinfromhome` that returns success without editing Favourites must not run first.
-unsafe fn unfavorite_file(path: &str) -> bool {
-    let mut menus = Vec::new();
-    for root in [HOME, QUICK_ACCESS] {
-        for item in namespace_matches(root, path) {
-            if let Some(menu) = verb_menu(&item) {
-                menus.push(menu);
-            }
+/// Command id, including offset 0. A null `lpVerb` is that offset (`MAKEINTRESOURCE(0)`),
+/// so the first item is not skipped. The enumerated verb is tried only when the id fails.
+unsafe fn invoke_id(cm: &IContextMenu, cmd: &MenuCmd, owner: HWND) -> u32 {
+    let ici = CMINVOKECOMMANDINFO {
+        cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+        fMask: CMIC_MASK_FLAG_NO_UI,
+        hwnd: owner,
+        lpVerb: PCSTR(cmd.offset as *const u8),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    let hr = match cm.InvokeCommand(&ici) {
+        Ok(()) => 0,
+        Err(e) => e.code().0 as u32,
+    };
+    diag(&format!("invoke id={} off={} verb={:?} hr={hr:#010x}", cmd.id, cmd.offset, cmd.verb));
+    if hr == 0 || cmd.verb.is_empty() {
+        return hr;
+    }
+    let mut wide: Vec<u16> = cmd.verb.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut ansi: Vec<u8> = cmd.verb.bytes().chain(std::iter::once(0)).collect();
+    let ex = CMINVOKECOMMANDINFOEX {
+        cbSize: size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+        fMask: CMIC_MASK_FLAG_NO_UI | CMIC_MASK_UNICODE,
+        hwnd: owner,
+        lpVerb: PCSTR(ansi.as_ptr()),
+        lpVerbW: PCWSTR(wide.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    let hr2 = match cm.InvokeCommand(&ex as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO) {
+        Ok(()) => 0,
+        Err(e) => e.code().0 as u32,
+    };
+    diag(&format!("invoke-name verb={:?} hr={hr2:#010x}", cmd.verb));
+    let _ = (&mut wide, &mut ansi);
+    hr2
+}
+
+unsafe fn clear_ispinned(item: &IShellItem, target: &str) -> bool {
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::UI::Shell::PropertiesSystem::{GETPROPERTYSTOREFLAGS, IPropertyStore};
+    diag(&format!("property target={target} System.Home.IsPinned=false vt=11 val=0"));
+    let item2 = match item.cast::<IShellItem2>() {
+        Ok(item2) => item2,
+        Err(e) => {
+            diag(&format!("property target={target} cast hr={:#010x}", e.code().0 as u32));
+            return false;
         }
-    }
-    if menus.is_empty() {
-        return false;
-    }
-    for verb in file_unpin_passes() {
-        for menu in &menus {
-            if menu.invoke(verb) {
-                return true;
+    };
+    for flags in store_flag_sets() {
+        let store = match item2.GetPropertyStore::<IPropertyStore>(GETPROPERTYSTOREFLAGS(*flags as i32)) {
+            Ok(store) => store,
+            Err(e) => {
+                let hr = e.code().0 as u32;
+                diag(&format!("property target={target} flags={flags:#x} open hr={hr:#010x}"));
+                continue;
             }
-        }
-    }
-    // `remove` is the namespace item's own "take this off the list" command. It is not a delete.
-    for menu in &menus {
-        if menu.lists("remove") && menu.invoke("remove") {
+        };
+        let (vt, val) = unpinned_variant();
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&val.to_le_bytes());
+        let raw = PropVar { vt, w1: 0, w2: 0, w3: 0, data: PropData { bytes } };
+        let prop: PROPVARIANT = std::mem::transmute(raw);
+        let set = match store.SetValue(&PKEY_HOME_ISPINNED, &prop) {
+            Ok(()) => 0,
+            Err(e) => e.code().0 as u32,
+        };
+        let commit = if set == 0 {
+            match store.Commit() {
+                Ok(()) => 0,
+                Err(e) => e.code().0 as u32,
+            }
+        } else {
+            0xFFFF_FFFF
+        };
+        diag(&format!("property target={target} flags={flags:#x} set={set:#010x} commit={commit:#010x}"));
+        if set == 0 && commit == 0 {
             return true;
         }
     }
     false
-}
-
-/// Shell items under `parsing` whose filesystem path is `path`. One level of path-less
-/// groups is included, so a Favourites header that is not itself a file is searched too.
-unsafe fn namespace_matches(parsing: &str, path: &str) -> Vec<IShellItem> {
-    let Ok(root) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(parsing), None) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    collect_matches(&root, path, 0, &mut out);
-    out
-}
-
-unsafe fn collect_matches(root: &IShellItem, path: &str, depth: u8, out: &mut Vec<IShellItem>) {
-    if out.len() >= 4 {
-        return;
-    }
-    let Ok(items) = root.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) else { return };
-    let mut groups = Vec::new();
-    for _ in 0..PIN_CAP {
-        if out.len() >= 4 {
-            break;
-        }
-        let mut slot = [None];
-        _ = items.Next(&mut slot, None);
-        let Some(child) = slot[0].take() else { break };
-        let got = child.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).unwrap_or_default();
-        if !got.is_empty() && tidy_path(&got).eq_ignore_ascii_case(path) {
-            out.push(child);
-            continue;
-        }
-        if depth == 0 && got.is_empty() && groups.len() < 8 && child.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.contains(SFGAO_FOLDER)) {
-            groups.push(child);
-        }
-    }
-    drop(items);
-    if depth == 0 {
-        for group in groups {
-            collect_matches(&group, path, 1, out);
-        }
-    }
 }
 
 fn pin_worker() {
@@ -584,6 +1161,10 @@ fn apply_read(read: &HomeRead) {
         s.fresh_dir = fresh_dir;
         s.files = files;
         s.fresh_file = fresh_file;
+        if !s.note_path.is_empty() && !s.files.iter().any(|p| p.path.eq_ignore_ascii_case(&s.note_path)) {
+            s.note_path.clear();
+            s.note.clear();
+        }
         s.loaded = true;
         TRIES.store(0, Ordering::Relaxed);
     } else if TRIES.fetch_add(1, Ordering::Relaxed) + 1 >= PIN_TRIES {
@@ -640,6 +1221,45 @@ fn note_vt(vts: &mut String, vt: u16, pinned: bool) {
         vts.push(',');
     }
     vts.push_str(&format!("{vt}:{}", u8::from(pinned)));
+}
+
+fn favorite_log_file(dir: &Path) -> PathBuf {
+    dir.join("favorite-remove.log")
+}
+
+/// Keep one older file. The active log stays under `max_bytes`.
+fn rotate_log(path: &Path, max_bytes: u64) {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if max_bytes == 0 || len < max_bytes {
+        return;
+    }
+    let bak = path.with_extension("log.1");
+    _ = std::fs::remove_file(&bak);
+    _ = std::fs::rename(path, &bak);
+}
+
+fn diag_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOG: Mutex<()> = Mutex::new(());
+    LOG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn append_diag_at(dir: &Path, line: &str) {
+    let _gate = diag_lock();
+    _ = std::fs::create_dir_all(dir);
+    let path = favorite_log_file(dir);
+    rotate_log(&path, FAV_LOG_MAX);
+    let new_file = !path.exists();
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+    use std::io::Write;
+    if new_file {
+        _ = file.write_all(&[0xEF, 0xBB, 0xBF]);
+    }
+    _ = writeln!(file, "{line}");
+}
+
+fn diag(line: &str) {
+    let secs = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    append_diag_at(&crate::settings::store::config_dir(), &format!("{secs} {line}"));
 }
 
 #[cfg(debug_assertions)]
@@ -879,13 +1499,119 @@ mod tests {
         crate::session::Pinned { path: path.into(), name: path.into() }
     }
 
+    fn cmd(verb: &str, text: &str, id: u32) -> super::MenuCmd {
+        super::MenuCmd { verb: verb.into(), text: text.into(), id, offset: id.saturating_sub(1) as usize, gcs: 0 }
+    }
+
     #[test]
-    fn favourite_files_are_removed_with_removefromfavorites_before_the_folder_verb() {
-        assert_eq!(super::file_unpin_passes()[0], "removefromfavorites");
-        assert!(super::file_unpin_passes().contains(&"unpinfromhome"));
-        assert!(!super::file_unpin_passes().contains(&"remove"), "remove is only used when the namespace menu lists it");
-        assert_eq!(super::same_verb(" &RemoveFromFavorites ", "removefromfavorites"), true);
-        assert!(!super::same_verb("removefromhome", "remove"));
+    fn the_home_command_matches_the_verb_or_the_label_explorer_shows() {
+        assert!(super::is_remove_favorite_verb("removefromfavorites"));
+        assert!(super::is_remove_favorite_verb(" &RemoveFromFavorites "));
+        assert!(super::is_remove_favorite_verb("unpinfromfavourites"));
+        assert!(!super::is_remove_favorite_verb("unpinfromhome"), "that verb unpins a Quick Access folder");
+        assert!(!super::is_remove_favorite_verb("remove"));
+        assert!(!super::is_remove_favorite_verb("delete"));
+        assert!(super::is_remove_favorite_text("Remove from Favorites"));
+        assert!(super::is_remove_favorite_text("Remove from &Favorites"));
+        assert!(super::is_remove_favorite_text("Remove from Favourites"));
+        assert!(super::is_remove_favorite_text("Unpin from Favorites"));
+        assert!(super::is_remove_favorite_text("お気に入りから削除"));
+        assert!(super::is_remove_favorite_text("お気に入りから削除(&R)"));
+        assert!(super::is_remove_favorite_text("즐겨찾기에서 제거"));
+        assert!(!super::is_remove_favorite_text("Add to Favorites"));
+        assert!(!super::is_remove_favorite_text("お気に入りに追加"));
+        assert!(!super::is_remove_favorite_text("즐겨찾기에 추가"));
+        assert!(!super::is_remove_favorite_text("削除"));
+        assert!(!super::is_remove_favorite_text("Delete"));
+        assert_eq!(super::menu_label("お気に入りから削除(&R)"), "お気に入りから削除");
+    }
+
+    #[test]
+    fn the_enumerated_command_is_chosen_by_label_and_the_first_id_is_kept() {
+        let delete = cmd("delete", "削除", 10);
+        let unpin = cmd("unpinfromhome", "Unpin from Quick access", 11);
+        let home = cmd("removefromfavorites", "お気に入りから削除(&R)", 1);
+        let menu = [delete, unpin, home];
+        let picked = super::pick_remove(&menu).unwrap();
+        assert_eq!(picked.id, 1);
+        assert_eq!(picked.offset, 0, "offset 0 is the first command and is still invoked by id");
+        assert_eq!(picked.verb, "removefromfavorites");
+        assert_eq!(super::pick_remove(&[cmd("remove", "削除", 5), cmd("", "Remove from Favorites", 4)]).unwrap().id, 4);
+        assert!(super::pick_remove(&[cmd("delete", "Delete", 3), cmd("remove", "Remove", 8)]).is_none());
+        let text_only = cmd("", "Remove from Favorites", 4);
+        let line = super::cmd_log(&text_only);
+        assert!(line.contains("id=4"));
+        assert!(line.contains("Remove from Favorites"));
+        assert!(line.contains("0x00000000"));
+    }
+
+    #[test]
+    fn the_row_stays_unless_home_and_quick_access_both_omit_the_file() {
+        use super::Listed::*;
+        assert!(super::removal_persisted(Absent, Absent));
+        for home in [Absent, Present, Unread] {
+            for quick in [Absent, Present, Unread] {
+                if home == Absent && quick == Absent {
+                    continue;
+                }
+                assert!(!super::removal_persisted(home, quick), "{home:?} {quick:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unconfirmed_removal_does_not_hide_the_file() {
+        assert!(!super::removal_persisted(super::Listed::Present, super::Listed::Present));
+        let note = r"C:\note.txt";
+        let read = vec![pinned(note)];
+        let mut fresh = Vec::new();
+        let shown = super::merge_read(read, &[], &mut fresh, &[]);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].path, note);
+    }
+
+    #[test]
+    fn clearing_ispinned_writes_variant_false_on_a_writable_store() {
+        assert_eq!(super::unpinned_variant(), (VT_BOOL.0, 0));
+        assert_ne!(super::unpinned_variant().1, -1);
+        let flags = super::store_flag_sets();
+        assert!(flags[0] & super::GPS_READWRITE != 0);
+        assert!(flags[0] & super::GPS_HANDLERPROPERTIESONLY != 0);
+        assert!(flags.iter().all(|f| f & super::GPS_READWRITE != 0));
+    }
+
+    #[test]
+    fn the_diagnostic_log_is_beside_panegrid_settings_and_rotates() {
+        let settings = std::path::PathBuf::from(r"C:\Users\Jun\AppData\Roaming\Panegrid");
+        let log = super::favorite_log_file(&settings);
+        assert_eq!(log.file_name().and_then(|s| s.to_str()), Some("favorite-remove.log"));
+        let low = log.to_string_lossy().to_ascii_lowercase();
+        assert!(low.contains("panegrid"));
+        assert!(!low.contains("\\grids\\") && !low.contains("/grids/"));
+        let dir = std::env::temp_dir().join(format!("panegrid-favlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = super::favorite_log_file(&dir);
+        std::fs::write(&path, vec![b'a'; 50]).unwrap();
+        super::rotate_log(&path, 40);
+        let bak = path.with_extension("log.1");
+        assert_eq!(std::fs::read(&bak).unwrap().len(), 50);
+        assert!(!path.exists());
+        std::fs::write(&path, vec![b'b'; 60]).unwrap();
+        super::rotate_log(&path, 40);
+        assert_eq!(std::fs::read(&bak).unwrap(), vec![b'b'; 60]);
+        assert!(!path.exists());
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 1, "only the one rotated file is kept");
+        super::append_diag_at(&dir, &super::cmd_log(&cmd("removefromfavorites", "お気に入りから削除", 15)));
+        let body = std::fs::read(&path).unwrap();
+        assert!(body.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("removefromfavorites"));
+        assert!(text.contains("お気に入りから削除"));
+        assert!(text.contains("id=15"));
+        assert!(text.contains("0x00000000"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
