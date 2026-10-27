@@ -65,6 +65,8 @@ const CMDS: &[Cmd] = &[
     cmd("tab.next", TAB, s("Next tab", "다음 탭", "次のタブ"), 0x09, true, false, false, false, false),
     cmd("tab.prev", TAB, s("Previous tab", "이전 탭", "前のタブ"), 0x09, true, true, false, false, false),
     cmd("tab.reopen", TAB, s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), 0x54, true, true, false, false, false),
+    // Ctrl+K stays free. Duplicate tab is Ctrl+Alt+K; the tab right-click menu does the same.
+    cmd("tab.dup", TAB, s("Duplicate tab", "탭 복제", "タブを複製"), 0x4B, true, false, true, false, false),
     cmd("pane.next", PANE, s("Next pane", "다음 패널", "次のペイン"), 0x22, true, false, false, false, false),
     cmd("pane.prev", PANE, s("Previous pane", "이전 패널", "前のペイン"), 0x21, true, false, false, false, false),
     cmd("pane.goto", PANE, s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), 0x31, true, false, false, false, true),
@@ -536,13 +538,13 @@ fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
 }
 
 const EXPLORER: [&str; 3] = [
-    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\
+    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer. F5 reloads the active pane from anywhere in the window; a failed network folder is tried again\n\
 Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\
 Space\tQuick look, same as F3. A space within a second of typing, or during IME composition, stays part of the name. Settings → Panes & view can turn this off\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\
+    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일. F5는 창의 어디서나 활성 패널을 새로고침하고, 네트워크 폴더 오류면 그 경로를 다시 시도\n\
 Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\
 Space\t빠른 미리보기. F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어 조합 중에는 이름의 일부로 들어가요. 설정 → 패널·보기에서 끌 수 있어요\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\
+    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ。F5 はウィンドウのどこからでもアクティブなペインを再読み込みし、ネットワーク フォルダーのエラーではそのパスを再試行\n\
 Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\
 Space\tクイックルック。F3 と同じです。入力から 1 秒以内、または日本語・韓国語の変換中のスペースは名前の一部になります。設定 → ペインと表示でオフにできます\n\n",
 ];
@@ -616,6 +618,7 @@ mod tests {
             ("tab.next", "Ctrl+Tab"),
             ("tab.prev", "Ctrl+Shift+Tab"),
             ("tab.reopen", "Ctrl+Shift+T"),
+            ("tab.dup", "Ctrl+Alt+K"),
             ("pane.next", "Ctrl+PageDown"),
             ("pane.prev", "Ctrl+PageUp"),
             ("pane.goto", "Ctrl+1 … Ctrl+9"),
@@ -678,6 +681,20 @@ mod tests {
         assert_eq!(lookup(b'E' as u16, false, false, true, false), None);
         assert_eq!(lookup(b'C' as u16, true, false, true, false), index("file.winmerge"));
         assert_eq!(lookup(b'C' as u16, true, true, false, false), index("file.path"));
+        assert_eq!(lookup(0x74, false, false, false, false), None); // F5 stays a pane refresh, not a binding
+        let dup = index("tab.dup").unwrap();
+        assert_eq!(CMDS[dup].cat, TAB);
+        assert_eq!(CMDS[dup].act, ["Duplicate tab", "탭 복제", "タブを複製"]);
+        assert_eq!(lookup(b'K' as u16, true, false, true, false), Some(dup));
+        assert!(help_text().lines().any(|l| l == "Ctrl+Alt+K\tDuplicate tab"));
+        assert_eq!(lookup(b'K' as u16, true, false, false, false), None); // Ctrl+K stays free
+        assert_eq!(lookup(b'K' as u16, true, true, true, false), None);
+        let chord = default_chord(dup).unwrap();
+        for (i, c) in CMDS.iter().enumerate() {
+            if i != dup {
+                assert!(!overlaps(c.chord(), chord), "{} collides with tab.dup", c.id);
+            }
+        }
     }
 
     #[test]
