@@ -804,7 +804,13 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
     };
     add(1, tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更"), true);
     add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
-    add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
+    let dup_key = crate::keys::index("tab.dup").map(crate::keys::chord_text).unwrap_or_default();
+    let dup = if dup_key.is_empty() {
+        tr("Duplicate tab", "탭 복제", "タブを複製").to_string()
+    } else {
+        format!("{}\t{dup_key}", tr("Duplicate tab", "탭 복제", "タブを複製"))
+    };
+    add(3, &dup, true);
     add(6, tr("Move to new window", "새 창으로 이동", "新しいウィンドウへ移動"), true);
     add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
     add(5, tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存"), true);

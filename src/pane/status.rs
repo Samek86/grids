@@ -200,7 +200,7 @@ pub(crate) fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() 
     Some((sum, partial))
 }
 
-// F5 in a file list: the shell reloads it, and selected folders are summed again.
+// F5: the shell reloads the active pane, and selected folders are summed again.
 pub(crate) fn resum_sizes() {
     want_size(&[], true);
     app(|a| a.status_key.clear());

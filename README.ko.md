@@ -100,6 +100,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 |  | Ctrl+W | 탭 닫기 |
 |  | Ctrl+Tab / Ctrl+Shift+Tab | 다음 / 이전 탭 |
 |  | Ctrl+Shift+T | 닫은 탭 다시 열기 |
+|  | Ctrl+Alt+K | 탭 복제 |
 |  | 탭 더블클릭 | 탭 이름 바꾸기 |
 | **패널** | Ctrl+PgDn / Ctrl+PgUp | 다음 / 이전 패널 |
 |  | Ctrl+1 … 9 | 1~9번 패널로 |
@@ -126,7 +127,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 |  | Ctrl+Alt+N | 새 텍스트 문서 |
 |  | Ctrl+Shift+N, F7 | 새 폴더 |
 |  | Ctrl+Alt+C | WinMerge로 두 패널 비교 |
-|  | F2, Del, Ctrl+C / V, F5 | 탐색기와 동일 (복사한 그림을 Ctrl+V 하면 이 폴더에 PNG로 저장) |
+|  | F2, Del, Ctrl+C / V, F5 | 탐색기와 동일. F5는 파일 목록·주소창·필터·폴더 트리·즐겨찾기에서 활성 패널을 새로고침하고, 네트워크 폴더 오류면 그 경로를 다시 시도 (복사한 그림을 Ctrl+V 하면 이 폴더에 PNG로 저장) |
 | **기타** | Ctrl+B | 빠른 즐겨찾기 목록 |
 |  | Ctrl+S | 세션 저장 |
 |  | Ctrl+, | 설정 |
