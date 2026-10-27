@@ -12,5 +12,16 @@ build.cmd
 
 ## 릴리스
 
-그 exe를 GitHub 릴리스 자산 이름 `panegrid.exe`로 올립니다. zip으로 묶지 않습니다. 앱 안 업데이트는 `panegrid.exe`를 받고 zip은 풀지 않습니다. zip만 있는 릴리스는 안내만 하고 설치하지 않습니다.
+GitHub 릴리스 자산 두 개를 올리고, zip으로 묶지 않습니다.
+
+- `panegrid.exe`
+- `panegrid.exe.sha256`
+
+exe와 함께 `panegrid.exe.sha256`을 항상 올립니다. 파일은 sha256sum 한 줄, `<64 hex>  panegrid.exe`(공백 두 칸)입니다. 파일 안의 이름이 `panegrid.exe`가 되도록 exe가 있는 폴더에서 만듭니다.
+
+```
+sha256sum panegrid.exe > panegrid.exe.sha256
+```
+
+앱 안 업데이트는 두 파일을 받아 SHA-256이 같을 때만 exe를 바꿉니다. `panegrid.exe.sha256`이 없거나 zip만 있는 릴리스는 안내만 하고 설치하지 않습니다.
 
