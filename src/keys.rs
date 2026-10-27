@@ -552,7 +552,7 @@ Space\tクイックルック。F3 と同じです。入力から 1 秒以内、�
 const NOTES_EN: &str = "\
 Address bar: click a folder in the path to go there; click a › to list the folders inside; click the current folder or empty space, or press Ctrl+L, to type a path\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
-⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns; or copy / move the selected files to another pane's folder (up to 10,000)\n\
+⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns (order, widths, sort) and view; or copy / move the selected files to another pane's folder (up to 10,000). With only one pane, split side by side (new pane on the right, even split) and open that folder there. Nothing selected duplicates the current folder. Only files selected also duplicates it, and does not copy or move them\n\
 Save (Ctrl+S): save this tab (pane layout, folders, view, colour labels). A green dot means this tab's layout is unsaved (not folder moves)\n\
 Open session: open the saved tab as a new tab beside the current one. Open several opens each selected session as its own tab\n\
 Double-click a splitter: split evenly\n\
@@ -565,7 +565,7 @@ If Panegrid is already running, a new window opens in that process. Single-windo
 const NOTES_KO: &str = "\
 주소 칸: 경로의 폴더를 누르면 그리로 이동, › 를 누르면 그 안의 폴더 목록, 현재 폴더·빈 곳을 누르거나 Ctrl+L이면 경로 입력\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
-⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개)\n\
+⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬과 보기도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개). 패널이 하나뿐이면 좌우로 균등하게 나누고(새 패널은 오른쪽) 그 폴더를 거기서 엽니다. 선택이 없으면 현재 폴더를 복제합니다. 파일만 선택된 경우에도 현재 폴더를 복제하며, 파일은 복사·이동하지 않습니다\n\
 저장 (Ctrl+S): 이 탭을 저장 (패널 배치, 폴더, 보기, 색 라벨). 초록 점 = 이 탭의 저장 안 된 배치 변경(폴더 이동은 제외)\n\
 세션 열기: 저장한 탭을 현재 탭 옆에 새 탭으로 엽니다. 여러 개 열기는 고른 세션마다 탭 하나씩\n\
 스플리터 더블클릭: 균등 분할\n\
@@ -578,7 +578,7 @@ Ctrl+Alt+C는 활성 패널의 폴더를 다음 패널과 WinMerge로 비교합�
 const NOTES_JA: &str = "\
 アドレス バー: パスのフォルダーをクリックするとそこへ移動。› で中のフォルダー一覧。現在のフォルダーか空き、または Ctrl+L でパスを入力\n\
 レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
-⇄ ボタン: 選択したフォルダー（なければ現在のフォルダー）を別ペインで開く。列の順序・幅・並べ替えも引き継ぐ。または選択したファイルを別ペインのフォルダーへコピー / 移動（最大 10,000 個）\n\
+⇄ ボタン: 選択したフォルダー（なければ現在のフォルダー）を別ペインで開く。列の順序・幅・並べ替えと表示も引き継ぐ。または選択したファイルを別ペインのフォルダーへコピー / 移動（最大 10,000 個）。ペインが一つのときは左右に均等に分け（新しいペインは右）、そのフォルダーをそこで開く。選択がなければ現在のフォルダーを複製する。ファイルだけが選択されているときも現在のフォルダーを複製し、ファイルはコピー / 移動しない\n\
 保存 (Ctrl+S): このタブを保存（ペインの配置、フォルダー、表示、色ラベル）。緑の点 = このタブの未保存のレイアウト変更（フォルダー移動は含まない）\n\
 セッションを開く: 保存したタブを現在のタブの隣に新しいタブで開きます。まとめて開くは選んだセッションをそれぞれタブにします\n\
 スプリッターをダブルクリック: 均等に分割\n\
