@@ -2,6 +2,7 @@ mod draw;
 mod drives;
 mod sicon;
 mod favlist;
+mod favmiss;
 mod favpanel;
 mod favpop;
 mod keys;
@@ -13,6 +14,7 @@ mod tabs;
 mod theme;
 
 pub(crate) use favlist::*;
+pub(crate) use favmiss::*;
 pub(crate) use favpanel::*;
 pub(crate) use favpop::*;
 pub(crate) use ficons::*;

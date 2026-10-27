@@ -452,6 +452,82 @@ pub(crate) fn add_group(tree: &mut Vec<FavNode>, parent: &[usize], name: &str) -
     insert_child(tree, parent, usize::MAX, node).is_some()
 }
 
+/// Point a leaf at a new folder. The display name and the node's place in the tree stay.
+/// An empty name is frozen to the old folder's label so it does not follow the new path.
+/// The new path is a folder, so a file leaf stops being a file. A path another leaf already
+/// uses is refused.
+pub(crate) fn retarget_leaf(tree: &mut [FavNode], id: &[usize], path: &str) -> bool {
+    let path = tidy_path(path);
+    if path.is_empty() || id.is_empty() {
+        return false;
+    }
+    if other_has_path(tree, id, &path) {
+        return false;
+    }
+    let Some(n) = node_mut(tree, id) else { return false };
+    if n.is_group() {
+        return false;
+    }
+    freeze_label(n);
+    n.path = path;
+    n.file = false;
+    true
+}
+
+/// `retarget_leaf` found by path, for a row whose id is no longer in the tree.
+pub(crate) fn retarget_path(tree: &mut [FavNode], old: &str, path: &str) -> bool {
+    let path = tidy_path(path);
+    let old = tidy_path(old);
+    if path.is_empty() || old.is_empty() {
+        return false;
+    }
+    // The leaf being updated already contains `old`. Another leaf owning `path` is a clash.
+    if !old.eq_ignore_ascii_case(&path) && contains_path(tree, &path) {
+        return false;
+    }
+    fn apply(nodes: &mut [FavNode], old: &str, path: &str) -> bool {
+        for n in nodes.iter_mut() {
+            if !n.path.is_empty() && n.path.eq_ignore_ascii_case(old) {
+                freeze_label(n);
+                n.path = path.to_string();
+                n.file = false;
+                return true;
+            }
+            if n.is_group() && apply(&mut n.children, old, path) {
+                return true;
+            }
+        }
+        false
+    }
+    apply(tree, &old, &path)
+}
+
+fn freeze_label(n: &mut FavNode) {
+    if n.name.trim().is_empty() {
+        let label = short_name(&n.path);
+        if !label.is_empty() {
+            n.name = label;
+        }
+    }
+}
+
+fn other_has_path(nodes: &[FavNode], id: &[usize], path: &str) -> bool {
+    fn walk(nodes: &[FavNode], id: &[usize], path: &str, at: &mut Vec<usize>) -> bool {
+        for (i, n) in nodes.iter().enumerate() {
+            at.push(i);
+            if !n.path.is_empty() && n.path.eq_ignore_ascii_case(path) && at.as_slice() != id {
+                return true;
+            }
+            if n.is_group() && walk(&n.children, id, path, at) {
+                return true;
+            }
+            at.pop();
+        }
+        false
+    }
+    walk(nodes, id, path, &mut Vec::new())
+}
+
 pub(crate) fn rename_at(tree: &mut Vec<FavNode>, id: &[usize], name: &str) -> bool {
     let name = name.trim();
     if name.is_empty() {
@@ -1166,6 +1242,32 @@ mod tests {
         let before = t.len();
         assert!(apply_drop(&mut t, &[0], &[7, 3], 1).is_none());
         assert_eq!(t.len(), before);
+    }
+
+    #[test]
+    fn retarget_keeps_the_name_and_the_order() {
+        let mut tree = vec![FavNode::group("Jobs")];
+        tree[0].children.push(FavNode::leaf(r"C:\old\docs", "Reports", false));
+        tree[0].children.push(FavNode::leaf(r"C:\old\pics", "", true));
+        tree.push(FavNode::leaf(r"D:\keep", "Stay", false));
+        assert!(retarget_leaf(&mut tree, &[0, 0], r"E:\new\docs\"));
+        assert_eq!(tree[0].children[0].name, "Reports");
+        assert_eq!(tree[0].children[0].path, r"E:\new\docs");
+        assert!(!tree[0].children[0].file);
+        assert_eq!(tree[0].children[1].path, r"C:\old\pics");
+        assert_eq!(tree[1].path, r"D:\keep");
+        assert_eq!(tree[1].name, "Stay");
+        assert!(retarget_leaf(&mut tree, &[0, 1], r"E:\elsewhere\photos"));
+        assert_eq!(tree[0].children[1].name, "pics");
+        assert_eq!(tree[0].children[1].path, r"E:\elsewhere\photos");
+        assert!(!tree[0].children[1].file);
+        assert_eq!(tree[0].children.len(), 2);
+        assert!(!retarget_leaf(&mut tree, &[1], r"E:\new\docs"));
+        assert_eq!(tree[1].path, r"D:\keep");
+        assert!(retarget_path(&mut tree, r"d:\keep\", r"F:\moved"));
+        assert_eq!(tree[1].name, "Stay");
+        assert_eq!(tree[1].path, r"F:\moved");
+        assert_eq!(tree[0].children[0].path, r"E:\new\docs");
     }
 
     #[test]

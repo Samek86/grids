@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn report_names_the_module_and_the_shell_dll() {
         let text = format_report(&Report {
-            version: "0.1.21".into(),
+            version: "0.1.25".into(),
             thread: "main".into(),
             kind: "exception".into(),
             detail: String::new(),
@@ -638,7 +638,7 @@ mod tests {
             third_party: vec![r"C:\Program Files\Codec\bad.dll".into(), r"C:\Program Files\Codec\codec.dll".into()],
             recent: vec!["nav F:\\CAC\\サンプル".into()],
         });
-        assert!(text.contains("Panegrid 0.1.21"), "{text}");
+        assert!(text.contains("Panegrid 0.1.25"), "{text}");
         assert!(text.contains("exception: 0xC0000005"), "{text}");
         assert!(text.contains(r"bad.dll+0x1A2B"), "{text}");
         assert!(text.contains(r"F:\CAC\サンプル"), "{text}");

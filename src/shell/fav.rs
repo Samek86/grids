@@ -70,18 +70,63 @@ pub(crate) unsafe fn commit_favs() {
     save_session();
 }
 
+#[allow(dead_code)] // path-only entry; the panel passes the row through open_fav_row
 pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
-    if path.is_empty() {
+    open_fav_row(&FavRow {
+        id: Vec::new(),
+        depth: 0,
+        group: false,
+        file,
+        open: false,
+        name: String::new(),
+        path: path.to_string(),
+        kind: RowKind::Tree,
+    });
+}
+
+/// Open a favourites row in the active pane. A local path that is already gone does not navigate:
+/// the current folder stays, the row is dimmed, and a notice offers remove or a new location.
+/// A UNC or mapped path is resolved in the background. If it does not answer, the pane shows
+/// the network error view. The favourite is not removed.
+pub(crate) unsafe fn open_fav_row(row: &FavRow) {
+    if row.group || row.path.is_empty() {
         return;
     }
+    let unc = unc_path(&row.path);
+    // Mapped drives are remote only when the path is not already a UNC. share_path stats a drive root, never the share itself.
+    let place = path_place(unc, !unc && share_path(&row.path), is_fs(&row.path));
+    let hit = if place == PathPlace::Local { Some(probe_local(&row.path)) } else { None };
+    match fav_act(place, hit) {
+        FavAct::Missing => {
+            mark_missing(&row.path);
+            show_fav_missing(row);
+        }
+        FavAct::Share => {
+            let i = active_pane();
+            if !open_share(i, &row.path, row.file) {
+                _ = MessageBeep(MB_ICONWARNING);
+            } else if !row.file && !net_failed(i) {
+                focus_view(i);
+            }
+        }
+        FavAct::Open => open_present(&row.path, row.file),
+    }
+}
+
+unsafe fn open_present(path: &str, file: bool) {
     // A shortcut to a folder would ShellExecute, and that verb is us while the setting is on.
+    // The link is loaded only after the local existence check above, so a missing favourite
+    // still stays on the current pane. A UNC link is a share and is resolved off this thread.
     if crate::folderapp::shown_on() && crate::folderapp::link_file(path) {
         if let Some(dir) = folder_link_target(path) {
             let i = active_pane();
             if !navigate(i, &dir) {
                 _ = MessageBeep(MB_ICONWARNING);
+                return;
             }
-            focus_view(i);
+            if !net_failed(i) {
+                focus_view(i);
+            }
             return;
         }
     }
@@ -91,8 +136,13 @@ pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
         }
         if let Some(parent) = parent_of(path) {
             let i = active_pane();
-            navigate(i, &parent);
-            focus_view(i);
+            if navigate(i, &parent) {
+                if !net_failed(i) {
+                    focus_view(i);
+                }
+            } else {
+                _ = MessageBeep(MB_ICONWARNING);
+            }
         } else {
             _ = MessageBeep(MB_ICONWARNING);
         }
@@ -101,8 +151,11 @@ pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
     let i = active_pane();
     if !navigate(i, path) {
         _ = MessageBeep(MB_ICONWARNING);
+        return;
     }
-    focus_view(i);
+    if !net_failed(i) {
+        focus_view(i);
+    }
 }
 
 /// Open / Explore / our verb on one folder browses this pane while Panegrid is the
@@ -936,7 +989,8 @@ pub(crate) unsafe fn paint_favs(h: HWND) {
             text(dc, icon, glyph, icon_font, pal().sub, DT_CENTER);
             let line = |top: i32, hgt: i32| RECT { left: icon.right + s(6), right: remove.left - s(4), top, bottom: top + hgt };
             let label = if f.name.is_empty() { short_name(&f.path) } else { f.name.clone() };
-            text(dc, line(row.top + s(3), s(19)), &label, font, pal().text, DT_LEFT);
+            let ink = if !f.group && known_missing(&f.path) { pal().sub } else { pal().text };
+            text(dc, line(row.top + s(3), s(19)), &label, font, ink, DT_LEFT);
             let sub = if f.group {
                 tr("Group", "그룹", "グループ")
             } else {
@@ -990,7 +1044,7 @@ pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                         return;
                     }
                     _ = DestroyWindow(h);
-                    open_fav_target(&row.path, row.file);
+                    open_fav_row(&row);
                 };
                 if msg == WM_LBUTTONUP {
                     let (x, y) = xy(lp);
