@@ -1772,6 +1772,36 @@ pub(crate) fn crumb_fit_tail(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32
     (first, more, last, tail)
 }
 
+/// The address crumbs hide part of the path. `w` is each segment's laid-out width.
+/// A parent is missing when `first > 0` (folded into `…`, or dropped when `…` itself
+/// does not fit). The current name is cut when `last` is narrower than its width.
+/// No segments means there is nothing to cut. Does not change the fit itself.
+pub(crate) fn addr_path_truncated(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32, fs: bool) -> bool {
+    let Some(&full) = w.last() else { return false };
+    let (first, more, last, _) = crumb_fit_tail(w, avail, sep, ell, min, fs);
+    more || first > 0 || last < full
+}
+
+/// One line of address text (the edit, or a shell name drawn as a single crumb)
+/// is cut off when the text is wider than the field it is drawn in.
+pub(crate) fn addr_line_truncated(text_px: i32, box_px: i32) -> bool {
+    text_px > box_px.max(0)
+}
+
+/// Tooltip for the address bar.
+/// A filesystem parsing name is the absolute path. A shell place has no file path:
+/// its display name, or the parsing name when the display name is empty.
+/// Character boundaries only; a multibyte name is never sliced.
+pub(crate) fn addr_tip_text(parse: &str, disp: &str) -> String {
+    if is_fs(parse) {
+        return parse.to_string();
+    }
+    if !disp.is_empty() {
+        return disp.to_string();
+    }
+    parse.to_string()
+}
+
 pub(crate) const RECENT: usize = 20;
 
 // A pane moving from `old` to `new` puts both at the front of the recent list. Coming back to the folder it
@@ -1964,7 +1994,7 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{addr_jumps, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, resolve, same_type, Session};
+    use super::{addr_jumps, addr_line_truncated, addr_path_truncated, addr_tip_text, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, resolve, same_type, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::MAXP;
     use crate::THIS_PC;
@@ -2006,6 +2036,48 @@ mod crumb_tests {
         assert!(!f(500, false).3); // a shell place never grows a tail
         assert!(!f(16, false).3);
         assert_eq!(f(0, true).3, false);
+    }
+
+    #[test]
+    fn address_tip_only_when_the_path_is_cut() {
+        let cut = |w: &[i32], avail, fs| addr_path_truncated(w, avail, 4, 20, 16, fs);
+        assert!(!cut(&[30, 40, 50], 500, true), "every segment fits");
+        // 14+4+15+4+15 = 52. The tail `›` needs another 4, so 52 folds a parent and 56 does not.
+        assert!(!cut(&[14, 15, 15], 56, true), "names and the tail chevron fit");
+        assert!(cut(&[14, 15, 15], 52, true), "the tail chevron pushes a parent out");
+        assert!(!cut(&[14, 15, 15], 52, false), "without the chevron the same width fits");
+        assert!(cut(&[14, 15, 15], 51, true), "a parent is folded into …");
+        assert!(cut(&[10, 200], 100, true), "the current name is narrower than its text");
+        assert!(cut(&[30, 10, 50], 70, true));
+        assert!(cut(&[30, 40], 15, true), "the field is too narrow to show the path");
+        assert!(cut(&[30, 40], 0, true));
+        assert!(!cut(&[], 100, true));
+        assert!(!cut(&[30], 80, false), "a shell name that fits gets no tip");
+        assert!(cut(&[80], 40, false), "a shell name that does not fit does");
+        assert!(cut(&[100], 40, true));
+        // 30 + sep + 40 = 74. The tail `›` costs another sep. 76 folds a parent; 78 still shows both.
+        assert!(cut(&[30, 40], 76, true));
+        assert!(!cut(&[30, 40], 78, true));
+        assert!(!cut(&[30, 40], 76, false), "a shell place does not reserve the tail chevron");
+        assert!(!addr_line_truncated(40, 40));
+        assert!(addr_line_truncated(41, 40));
+        assert!(!addr_line_truncated(0, 0));
+        assert!(addr_line_truncated(10, 0));
+        assert!(!addr_line_truncated(0, -4));
+    }
+
+    #[test]
+    fn address_tip_text_uses_the_path_or_the_shell_name() {
+        let jp = r"F:\CAC\サンプル";
+        assert_eq!(addr_tip_text(jp, "サンプル"), jp);
+        assert_eq!(addr_tip_text(r"\\srv\share\資料", "資料"), r"\\srv\share\資料");
+        assert_eq!(addr_tip_text(THIS_PC, "This PC"), "This PC");
+        assert_eq!(addr_tip_text(THIS_PC, ""), THIS_PC);
+        assert_eq!(addr_tip_text("", "ごみ箱"), "ごみ箱");
+        assert_eq!(addr_tip_text("", ""), "");
+        // A multibyte prefix is not a drive letter. `get` on a char boundary must not panic.
+        assert_eq!(addr_tip_text("サンプル", ""), "サンプル");
+        assert_eq!(addr_tip_text("サンプル", "表示"), "表示");
     }
 
     #[test]

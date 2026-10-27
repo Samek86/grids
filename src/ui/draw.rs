@@ -1,4 +1,4 @@
-use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL};
+use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL, TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 use crate::imports::*;
 use super::*;
@@ -375,6 +375,10 @@ pub(crate) unsafe fn add_tip(btn: HWND, tip: &str) {
     tip_text(btn, tip, TTM_ADDTOOLW);
 }
 
+unsafe fn send_tip(ti: &TTTOOLINFOW, msg: u32, wp: Option<WPARAM>) {
+    SendMessageW(app(|a| a.tip), msg, wp, Some(LPARAM(ti as *const _ as isize)));
+}
+
 // TTM_ADDTOOLW to add a control's tooltip, TTM_UPDATETIPTEXTW to change its text.
 pub(crate) unsafe fn tip_text(btn: HWND, tip: &str, msg: u32) {
     let tip = HSTRING::from(tip);
@@ -386,7 +390,7 @@ pub(crate) unsafe fn tip_text(btn: HWND, tip: &str, msg: u32) {
         lpszText: PWSTR(tip.as_ptr() as *mut u16),
         ..Default::default()
     };
-    SendMessageW(app(|a| a.tip), msg, None, Some(LPARAM(&ti as *const _ as isize)));
+    send_tip(&ti, msg, None);
 }
 
 pub(crate) unsafe fn pwstr(p: PWSTR) -> String {
@@ -473,16 +477,22 @@ pub(crate) fn addr_rect(h: HWND, dpi: i32) -> RECT {
     pane_geo_of(h, rc.right, rc.bottom, dpi).addr
 }
 
-/// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
-pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
-    let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
-        return Vec::new();
-    };
+struct CrumbMetrics {
+    items: Vec<(String, String)>,
+    w: Vec<i32>,
+    sep: i32,
+    ell: i32,
+    min: i32,
+    fs: bool,
+}
+
+/// Segment widths the breadcrumb row lays out with. Same measure `crumb_layout` paints from.
+unsafe fn crumb_metrics(dc: HDC, font: HFONT, dpi: i32, parse: &str, disp: &str) -> CrumbMetrics {
     let s = |v: i32| v * dpi / 96;
-    let mut items = crumbs(&parse);
+    let mut items = crumbs(parse);
     let fs = !items.is_empty();
     if items.is_empty() {
-        let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp };
+        let name = if disp.is_empty() { tr("This PC", "내 PC", "PC").to_string() } else { disp.to_string() };
         items.push((name, String::new()));
     }
     let old = SelectObject(dc, font.into());
@@ -495,7 +505,18 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     let w: Vec<i32> = items.iter().map(|(n, _)| width(n) + 2 * s(4)).collect();
     let (sep, ell) = (width("›") + 2 * s(2), width("…") + 2 * s(4));
     SelectObject(dc, old);
-    let (first, more, last, tail) = crumb_fit_tail(&w, field.right - field.left, sep, ell, s(16), fs);
+    CrumbMetrics { items, w, sep, ell, min: s(16), fs }
+}
+
+/// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
+pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
+    let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
+        return Vec::new();
+    };
+    let m = crumb_metrics(dc, font, dpi, &parse, &disp);
+    let (sep, ell) = (m.sep, m.ell);
+    let (items, w) = (m.items, m.w);
+    let (first, more, last, tail) = crumb_fit_tail(&w, field.right - field.left, sep, ell, m.min, m.fs);
     let mut out = Vec::new();
     let mut x = field.left;
     let mut put = |wd: i32, label: &str, c: Crumb| {
@@ -560,12 +581,14 @@ pub(crate) unsafe fn sync_addr(h: HWND) {
             _ = ShowWindow(e, SW_SHOWNA);
         }
         _ = InvalidateRect(Some(h), None, false);
+        refresh_addr_tip(h);
         return;
     }
     let disp = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone()));
     let show = GetFocus() == e || text_of(e) != disp.unwrap_or_default();
     _ = ShowWindow(e, if show { SW_SHOWNA } else { SW_HIDE });
     _ = InvalidateRect(Some(h), None, false);
+    refresh_addr_tip(h);
 }
 
 pub(crate) unsafe fn crumb_click(h: HWND, i: usize, x: i32, y: i32) {
@@ -863,6 +886,157 @@ pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
         }
     }
     focus_view(k.i);
+}
+
+/// Tracking tooltip for one pane's address. Same id space as the tab tips (lock 7, paths 8).
+const ADDR_TIP_ID: usize = 9;
+const EM_GETRECT: u32 = 0xB2;
+
+fn addr_tip_info(owner: HWND, label: &HSTRING) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE,
+        hwnd: owner,
+        uId: ADDR_TIP_ID,
+        lpszText: PWSTR(label.as_ptr() as *mut u16),
+        ..Default::default()
+    }
+}
+
+unsafe fn cursor_on_addr(h: HWND) -> bool {
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return false;
+    }
+    _ = ScreenToClient(h, &mut pt);
+    let dpi = app(|a| a.dpi);
+    let r = addr_rect(h, dpi);
+    pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom
+}
+
+unsafe fn text_px(dc: HDC, font: HFONT, text: &str) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let old = SelectObject(dc, font.into());
+    let w: Vec<u16> = text.encode_utf16().collect();
+    let mut sz = SIZE::default();
+    _ = GetTextExtentPoint32W(dc, &w, &mut sz);
+    SelectObject(dc, old);
+    sz.cx
+}
+
+/// The edit is showing this pane's place, not a path the user is still typing.
+fn edit_shows_place(shown: &str, parse: &str, disp: &str, failed: Option<&str>) -> bool {
+    if shown.is_empty() {
+        return false;
+    }
+    shown == parse || (!disp.is_empty() && shown == disp) || failed.is_some_and(|p| !p.is_empty() && shown == p)
+}
+
+/// Full address tooltip, or None when the bar already shows the whole path.
+/// Connecting is a status line, not a path. The edit, while it is up, is the path display.
+unsafe fn addr_tip_body(h: HWND) -> Option<String> {
+    let i = pane_of(h)?;
+    let (parse, disp, failed, connecting) = app(|a| {
+        let p = a.panes.get(i)?.as_ref()?;
+        if p.hwnd != h {
+            return None;
+        }
+        let failed = p.net.as_ref().filter(|n| n.bad).map(|n| n.path.clone());
+        let connecting = p.net.as_ref().is_some_and(|n| !n.bad);
+        Some((a.s.paths.get(i).cloned().unwrap_or_default(), p.disp.clone(), failed, connecting))
+    })?;
+    if connecting {
+        return None;
+    }
+    let tip = match failed.as_deref() {
+        Some(path) => addr_tip_text(path, ""),
+        None => addr_tip_text(&parse, &disp),
+    };
+    if tip.is_empty() {
+        return None;
+    }
+    let (dpi, font) = app(|a| (a.dpi, a.font));
+    let edit = GetDlgItem(Some(h), ID_EDIT).unwrap_or_default();
+    if !edit.0.is_null() && IsWindowVisible(edit).as_bool() {
+        let shown = text_of(edit);
+        if !edit_shows_place(&shown, &parse, &disp, failed.as_deref()) {
+            return None;
+        }
+        let dc = GetDC(Some(edit));
+        let face = HFONT(SendMessageW(edit, WM_GETFONT, None, None).0 as _);
+        let px = text_px(dc, if face.0.is_null() { font } else { face }, &shown);
+        _ = ReleaseDC(Some(edit), dc);
+        let mut box_r = RECT::default();
+        SendMessageW(edit, EM_GETRECT, None, Some(LPARAM(&mut box_r as *mut RECT as isize)));
+        return addr_line_truncated(px, box_r.right - box_r.left).then_some(tip);
+    }
+    let field = crumb_field(addr_rect(h, dpi), dpi);
+    let dc = GetDC(Some(h));
+    let m = crumb_metrics(dc, font, dpi, &parse, &disp);
+    _ = ReleaseDC(Some(h), dc);
+    addr_path_truncated(&m.w, field.right - field.left, m.sep, m.ell, m.min, m.fs).then_some(tip)
+}
+
+/// Hide the address tooltip. The tool stays installed for the next hover.
+pub(crate) unsafe fn hide_addr_tip() {
+    let (tip, main, added, pane) = app(|a| (a.tip, a.main, a.addr_tip, a.addr_tip_pane));
+    if !added || tip.0.is_null() || pane.0.is_null() {
+        return;
+    }
+    let label = HSTRING::from("");
+    let ti = addr_tip_info(main, &label);
+    send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(0)));
+    app(|a| a.addr_tip_pane = HWND::default());
+}
+
+/// `over` is the pointer on pane `h`'s address pill. A drag hides it. The text is the full
+/// path, and only while that path does not fit. Same tracking tooltip as a tab's path tip,
+/// on the window tooltip `tip_text` fills and `tip_theme` colours.
+pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
+    let (tip, main) = app(|a| (a.tip, a.main));
+    if tip.0.is_null() || main.0.is_null() || h.0.is_null() {
+        return;
+    }
+    let over = over && app(|a| a.pane_drag.is_none() && a.pane_press.is_none());
+    let text = if over { addr_tip_body(h) } else { None };
+    let Some(text) = text else {
+        let pane = app(|a| a.addr_tip_pane);
+        if pane == h || (over && !pane.0.is_null()) {
+            hide_addr_tip();
+        }
+        return;
+    };
+    let label = HSTRING::from(text);
+    let ti = addr_tip_info(main, &label);
+    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
+    if !app(|a| a.addr_tip) {
+        send_tip(&ti, TTM_ADDTOOLW, None);
+        app(|a| a.addr_tip = true);
+    }
+    send_tip(&ti, TTM_UPDATETIPTEXTW, None);
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return;
+    }
+    // Below the pointer so the tip never sits under it and swallows a click.
+    let below = pt.y + 22 * app(|a| a.dpi) / 96;
+    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
+    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
+    send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(1)));
+    app(|a| a.addr_tip_pane = h);
+}
+
+/// Navigation and resize: keep the tip in step with the path now on screen.
+pub(crate) unsafe fn refresh_addr_tip(h: HWND) {
+    if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
+        if app(|a| a.addr_tip_pane) == h {
+            hide_addr_tip();
+        }
+        return;
+    }
+    addr_tip_at(h, cursor_on_addr(h));
 }
 
 pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
