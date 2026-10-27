@@ -9,8 +9,13 @@ use crate::session::*;
 use crate::i18n::*;
 use crate::shell::*;
 use super::*;
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 const ID_SIDE_EDIT: i32 = 209;
+/// Tracking tool for a row in the favourites panel. Lock is 7, tab paths 8, address 9.
+const FAV_TIP_ID: usize = 10;
+/// Tracking tool for a row in the favourites window.
+const FAV_POP_TIP_ID: usize = 11;
 
 /// Favourites row height in px. `tree` is the folder tree's `TVM_GETITEMHEIGHT`.
 /// When that control is not up yet, `font_px` (the UI font's line height, already scaled
@@ -133,8 +138,52 @@ pub(crate) fn sync_side_scrollbar() {
 
 pub(crate) fn clamp_side_scroll() {
     let max = max_side_scroll();
-    app(|a| a.side_scroll = a.side_scroll.min(max));
+    let changed = app(|a| {
+        let next = a.side_scroll.min(max);
+        let changed = next != a.side_scroll;
+        a.side_scroll = next;
+        changed
+    });
     sync_side_scrollbar();
+    if changed {
+        unsafe { dismiss_side_fav_tip() };
+    }
+}
+
+fn mix_str(h: u64, s: &str) -> u64 {
+    let mut h = h.wrapping_mul(31).wrapping_add(s.chars().count() as u64);
+    for c in s.chars() {
+        h = h.wrapping_mul(31).wrapping_add(c as u64);
+    }
+    h
+}
+
+/// Changes when a row is added, removed, renamed, or its path changes. Character-wise, so a
+/// non-ASCII path is part of the value and is never cut.
+fn fav_rows_mark() -> u64 {
+    mark_rows(&rows())
+}
+
+fn mark_rows(list: &[FavRow]) -> u64 {
+    let mut h = 0x9E37_79B9u64.wrapping_add(list.len() as u64);
+    for r in list {
+        h = mix_str(h, &r.path);
+        h = mix_str(h, &r.name);
+        h = h.wrapping_mul(31).wrapping_add(r.id.len() as u64);
+        for id in &r.id {
+            h = h.wrapping_mul(31).wrapping_add(*id as u64);
+        }
+        h = h.wrapping_mul(31).wrapping_add(r.depth as u64);
+        h = h.wrapping_mul(31).wrapping_add(u64::from(r.group));
+        h = h.wrapping_mul(31).wrapping_add(u64::from(r.open));
+        h = h.wrapping_mul(31).wrapping_add(u64::from(r.file));
+        h = h.wrapping_mul(31).wrapping_add(match r.kind {
+            RowKind::Tree => 1,
+            RowKind::Pins => 2,
+            RowKind::Files => 3,
+        });
+    }
+    h
 }
 
 fn drag_of(r: &FavRow) -> SideDrag {
@@ -143,6 +192,161 @@ fn drag_of(r: &FavRow) -> SideDrag {
 
 fn tree_pos(list: &[FavRow], id: &[usize]) -> Option<usize> {
     list.iter().position(|r| r.in_tree() && r.id == id)
+}
+
+/// Location tooltip for one favourites row.
+/// A filesystem path is the absolute path. A shell place has no file path, so the tip is its
+/// display name, or the parsing name when that name is empty — the address-bar rule.
+/// Every leaf is included, whether or not the label on screen is cut off. A group has no location.
+/// A missing leaf keeps the location and adds a short note. Nothing is cut on a byte index.
+pub(crate) fn fav_tip_text(path: &str, name: &str, group: bool, missing: bool) -> String {
+    if group {
+        return String::new();
+    }
+    let loc = addr_tip_text(path, name);
+    if loc.is_empty() {
+        return String::new();
+    }
+    if !missing {
+        return loc;
+    }
+    let note = fav_missing_note();
+    let mut out = String::with_capacity(loc.len() + 2 + note.len());
+    out.push_str(&loc);
+    out.push('\r');
+    out.push('\n');
+    out.push_str(note);
+    out
+}
+
+fn fav_row_tip(row: &FavRow) -> String {
+    fav_tip_text(&row.path, &row.name, row.group, !row.group && known_missing(&row.path))
+}
+
+fn fav_tip_info(owner: HWND, id: usize, label: &HSTRING) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_TRACK | TTF_ABSOLUTE,
+        hwnd: owner,
+        uId: id,
+        lpszText: PWSTR(label.as_ptr() as *mut u16),
+        ..Default::default()
+    }
+}
+
+/// Show `text` on the window tooltip, or hide that tool when `text` is empty.
+/// The tool stays installed. It sits below the pointer so a click still hits the row.
+unsafe fn place_fav_tip(owner: HWND, id: usize, installed: bool, text: &str) -> bool {
+    let tip = app(|a| a.tip);
+    if tip.0.is_null() || owner.0.is_null() {
+        return installed;
+    }
+    if text.is_empty() {
+        if installed {
+            let label = HSTRING::from("");
+            let ti = fav_tip_info(owner, id, &label);
+            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
+        }
+        return installed;
+    }
+    let label = HSTRING::from(text);
+    let ti = fav_tip_info(owner, id, &label);
+    let lp = LPARAM(&ti as *const _ as isize);
+    // Wide enough that a normal path stays one line. A positive width is what lets the missing note break.
+    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
+    if !installed {
+        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
+    }
+    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return true;
+    }
+    let below = pt.y + 22 * app(|a| a.dpi) / 96;
+    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
+    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+    true
+}
+
+unsafe fn cursor_in_client(h: HWND) -> Option<(i32, i32)> {
+    if h.0.is_null() {
+        return None;
+    }
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() || !ScreenToClient(h, &mut pt).as_bool() {
+        return None;
+    }
+    let mut rc = RECT::default();
+    if GetClientRect(h, &mut rc).is_err() {
+        return None;
+    }
+    (pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom).then_some((pt.x, pt.y))
+}
+
+/// Hide the panel tip and let the next hover show it.
+pub(crate) unsafe fn hide_side_fav_tip() {
+    let (owner, on) = app(|a| (a.side_hwnd, a.fav_tip));
+    app(|a| a.fav_tip_hold = None);
+    if on {
+        app(|a| a.fav_tip = place_fav_tip(owner, FAV_TIP_ID, true, ""));
+    }
+}
+
+/// Hide the panel tip after a scroll or a change of the rows. The pointer has to move before it returns.
+pub(crate) unsafe fn dismiss_side_fav_tip() {
+    let h = app(|a| a.side_hwnd);
+    let on = app(|a| a.fav_tip);
+    if on {
+        app(|a| a.fav_tip = place_fav_tip(h, FAV_TIP_ID, true, ""));
+    }
+    app(|a| a.fav_tip_hold = cursor_in_client(h));
+}
+
+/// `x` and `y` are client coordinates. A drag, or the point that just scrolled away, shows nothing.
+pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
+    if app(|a| a.side_drag.is_some() || a.side_external) {
+        hide_side_fav_tip();
+        return;
+    }
+    if app(|a| a.fav_tip_hold) == Some((x, y)) {
+        return;
+    }
+    app(|a| a.fav_tip_hold = None);
+    let owner = app(|a| a.side_hwnd);
+    let text = row.map(fav_row_tip).unwrap_or_default();
+    let installed = app(|a| a.fav_tip);
+    let now = place_fav_tip(owner, FAV_TIP_ID, installed, &text);
+    app(|a| a.fav_tip = now);
+}
+
+/// The favourites window uses the same tooltip. `owner` is that window; the desk is already current.
+pub(crate) unsafe fn show_pop_fav_tip(owner: HWND, row: Option<&FavRow>) {
+    let text = row.map(fav_row_tip).unwrap_or_default();
+    let installed = app(|a| a.fav_pop_tip);
+    let now = place_fav_tip(owner, FAV_POP_TIP_ID, installed, &text);
+    app(|a| a.fav_pop_tip = now);
+}
+
+pub(crate) unsafe fn hide_pop_fav_tip(owner: HWND) {
+    let on = app(|a| a.fav_pop_tip);
+    if on {
+        app(|a| a.fav_pop_tip = place_fav_tip(owner, FAV_POP_TIP_ID, true, ""));
+    }
+}
+
+/// The window is going away, so the tool has to come off the tooltip. The next window adds its own.
+pub(crate) unsafe fn drop_pop_fav_tip(owner: HWND) {
+    let (tip, on) = app(|a| (a.tip, a.fav_pop_tip));
+    app(|a| a.fav_pop_tip = false);
+    if !on || tip.0.is_null() || owner.0.is_null() {
+        return;
+    }
+    let label = HSTRING::from("");
+    let ti = fav_tip_info(owner, FAV_POP_TIP_ID, &label);
+    let lp = LPARAM(&ti as *const _ as isize);
+    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
+    SendMessageW(tip, TTM_DELTOOLW, None, Some(lp));
 }
 
 fn row_at(y: i32) -> Option<usize> {
@@ -200,6 +404,7 @@ unsafe fn group_wash_brush(rgb: u32) -> HBRUSH {
 pub(crate) unsafe fn paint_side(h: HWND) {
     pins_on_paint();
     let list = rows();
+    app(|a| a.side_rows_mark = Some(mark_rows(&list)));
     let (dpi, font, icon, hot, sel, scroll, drop, accent) = app(|a| {
         (a.dpi, a.font, a.icon_font, a.side_hot, a.side_sel, a.side_scroll, a.side_drop, a.s.accent_now())
     });
@@ -715,6 +920,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         note_pins_hwnd(h);
         match msg {
             WM_DESTROY => {
+                hide_side_fav_tip();
                 drop_side(h);
                 drop_pins_hwnd(h);
                 _ = RevokeDragDrop(h);
@@ -725,6 +931,14 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             WM_FAV_ICON => {
                 clear_icon_refresh();
                 _ = InvalidateRect(Some(h), None, false);
+                // A row may have just been marked missing. Refresh the note if the pointer is still on it.
+                if app(|a| a.fav_tip_hold.is_none() && a.side_drag.is_none() && !a.side_external) {
+                    if let Some((x, y)) = cursor_in_client(h) {
+                        let hot = row_at(y);
+                        let list = rows();
+                        show_side_fav_tip(x, y, hot.and_then(|i| list.get(i)));
+                    }
+                }
             }
             WM_TIMER if wp.0 == TIMER_ICON => {
                 _ = KillTimer(Some(h), TIMER_ICON);
@@ -738,6 +952,16 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             WM_PINS => {
                 // Row count changed under the panel. Reclamp the scroll, then paint now:
                 // a later WM_PAINT may never arrive while the queue stays busy.
+                // Pin reads retry until Explorer answers. Only a real change of the rows hides the tip.
+                let mark = fav_rows_mark();
+                let changed = app(|a| {
+                    let changed = a.side_rows_mark.is_some_and(|prev| prev != mark);
+                    a.side_rows_mark = Some(mark);
+                    changed
+                });
+                if changed {
+                    dismiss_side_fav_tip();
+                }
                 clamp_side_scroll();
                 _ = InvalidateRect(Some(h), None, false);
                 _ = UpdateWindow(h);
@@ -752,12 +976,15 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let hot = row_at(y);
                 let dragging = app(|a| a.side_drag.is_some());
                 if dragging {
+                    // The tip sits below the pointer. Hide it before the drag moves onto that spot.
+                    hide_side_fav_tip();
                     if track_drop(y) {
                         _ = InvalidateRect(Some(h), None, false);
                     }
                 } else if let Some((px, py, i)) = app(|a| a.side_press) {
                     if (x - px).abs() + (y - py).abs() > 4 {
                         if let Some(row) = rows().get(i).filter(|r| !(r.group && !r.in_tree())) {
+                            hide_side_fav_tip();
                             let drag = drag_of(row);
                             app(|a| a.side_drag = Some(drag));
                             if track_drop(y) {
@@ -765,6 +992,8 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                             }
                         }
                     }
+                } else if app(|a| a.side_external) {
+                    hide_side_fav_tip();
                 } else {
                     let paint = app(|a| {
                         let paint = a.side_hot != hot;
@@ -774,15 +1003,19 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     if paint {
                         _ = InvalidateRect(Some(h), None, false);
                     }
+                    let list = rows();
+                    show_side_fav_tip(x, y, hot.and_then(|i| list.get(i)));
                     let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
                     _ = TrackMouseEvent(&mut t);
                 }
             }
             WM_MOUSELEAVE => {
+                hide_side_fav_tip();
                 app(|a| a.side_hot = None);
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_MOUSEWHEEL => {
+                dismiss_side_fav_tip();
                 let rh = row_h();
                 let delta = ((wp.0 >> 16) as i16 as i32) * rh / 120;
                 let max = max_side_scroll();
@@ -796,6 +1029,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_VSCROLL => {
+                dismiss_side_fav_tip();
                 let mut si = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..Default::default() };
                 _ = GetScrollInfo(h, SB_VERT, &mut si);
                 let rh = row_h();
@@ -816,6 +1050,8 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = InvalidateRect(Some(h), None, false);
             }
             WM_LBUTTONDOWN => {
+                // Gone before the click is handled, so the tip cannot take the click or the double-click.
+                hide_side_fav_tip();
                 let (x, y) = xy(lp);
                 _ = SetFocus(Some(h));
                 if let Some(i) = row_at(y) {
@@ -891,6 +1127,8 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 }
             }
             WM_RBUTTONUP => {
+                // The menu opens at the pointer. The tip would sit on top of it.
+                hide_side_fav_tip();
                 let (x, y) = xy(lp);
                 let i = row_at(y);
                 if let Some(i) = i {
@@ -1072,6 +1310,8 @@ impl SideDrop {
     }
 
     unsafe fn clear(&self) {
+        bind_hwnd(self.hwnd);
+        app(|a| a.side_external = false);
         *self.pending.borrow_mut() = None;
         self.paint_line(None);
     }
@@ -1081,6 +1321,9 @@ impl IDropTarget_Impl for SideDrop_Impl {
     fn DragEnter(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
+            // Hide before the drop target is live, so the tip cannot sit under the drag cursor.
+            app(|a| a.side_external = true);
+            hide_side_fav_tip();
             *self.pending.borrow_mut() = Some(pending_of(read_drop(&d)));
             self.hover(pt, effect);
         }
@@ -1298,7 +1541,10 @@ pub(crate) unsafe fn register_side_drop(h: HWND) {
 
 #[cfg(test)]
 mod tests {
-    use super::fav_row_height;
+    use std::sync::atomic::Ordering;
+
+    use super::{fav_row_height, fav_tip_text, mark_rows, FavRow, RowKind};
+    use crate::i18n::UI;
 
     #[test]
     fn row_height_uses_the_tree_and_font_fallback_scales() {
@@ -1307,5 +1553,51 @@ mod tests {
         assert_eq!(fav_row_height(0, 16), 20);
         assert_eq!(fav_row_height(0, 32), 36);
         assert_eq!(fav_row_height(-1, 16), 20);
+    }
+
+    #[test]
+    fn favourite_tip_is_the_full_location_and_a_missing_note() {
+        let prev = UI.load(Ordering::Relaxed);
+        UI.store(0, Ordering::Relaxed);
+        let jp = r"F:\CAC\サンプル";
+        assert_eq!(fav_tip_text(jp, "表示", false, false), jp);
+        assert_eq!(fav_tip_text(r"\\srv\share\資料", "資料", false, false), r"\\srv\share\資料");
+        assert_eq!(fav_tip_text(r"C:\Users\me\Documents", "Docs", false, false), r"C:\Users\me\Documents");
+        assert_eq!(fav_tip_text("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "This PC", false, false), "This PC");
+        assert_eq!(fav_tip_text("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", "", false, false), "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}");
+        assert_eq!(fav_tip_text("", "ごみ箱", false, false), "ごみ箱");
+        assert_eq!(fav_tip_text("", "", false, false), "");
+        assert_eq!(fav_tip_text("", "", false, true), "");
+        // A group has no location, even when a path was passed in by mistake.
+        assert_eq!(fav_tip_text(r"C:\gone", "gone", true, true), "");
+        // A multibyte name is not a drive letter. Slicing it by bytes would panic or drop a character.
+        assert_eq!(fav_tip_text("サンプル", "", false, false), "サンプル");
+        assert_eq!(fav_tip_text(r"D:\없는\폴더", "폴더", false, true), "D:\\없는\\폴더\r\nNot found");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(fav_tip_text(r"D:\없는\폴더", "폴더", false, true), "D:\\없는\\폴더\r\n찾을 수 없음");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(fav_tip_text(r"D:\없는\폴더", "폴더", false, true), "D:\\없는\\폴더\r\n見つかりません");
+        UI.store(prev, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn row_mark_includes_the_whole_path() {
+        let row = |path: &str| FavRow {
+            id: vec![0],
+            depth: 0,
+            group: false,
+            file: false,
+            open: false,
+            name: "n".into(),
+            path: path.into(),
+            kind: RowKind::Tree,
+        };
+        let a = mark_rows(&[row(r"D:\없는\폴더")]);
+        let b = mark_rows(&[row(r"D:\없는\폴더2")]);
+        let c = mark_rows(&[row("サンプル")]);
+        let d = mark_rows(&[row("サンフ")]);
+        assert_ne!(a, b);
+        assert_ne!(c, d);
+        assert_eq!(a, mark_rows(&[row(r"D:\없는\폴더")]));
     }
 }
