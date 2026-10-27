@@ -7,7 +7,7 @@ use crate::i18n::*;
 use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 /// Widest a tab grows, at 96 DPI. A longer title is drawn with `DT_END_ELLIPSIS`.
-const TAB_MAX_W: i32 = 90;
+const TAB_MAX_W: i32 = 135;
 /// Tracking tooltip for the paths under one tab. The lock glyph uses id 7.
 const TAB_TIP_ID: usize = 8;
 
