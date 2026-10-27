@@ -605,6 +605,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.accent_dark = fresh.accent_dark;
         a.s.winmerge_path.clear();
         a.s.ctx_off.clear();
+        a.s.ctx_on.clear();
     });
     crate::winmerge::forget_status();
     // The folder association is not a saved preference. Reset turns it off.

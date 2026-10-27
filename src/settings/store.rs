@@ -2,7 +2,7 @@
 // Named .grids sessions stay in the ini shape. Missing panegrid.json is copied from grids.json, else read once from grids.ini or qdir.ini; the source file is left untouched.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -299,6 +299,14 @@ struct SettingsFile {
     /// Menu strings observed for each handler id. Omitted until a menu has been opened.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     ctx_labels: BTreeMap<String, Vec<String>>,
+    /// Targets explicitly enabled for handlers that start off (WinMerge). Omitted while empty,
+    /// which keeps those commands hidden. A .grids file does not store this.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ctx_on: BTreeMap<String, Vec<String>>,
+    /// Handler ids that added no visible menu item. Omitted until a menu has been learned.
+    /// They leave the settings list only. A .grids file does not store this.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    ctx_quiet: BTreeSet<String>,
     #[serde(default, flatten)]
     extra: Map<String, Value>,
 }
@@ -369,6 +377,8 @@ impl SettingsFile {
             favorites_tree: Vec::new(),
             ctx_menu: BTreeMap::new(),
             ctx_labels: BTreeMap::new(),
+            ctx_on: BTreeMap::new(),
+            ctx_quiet: BTreeSet::new(),
             extra: Map::new(),
         }
     }
@@ -460,6 +470,8 @@ impl SettingsFile {
             favorites_tree: crate::tree_to_values(&tree),
             ctx_menu: clean_ctx(&s.ctx_off),
             ctx_labels: clean_labels(&s.ctx_labels),
+            ctx_on: clean_ctx(&s.ctx_on),
+            ctx_quiet: clean_quiet(&s.ctx_quiet),
             extra: Map::new(),
         }
     }
@@ -499,6 +511,8 @@ impl SettingsFile {
         self.extra.remove("layout_new");
         self.extra.remove("ctx_menu");
         self.extra.remove("ctx_labels");
+        self.extra.remove("ctx_on");
+        self.extra.remove("ctx_quiet");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
     }
@@ -594,6 +608,9 @@ impl SettingsFile {
         s.winmerge_path = self.winmerge_path.trim().to_string();
         s.ctx_off = clean_ctx(&self.ctx_menu);
         s.ctx_labels = clean_labels(&self.ctx_labels);
+        s.ctx_on = clean_ctx(&self.ctx_on);
+        s.ctx_quiet = clean_quiet(&self.ctx_quiet);
+        crate::shell::ctxmenu::reconcile_winmerge(&mut s.ctx_off, &mut s.ctx_on);
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
         if !parsed_tree.is_empty() {
@@ -663,6 +680,13 @@ fn clean_ctx(map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String
         }
     }
     out
+}
+
+fn clean_quiet(ids: &BTreeSet<String>) -> BTreeSet<String> {
+    ids.iter().filter_map(|id| {
+        let id = id.trim();
+        if id.is_empty() || id.len() > 96 { None } else { Some(id.to_string()) }
+    }).collect()
 }
 
 fn clean_labels(map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
@@ -1034,6 +1058,36 @@ mod tests {
             cleaned.ctx_labels.get("clsid:vs").map(Vec::as_slice),
             Some(["Visual Studio で開く".to_string(), "\"…\" に圧縮".to_string()].as_slice())
         );
+
+        let mut marked = Session::default();
+        marked.ctx_on.insert("app:winmerge".into(), vec!["folder".into(), "file".into()]);
+        marked.ctx_quiet.insert("clsid:os".into());
+        marked.ctx_quiet.insert("  ".into());
+        let text = sync_text(&marked);
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["ctx_on"]["app:winmerge"], serde_json::json!(["file", "folder"]));
+        assert_eq!(saved["ctx_quiet"], serde_json::json!(["clsid:os"]));
+        assert!(!marked.to_ini().contains("ctx_on"));
+        assert!(!marked.to_ini().contains("ctx_quiet"));
+        let back = adopt(&text).unwrap();
+        assert_eq!(back.ctx_on.get("app:winmerge").map(Vec::as_slice), Some(["file".to_string(), "folder".to_string()].as_slice()));
+        assert!(back.ctx_quiet.contains("clsid:os"));
+        let fresh = serde_json::from_str::<Value>(&sync_text(&Session::default())).unwrap();
+        assert!(fresh.get("ctx_on").is_none());
+        assert!(fresh.get("ctx_quiet").is_none());
+
+        let partial = adopt(r#"{"ctx_menu":{"clsid:4e716236-aa30-4c65-b225-d68bba81e9c2":["file"]}}"#).unwrap();
+        assert!(partial.ctx_off.is_empty());
+        assert_eq!(
+            partial.ctx_on.get("app:winmerge").map(Vec::as_slice),
+            Some(["folder".to_string(), "background".to_string(), "drive".to_string()].as_slice())
+        );
+        let hidden = adopt(r#"{"ctx_menu":{"clsid:4e716236-aa30-4c65-b225-d68bba81e9c2":["file","folder","background","drive"]}}"#).unwrap();
+        assert!(hidden.ctx_off.is_empty());
+        assert!(hidden.ctx_on.is_empty());
+        let kept = adopt(r#"{"ctx_on":{"app:winmerge":["file"]},"ctx_menu":{"clsid:4e716236-aa30-4c65-b225-d68bba81e9c2":["drive"]}}"#).unwrap();
+        assert!(kept.ctx_off.is_empty());
+        assert_eq!(kept.ctx_on.get("app:winmerge").map(Vec::as_slice), Some(["file".to_string()].as_slice()));
     }
 
     #[test]

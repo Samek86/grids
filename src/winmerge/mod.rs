@@ -6,5 +6,5 @@ mod menu;
 mod plan;
 mod run;
 
-pub(crate) use menu::{ctx_command, gear, insert_ctx, run_folders, sync_gear};
+pub(crate) use menu::{context_labels, ctx_command, gear, insert_ctx, run_folders, sync_gear};
 pub(crate) use run::{forget_status, pick_exe, status_now, status_text};

@@ -12,11 +12,15 @@
 // not used for the popup.
 //
 // When a handler is off for this click, `popup_ctx` builds that normal menu and then
-// deletes only the disabled handler's commands. Static verbs match the registry verb.
-// A COM handler is CoCreated into a throwaway menu solely to learn the strings it
-// adds; those strings are deleted from the real menu. The shell has already loaded
-// every handler on the real menu, including ones that are off — that is the cost of
-// an identical item set. Disabled handlers are never given their own visible menu.
+// deletes only the disabled handler's commands. A static verb matches its registry
+// verb and the menu text this Windows language resolved, including MuiVerb.
+// A COM handler is CoCreated into a throwaway menu to learn the strings it inserts;
+// those strings are deleted from the real menu. With a selection, the handler is
+// asked with the data object alone and again with the parent folder pidl. WinMerge
+// counts that pidl as a second selected path, so the two calls insert different
+// items, and every inserted string is eligible for deletion. The shell has already
+// loaded every handler on the real menu, including ones that are off — that is the
+// cost of an identical item set. Disabled handlers are never given their own visible menu.
 //
 // Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
 //
@@ -25,8 +29,15 @@
 // A real menu records the strings the user actually saw (`ctx_labels` in panegrid.json).
 // Handlers that share a product title are one settings row; a toggle writes every
 // handler in that row. Recording never inserts, deletes, or reorders the menu.
+//
+// A handler that was asked and added no visible item is remembered (`ctx_quiet`) and
+// left off the settings list. The shell menu still loads it. Handlers whose product
+// is the generic Windows operating system, and Screen saver, stay off that list
+// before any probe: they do not insert a row in this menu. A label recorded from a
+// real menu lists them again. WinMerge starts off: its own commands and its shell
+// handler share one row, and an explicit on is `ctx_on`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -49,6 +60,10 @@ pub(crate) const FOLDER: u8 = 2;
 pub(crate) const BACKGROUND: u8 = 4;
 pub(crate) const DRIVE: u8 = 8;
 const TARGET_ALL: u8 = FILE | FOLDER | BACKGROUND | DRIVE;
+/// Panegrid's own WinMerge commands. The shell extension, when installed, shares this switch.
+pub(crate) const APP_WINMERGE: &str = "app:winmerge";
+/// WinMerge's Explorer context-menu handler. `GetCommandString` returns no verb; both items are the text it inserts.
+const WINMERGE_CLSID: &str = "clsid:4e716236-aa30-4c65-b225-d68bba81e9c2";
 
 const FIXED: &[(&str, u8)] = &[
     ("*", FILE),
@@ -169,8 +184,6 @@ pub(crate) struct UiRow {
     pub(crate) raw: String,
     /// Menu item labels, joined for the line under the title. Empty when unknown or identical to the title.
     pub(crate) detail: String,
-    /// No menu text yet. The row shows a hint until a real menu is opened.
-    pub(crate) pending: bool,
     pub(crate) targets: u8,
     pub(crate) tick: Tick,
     /// File, folder, empty space, drive.
@@ -223,7 +236,17 @@ pub(crate) fn needs_filter(targets: u8) -> bool {
     if targets == 0 {
         return false;
     }
-    app(|a| a.s.ctx_off.values().any(|v| bits_of(v) & targets != 0))
+    app(|a| {
+        a.s.ctx_off.values().any(|v| bits_of(v) & targets != 0) || !winmerge_covers(&a.s.ctx_on, targets)
+    })
+}
+
+/// WinMerge's right-click commands are shown only when this click's targets were explicitly enabled.
+pub(crate) fn winmerge_menu_on(targets: u8) -> bool {
+    if targets == 0 {
+        return false;
+    }
+    app(|a| winmerge_covers(&a.s.ctx_on, targets))
 }
 
 pub(crate) fn tick_of(off: u8, attached: u8) -> Tick {
@@ -260,23 +283,38 @@ pub(crate) fn toggle_target(map: &mut BTreeMap<String, Vec<String>>, id: &str, b
 
 /// One decision for the whole product group, then the same direction is written to every handler.
 /// A mixed group turns every member on. Each handler keeps only its own target bits.
-pub(crate) fn toggle_ids_master(map: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) {
+/// WinMerge is the exception: the row starts off, and an on is written to `ctx_on`.
+pub(crate) fn toggle_ids_master(off: &mut BTreeMap<String, Vec<String>>, on: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) {
     if ids.is_empty() || ids.len() != scopes.len() {
         return;
     }
+    if let Some(i) = ids.iter().position(|id| id == APP_WINMERGE) {
+        let scope = scopes[i];
+        let cur = winmerge_bits(on);
+        let fully_on = scope != 0 && cur & scope == scope;
+        let next = if fully_on { cur & !scope } else { cur | scope };
+        write_bits(on, APP_WINMERGE, next & TARGET_ALL);
+        return;
+    }
     let fully_on = ids.iter().zip(scopes).all(|(id, attached)| {
-        let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        let cur = bits_of(off.get(id).map(Vec::as_slice).unwrap_or(&[]));
         cur & attached == 0
     });
     for (id, attached) in ids.iter().zip(scopes) {
-        let cur = bits_of(map.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        let cur = bits_of(off.get(id).map(Vec::as_slice).unwrap_or(&[]));
         let next = if fully_on { *attached } else { cur & !attached };
-        write_bits(map, id, next & TARGET_ALL);
+        write_bits(off, id, next & TARGET_ALL);
     }
 }
 
-pub(crate) fn toggle_ids_target(map: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8], bit: u8) {
+pub(crate) fn toggle_ids_target(off: &mut BTreeMap<String, Vec<String>>, on: &mut BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8], bit: u8) {
     if ids.len() != scopes.len() || bit == 0 {
+        return;
+    }
+    if ids.iter().any(|id| id == APP_WINMERGE) {
+        let cur = winmerge_bits(on);
+        let next = if cur & bit != 0 { cur & !bit } else { cur | bit };
+        write_bits(on, APP_WINMERGE, next & TARGET_ALL);
         return;
     }
     let relevant: Vec<usize> = scopes.iter().enumerate().filter(|(_, t)| *t & bit != 0).map(|(i, _)| i).collect();
@@ -284,14 +322,14 @@ pub(crate) fn toggle_ids_target(map: &mut BTreeMap<String, Vec<String>>, ids: &[
         return;
     }
     let fully_on = relevant.iter().all(|&i| {
-        let cur = bits_of(map.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
+        let cur = bits_of(off.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
         cur & bit == 0
     });
     for i in relevant {
-        let cur = bits_of(map.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
+        let cur = bits_of(off.get(&ids[i]).map(Vec::as_slice).unwrap_or(&[]));
         let attached = scopes[i];
         let next = if fully_on { (cur | bit) & attached } else { (cur & !bit) & attached };
-        write_bits(map, &ids[i], next & TARGET_ALL);
+        write_bits(off, &ids[i], next & TARGET_ALL);
     }
 }
 
@@ -299,10 +337,20 @@ pub(crate) fn clear_off(map: &mut BTreeMap<String, Vec<String>>) {
     map.clear();
 }
 
-pub(crate) fn ui_rows(off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
+/// Settings → Right-click menu → Reset. Every handler on, including WinMerge, and that on is stored.
+pub(crate) fn reset_menu(off: &mut BTreeMap<String, Vec<String>>, on: &mut BTreeMap<String, Vec<String>>) {
+    clear_off(off);
+    write_bits(on, APP_WINMERGE, TARGET_ALL);
+}
+
+pub(crate) fn ui_rows(off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, quiet: &BTreeSet<String>, q: &str) -> Vec<UiRow> {
     let q = q.trim().to_lowercase();
-    let rows: Vec<Row> = catalogue().into_iter().filter(|r| !r.builtin && r.targets != 0).collect();
-    assemble(&rows, off, seen, &q)
+    let mut rows: Vec<Row> = catalogue().into_iter().filter(|r| listed(r, seen, quiet)).collect();
+    let wm = app_winmerge_row();
+    let sort_key = title_of(&wm).to_lowercase();
+    let at = rows.iter().position(|r| title_of(r).to_lowercase() > sort_key).unwrap_or(rows.len());
+    rows.insert(at, wm);
+    assemble(&rows, off, on, seen, &q)
 }
 
 /// Search hit on a handler, its component name, or a menu label. A one-character query does not walk the registry.
@@ -313,6 +361,9 @@ pub(crate) fn name_hit(q: &str) -> bool {
     }
     let q = q.to_lowercase();
     let seen = app(|a| a.s.ctx_labels.clone());
+    if "winmerge".contains(&q) || crate::winmerge::context_labels().iter().any(|l| l.to_lowercase().contains(&q)) {
+        return true;
+    }
     catalogue().iter().any(|r| !r.builtin && row_matches(r, &seen, &q))
 }
 
@@ -320,6 +371,7 @@ struct Presented {
     name: String,
     raw: String,
     labels: Vec<String>,
+    #[allow(dead_code)] // learning state; the settings row no longer prints a hint
     pending: bool,
 }
 
@@ -436,14 +488,15 @@ struct Acc {
     targets: u8,
     labels: Vec<String>,
     raws: Vec<String>,
-    any_known: bool,
 }
 
-fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
+fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, q: &str) -> Vec<UiRow> {
     let mut accs: Vec<Acc> = Vec::new();
     for r in rows {
         let shown = present_row(r, seen);
-        let key = group_key(&shown.name);
+        let winmerge = row_defaults_off(r);
+        let key = if winmerge { Some("winmerge".to_string()) } else { group_key(&shown.name) };
+        let title = if winmerge { "WinMerge".to_string() } else { shown.name };
         if let Some(k) = key.as_ref() {
             if let Some(acc) = accs.iter_mut().find(|a| a.key == *k) {
                 acc.ids.push(r.id.clone());
@@ -453,19 +506,17 @@ fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<S
                 if !shown.raw.is_empty() {
                     acc.raws.push(shown.raw);
                 }
-                acc.any_known |= !shown.pending;
                 continue;
             }
         }
         accs.push(Acc {
             key: key.unwrap_or_else(|| format!("id:{}", r.id)),
-            title: shown.name,
+            title,
             ids: vec![r.id.clone()],
             scopes: vec![r.targets],
             targets: r.targets,
             labels: shown.labels,
             raws: if shown.raw.is_empty() { Vec::new() } else { vec![shown.raw] },
-            any_known: !shown.pending,
         });
     }
     let mut out = Vec::new();
@@ -479,9 +530,8 @@ fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<S
             continue;
         }
         let labels: Vec<String> = acc.labels.into_iter().filter(|l| fold_menu(l) != fold_menu(&acc.title)).collect();
-        let pending = !acc.any_known && labels.is_empty();
         let raw = shared_raw(&acc.title, &acc.raws, &labels);
-        let (tick, subs) = group_ticks(off, &acc.ids, &acc.scopes);
+        let (tick, subs) = group_ticks(off, on, &acc.ids, &acc.scopes);
         let id = if acc.ids.len() == 1 {
             acc.ids[0].clone()
         } else {
@@ -496,7 +546,6 @@ fn assemble(rows: &[Row], off: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<S
             name: acc.title,
             raw,
             detail: labels.join(" · "),
-            pending,
             targets: acc.targets,
             tick,
             subs,
@@ -514,7 +563,17 @@ fn shared_raw(title: &str, raws: &[String], labels: &[String]) -> String {
     display_raw(title, first, labels)
 }
 
-fn group_ticks(off: &BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) -> (Tick, [Tick; 4]) {
+fn group_ticks(off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>, ids: &[String], scopes: &[u8]) -> (Tick, [Tick; 4]) {
+    if ids.iter().any(|id| id == APP_WINMERGE) {
+        let enabled = winmerge_bits(on);
+        let scope = ids.iter().zip(scopes).fold(0u8, |a, (_, s)| a | s);
+        let bits = [FILE, FOLDER, BACKGROUND, DRIVE];
+        let mut subs = [Tick::On; 4];
+        for (i, bit) in bits.into_iter().enumerate() {
+            subs[i] = if scope & bit == 0 || enabled & bit != 0 { Tick::On } else { Tick::Off };
+        }
+        return (tick_of(scope & !enabled, scope), subs);
+    }
     let bits = [FILE, FOLDER, BACKGROUND, DRIVE];
     let mut subs = [Tick::On; 4];
     for (i, bit) in bits.into_iter().enumerate() {
@@ -747,81 +806,196 @@ pub(crate) unsafe fn compose_paths(owner: HWND, items: &[(String, bool)], target
 }
 
 pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8) {
-    let off = app(|a| a.s.ctx_off.clone());
+    let (off, on) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_on.clone()));
     let cat = catalogue();
     let mut verbs = Vec::new();
     let mut names = Vec::new();
+    let mut marks: Vec<HandlerMarks> = Vec::new();
     for r in &cat {
-        if !blocked(r, targets, &off) {
+        if !blocked(r, targets, &off, &on) {
             continue;
         }
-        // A static verb's registry name is the menu verb. Its label is the menu text.
+        let mut mv = Vec::new();
+        let mut mn = Vec::new();
+        // The registry verb is language-independent. MuiVerb is the text this UI language shows.
         if !r.verb.is_empty() {
-            verbs.push(r.verb.to_ascii_lowercase());
-            if !r.name.is_empty() {
-                names.push(fold_menu(&r.name));
+            mv.push(r.verb.to_ascii_lowercase());
+            push_mark(&mut mn, &r.name);
+            for label in &r.static_labels {
+                push_mark(&mut mn, label);
             }
         }
-        // A COM handler's catalogue name is a product or class name, not the menu text
-        // ("지금 동기화"). Ask it on a throwaway menu, then delete those strings.
-        // Static verbs, including DelegateExecute, already match on the registry verb.
+        // A COM handler's catalogue name is a product or class name, not the menu text.
+        // Ask it what it inserts, then delete those strings. DelegateExecute verbs already
+        // matched on the registry verb above.
         if r.clsid.is_some() && r.verb.is_empty() {
-            if let Some((vs, ns)) = probe_marks(r, targets) {
-                verbs.extend(vs);
-                names.extend(ns);
+            if let Some(items) = probe_marks(r, targets) {
+                for item in items {
+                    if !item.verb.is_empty() && !mv.iter().any(|v| v == &item.verb) {
+                        mv.push(item.verb);
+                    }
+                    if !item.folded.is_empty() && !mn.iter().any(|n| n == &item.folded) {
+                        mn.push(item.folded);
+                    }
+                }
             }
         }
+        if mv.is_empty() && mn.is_empty() {
+            continue;
+        }
+        verbs.extend(mv.iter().cloned());
+        names.extend(mn.iter().cloned());
+        marks.push(HandlerMarks { id: r.id.clone(), verbs: mv, names: mn });
     }
     let n = GetMenuItemCount(Some(menu));
     if n <= 0 {
         return;
     }
+    let mut learned: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for i in (0..n as u32).rev() {
         if super::menu_sep(menu, i) {
             continue;
         }
         let id = GetMenuItemID(menu, i as i32);
-        if id != u32::MAX && id >= 0x8000 {
+        // Panegrid's own commands (batch rename, favourites, WinMerge) use ids at 0x8000 and above.
+        if panegrid_menu_id(id) {
             continue;
         }
+        let raw = item_text(menu, i);
         let verb = if id != u32::MAX && id >= 1 && id < 0x8000 { super::cmd_verb(cm, (id - 1) as usize) } else { String::new() };
-        let verb_l = verb.trim().to_ascii_lowercase();
-        if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
+        if !item_dropped(&verb, &raw, &verbs, &names) {
             continue;
         }
-        let text = fold_menu(&item_text(menu, i));
-        let drop_verb = !verb_l.is_empty() && verbs.iter().any(|v| v == &verb_l);
-        let drop_name = !text.is_empty() && names.iter().any(|n| n == &text);
-        if drop_verb || drop_name {
-            _ = DeleteMenu(menu, i, MF_BYPOSITION);
+        let verb_l = verb.trim().to_ascii_lowercase();
+        let key = menu_match_key(&raw);
+        let label = menu_label(&raw);
+        if !label.is_empty() {
+            for m in &marks {
+                let hit_verb = !verb_l.is_empty() && m.verbs.iter().any(|v| v == &verb_l);
+                let hit_name = !key.is_empty() && m.names.iter().any(|n| n == &key);
+                if hit_verb || hit_name {
+                    learned.entry(m.id.clone()).or_default().push(label.clone());
+                }
+            }
         }
+        _ = DeleteMenu(menu, i, MF_BYPOSITION);
     }
     collapse_separators(menu);
+    for (id, labels) in learned {
+        note_labels(&id, &labels);
+    }
+}
+
+struct HandlerMarks {
+    id: String,
+    verbs: Vec<String>,
+    names: Vec<String>,
+}
+
+fn push_mark(names: &mut Vec<String>, text: &str) {
+    let key = menu_match_key(text);
+    if key.is_empty() || names.iter().any(|n| n == &key) {
+        return;
+    }
+    names.push(key);
+}
+
+/// Panegrid appends its own commands at 0x8000 and above. The shell's range stops at 0x7FFF.
+fn panegrid_menu_id(id: u32) -> bool {
+    id != u32::MAX && id >= 0x8000
+}
+
+/// A shell row belongs to a disabled handler. Builtin verbs stay. Comparison uses the verb
+/// or the strings the handler inserted, after accelerators and ellipsis are folded.
+fn item_dropped(verb: &str, text: &str, verbs: &[String], names: &[String]) -> bool {
+    let verb_l = verb.trim().to_ascii_lowercase();
+    if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
+        return false;
+    }
+    if !verb_l.is_empty() && verbs.iter().any(|v| v == &verb_l) {
+        return true;
+    }
+    let key = menu_match_key(text);
+    !key.is_empty() && names.iter().any(|n| n == &key)
 }
 
 struct ProbeItem {
     verb: String,
-    /// `fold_menu` of the raw item text. Deletion compares this, not the cleaned label.
+    /// `menu_match_key` of the raw item text. Deletion compares this, not the cleaned label.
     folded: String,
     /// What the settings page shows: accelerators and a trailing shortcut suffix removed.
     label: String,
 }
 
-/// Verbs and folded labels a disabled COM handler adds. The menu is destroyed; nothing is shown.
-unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String>)> {
+/// Strings a disabled COM handler inserts. An empty menu is remembered as quiet.
+/// Labels for the settings row are taken from the real menu, once a row is actually removed.
+unsafe fn probe_marks(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
     let items = probe_items(row, targets)?;
-    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).filter(|s| !s.is_empty()).collect();
-    note_labels(&row.id, &labels);
-    let verbs = items.iter().filter(|i| !i.verb.is_empty()).map(|i| i.verb.clone()).collect();
-    let names = items.iter().map(|i| i.folded.clone()).filter(|s| !s.is_empty()).collect();
-    Some((verbs, names))
+    if items.iter().all(|i| i.verb.is_empty() && i.folded.is_empty()) {
+        note_quiet(&row.id);
+    }
+    Some(items)
 }
 
-/// Top-level strings a COM handler adds on a throwaway menu. Nothing is shown.
+/// How the shell might have called `IShellExtInit::Initialize` for this click.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ProbeContract {
+    /// Selected items only. The parent folder is not also a selected path.
+    Selection,
+    /// Parent folder and the selection together.
+    FolderAndData,
+    /// Empty space. The folder itself, and no data object.
+    Folder,
+}
+
+/// A selection is asked without the parent folder, then with it. WinMerge appends a
+/// resolvable folder pidl to the dropped paths, so the folder-and-data call inserts
+/// one "Compare" item where the real one-item menu inserted "Select Left" and "Compare...".
+fn probe_contracts(has_folder: bool, has_data: bool) -> Vec<ProbeContract> {
+    let mut out = Vec::new();
+    if has_data {
+        out.push(ProbeContract::Selection);
+    }
+    if has_folder && has_data {
+        out.push(ProbeContract::FolderAndData);
+    } else if has_folder {
+        out.push(ProbeContract::Folder);
+    }
+    out
+}
+
+/// Top-level strings a COM handler adds. Each init contract is a fresh object. Nothing is shown.
 unsafe fn probe_items(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
     let guid = row.clsid?;
     let (folder_pidl, data) = probe_context()?;
-    let cm = cocreate(&guid, &row.anchor, folder_pidl, data.as_ref())?;
+    let contracts = probe_contracts(!folder_pidl.is_null(), data.is_some());
+    if contracts.is_empty() {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut any_ok = false;
+    for contract in contracts {
+        let folder = match contract {
+            ProbeContract::Selection => std::ptr::null(),
+            ProbeContract::Folder | ProbeContract::FolderAndData => folder_pidl,
+        };
+        let use_data = matches!(contract, ProbeContract::Selection | ProbeContract::FolderAndData);
+        let Some(found) = probe_contract(row, &guid, folder, if use_data { data.as_ref() } else { None }, targets) else {
+            continue;
+        };
+        any_ok = true;
+        for item in found {
+            if items.iter().any(|e: &ProbeItem| e.verb == item.verb && e.folded == item.folded) {
+                continue;
+            }
+            items.push(item);
+        }
+    }
+    if any_ok { Some(items) } else { None }
+}
+
+unsafe fn probe_contract(row: &Row, guid: &GUID, folder_pidl: *const ITEMIDLIST, data: Option<&IDataObject>, targets: u8) -> Option<Vec<ProbeItem>> {
+    let cm = cocreate(guid, &row.anchor, folder_pidl, data)?;
     let menu = CreatePopupMenu().ok()?;
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
     if targets & BACKGROUND == 0 {
@@ -850,7 +1024,7 @@ unsafe fn probe_items(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
             continue;
         }
         let raw = item_text(menu, i);
-        let folded = fold_menu(&raw);
+        let folded = menu_match_key(&raw);
         let label = menu_label(&raw);
         if verb_l.is_empty() && folded.is_empty() && label.is_empty() {
             continue;
@@ -900,18 +1074,37 @@ unsafe fn learn_unknown_com(cat: &[Row], targets: u8) {
     if probe_context().is_none() {
         return;
     }
-    let off = app(|a| a.s.ctx_off.clone());
-    let seen: HashSet<String> = app(|a| a.s.ctx_labels.keys().cloned().collect());
+    let (off, on, seen, quiet) = app(|a| {
+        let seen: HashSet<String> = a.s.ctx_labels.keys().cloned().collect();
+        (a.s.ctx_off.clone(), a.s.ctx_on.clone(), seen, a.s.ctx_quiet.clone())
+    });
+    let mut order: Vec<&Row> = Vec::new();
+    let mut later: Vec<&Row> = Vec::new();
+    for quiet_pass in [false, true] {
+        for row in cat {
+            if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
+                continue;
+            }
+            if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off, &on) {
+                continue;
+            }
+            if quiet.contains(&row.id) != quiet_pass {
+                continue;
+            }
+            // Generic Windows and screen-saver handlers rarely insert a row. Ask them after
+            // products the settings list is still waiting to name, so they do not use the budget first.
+            if shell_dormant(row) {
+                later.push(row);
+            } else {
+                order.push(row);
+            }
+        }
+    }
+    order.extend(later);
     let mut tried = 0u32;
-    for row in cat {
+    for row in order {
         if tried >= 8 {
             break;
-        }
-        if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
-            continue;
-        }
-        if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off) {
-            continue;
         }
         tried += 1;
         match probe_items(row, targets) {
@@ -919,11 +1112,17 @@ unsafe fn learn_unknown_com(cat: &[Row], targets: u8) {
                 let labels: Vec<String> = items.into_iter().map(|i| i.label).filter(|s| !s.is_empty()).collect();
                 if labels.is_empty() {
                     mark_missed(&row.id, targets);
+                    note_quiet(&row.id);
                 } else {
                     note_labels(&row.id, &labels);
                 }
             }
-            None => mark_missed(&row.id, targets),
+            None => {
+                mark_missed(&row.id, targets);
+                if missed_label(&row.id, row.targets) {
+                    note_quiet(&row.id);
+                }
+            }
         }
     }
 }
@@ -931,16 +1130,45 @@ unsafe fn learn_unknown_com(cat: &[Row], targets: u8) {
 /// Empty or failed probes, per handler and click kind. A few tries cover a different selection; then we stop asking.
 static MISSED: Mutex<Vec<(String, u8, u8)>> = Mutex::new(Vec::new());
 
+/// Every bit of `targets` has been asked often enough and never added an item.
 fn missed_label(id: &str, targets: u8) -> bool {
-    MISSED.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(i, t, n)| i == id && *t == targets && *n >= 3)
+    if targets == 0 {
+        return false;
+    }
+    let g = MISSED.lock().unwrap_or_else(|e| e.into_inner());
+    [FILE, FOLDER, BACKGROUND, DRIVE].into_iter().filter(|bit| targets & bit != 0).all(|bit| g.iter().any(|(i, t, n)| i == id && *t == bit && *n >= 3))
 }
 
 fn mark_missed(id: &str, targets: u8) {
     let mut g = MISSED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, _, n)) = g.iter_mut().find(|(i, t, _)| i == id && *t == targets) {
-        *n = n.saturating_add(1);
-    } else {
-        g.push((id.to_string(), targets, 1));
+    for bit in [FILE, FOLDER, BACKGROUND, DRIVE] {
+        if targets & bit == 0 {
+            continue;
+        }
+        if let Some((_, _, n)) = g.iter_mut().find(|(i, t, _)| i == id && *t == bit) {
+            *n = n.saturating_add(1);
+        } else {
+            g.push((id.to_string(), bit, 1));
+        }
+    }
+}
+
+/// The handler ran (or was given up on) and added no visible item. The shell menu is not changed.
+fn note_quiet(id: &str) {
+    if id.is_empty() || id == APP_WINMERGE {
+        return;
+    }
+    let changed = app(|a| {
+        if a.s.ctx_labels.get(id).is_some_and(|v| !v.is_empty()) {
+            return false;
+        }
+        a.s.ctx_quiet.insert(id.to_string())
+    });
+    if changed {
+        unsafe {
+            crate::note_save();
+            crate::settings::refresh_ctx_labels();
+        }
     }
 }
 
@@ -951,7 +1179,9 @@ fn note_labels(id: &str, incoming: &[String]) {
     }
     let changed = app(|a| {
         let slot = a.s.ctx_labels.entry(id.to_string()).or_default();
-        merge_labels(slot, incoming)
+        let added = merge_labels(slot, incoming);
+        let revealed = if slot.is_empty() { false } else { a.s.ctx_quiet.remove(id) };
+        added || revealed
     });
     if changed {
         unsafe {
@@ -1298,6 +1528,16 @@ fn menu_label(s: &str) -> String {
     let t = generalize_filenames(t);
     let t = strip_shortcut_suffix(&t);
     if label_is_placeholder(&t) { String::new() } else { t }
+}
+
+/// Identity of a menu row for deletion. Accelerators, a trailing `(L)`, and `...` / `…` fold together.
+/// `比較` and `比較...` stay distinct: they are different commands.
+fn menu_match_key(s: &str) -> String {
+    let t = menu_label(s);
+    if t.is_empty() {
+        return String::new();
+    }
+    fold_menu(&t.replace("...", "\u{2026}"))
 }
 
 fn strip_shortcut_suffix(s: &str) -> String {
@@ -1665,9 +1905,9 @@ impl IContextMenu3_Impl for CtxHost_Impl {
 impl CtxHost {
     unsafe fn fill_menu(&self, menu: HMENU, index_menu: u32, id_first: u32, id_last: u32, flags: u32) -> HRESULT {
         self.reset_parts();
-        let off = app(|a| a.s.ctx_off.clone());
+        let (off, on) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_on.clone()));
         let cat = catalogue();
-        let (clean, dirty) = split_classes(&self.classes, self.targets, &cat, &off);
+        let (clean, dirty) = split_classes(&self.classes, self.targets, &cat, &off, &on);
         let mut keys = Vec::new();
         let mut opened = Vec::new();
         for class in clean.iter().take(KEY_CAP) {
@@ -1714,7 +1954,7 @@ impl CtxHost {
         *self.keys.borrow_mut() = keys;
 
         let shift = flags & CMF_EXTENDEDVERBS != 0;
-        let manual = manual_rows(&dirty, &opened, self.targets, &cat, &off);
+        let manual = manual_rows(&dirty, &opened, self.targets, &cat, &off, &on);
         let t_ext = Instant::now();
         let mut next = id_first.saturating_add(BASE_END);
         let mut at = GetMenuItemCount(Some(menu)).max(0) as u32;
@@ -1988,7 +2228,9 @@ unsafe fn cocreate(guid: &GUID, class: &str, folder_pidl: *const ITEMIDLIST, dat
     if let Ok(init) = cm.cast::<IShellExtInit>() {
         let key = open_hkcr(class);
         let hk = key.unwrap_or_default();
-        let _ = init.Initialize(Some(folder_pidl), data, Some(hk));
+        // `Option<*const _>` uses a null pointer as None. Some(null) is not a value we can pass.
+        let pidl = if folder_pidl.is_null() { None } else { Some(folder_pidl) };
+        let _ = init.Initialize(pidl, data, Some(hk));
         if let Some(k) = key {
             _ = RegCloseKey(k);
         }
@@ -2008,6 +2250,111 @@ fn bits_of(names: &[String]) -> u8 {
     })
 }
 
+fn winmerge_bits(on: &BTreeMap<String, Vec<String>>) -> u8 {
+    bits_of(on.get(APP_WINMERGE).map(Vec::as_slice).unwrap_or(&[]))
+}
+
+fn winmerge_covers(on: &BTreeMap<String, Vec<String>>, targets: u8) -> bool {
+    targets != 0 && winmerge_bits(on) & targets == targets
+}
+
+fn mentions_winmerge(s: &str) -> bool {
+    s.to_ascii_lowercase().contains("winmerge")
+}
+
+/// Shell handler and Panegrid's own commands. New handlers start on; this one starts off.
+fn row_defaults_off(r: &Row) -> bool {
+    r.id == APP_WINMERGE || r.id.eq_ignore_ascii_case(WINMERGE_CLSID) || mentions_winmerge(&r.product) || mentions_winmerge(&r.raw) || mentions_winmerge(&r.name)
+}
+
+fn is_legacy_winmerge_id(id: &str) -> bool {
+    let n = id.trim().to_ascii_lowercase();
+    n != APP_WINMERGE && (n == WINMERGE_CLSID || n.contains("winmerge"))
+}
+
+/// An older file stored WinMerge only when it was turned off. Targets missing from that list
+/// were left on, so they become an explicit on. No entry at all stays off, the new default.
+pub(crate) fn reconcile_winmerge(off: &mut BTreeMap<String, Vec<String>>, on: &mut BTreeMap<String, Vec<String>>) {
+    if on.contains_key(APP_WINMERGE) {
+        off.retain(|id, _| !is_legacy_winmerge_id(id));
+        return;
+    }
+    let keys: Vec<String> = off.keys().filter(|id| is_legacy_winmerge_id(id)).cloned().collect();
+    if keys.is_empty() {
+        return;
+    }
+    let mut enabled = 0u8;
+    for id in &keys {
+        enabled |= TARGET_ALL & !bits_of(&off[id]);
+    }
+    write_bits(on, APP_WINMERGE, enabled);
+    for id in keys {
+        off.remove(&id);
+    }
+}
+
+fn listed(r: &Row, seen: &BTreeMap<String, Vec<String>>, quiet: &BTreeSet<String>) -> bool {
+    if r.builtin || r.targets == 0 {
+        return false;
+    }
+    if seen.get(&r.id).is_some_and(|v| !v.is_empty()) {
+        return true;
+    }
+    // Registered, but this menu never shows a row. Hidden before a probe marks them quiet.
+    if shell_dormant(r) {
+        return false;
+    }
+    if quiet.contains(&r.id) && r.static_labels.is_empty() {
+        return false;
+    }
+    true
+}
+
+/// The generic Windows product name, or a screen saver. Neither inserts a row in a folder menu.
+fn shell_dormant(r: &Row) -> bool {
+    generic_windows_product(&title_of(r))
+        || generic_windows_product(&r.product)
+        || generic_windows_product(&r.name)
+        || screen_saver_title(&title_of(r))
+        || screen_saver_title(&r.product)
+        || screen_saver_title(&r.name)
+        || screen_saver_title(&r.raw)
+        || screen_saver_title(&r.verb)
+}
+
+fn generic_windows_product(s: &str) -> bool {
+    let n = fold_menu(&polish_name(s));
+    n.contains("windows") && n.contains("operating system")
+}
+
+fn screen_saver_title(s: &str) -> bool {
+    let n: String = fold_menu(&polish_name(s)).chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    n == "screensaver" || n.contains("スクリーンセーバー") || n.contains("화면보호기")
+}
+
+fn app_winmerge_row() -> Row {
+    let mut static_labels = Vec::new();
+    push_unique(&mut static_labels, &crate::winmerge::context_labels());
+    Row {
+        id: APP_WINMERGE.into(),
+        name: "WinMerge".into(),
+        targets: TARGET_ALL,
+        builtin: false,
+        clsid: None,
+        verb: String::new(),
+        command: String::new(),
+        rank: 0,
+        extended: false,
+        single: false,
+        position: 0,
+        classes: Vec::new(),
+        anchor: String::new(),
+        product: "WinMerge".into(),
+        raw: String::new(),
+        static_labels,
+    }
+}
+
 fn write_bits(map: &mut BTreeMap<String, Vec<String>>, id: &str, bits: u8) {
     if id.is_empty() || bits == 0 {
         map.remove(id);
@@ -2022,19 +2369,25 @@ fn write_bits(map: &mut BTreeMap<String, Vec<String>>, id: &str, bits: u8) {
     map.insert(id.to_string(), v);
 }
 
-fn blocked(row: &Row, click: u8, off: &BTreeMap<String, Vec<String>>) -> bool {
+fn blocked(row: &Row, click: u8, off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>) -> bool {
     if row.builtin {
         return false;
     }
     let relevant = row.targets & click;
-    relevant != 0 && bits_of(off.get(&row.id).map(Vec::as_slice).unwrap_or(&[])) & relevant != 0
+    if relevant == 0 {
+        return false;
+    }
+    if row_defaults_off(row) {
+        return !winmerge_covers(on, relevant);
+    }
+    bits_of(off.get(&row.id).map(Vec::as_slice).unwrap_or(&[])) & relevant != 0
 }
 
-fn split_classes(classes: &[String], click: u8, cat: &[Row], off: &BTreeMap<String, Vec<String>>) -> (Vec<String>, Vec<String>) {
+fn split_classes(classes: &[String], click: u8, cat: &[Row], off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>) -> (Vec<String>, Vec<String>) {
     let mut clean = Vec::new();
     let mut dirty = Vec::new();
     for c in classes {
-        if class_dirty(c, click, cat, off) {
+        if class_dirty(c, click, cat, off, on) {
             dirty.push(c.clone());
         } else {
             clean.push(c.clone());
@@ -2043,14 +2396,14 @@ fn split_classes(classes: &[String], click: u8, cat: &[Row], off: &BTreeMap<Stri
     (clean, dirty)
 }
 
-fn class_dirty(class: &str, click: u8, cat: &[Row], off: &BTreeMap<String, Vec<String>>) -> bool {
-    cat.iter().any(|r| r.has_class(class) && blocked(r, click, off))
+fn class_dirty(class: &str, click: u8, cat: &[Row], off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>) -> bool {
+    cat.iter().any(|r| r.has_class(class) && blocked(r, click, off, on))
 }
 
-fn manual_rows<'a>(dirty: &[String], clean: &[String], click: u8, cat: &'a [Row], off: &BTreeMap<String, Vec<String>>) -> Vec<&'a Row> {
+fn manual_rows<'a>(dirty: &[String], clean: &[String], click: u8, cat: &'a [Row], off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>) -> Vec<&'a Row> {
     let mut out = Vec::new();
     for row in cat {
-        if row.targets & click == 0 || blocked(row, click, off) {
+        if row.targets & click == 0 || blocked(row, click, off, on) {
             continue;
         }
         let on_dirty = dirty.iter().any(|c| row.has_class(c));
@@ -2308,7 +2661,7 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
         if command.is_empty() && delegate_guid.is_none() {
             continue;
         }
-        // `name` stays the registry menu text. Deletion matches that string; the product title is separate.
+        // `name` stays the registry menu text. Deletion also matches the resolved MuiVerb. The product title is separate.
         let friendly = {
             let raw = if display.is_empty() { name.as_str() } else { display.as_str() };
             let shown = clean_label(raw);
@@ -3086,16 +3439,17 @@ mod tests {
             static_labels: Vec::new(),
         };
         let cat = vec![third, send];
-        assert!(blocked(&cat[0], FILE, &off));
-        assert!(!blocked(&cat[0], FOLDER, &off));
-        assert!(!blocked(&cat[1], FILE, &off), "a built-in handler stays even if the map names it");
-        assert!(class_dirty("AllFilesystemObjects", FILE, &cat, &off));
-        assert!(!class_dirty("AllFilesystemObjects", FOLDER, &cat, &off));
-        assert!(!class_dirty("*", FILE, &cat, &off));
-        let (clean, dirty) = split_classes(&["*".into(), "AllFilesystemObjects".into()], FILE, &cat, &off);
+        let none = BTreeMap::new();
+        assert!(blocked(&cat[0], FILE, &off, &none));
+        assert!(!blocked(&cat[0], FOLDER, &off, &none));
+        assert!(!blocked(&cat[1], FILE, &off, &none), "a built-in handler stays even if the map names it");
+        assert!(class_dirty("AllFilesystemObjects", FILE, &cat, &off, &none));
+        assert!(!class_dirty("AllFilesystemObjects", FOLDER, &cat, &off, &none));
+        assert!(!class_dirty("*", FILE, &cat, &off, &none));
+        let (clean, dirty) = split_classes(&["*".into(), "AllFilesystemObjects".into()], FILE, &cat, &off, &none);
         assert_eq!(clean, vec!["*".to_string()]);
         assert_eq!(dirty, vec!["AllFilesystemObjects".to_string()]);
-        let manual = manual_rows(&dirty, &clean, FILE, &cat, &off);
+        let manual = manual_rows(&dirty, &clean, FILE, &cat, &off, &none);
         assert!(manual.iter().any(|r| r.id == "clsid:sendto"));
         assert!(manual.iter().all(|r| r.id != "clsid:third"));
     }
@@ -3323,7 +3677,7 @@ mod tests {
         let word = sample_row("verb:word", "Open in Word", "Microsoft Office", "word", FILE | FOLDER);
         let configure = sample_row("verb:configure", "Configure", "", "configure", FILE);
         let rows = vec![excel, word, configure];
-        let ui = assemble(&rows, &BTreeMap::new(), &BTreeMap::new(), "");
+        let ui = assemble(&rows, &BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new(), "");
         assert_eq!(ui.len(), 2);
         assert_eq!(ui[0].name, "Microsoft Office");
         assert_eq!(ui[0].ids, vec!["verb:excel".to_string(), "verb:word".to_string()]);
@@ -3335,18 +3689,19 @@ mod tests {
         assert_eq!(ui[1].detail, "Configure");
 
         let mut off = BTreeMap::new();
-        toggle_ids_master(&mut off, &ui[0].ids, &ui[0].scopes);
+        let mut on = BTreeMap::new();
+        toggle_ids_master(&mut off, &mut on, &ui[0].ids, &ui[0].scopes);
         assert_eq!(bits_of(&off["verb:excel"]), FILE);
         assert_eq!(bits_of(&off["verb:word"]), FILE | FOLDER);
-        assert_eq!(assemble(&rows, &off, &BTreeMap::new(), "")[0].tick, Tick::Off);
-        toggle_ids_target(&mut off, &ui[0].ids, &ui[0].scopes, FILE);
+        assert_eq!(assemble(&rows, &off, &on, &BTreeMap::new(), "")[0].tick, Tick::Off);
+        toggle_ids_target(&mut off, &mut on, &ui[0].ids, &ui[0].scopes, FILE);
         assert!(!off.contains_key("verb:excel"));
         assert_eq!(bits_of(&off["verb:word"]), FOLDER);
         write_bits(&mut off, "verb:excel", FILE);
-        let mixed = assemble(&rows, &off, &BTreeMap::new(), "");
+        let mixed = assemble(&rows, &off, &on, &BTreeMap::new(), "");
         assert_eq!(mixed[0].tick, Tick::Mixed);
         assert_eq!(mixed[0].subs[0], Tick::Mixed);
-        toggle_ids_master(&mut off, &mixed[0].ids, &mixed[0].scopes);
+        toggle_ids_master(&mut off, &mut on, &mixed[0].ids, &mixed[0].scopes);
         assert_eq!(bits_of(off.get("verb:excel").map(Vec::as_slice).unwrap_or(&[])) & (FILE | FOLDER), 0);
         assert_eq!(bits_of(off.get("verb:word").map(Vec::as_slice).unwrap_or(&[])) & (FILE | FOLDER), 0);
     }
@@ -3421,9 +3776,218 @@ mod tests {
         assert!(quiet.raw.is_empty());
     }
 
+    fn com_row(id: &str, product: &str, raw: &str) -> Row {
+        Row {
+            id: id.into(),
+            name: product.into(),
+            targets: FILE | FOLDER,
+            builtin: false,
+            clsid: parse_guid("{11111111-2222-3333-4444-555555555555}"),
+            verb: String::new(),
+            command: String::new(),
+            rank: 1,
+            extended: false,
+            single: false,
+            position: 0,
+            classes: Vec::new(),
+            anchor: String::new(),
+            product: product.into(),
+            raw: raw.into(),
+            static_labels: Vec::new(),
+        }
+    }
+
+    fn shown(rows: &[Row], off: &BTreeMap<String, Vec<String>>, on: &BTreeMap<String, Vec<String>>, seen: &BTreeMap<String, Vec<String>>, quiet: &BTreeSet<String>) -> Vec<UiRow> {
+        let kept: Vec<Row> = rows.iter().filter(|r| listed(r, seen, quiet)).cloned().collect();
+        assemble(&kept, off, on, seen, "")
+    }
+
+    #[test]
+    fn handlers_that_add_no_menu_item_leave_the_list() {
+        let os = com_row("clsid:os", "Microsoft Windows Operating System", "ShellExt");
+        let saver = com_row("clsid:saver", "Screen saver", "ScrMenu");
+        let zip = sample_row("verb:7zip", "7-Zip", "7-Zip", "7-Zip", FILE);
+        let band = Row {
+            raw: "BdzShell".into(),
+            static_labels: vec!["반디집으로 압축하기".into()],
+            ..com_row("clsid:bdz", "반디집", "BdzShell")
+        };
+        let mut quiet = BTreeSet::new();
+        quiet.insert(os.id.clone());
+        quiet.insert(saver.id.clone());
+        let seen = BTreeMap::new();
+        let ui = shown(&[os.clone(), saver.clone(), zip.clone(), band.clone()], &BTreeMap::new(), &BTreeMap::new(), &seen, &quiet);
+        assert!(ui.iter().all(|r| r.name != "Microsoft Windows Operating System"));
+        assert!(ui.iter().all(|r| r.name != "Screen saver"));
+        assert!(ui.iter().any(|r| r.name == "7-Zip"));
+        let kept = ui.iter().find(|r| r.name == "반디집").unwrap();
+        assert_eq!(kept.detail, "반디집으로 압축하기");
+        assert_eq!(kept.raw, "BdzShell");
+
+        // Hidden before any probe. A third-party handler with no learned label stays listed.
+        let pending = shown(&[os.clone(), saver.clone()], &BTreeMap::new(), &BTreeMap::new(), &seen, &BTreeSet::new());
+        assert!(pending.is_empty());
+        let syno = com_row("clsid:syno", "Synology Drive", "SynoFolderContextMenu Class");
+        let waiting = shown(&[syno], &BTreeMap::new(), &BTreeMap::new(), &seen, &BTreeSet::new());
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].detail.is_empty());
+        assert_eq!(waiting[0].raw, "SynoFolderContextMenu Class");
+
+        // A screen-saver verb still has registry text. It stays hidden until a real menu shows it.
+        let saver_verb = sample_row("verb:screensaver", "Screen saver", "Microsoft Windows Operating System", "screensaver", BACKGROUND);
+        assert!(shell_dormant(&saver_verb));
+        assert!(!listed(&saver_verb, &BTreeMap::new(), &BTreeSet::new()));
+
+        // A later menu that does add an item brings the handler back.
+        let mut seen = BTreeMap::new();
+        seen.insert(os.id.clone(), vec!["Something visible".into()]);
+        let back = shown(&[os, saver], &BTreeMap::new(), &BTreeMap::new(), &seen, &quiet);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name, "Microsoft Windows Operating System");
+        assert_eq!(back[0].detail, "Something visible");
+        assert_eq!(back[0].raw, "ShellExt");
+        assert!(listed(&zip, &BTreeMap::new(), &{
+            let mut q = BTreeSet::new();
+            q.insert(zip.id.clone());
+            q
+        }));
+    }
+
+    #[test]
+    fn winmerge_is_one_row_and_starts_off() {
+        let shell = Row {
+            id: WINMERGE_CLSID.into(),
+            name: "WinMerge".into(),
+            product: "WinMerge".into(),
+            raw: "WinMerge".into(),
+            targets: FILE | FOLDER | BACKGROUND | DRIVE,
+            ..com_row(WINMERGE_CLSID, "WinMerge", "WinMerge")
+        };
+        let app = app_winmerge_row();
+        let off = BTreeMap::new();
+        let on = BTreeMap::new();
+        let rows = [shell.clone(), app];
+        let ui = assemble(&rows, &off, &on, &BTreeMap::new(), "");
+        assert_eq!(ui.len(), 1);
+        assert_eq!(ui[0].name, "WinMerge");
+        assert!(ui[0].ids.iter().any(|id| id == APP_WINMERGE));
+        assert!(ui[0].ids.iter().any(|id| id.eq_ignore_ascii_case(WINMERGE_CLSID)));
+        assert_eq!(ui[0].tick, Tick::Off);
+        let labels = crate::winmerge::context_labels();
+        assert!(ui[0].detail.contains(&labels[0]));
+        assert!(ui[0].detail.contains(&labels[1]));
+        assert!(ui[0].raw.is_empty(), "the internal name repeats the title, so it stays hidden");
+        assert!(blocked(&shell, FILE, &off, &on));
+        assert!(!blocked(&sample_row("verb:7zip", "7-Zip", "7-Zip", "7-Zip", FILE), FILE, &off, &on));
+
+        let mut on = BTreeMap::new();
+        toggle_ids_master(&mut BTreeMap::new(), &mut on, &ui[0].ids, &ui[0].scopes);
+        assert_eq!(bits_of(&on[APP_WINMERGE]), TARGET_ALL);
+        assert!(on.keys().all(|id| id == APP_WINMERGE));
+        let enabled = assemble(&rows, &BTreeMap::new(), &on, &BTreeMap::new(), "");
+        assert_eq!(enabled[0].tick, Tick::On);
+        assert!(!blocked(&shell, FILE | FOLDER, &BTreeMap::new(), &on));
+
+        toggle_ids_target(&mut BTreeMap::new(), &mut on, &ui[0].ids, &ui[0].scopes, FILE);
+        assert_eq!(bits_of(&on[APP_WINMERGE]), TARGET_ALL & !FILE);
+        assert_eq!(assemble(&rows, &BTreeMap::new(), &on, &BTreeMap::new(), "")[0].tick, Tick::Mixed);
+
+        let mut reset_off = BTreeMap::new();
+        let mut reset_on = BTreeMap::new();
+        reset_menu(&mut reset_off, &mut reset_on);
+        assert!(reset_off.is_empty());
+        assert_eq!(bits_of(&reset_on[APP_WINMERGE]), TARGET_ALL);
+    }
+
+    #[test]
+    fn an_older_winmerge_off_list_becomes_an_explicit_on() {
+        let mut off = BTreeMap::new();
+        let mut on = BTreeMap::new();
+        off.insert(WINMERGE_CLSID.into(), vec!["file".into()]);
+        off.insert("clsid:other".into(), vec!["folder".into()]);
+        reconcile_winmerge(&mut off, &mut on);
+        assert!(!off.contains_key(WINMERGE_CLSID));
+        assert_eq!(bits_of(&off["clsid:other"]), FOLDER);
+        assert_eq!(bits_of(&on[APP_WINMERGE]), TARGET_ALL & !FILE);
+
+        let mut off = BTreeMap::new();
+        let mut on = BTreeMap::new();
+        off.insert("verb:winmerge".into(), names(TARGET_ALL));
+        reconcile_winmerge(&mut off, &mut on);
+        assert!(off.is_empty());
+        assert!(on.is_empty(), "fully off stays the new default");
+
+        let mut off = BTreeMap::new();
+        let mut on = BTreeMap::new();
+        write_bits(&mut on, APP_WINMERGE, FILE | FOLDER);
+        off.insert(WINMERGE_CLSID.into(), vec!["drive".into()]);
+        reconcile_winmerge(&mut off, &mut on);
+        assert!(off.is_empty());
+        assert_eq!(bits_of(&on[APP_WINMERGE]), FILE | FOLDER, "an explicit on wins over the old off list");
+
+        let mut off = BTreeMap::new();
+        let mut on = BTreeMap::new();
+        reconcile_winmerge(&mut off, &mut on);
+        assert!(on.is_empty());
+    }
+
     #[test]
     fn the_filtered_key_builder_stays_compiled() {
         let _compose: unsafe fn(HWND, &IShellFolder, &[*const ITEMIDLIST], u8, &[String]) -> Option<IContextMenu> = compose;
         let _paths: unsafe fn(HWND, &[(String, bool)], u8) -> Option<IContextMenu> = compose_paths;
+    }
+
+    #[test]
+    fn menu_keys_fold_accelerators_without_merging_distinct_commands() {
+        assert_eq!(menu_match_key("左側として選択(&L)"), menu_match_key("左側として選択(L)"));
+        assert_eq!(menu_match_key("比較..."), menu_match_key("比較…"));
+        assert_eq!(menu_match_key("Visual Studio で開く(&V)"), menu_match_key("Visual Studio で開く(V)"));
+        assert_ne!(menu_match_key("比較"), menu_match_key("比較..."));
+        assert_eq!(menu_match_key("Select Left"), "select left");
+        assert!(generic_windows_product("Microsoft® Windows® Operating System"));
+        assert!(!generic_windows_product("Microsoft Office"));
+        assert!(!generic_windows_product("WinMerge"));
+        assert!(screen_saver_title("Screen saver"));
+        assert!(screen_saver_title("Screensaver"));
+        assert!(screen_saver_title("スクリーンセーバー"));
+        assert!(!screen_saver_title("Screen"));
+        assert!(!shell_dormant(&com_row(WINMERGE_CLSID, "WinMerge", "WinMerge")));
+    }
+
+    #[test]
+    fn a_selection_is_probed_without_counting_the_parent_folder() {
+        assert_eq!(probe_contracts(true, true), vec![ProbeContract::Selection, ProbeContract::FolderAndData]);
+        assert_eq!(probe_contracts(true, false), vec![ProbeContract::Folder]);
+        assert_eq!(probe_contracts(false, true), vec![ProbeContract::Selection]);
+        assert!(probe_contracts(false, false).is_empty());
+    }
+
+    #[test]
+    fn disabled_handlers_drop_inserted_text_in_the_ui_language() {
+        // What the handler inserted on a one-item menu, in Japanese.
+        let inserted = vec![menu_match_key("左側として選択(&L)"), menu_match_key("比較...")];
+        assert!(item_dropped("", "左側として選択(L)", &[], &inserted));
+        assert!(item_dropped("", "比較…", &[], &inserted));
+        // The two-path probe inserts a different command. That string does not remove the ellipsis item.
+        let two_paths = vec![menu_match_key("比較")];
+        assert!(!item_dropped("", "比較...", &[], &two_paths));
+        assert!(!item_dropped("", "左側として選択(L)", &[], &two_paths));
+        // English catalogue text is not a stand-in for the inserted Japanese rows.
+        let english = vec![menu_match_key("WinMerge"), menu_match_key("Select Left"), menu_match_key("Compare...")];
+        assert!(!item_dropped("", "左側として選択(L)", &[], &english));
+        assert!(!item_dropped("", "比較...", &[], &english));
+        // A resolved MuiVerb does remove the localized row, and the registry verb does too.
+        let mui = vec![menu_match_key("比較...")];
+        assert!(item_dropped("", "比較...", &[], &mui));
+        assert!(item_dropped("WinMerge", "比較...", &["winmerge".into()], &[]));
+        // Neighbouring commands and the shell's own verbs stay.
+        assert!(!item_dropped("", "SVN Checkout...", &[], &inserted));
+        assert!(!item_dropped("properties", "プロパティ", &[], &inserted));
+        assert!(!item_dropped("open", "開く(O)", &["open".into()], &inserted));
+        // Panegrid's own WinMerge commands sit at 0x8020 and are not shell rows.
+        assert!(panegrid_menu_id(0x8020));
+        assert!(panegrid_menu_id(0x8021));
+        assert!(!panegrid_menu_id(1));
+        assert!(!panegrid_menu_id(u32::MAX));
     }
 }
