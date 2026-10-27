@@ -33,6 +33,7 @@ const S_FV_RESET: i32 = 34;
 const S_FV_CLEAR: i32 = 35;
 pub(crate) const S_CTX_RESET: i32 = 36;
 const S_LAYOUT: i32 = 29;
+const S_SIDE: i32 = 37;
 const S_WM: i32 = 30;
 const S_WM_BROWSE: i32 = 31;
 const S_FAV0: i32 = 20000;
@@ -176,6 +177,7 @@ enum Ctl {
     FolderDefault,
     FolderReset,
     FolderClear,
+    SideOrder,
 }
 
 #[derive(Clone, Copy)]
@@ -221,7 +223,8 @@ const VIEW: &[Spec] = &[
     Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), live: true, ctl: Ctl::StartDir },
     Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
     Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), live: true, ctl: Ctl::Toggle(TG_EXT) },
-    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("The folder tree is on top and favourites are below. Drag the divider between them. This hides both.", "위는 폴더 트리, 아래는 즐겨찾기예요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "上はフォルダー ツリー、下はお気に入りです。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("Favourites and the folder tree share it. Drag the divider between them. This hides both.", "즐겨찾기와 폴더 트리가 같이 있어요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "お気に入りとフォルダー ツリーが入ります。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: s("Left panel order", "왼쪽 패널 순서", "左のパネルの順番"), desc: s("Favourites on top, or folder tree on top. The tree keeps its share of the height.", "즐겨찾기 위, 또는 폴더 트리 위. 폴더 트리가 차지하는 높이는 그대로예요.", "お気に入りを上、またはフォルダー ツリーを上。フォルダー ツリーの高さの割合はそのままです。"), live: true, ctl: Ctl::SideOrder },
     Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_EDGE) },
     Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On by default.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. 기본값은 켜짐.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_SPACE) },
     Spec { title: s("Wheel moves to next/previous file", "휠로 다음/이전 파일로 넘기기", "ホイールで次/前のファイルへ"), desc: s("Scrolling past the end of the content moves to the next or previous file.", "내용 끝에서 마우스 휠을 더 돌리면 다음·이전 파일로 넘어가요.", "内容の端でさらにホイールを回すと次・前のファイルに移ります。"), live: true, ctl: Ctl::Toggle(TG_WHEEL) },
@@ -250,6 +253,8 @@ const KEY_NOTE: [&str; 3] = s(
     "行をダブルクリックするか変更を押し、新しいキーを押します。Esc で取消。重複は入れ替えできます。",
 );
 const LIST_H: [&str; 3] = s("List", "목록", "一覧");
+const SIDE_FAV: [&str; 3] = s("Favourites on top", "즐겨찾기 위", "お気に入りを上");
+const SIDE_TREE: [&str; 3] = s("Folder tree on top", "폴더 트리 위", "フォルダー ツリーを上");
 const ABOUT: &[Spec] = &[Spec {
     title: s("Panegrid", "Panegrid", "Panegrid"),
     desc: s(
@@ -768,7 +773,7 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
             RECT { left: rect.left + pad, top: rect.bottom - sc(dpi, 12) - eh, right: rect.right - pad, bottom: rect.bottom - sc(dpi, 12) }
         }
         Ctl::CopyEng => right_box(rect, sc(dpi, 140), sc(dpi, 22), pad),
-        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout => {
+        Ctl::Lang | Ctl::Face | Ctl::Start | Ctl::Theme | Ctl::ViewMode | Ctl::StartDir | Ctl::DelMode | Ctl::NewName | Ctl::Drop | Ctl::Layout | Ctl::SideOrder => {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
         }
         Ctl::Sess => right_box(rect, sc(dpi, 108), sc(dpi, 32), pad),
@@ -936,6 +941,7 @@ fn ctl_id(c: Ctl) -> Option<i32> {
         Ctl::NewName => S_NEW,
         Ctl::Drop => S_DROP,
         Ctl::Layout => S_LAYOUT,
+        Ctl::SideOrder => S_SIDE,
         Ctl::Sess => S_SESS,
         Ctl::About => S_GITHUB,
         Ctl::Accent => S_ACCENT,
@@ -1209,5 +1215,59 @@ mod tests {
         let w = r.right - r.left;
         assert!(w >= 18 + 13 * 4, "drive chip width {w}");
         assert_eq!(crate::shell::ctxmenu::target_label(crate::shell::ctxmenu::DRIVE), "드라이브");
+    }
+
+    #[test]
+    fn left_panel_order_sits_under_the_panel_toggle_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let panel = VIEW.iter().position(|c| c.ctl == Ctl::Toggle(TG_TREE)).unwrap();
+        let order = VIEW.iter().position(|c| c.ctl == Ctl::SideOrder).unwrap();
+        assert_eq!(order, panel + 1);
+        let show = &VIEW[panel];
+        assert_eq!(show.title, s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"));
+        assert!(!show.desc[0].contains("on top") && !show.desc[0].contains("below"));
+        assert!(!show.desc[1].contains("위는 폴더"));
+        assert!(!show.desc[2].contains("上はフォルダー"));
+        assert_eq!(VIEW[order].title, s("Left panel order", "왼쪽 패널 순서", "左のパネルの順番"));
+        assert_eq!(SIDE_FAV, s("Favourites on top", "즐겨찾기 위", "お気に入りを上"));
+        assert_eq!(SIDE_TREE, s("Folder tree on top", "폴더 트리 위", "フォルダー ツリーを上"));
+        assert!(VIEW[order].desc[0].contains("Favourites on top") && VIEW[order].desc[0].contains("folder tree on top"));
+        assert!(VIEW[order].desc[1].contains("즐겨찾기 위") && VIEW[order].desc[1].contains("폴더 트리 위"));
+        assert!(VIEW[order].desc[2].contains("お気に入りを上") && VIEW[order].desc[2].contains("フォルダー ツリーを上"));
+        assert_eq!(ctl_id(Ctl::SideOrder), Some(S_SIDE));
+        assert!(VIEW[order].live);
+
+        let ctls = |g: &Geo| {
+            g.items.iter().filter_map(|it| match it {
+                Item::Card(c) => Some(c.spec.ctl),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let ordered = |g: &Geo| {
+            let ctls = ctls(g);
+            let p = ctls.iter().position(|c| *c == Ctl::Toggle(TG_TREE));
+            ctls.iter().position(|c| *c == Ctl::SideOrder) == p.map(|i| i + 1)
+        };
+        assert!(ordered(&geo(client(), &shot(2, ""))));
+        let has = |q: &str| ctls(&geo(client(), &shot(2, q))).contains(&Ctl::SideOrder);
+        let (anchor, page) = commit_search(0, 0, "Left panel order");
+        assert_eq!((anchor, page), (0, 2));
+        assert!(has("Left panel order"));
+        assert!(has("Favourites on top"));
+        assert!(has("folder tree on top"));
+        assert!(ctls(&geo(client(), &shot(2, "Show the left panel"))).contains(&Ctl::Toggle(TG_TREE)));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "왼쪽 패널 순서");
+        assert_eq!(page, 2);
+        assert!(ordered(&geo(client(), &shot(2, ""))));
+        assert!(has("왼쪽 패널 순서") && has("즐겨찾기 위") && has("폴더 트리 위"));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "左のパネルの順番");
+        assert_eq!(page, 2);
+        assert!(ordered(&geo(client(), &shot(2, ""))));
+        assert!(has("左のパネルの順番") && has("お気に入りを上") && has("フォルダー ツリーを上"));
     }
 }

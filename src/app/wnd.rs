@@ -159,7 +159,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let min = 60 * a.dpi / 96;
                     match d {
                         Hit::Side => a.s.side = x - g.gap / 2,
-                        Hit::SideSplit => a.s.side_split = split_ratio_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi)),
+                        Hit::SideSplit => a.s.side_split = tree_share_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi), a.s.fav_top),
                         Hit::Col(k) => drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, g.w - g.pad - g.gx, g.gap, min),
                         Hit::Row(c, k) => drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, g.bot - g.top, g.gap, min),
                     }

@@ -24,6 +24,12 @@ fn yes() -> bool {
 fn half_split() -> f64 {
     0.5
 }
+fn side_fav() -> String {
+    "fav".into()
+}
+fn side_is_fav(v: &String) -> bool {
+    v != "tree"
+}
 fn pins_open() -> bool {
     true
 }
@@ -211,6 +217,11 @@ struct SettingsFile {
     /// Folder tree's share of the left panel. Favourites use the rest. Missing means even.
     #[serde(default = "half_split", skip_serializing_if = "is_half_split")]
     side_split: f64,
+    /// Which half is on top. `"tree"` puts the folder tree above favourites.
+    /// Missing, `"fav"`, or anything else is favourites on top, and the key is omitted.
+    /// Not written into grids.ini.
+    #[serde(default = "side_fav", skip_serializing_if = "side_is_fav")]
+    side_order: String,
     /// Explorer pins group expanded. The pinned folders themselves are not stored.
     #[serde(default = "pins_open", skip_serializing_if = "pins_are_open")]
     explorer_pins_open: bool,
@@ -343,6 +354,7 @@ impl SettingsFile {
             tree: true,
             panel: String::new(),
             side_split: 0.5,
+            side_order: side_fav(),
             explorer_pins_open: true,
             explorer_files_open: true,
             edge: true,
@@ -436,6 +448,7 @@ impl SettingsFile {
             tree: s.tree_on,
             panel: String::new(),
             side_split: crate::sane_split(s.side_split),
+            side_order: if s.fav_top { side_fav() } else { "tree".into() },
             explorer_pins_open: s.pins_open,
             explorer_files_open: s.files_open,
             edge: s.edge,
@@ -580,6 +593,7 @@ impl SettingsFile {
         s.ext = self.ext;
         s.tree_on = self.tree;
         s.side_split = crate::sane_split(self.side_split);
+        s.fav_top = self.side_order != "tree";
         s.pins_open = self.explorer_pins_open;
         s.files_open = self.explorer_files_open;
         s.edge = self.edge;
@@ -1496,6 +1510,77 @@ mod tests {
         assert!(dropped.get("panel").is_none());
         let wide = adopt(r#"{"side_split":9}"#).unwrap();
         assert!((wide.side_split - 1.0).abs() < 1e-9);
+        assert!(even.get("side_order").is_none());
+        assert!(Session::default().fav_top);
+    }
+
+    #[test]
+    fn side_order_defaults_to_favourites_and_round_trips_the_tree() {
+        let fresh = adopt("{}").unwrap();
+        assert!(fresh.fav_top);
+        let saved: Value = serde_json::from_str(&sync_text(&fresh)).unwrap();
+        assert!(saved.get("side_order").is_none());
+        assert!(!fresh.to_ini().contains("sideorder"));
+
+        let mut s = Session::default();
+        s.fav_top = false;
+        s.side_split = 0.25;
+        let text = sync_text(&s);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["side_order"], "tree");
+        assert!((v["side_split"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+        let back = adopt(&text).unwrap();
+        assert!(!back.fav_top);
+        assert!((back.side_split - 0.25).abs() < 1e-9);
+        assert!(back.to_ini().contains("sideorder=tree\n"));
+        assert_eq!(Session::parse(&back.to_ini()).fav_top, false);
+
+        assert!(adopt(r#"{"side_order":"fav"}"#).unwrap().fav_top);
+        assert!(adopt(r#"{"side_order":"nope"}"#).unwrap().fav_top);
+        let tree_again: Value = serde_json::from_str(&sync_text(&adopt(r#"{"side_order":"tree"}"#).unwrap())).unwrap();
+        assert_eq!(tree_again["side_order"], "tree");
+        let cleared = adopt(r#"{"side_order":"fav","side_split":0.25}"#).unwrap();
+        assert!(cleared.fav_top);
+        assert!(serde_json::from_str::<Value>(&sync_text(&cleared)).unwrap().get("side_order").is_none());
+    }
+
+    #[test]
+    fn side_order_import_leaves_grids_ini_byte_for_byte() {
+        let root = scratch("side-order-ini");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        let old = root.join("old");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let body = "tree=1\nsplit=0.25\nlang=en\n";
+        let ini = exe.join("grids.ini");
+        std::fs::write(&ini, body).unwrap();
+        let loaded = load_at(&exe, &cfg, &old);
+        assert!(loaded.fav_top);
+        assert!((loaded.side_split - 0.25).abs() < 1e-9);
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), body);
+        assert!(ini.is_file());
+        assert!(!exe.join("grids.ini.bak").exists());
+        let json = std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap();
+        assert!(!json.contains("side_order"));
+        assert!(!json.contains("grids.ini"));
+
+        let root2 = scratch("side-order-tree");
+        let exe2 = root2.join("exe");
+        let cfg2 = root2.join("cfg");
+        let old2 = root2.join("old");
+        std::fs::create_dir_all(&exe2).unwrap();
+        std::fs::create_dir_all(&old2).unwrap();
+        let body2 = "sideorder=tree\nsplit=0.4\n";
+        let ini2 = exe2.join("grids.ini");
+        std::fs::write(&ini2, body2).unwrap();
+        let tree = load_at(&exe2, &cfg2, &old2);
+        assert!(!tree.fav_top);
+        assert!((tree.side_split - 0.4).abs() < 1e-9);
+        assert_eq!(std::fs::read_to_string(&ini2).unwrap(), body2);
+        assert!(!exe2.join("grids.ini.bak").exists());
+        let json2 = std::fs::read_to_string(cfg2.join(SETTINGS_FILE)).unwrap();
+        assert!(json2.contains("\"side_order\": \"tree\""));
     }
 
     #[test]

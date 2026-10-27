@@ -413,13 +413,13 @@ pub(crate) unsafe fn paint_main(h: HWND) {
         if g.side > 0 {
             let side = side_rect(&g);
             fill(dc, side, side_ground());
-            if g.tree_h > 0 && g.gap > 0 {
-                let gap = RECT { left: side.left, top: side.top + g.tree_h, right: side.right, bottom: side.top + g.tree_h + g.gap };
-                fill(dc, gap, pal().bg);
+            if let Some(gap) = side_gap_rect(&g) {
+                let (gap_c, line_c) = side_divider_now(accent);
+                fill(dc, gap, gap_c);
                 // The tree/favourites divider always shows its accent line, not only under the pointer.
                 let t = (2 * dpi / 96).max(1);
-                let y = gap.top + g.gap / 2;
-                fill(dc, RECT { left: side.left, top: y - t / 2, right: side.right, bottom: y - t / 2 + t }, accent);
+                let y = gap.top + (gap.bottom - gap.top) / 2;
+                fill(dc, RECT { left: gap.left, top: y - t / 2, right: gap.right, bottom: y - t / 2 + t }, line_c);
             }
             frame(dc, side, 1, pal().line);
         }

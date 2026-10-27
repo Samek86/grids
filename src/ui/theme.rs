@@ -57,6 +57,15 @@ pub(crate) fn side_ground() -> u32 {
     pal().bg
 }
 
+/// Gap fill and accent line of the left-panel divider. The same pair in either order.
+pub(crate) fn side_divider_colors(dark: bool, accent: u32) -> (u32, u32) {
+    ((if dark { &DARK } else { &LIGHT }).bg, accent)
+}
+
+pub(crate) fn side_divider_now(accent: u32) -> (u32, u32) {
+    side_divider_colors(DARK_ON.load(Ordering::Relaxed), accent)
+}
+
 /// Favourite group row wash: accent mixed into the panel. Light keeps about 18% accent.
 /// Dark uses a smaller share so a bright accent stays a dim tint rather than a glow.
 pub(crate) fn group_tint(accent: u32, ground: u32, dark: bool) -> u32 {
@@ -104,5 +113,17 @@ mod tests {
         assert!(lum(tint_d) < lum(tint));
         assert_ne!(tint_d, hot_d);
         assert!(dist(sel_d, DARK.card) > dist(tint_d, DARK.card) * 2);
+    }
+
+    #[test]
+    fn divider_colours_follow_the_palette() {
+        assert_eq!(side_divider_colors(false, 0x112233), (LIGHT.bg, 0x112233));
+        assert_eq!(side_divider_colors(true, 0xAABBCC), (DARK.bg, 0xAABBCC));
+        assert_eq!(side_ground_of(false), LIGHT.bg);
+        assert_eq!(side_ground_of(true), DARK.bg);
+    }
+
+    fn side_ground_of(dark: bool) -> u32 {
+        side_divider_colors(dark, 0).0
     }
 }

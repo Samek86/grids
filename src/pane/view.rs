@@ -259,9 +259,7 @@ pub(crate) unsafe fn relayout() {
         }
         let g = geo(a);
         let s = |v: i32| v * a.dpi / 96;
-        let sr = side_rect(&g);
-        let tree = RECT { left: sr.left + s(2), top: sr.top + s(2), right: sr.right - s(2), bottom: sr.top + g.tree_h };
-        let fav = RECT { left: sr.left + s(2), top: sr.top + g.tree_h + g.gap, right: sr.right - s(2), bottom: sr.bottom - s(2) };
+        let (tree, fav) = side_panes(&g, s(2));
         let mut moves = vec![(a.tree_hwnd, tree), (a.side_hwnd, fav)];
         let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
         let show_bar = a.s.bar;
