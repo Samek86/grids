@@ -229,9 +229,9 @@ pub(crate) fn fav_menu_label(paths: &[String]) -> &'static str {
 /// (`お気に入りに追加`), so this label names Panegrid in every UI language.
 pub(crate) fn fav_action_label(remove: bool) -> &'static str {
     if remove {
-        tr("Remove from Panegrid favorites", "Panegrid 즐겨찾기에서 제거", "Panegrid のお気に入りから削除")
+        tr(crate::Key::RemoveFromPanegridFavorites)
     } else {
-        tr("Add to Panegrid favorites", "Panegrid 즐겨찾기에 추가", "Panegrid のお気に入りに追加")
+        tr(crate::Key::AddPanegridFavorites)
     }
 }
 
@@ -665,7 +665,7 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
             if !menu_sep(menu, n - 1) {
                 _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             }
-            _ = AppendMenuW(menu, MF_STRING, ID_CTX_PROPS as usize, &HSTRING::from(tr("Properties", "속성", "プロパティ")));
+            _ = AppendMenuW(menu, MF_STRING, ID_CTX_PROPS as usize, &HSTRING::from(tr(crate::Key::Properties)));
             add_props = true;
         }
     }
@@ -1039,7 +1039,7 @@ pub(crate) unsafe fn paint_favs(h: HWND) {
         fill(dc, rc, pal().card);
         frame(dc, rc, 1, pal().line);
         if rows.is_empty() {
-            text(dc, rc, tr("No favourites yet · add one with ☆+ in a pane header", "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가", "お気に入りはまだありません · ペインヘッダーの ☆+ で追加"), font, pal().sub, DT_CENTER);
+            text(dc, rc, tr(crate::Key::NoFavouritesYetAddOneWithIn), font, pal().sub, DT_CENTER);
         }
         for (k, (f, (row, remove))) in rows.iter().zip(&g.rows).enumerate() {
             if hot.is_some_and(|(i, _)| i == k) {
@@ -1056,7 +1056,7 @@ pub(crate) unsafe fn paint_favs(h: HWND) {
             let ink = if !f.group && known_missing(&f.path) { pal().sub } else { pal().text };
             text(dc, line(row.top + s(3), s(19)), &label, font, ink, DT_LEFT);
             let sub = if f.group {
-                tr("Group", "그룹", "グループ")
+                tr(crate::Key::Group)
             } else {
                 f.path.as_str()
             };
@@ -1216,7 +1216,7 @@ pub(crate) unsafe fn new_folder(i: usize) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     }
-    let base = tr("New folder", "새 폴더", "新しいフォルダー");
+    let base = tr(crate::Key::NewFolder);
     let name = fresh_folder(base, |n| Path::new(&dir).join(n).exists());
     if std::fs::create_dir(Path::new(&dir).join(&name)).is_err() {
         _ = MessageBeep(MB_ICONWARNING);

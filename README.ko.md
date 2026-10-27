@@ -148,12 +148,20 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 탭 줄의 톱니가 보기 메뉴를 엽니다. 설정은 그 메뉴에 있습니다(`Ctrl+,`).
 
-언어(자동, English, 한국어, 日本語), 글꼴, 라이트/다크 테마, 단축키는 설정에서 바꿉니다. 이전 Grids 설정 이전, 파일 저장 방식, `panegrid.json` 키 전체 표는 [docs/settings.ko.md](docs/settings.ko.md)에 있습니다.
+언어(자동, English, 그리고 언어 파일마다), 글꼴, 라이트/다크 테마, 단축키는 설정에서 바꿉니다. 이전 Grids 설정 이전, 파일 저장 방식, `panegrid.json` 키 전체 표는 [docs/settings.ko.md](docs/settings.ko.md)에 있습니다.
+
+## 언어 파일
+
+영어는 프로그램에 들어 있고, 번역이 없으면 영어로 나옵니다. 한국어, 일본어, 프랑스어, 독일어는 `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, `lang/lang.de.ini`로 들어 있습니다. 처음 실행할 때, 그리고 버전이 바뀔 때마다, 이 네 파일을 설정 파일 옆 `lang` 폴더에 씁니다(`%APPDATA%\Panegrid\lang`, `portable.txt`가 있으면 `panegrid.exe` 옆). 이 네 파일은 항상 덮어씁니다. `lang.xx.user.ini`와, 직접 넣은 다른 `lang.xx.ini`는 쓰거나 덮거나 지우지 않습니다.
+
+파일은 UTF-8입니다(앞의 BOM은 무시). 한 줄은 `key = text`입니다. `=` 뒤의 공백 하나가 구분자입니다. `\\`는 역슬래시, `\n`은 줄바꿈입니다. `#`이나 `;`로 시작하는 줄은 주석입니다. `[meta]`의 `name`은 언어 목록에 보이는 이름입니다. `[meta]`의 `font`는 선택 글꼴입니다(한국어·일본어 기본은 맑은 고딕, Yu Gothic UI이고, 그 외는 Segoe UI). 없는 키는 영어를 씁니다.
+
+`lang.xx.user.ini`(예: `lang.ko.user.ini`)는 `lang.xx.ini` 위에 얹히고, 같은 키는 이쪽이 이깁니다. `lang.es.ini`를 넣으면 스페인어가 목록에 나옵니다. 자동은 Windows 표시 언어의 ISO 코드와 맞는 파일이 있으면 그 언어를, 없으면 영어를 씁니다. 저장값 `en`, `ko`, `ja`는 그대로 동작합니다.
 
 ## 로드맵
 
 - [ ] `panegrid.exe`에 코드 서명을 넣어, 처음 실행할 때 SmartScreen 경고가 나오지 않게 합니다
-- [ ] English, 한국어, 日本語 이외의 표시 언어
+- [x] English, 한국어, 日本語 이외의 표시 언어
 
 ## 감사
 

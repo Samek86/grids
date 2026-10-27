@@ -253,9 +253,11 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 }
                 ID_SETTINGS => settings::open(h),
                 ID_LANG_AUTO => set_language(Lang::Auto),
-                ID_LANG_EN => set_language(Lang::En),
-                ID_LANG_KO => set_language(Lang::Ko),
-                ID_LANG_JA => set_language(Lang::Ja),
+                id if (ID_LANG_FIRST..ID_LANG_FIRST + 64).contains(&id) => {
+                    if let Some((lang, _)) = language_choices().get(id - ID_LANG_FIRST) {
+                        set_language(*lang);
+                    }
+                }
                 ID_HELP => open_help(),
                 ID_ABOUT => about(h),
                 id @ ID_ACCENT..=1405 => set_accent(pal().accents[id - ID_ACCENT].1),
@@ -278,30 +280,30 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = ModifyMenuW(menu, ID_THEME as u32, MF_BYCOMMAND | MF_STRING, ID_THEME as usize, &HSTRING::from(theme_action_label()));
                 check(ID_HOTKEY, hot);
                 if let Some(i) = crate::keys::index("app.front") {
-                    let label = format!("{}\t{}", tr("Bring Panegrid to front from anywhere", "어디서나 Panegrid 불러오기", "どこからでも Panegrid を前面に"), crate::keys::chord_text(i));
+                    let label = format!("{}\t{}", tr(crate::Key::BringPanegridFrontFromAnywhere), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_HOTKEY as u32, MF_BYCOMMAND | MF_STRING, ID_HOTKEY as usize, &HSTRING::from(label));
                 }
                 if let Some(i) = crate::keys::index("view.panel") {
-                    let label = format!("{}\t{}", tr("Left panel", "왼쪽 패널", "左のパネル"), crate::keys::chord_text(i));
+                    let label = format!("{}\t{}", tr(crate::Key::LeftPanel), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_PANEL as u32, MF_BYCOMMAND | MF_STRING, ID_PANEL as usize, &HSTRING::from(label));
                 }
                 if let Some(i) = crate::keys::index("view.gather") {
                     let label = format!(
                         "{}\t{}",
-                        tr("Open folders from Explorer windows", "탐색기 창의 폴더 가져오기", "エクスプローラーのウィンドウからフォルダーを開く"),
+                        tr(crate::Key::OpenFoldersFromExplorerWindows),
                         crate::keys::chord_text(i)
                     );
                     _ = ModifyMenuW(menu, ID_GATHER as u32, MF_BYCOMMAND | MF_STRING, ID_GATHER as usize, &HSTRING::from(label));
                 }
                 if let Some(i) = crate::keys::index("sess.save") {
-                    let label = format!("{}\t{}", tr("Save this tab", "이 탭 저장", "このタブを保存"), crate::keys::chord_text(i));
+                    let label = format!("{}\t{}", tr(crate::Key::SaveThisTab), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_SESS_SAVE as u32, MF_BYCOMMAND | MF_STRING, ID_SESS_SAVE, &HSTRING::from(label));
                 }
                 check(ID_DBLUP, dblup);
                 check(ID_LANG_AUTO, lang == Lang::Auto);
-                check(ID_LANG_EN, lang == Lang::En);
-                check(ID_LANG_KO, lang == Lang::Ko);
-                check(ID_LANG_JA, lang == Lang::Ja);
+                for (i, (choice, _)) in language_choices().into_iter().enumerate() {
+                    check(ID_LANG_FIRST + i, lang == choice);
+                }
                 for (k, (_, c)) in pal().accents.iter().enumerate() {
                     check(ID_ACCENT + k, *c == accent);
                 }
@@ -788,11 +790,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 pub(crate) const HOTKEY_ID: i32 = 1;
 
 fn hotkey_busy(chord: &str) -> String {
-    match ui() {
-        1 => format!("{chord}는 다른 앱이 이미 쓰고 있음"),
-        2 => format!("{chord} は他のアプリが使用中です"),
-        _ => format!("{chord} is already used by another app"),
-    }
+    tf(Key::HotkeyBusy, &[("chord", chord)])
 }
 
 /// Registers or drops the global hotkey. A bare key is refused: it would steal typing in every app.
@@ -930,7 +928,7 @@ pub(crate) unsafe fn hotkey_pressed() {
 
 // The README on GitHub, in the UI language.
 pub(crate) unsafe fn open_help() {
-    let url = format!("{HOME}/blob/main/{}", tr("README.md", "README.ko.md", "README.md"));
+    let url = format!("{HOME}/blob/main/{}", tr(crate::Key::ReadmeMd));
     ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
 }
 
@@ -938,16 +936,12 @@ pub(crate) unsafe fn about(owner: HWND) {
     let text = format!(
         "Panegrid {}\n{}\n\n{}\n{}\n{HOME}\n\n{}",
         env!("CARGO_PKG_VERSION"),
-        tr("Fast multi-pane file manager for Windows", "Windows용 빠른 다중 패널 파일 관리자", "Windows 向けの高速マルチペイン ファイル マネージャー"),
-        tr(
-            "Panegrid is a fork of efww/grids by efww\nfork Samek86/panegrid",
-            "Panegrid는 efww의 efww/grids 포크입니다\n포크 Samek86/panegrid",
-            "Panegrid は efww による efww/grids のフォークです\nフォーク Samek86/panegrid",
-        ),
-        tr("MIT License · © 2026 efww", "MIT 라이선스 · © 2026 efww", "MIT ライセンス · © 2026 efww"),
-        tr("Open the project page?", "프로젝트 페이지를 열까요?", "プロジェクト ページを開きますか?"),
+        tr(crate::Key::FastMultiPaneFileManagerForWindows),
+        tr(crate::Key::PanegridIsForkOfEfwwGridsBy),
+        tr(crate::Key::MitLicense2026Efww),
+        tr(crate::Key::OpenProjectPage),
     );
-    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr("About Panegrid", "Panegrid 정보", "Panegrid のバージョン情報")), MB_YESNO | MB_ICONINFORMATION) == IDYES {
+    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr(crate::Key::AboutPanegrid)), MB_YESNO | MB_ICONINFORMATION) == IDYES {
         ShellExecuteW(None, w!("open"), &HSTRING::from(HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
     }
 }
@@ -955,31 +949,31 @@ pub(crate) unsafe fn about(owner: HWND) {
 // Tab-row buttons: id, accessible name, tooltip.
 pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 5] {
     [
-        (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수", "レイアウト: クリック = 均等、ドラッグ = 列ごとの行数")),
-        (ID_TB_SAVE, tr("Save this tab", "이 탭 저장", "このタブを保存"), ""), // tooltip set by refresh_save_button
-        (ID_TB_LOAD, tr("Open session", "세션 열기", "セッションを開く"), tr("Open a session as a new tab", "세션을 새 탭으로 열기", "セッションを新しいタブで開く")),
+        (ID_TB_LAYOUT, "", tr(crate::Key::LayoutClickEvenGridDragRowsPer)),
+        (ID_TB_SAVE, tr(crate::Key::SaveThisTab), ""), // tooltip set by refresh_save_button
+        (ID_TB_LOAD, tr(crate::Key::OpenSession), tr(crate::Key::OpenSessionAsNewTab)),
         (
             ID_TB_FAV,
-            tr("Favourites", "즐겨찾기", "お気に入り"),
-            tr("Favourites: search, edit, and open in the active pane", "즐겨찾기: 검색하고 편집하고 활성 패널에서 열기", "お気に入り: 検索、編集、アクティブなペインで開く"),
+            tr(crate::Key::Favourites),
+            tr(crate::Key::FavouritesSearchEditAndOpenInActive),
         ),
-        (ID_TB_SET, tr("Settings and view", "설정 및 보기", "設定と表示"), tr("Settings and view", "설정 및 보기", "設定と表示")),
+        (ID_TB_SET, tr(crate::Key::SettingsAndView), tr(crate::Key::SettingsAndView)),
     ]
 }
 
 /// View-menu label for the hand-picked theme. It names the theme a click will turn on.
 pub(crate) fn theme_action_label() -> &'static str {
     if app(|a| a.s.dark) {
-        tr("Light theme", "라이트 테마", "ライト テーマ")
+        tr(crate::Key::LightTheme)
     } else {
-        tr("Dark theme", "다크 테마", "ダーク テーマ")
+        tr(crate::Key::DarkTheme)
     }
 }
 
 // Switches the UI language now: menus, fonts, toolbar tooltips, panes, and an open settings window.
 pub(crate) unsafe fn set_language(lang: Lang) {
     app(|a| a.s.choose_lang(lang));
-    UI.store(lang.resolve(), Ordering::Relaxed);
+    apply(lang);
     // Vendor titles are chosen in the UI language. The next settings paint reads them again.
     crate::shell::ctxmenu::invalidate();
     publish_shared();
@@ -1014,45 +1008,41 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     let view = CreatePopupMenu()?;
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
     let save_chord = crate::keys::index("sess.save").map(crate::keys::chord_text).unwrap_or_default();
-    item(view, MF_STRING, ID_SESS_SAVE, &format!("{}\t{}", tr("Save this tab", "이 탭 저장", "このタブを保存"), save_chord))?;
-    item(view, MF_STRING, ID_SESS_OPEN, tr("Open session...", "세션 열기...", "セッションを開く..."))?;
+    item(view, MF_STRING, ID_SESS_SAVE, &format!("{}\t{}", tr(crate::Key::SaveThisTab), save_chord))?;
+    item(view, MF_STRING, ID_SESS_OPEN, tr(crate::Key::OpenSession2))?;
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
-    item(view, MF_STRING, ID_PANEL, tr("Left panel\tCtrl+Shift+E", "왼쪽 패널\tCtrl+Shift+E", "左のパネル\tCtrl+Shift+E"))?;
+    item(view, MF_STRING, ID_HIDDEN, tr(crate::Key::ShowHiddenFilesCtrlH))?;
+    item(view, MF_STRING, ID_PANEL, tr(crate::Key::LeftPanelCtrlShiftE))?;
     item(
         view,
         MF_STRING,
         ID_GATHER,
-        tr(
-            "Open folders from Explorer windows\tCtrl+Shift+O",
-            "탐색기 창의 폴더 가져오기\tCtrl+Shift+O",
-            "エクスプローラーのウィンドウからフォルダーを開く\tCtrl+Shift+O",
-        ),
+        tr(crate::Key::OpenFoldersFromExplorerWindowsCtrlShift),
     )?;
-    item(view, MF_STRING, ID_EXT, tr("Show file extensions", "파일 확장명 표시", "ファイルの拡張子を表示"))?;
-    item(view, MF_STRING, ID_FOLLOW, tr("Follow Windows light / dark", "Windows 라이트·다크 설정 따르기", "Windows のライト / ダークに合わせる"))?;
+    item(view, MF_STRING, ID_EXT, tr(crate::Key::ShowFileExtensions))?;
+    item(view, MF_STRING, ID_FOLLOW, tr(crate::Key::FollowWindowsLightDark))?;
     item(view, MF_STRING, ID_THEME, theme_action_label())?;
-    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr("Bring Panegrid to front from anywhere", "어디서나 Panegrid 불러오기", "どこからでも Panegrid を前面に"), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
-    item(view, MF_STRING, ID_DBLUP, tr("Double-click empty space: parent folder", "빈 곳 더블클릭: 위 폴더로", "空白をダブルクリック: 上のフォルダー"))?;
+    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr(crate::Key::BringPanegridFrontFromAnywhere), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
+    item(view, MF_STRING, ID_DBLUP, tr(crate::Key::DoubleClickEmptySpaceParentFolder))?;
     let colors = CreatePopupMenu()?;
-    for (k, (name, _)) in LIGHT.accents.iter().enumerate() {
-        item(colors, MF_STRING, ID_ACCENT + k, tr(ACCENT_EN[k], name, ACCENT_JA[k]))?;
+    for k in 0..LIGHT.accents.len() {
+        item(colors, MF_STRING, ID_ACCENT + k, accent_name(k))?;
     }
     AppendMenuW(colors, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(colors, MF_STRING, ID_ACCENT_PICK, tr("Custom...", "직접 선택...", "カスタム..."))?;
-    item(view, MF_POPUP, colors.0 as usize, tr("Selection colour", "선택 색", "選択色"))?;
+    item(colors, MF_STRING, ID_ACCENT_PICK, tr(crate::Key::Custom))?;
+    item(view, MF_POPUP, colors.0 as usize, tr(crate::Key::SelectionColour))?;
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(view, MF_STRING, ID_SETTINGS, tr("Settings...", "설정...", "設定..."))?;
+    item(view, MF_STRING, ID_SETTINGS, tr(crate::Key::Settings))?;
     let langs = CreatePopupMenu()?;
-    item(langs, MF_STRING, ID_LANG_AUTO, tr("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う"))?;
-    item(langs, MF_STRING, ID_LANG_EN, "English")?;
-    item(langs, MF_STRING, ID_LANG_KO, "한국어")?;
-    item(langs, MF_STRING, ID_LANG_JA, "日本語")?;
-    item(view, MF_POPUP, langs.0 as usize, tr("Language", "언어", "言語"))?;
+    item(langs, MF_STRING, ID_LANG_AUTO, tr(crate::Key::FollowWindows))?;
+    for (i, (_, name)) in language_choices().iter().enumerate() {
+        item(langs, MF_STRING, ID_LANG_FIRST + i, name)?;
+    }
+    item(view, MF_POPUP, langs.0 as usize, tr(crate::Key::Language))?;
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
-    item(view, MF_STRING, ID_KEYS, tr("Keyboard shortcuts...", "단축키...", "ショートカット キー..."))?;
-    item(view, MF_STRING, ID_HELP, tr("Help (online)\tF1", "도움말 (온라인)\tF1", "ヘルプ (オンライン)\tF1"))?;
-    item(view, MF_STRING, ID_ABOUT, tr("About Panegrid", "Panegrid 정보", "Panegrid のバージョン情報"))?;
+    item(view, MF_STRING, ID_KEYS, tr(crate::Key::KeyboardShortcuts))?;
+    item(view, MF_STRING, ID_HELP, tr(crate::Key::HelpOnlineF1))?;
+    item(view, MF_STRING, ID_ABOUT, tr(crate::Key::AboutPanegrid))?;
     crate::winmerge::sync_gear(view);
     Ok(view)
 }

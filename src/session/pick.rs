@@ -188,23 +188,23 @@ pub(crate) fn preview_matches(name: &str, preview: &SessionPreview, query: &str)
 
 fn tab_count_line(n: usize) -> String {
     if n == 1 {
-        tr("1 tab", "탭 1개", "タブ 1個").to_string()
+        tr(crate::Key::K1Tab).to_string()
     } else {
-        format!("{n}{}", tr(" tabs", "개 탭", " 個のタブ"))
+        format!("{n}{}", tr(crate::Key::Tabs))
     }
 }
 
 fn tab_heading(name: &str, index: usize) -> String {
     match custom_tab_name(name) {
         Some(n) => n.to_string(),
-        None => format!("{} {}", tr("Tab", "탭", "タブ"), index + 1),
+        None => format!("{} {}", tr(crate::Key::Tab), index + 1),
     }
 }
 
 fn path_line(index: usize, path: &str) -> String {
     // Shell folders (::{CLSID}) read as their name, e.g. This PC, not the raw id.
     let shown = if path.is_empty() {
-        tr("(empty)", "(비어 있음)", "(空)").to_string()
+        tr(crate::Key::Empty2).to_string()
     } else if path.starts_with("::") {
         crate::short_name(path)
     } else {
@@ -222,12 +222,12 @@ pub(crate) fn detail_plan(name: &str, preview: &SessionPreview, dpi: i32) -> Vec
             kind: DetailKind::Meta,
             text: if preview.readable {
                 if preview.tabs.len() <= 1 {
-                    preview.tabs.first().map(|t| layout_label(&t.columns)).filter(|s| !s.is_empty()).unwrap_or_else(|| tr("One tab", "탭 하나", "タブ 1 個").to_string())
+                    preview.tabs.first().map(|t| layout_label(&t.columns)).filter(|s| !s.is_empty()).unwrap_or_else(|| tr(crate::Key::OneTab).to_string())
                 } else {
                     tab_count_line(preview.tabs.len())
                 }
             } else {
-                tr("This session can't be read.", "이 세션을 읽을 수 없어요.", "このセッションは読み取れません。").to_string()
+                tr(crate::Key::ThisSessionCanTBeRead).to_string()
             },
             columns: Vec::new(),
             h: dip(dpi, 22),
@@ -406,12 +406,12 @@ fn button_widths(dc: HDC, font: HFONT, with_save: bool, dpi: i32) -> ButtonWidth
     let min = dip(dpi, 88);
     let w = |s: &str| (text_width(dc, font, s) + pad).max(min);
     ButtonWidths {
-        open: w(tr("Open", "열기", "開く")),
-        rename: w(tr("Rename", "이름 바꾸기", "名前の変更")),
-        delete: w(tr("Delete", "삭제", "削除")),
-        cancel: w(tr("Cancel", "취소", "キャンセル")),
-        save: if with_save { (text_width(dc, font, tr("Save this tab…", "이 탭 저장…", "このタブを保存…")) + pad).max(dip(dpi, 120)) } else { 0 },
-        several: if with_save { (text_width(dc, font, tr("Open several", "여러 개 열기", "まとめて開く")) + pad).max(dip(dpi, 120)) } else { 0 },
+        open: w(tr(crate::Key::Open)),
+        rename: w(tr(crate::Key::Rename)),
+        delete: w(tr(crate::Key::Delete)),
+        cancel: w(tr(crate::Key::Cancel)),
+        save: if with_save { (text_width(dc, font, tr(crate::Key::SaveThisTab3)) + pad).max(dip(dpi, 120)) } else { 0 },
+        several: if with_save { (text_width(dc, font, tr(crate::Key::OpenSeveral)) + pad).max(dip(dpi, 120)) } else { 0 },
     }
 }
 
@@ -463,9 +463,9 @@ fn row_stamp(when: &str, readable: bool) -> String {
     if readable {
         when.to_string()
     } else if when.is_empty() {
-        tr("Unreadable", "읽을 수 없음", "読み取れません").to_string()
+        tr(crate::Key::Unreadable).to_string()
     } else {
-        format!("{when}  ·  {}", tr("Unreadable", "읽을 수 없음", "読み取れません"))
+        format!("{when}  ·  {}", tr(crate::Key::Unreadable))
     }
 }
 
@@ -500,11 +500,7 @@ fn make_font(face: &str, px: i32, weight: i32, dpi: i32) -> HFONT {
 fn face_pair() -> (String, i32, &'static str) {
     let custom = app(|a| a.s.font_face.clone());
     if custom.is_empty() {
-        let (title, w) = match ui() {
-            1 => ("Malgun Gothic", 700),
-            2 => ("Yu Gothic UI", 700),
-            _ => ("Segoe UI Semibold", 600),
-        };
+        let (title, w) = crate::title_style();
         (ui_face().to_string(), w, title)
     } else {
         (custom, 700, "")
@@ -705,23 +701,19 @@ fn name_taken(dir: &Path, stem: &str, except: &Path) -> bool {
 }
 
 unsafe fn explain_name(h: HWND, why: &str) {
-    MessageBoxW(Some(h), &HSTRING::from(why), &HSTRING::from(tr("Rename session", "세션 이름 바꾸기", "セッションの名前を変更")), MB_OK | MB_ICONWARNING);
+    MessageBoxW(Some(h), &HSTRING::from(why), &HSTRING::from(tr(crate::Key::RenameSession)), MB_OK | MB_ICONWARNING);
 }
 
 unsafe fn do_rename(h: HWND) {
     let Some(path) = selected_path() else { return };
     let current = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let Some(typed) = crate::settings::ask(h, tr("Rename session", "세션 이름 바꾸기", "セッションの名前を変更"), &current) else { return };
+    let Some(typed) = crate::settings::ask(h, tr(crate::Key::RenameSession), &current) else { return };
     let Some(stem) = session_stem_ok(&typed) else {
-        explain_name(h, tr(
-            "That name can't be used. Leave out \\ / : * ? \" < > | and don't end it with a dot.",
-            "이 이름은 쓸 수 없어요. \\ / : * ? \" < > | 는 빼고, 점으로 끝내지 마세요.",
-            "この名前は使えません。\\ / : * ? \" < > | を除き、末尾をドットにしないでください。",
-        ));
+        explain_name(h, tr(crate::Key::ThatNameCanTBeUsedLeave));
         return;
     };
     if stem.chars().count() > SESSION_NAME_MAX {
-        explain_name(h, tr("That name is too long.", "이름이 너무 길어요.", "名前が長すぎます。"));
+        explain_name(h, tr(crate::Key::ThatNameIsTooLong));
         return;
     }
     if stem.eq_ignore_ascii_case(&current) && stem == current {
@@ -729,7 +721,7 @@ unsafe fn do_rename(h: HWND) {
     }
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(sessions_dir);
     if name_taken(&dir, &stem, &path) {
-        explain_name(h, tr("A session with this name already exists.", "같은 이름의 세션이 이미 있어요.", "同じ名前のセッションがあります。"));
+        explain_name(h, tr(crate::Key::SessionWithThisNameAlreadyExists2));
         return;
     }
     let old_s = path.to_string_lossy().into_owned();
@@ -756,10 +748,10 @@ unsafe fn do_delete(h: HWND) {
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let q = format!(
         "{}\n\"{name}\"\n{}",
-        tr("Delete this session?", "이 세션을 삭제할까요?", "このセッションを削除しますか?"),
-        tr("It will go to the Recycle Bin.", "휴지통으로 옮겨집니다.", "ごみ箱に移動します。")
+        tr(crate::Key::DeleteThisSession),
+        tr(crate::Key::ItWillGoRecycleBin)
     );
-    if MessageBoxW(Some(h), &HSTRING::from(q), &HSTRING::from(tr("Delete session", "세션 삭제", "セッションを削除")), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES {
+    if MessageBoxW(Some(h), &HSTRING::from(q), &HSTRING::from(tr(crate::Key::DeleteSession)), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES {
         return;
     }
     let owner = GetWindow(h, GW_OWNER).unwrap_or_default();
@@ -879,9 +871,9 @@ unsafe fn paint(h: HWND) {
         rfill(dc, lay.detail.rect(), dip(dpi, 6), crate::pal().card, Some(crate::pal().line));
         if shown.is_empty() {
             let msg = if when_bad && query_empty {
-                tr("No saved sessions yet.", "저장된 세션이 아직 없어요.", "保存したセッションはまだありません。")
+                tr(crate::Key::NoSavedSessionsYet)
             } else {
-                tr("No matches", "결과 없음", "一致なし")
+                tr(crate::Key::NoMatches)
             };
             crate::text(dc, lay.list.rect(), msg, small, crate::pal().sub, DT_CENTER);
         }
@@ -921,11 +913,11 @@ unsafe fn paint(h: HWND) {
         if sel.is_none() || shown.is_empty() {
             let empty_folder = when_bad && query_empty;
             let msg = if empty_folder {
-                tr("No saved sessions yet.", "저장된 세션이 아직 없어요.", "保存したセッションはまだありません。")
+                tr(crate::Key::NoSavedSessionsYet)
             } else if shown.is_empty() {
-                tr("No matches", "결과 없음", "一致なし")
+                tr(crate::Key::NoMatches)
             } else {
-                tr("Select a session", "세션을 선택하세요", "セッションを選択")
+                tr(crate::Key::SelectSession)
             };
             crate::text(dc, lay.detail.rect(), msg, font, crate::pal().sub, DT_CENTER);
             if empty_folder {
@@ -941,7 +933,7 @@ unsafe fn paint(h: HWND) {
                 let note = format!(
                     "{}{}",
                     picked.len(),
-                    tr(" selected. Open several opens each as its own tab.", "개 선택. 여러 개 열기는 각각 새 탭으로 엽니다.", " 件選択。まとめて開くはそれぞれ新しいタブで開きます。")
+                    tr(crate::Key::SelectedOpenSeveralOpensEachAsIts)
                 );
                 let r = RECT { left, top: y, right, bottom: y + dip(dpi, 22) };
                 crate::text(dc, r, &note, small, crate::pal().sub, DT_LEFT);
@@ -1026,12 +1018,8 @@ unsafe fn on_click(h: HWND, x: i32, y: i32, dbl: bool, ctrl: bool, shift: bool) 
 unsafe fn open_several(h: HWND) {
     let paths = picked_paths();
     if paths.len() < 2 {
-        let why = tr(
-            "Select two or more sessions with Ctrl+click or Shift+click, then Open several. Each one opens as its own tab.",
-            "Ctrl+클릭이나 Shift+클릭으로 세션을 둘 이상 고른 뒤 여러 개 열기를 누르세요. 세션마다 새 탭이 열려요.",
-            "Ctrl+クリックまたは Shift+クリックでセッションを二つ以上選び、まとめて開くを押します。それぞれ新しいタブで開きます。",
-        );
-        MessageBoxW(Some(h), &HSTRING::from(why), &HSTRING::from(tr("Open several", "여러 개 열기", "まとめて開く")), MB_OK | MB_ICONINFORMATION);
+        let why = tr(crate::Key::SelectTwoOrMoreSessionsWithCtrl);
+        MessageBoxW(Some(h), &HSTRING::from(why), &HSTRING::from(tr(crate::Key::OpenSeveral)), MB_OK | MB_ICONINFORMATION);
         return;
     }
     finish_open(h, paths);
@@ -1052,7 +1040,7 @@ unsafe fn pick_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT 
             let search = crate::child(h, w!("EDIT"), w!(""), 0x80 | tab, WINDOW_EX_STYLE(0), ID_SEARCH, font);
             theme_edit(search);
             UI.with(|u| u.borrow_mut().search = search);
-            let cue = HSTRING::from(tr("Search sessions", "세션 검색", "セッションを検索"));
+            let cue = HSTRING::from(tr(crate::Key::SearchSessions));
             SendMessageW(search, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
             let m = dip(dpi, 8) as isize;
             SendMessageW(search, 0x00D3, Some(WPARAM(3)), Some(LPARAM(m | (m << 16))));
@@ -1060,13 +1048,13 @@ unsafe fn pick_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT 
                 let t = HSTRING::from(label);
                 crate::child(h, w!("BUTTON"), PCWSTR(t.as_ptr()), 0xB | tab, WINDOW_EX_STYLE(0), id, font);
             };
-            btn(ID_OPEN, tr("Open", "열기", "開く"));
-            btn(ID_RENAME, tr("Rename", "이름 바꾸기", "名前の変更"));
-            btn(ID_DELETE, tr("Delete", "삭제", "削除"));
-            btn(ID_CANCEL, tr("Cancel", "취소", "キャンセル"));
+            btn(ID_OPEN, tr(crate::Key::Open));
+            btn(ID_RENAME, tr(crate::Key::Rename));
+            btn(ID_DELETE, tr(crate::Key::Delete));
+            btn(ID_CANCEL, tr(crate::Key::Cancel));
             if UI.with(|u| u.borrow().with_save) {
-                btn(ID_SAVE, tr("Save this tab…", "이 탭 저장…", "このタブを保存…"));
-                btn(ID_SEVERAL, tr("Open several", "여러 개 열기", "まとめて開く"));
+                btn(ID_SAVE, tr(crate::Key::SaveThisTab3));
+                btn(ID_SEVERAL, tr(crate::Key::OpenSeveral));
             }
             let rows = read_rows();
             UI.with(|u| u.borrow_mut().rows = rows);
@@ -1315,7 +1303,7 @@ unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<V
 /// Toolbar Load: the list window. Each chosen session opens as a new tab beside the current one.
 pub(crate) unsafe fn open_session_list() {
     let main = app(|a| a.main);
-    if let Some(paths) = pick_session_ex(main, tr("Open session", "세션 열기", "セッションを開く"), true) {
+    if let Some(paths) = pick_session_ex(main, tr(crate::Key::OpenSession), true) {
         load_session_files(&paths);
     } else if SAVE_ASKED.with(|c| c.replace(false)) {
         _ = save_session_as();

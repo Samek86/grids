@@ -86,8 +86,8 @@ pub(crate) fn search_frame_h(dpi: i32) -> i32 {
     sc(dpi, SEARCH_TOP_DIP + SEARCH_FRAME_DIP) - sc(dpi, SEARCH_TOP_DIP)
 }
 
-fn tx(t: [&'static str; 3]) -> &'static str {
-    tr(t[0], t[1], t[2])
+fn tx(t: crate::Key) -> &'static str {
+    tr(t)
 }
 
 const CHROME_LIGHT: u32 = 0x0067C0;
@@ -118,40 +118,32 @@ fn on_chrome(c: u32) -> u32 {
     }
 }
 
-const fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static str; 3] {
-    [en, ko, ja]
-}
-
-const TITLE: [&str; 3] = s("Panegrid settings", "Panegrid 설정", "Panegrid 設定");
-const FOOT: [&str; 3] = s("Changes apply right away", "변경은 바로 적용돼요", "変更はすぐに適用されます");
-const CLOSE_L: [&str; 3] = s("Close", "닫기", "閉じる");
-const FIND: [&str; 3] = s("Find a setting", "설정 검색", "設定を検索");
-const NONE: [&str; 3] = s("No matches", "결과 없음", "一致なし");
+const TITLE: crate::Key = crate::Key::PanegridSettings;
+const FOOT: crate::Key = crate::Key::ChangesApplyRightAway;
+const CLOSE_L: crate::Key = crate::Key::Close;
+const FIND: crate::Key = crate::Key::FindSetting;
+const NONE: crate::Key = crate::Key::NoMatches;
 /// Content shown when the nav query matches no page. Distinct from `NONE`, which is the nav label and an empty shortcut row.
-const NO_RESULTS: [&str; 3] = s("No results", "검색 결과 없음", "検索結果なし");
+const NO_RESULTS: crate::Key = crate::Key::NoResults;
 pub(crate) const PAGE_N: usize = 10;
 /// Right-click menu page. About stays last so earlier page numbers do not move.
 pub(crate) const CTX_PAGE: usize = 8;
-const PAGES: [[&str; 3]; PAGE_N] = [
-    s("General", "일반", "一般"),
-    s("Appearance", "모양", "外観"),
-    s("Panes & view", "패널·보기", "ペインと表示"),
-    s("File operations", "파일 작업", "ファイル操作"),
-    s("Favourites", "즐겨찾기", "お気に入り"),
-    s("Shortcuts", "단축키", "ショートカット"),
-    s("Sessions", "세션", "セッション"),
-    s("Advanced", "고급", "詳細"),
-    s("Right-click menu items", "우클릭 메뉴 항목", "右クリックメニュー項目"),
-    s("About", "정보", "情報"),
+const PAGES: [crate::Key; PAGE_N] = [
+    crate::Key::General,
+    crate::Key::Appearance,
+    crate::Key::PanesView,
+    crate::Key::FileOperations,
+    crate::Key::Favourites,
+    crate::Key::Shortcuts,
+    crate::Key::Sessions,
+    crate::Key::Advanced,
+    crate::Key::RightClickMenuItems,
+    crate::Key::About,
 ];
 
-const CTX_NOTE: [&str; 3] = s(
-    "These items appear in Panegrid's right-click menu. Windows items such as Open, Copy and Properties stay. A new item starts on. Explorer is unchanged.",
-    "Panegrid의 우클릭 메뉴에 나오는 항목이에요. 열기, 복사, 속성 같은 Windows 항목은 그대로예요. 새 항목은 켜진 채로 시작해요. 탐색기는 바뀌지 않아요.",
-    "Panegrid の右クリックメニューに出る項目です。開く、コピー、プロパティなどの Windows の項目はそのままです。新しい項目はオンで始まります。エクスプローラーは変わりません。",
-);
-const CTX_RESET_L: [&str; 3] = s("Reset to all enabled", "모두 사용", "すべて有効に戻す");
-const CTX_EMPTY: [&str; 3] = s("No third-party menu items", "타사 메뉴 항목이 없어요", "サードパーティの項目はありません");
+const CTX_NOTE: crate::Key = crate::Key::TheseItemsAppearInPanegridSRight;
+const CTX_RESET_L: crate::Key = crate::Key::ResetAllEnabled;
+const CTX_EMPTY: crate::Key = crate::Key::NoThirdPartyMenuItems;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ctl {
@@ -184,88 +176,80 @@ enum Ctl {
 
 #[derive(Clone, Copy)]
 struct Spec {
-    title: [&'static str; 3],
-    desc: [&'static str; 3],
+    title: crate::Key,
+    desc: crate::Key,
     live: bool,
     ctl: Ctl,
 }
 
 const GEN: &[Spec] = &[
-    Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language (Korean, Japanese, or English); otherwise English. A change applies right away.", "기본값은 Windows 표시 언어(한국어, 일본어, 영어)를 따라요. 그 외에는 영어예요. 바꾸면 바로 적용돼요.", "既定は Windows の表示言語（韓国語、日本語、英語）に従います。それ以外は英語です。変えるとすぐに適用されます。"), live: true, ctl: Ctl::Lang },
-    Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), live: true, ctl: Ctl::Face },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every open tab and the window, or open one saved tab.", "열려 있던 모든 탭과 창을 복원하거나, 저장한 탭 하나를 열어요.", "開いていたすべてのタブとウィンドウを復元するか、保存したタブを一つ開きます。"), live: true, ctl: Ctl::Start },
-    Spec { title: s("Use as default folder app", "기본 폴더 앱으로 사용", "既定のフォルダーアプリとして使用"), desc: s("Win+E and special folders stay with Explorer.", "Win+E와 특수 폴더는 탐색기 그대로예요.", "Win+E と特殊フォルダーはエクスプローラーのままです。"), live: true, ctl: Ctl::Toggle(TG_FOLDER) },
-    Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
-    Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
-    Spec { title: s("Single-window mode", "창 하나만 쓰기", "単一ウィンドウ"), desc: s("One window. Another launch brings it forward and restores it if minimized; paths open as tabs. Ctrl+N, dragging a tab out, Move to new window, and Win+Shift+E when Panegrid is already in front open a tab here.", "창은 하나예요. 다시 실행하면 그 창을 앞으로 가져오고, 최소화되어 있으면 복원해요. 경로는 탭으로 열립니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 이 창의 탭을 열어요.", "ウィンドウは一つです。もう一度起動すると前面に出し、最小化中なら元に戻します。パスはタブで開きます。Ctrl+N、タブを外へドラッグ、新しいウィンドウへ移動、すでに前面のときの Win+Shift+E は、このウィンドウのタブを開きます。"), live: true, ctl: Ctl::Toggle(TG_ONE) },
-    Spec { title: s("Double-click empty space for the parent folder", "빈 곳 더블클릭으로 상위 폴더", "空白のダブルクリックで上のフォルダー"), desc: s("In a file list, a double-click on empty space opens the parent folder.", "파일 목록의 빈 곳을 더블클릭하면 상위 폴더를 열어요.", "ファイル一覧の空白をダブルクリックすると、上のフォルダーを開きます。"), live: true, ctl: Ctl::Toggle(TG_DBLUP) },
-    Spec { title: s("Status", "상태", "状態"), desc: s("Installed, running, version", "설치, 실행, 버전", "インストール、実行、バージョン"), live: true, ctl: Ctl::EvStatus },
-    Spec { title: s("Use Everything for search", "검색에 Everything 사용", "検索に Everything を使う"), desc: s("On by default. Subfolder search asks Everything when it is running, and otherwise walks the folders.", "기본값은 켜짐. Everything이 실행 중이면 하위 폴더 검색이 Everything에 묻고, 아니면 폴더를 훑어요.", "既定はオンです。Everything が実行中ならサブフォルダー検索は Everything に問い合わせ、そうでなければフォルダーをたどります。"), live: true, ctl: Ctl::Toggle(TG_EV) },
-    Spec { title: s("Get Everything", "Everything 준비", "Everything の準備"), desc: s("Start it when it is installed. Install uses winget when that is available, otherwise the voidtools download page opens.", "설치되어 있으면 시작해요. 설치는 winget이 있으면 winget을 쓰고, 없으면 voidtools 다운로드 페이지를 열어요.", "インストール済みなら起動します。インストールは winget があれば winget、なければ voidtools のダウンロードページを開きます。"), live: true, ctl: Ctl::EvAct },
-    Spec { title: s("Auto-detect", "자동 감지", "自動検出"), desc: s("WinMerge", "WinMerge", "WinMerge"), live: true, ctl: Ctl::WmStatus },
-    Spec { title: s("WinMerge path", "WinMerge 경로", "WinMerge のパス"), desc: s("Empty uses auto-detect. A folder or WinMergeU.exe both work.", "비우면 자동으로 찾아요. 폴더나 WinMergeU.exe 모두 돼요.", "空なら自動検出です。フォルダーでも WinMergeU.exe でも構いません。"), live: true, ctl: Ctl::WmPath },
+    Spec { title: crate::Key::DisplayLanguage, desc: crate::Key::DefaultFollowsWindowsDisplayLanguageKorea, live: true, ctl: Ctl::Lang },
+    Spec { title: crate::Key::Font, desc: crate::Key::DefaultFollowsDisplayLanguageChosenFaceA, live: true, ctl: Ctl::Face },
+    Spec { title: crate::Key::OnStartup, desc: crate::Key::RestoreEveryOpenTabAndWindowOr, live: true, ctl: Ctl::Start },
+    Spec { title: crate::Key::UseAsDefaultFolderApp, desc: crate::Key::WinEAndSpecialFoldersStayWith, live: true, ctl: Ctl::Toggle(TG_FOLDER) },
+    Spec { title: crate::Key::DefaultLayout, desc: crate::Key::PanesInNewWindowAndOnFirst, live: true, ctl: Ctl::Layout },
+    Spec { title: crate::Key::SingleInstance, desc: crate::Key::SecondLaunchOpensNewWindowInThis, live: true, ctl: Ctl::Toggle(TG_SINGLE) },
+    Spec { title: crate::Key::SingleWindowMode, desc: crate::Key::OneWindowAnotherLaunchBringsItForward, live: true, ctl: Ctl::Toggle(TG_ONE) },
+    Spec { title: crate::Key::DoubleClickEmptySpaceForParentFolder, desc: crate::Key::InFileListDoubleClickOnEmpty, live: true, ctl: Ctl::Toggle(TG_DBLUP) },
+    Spec { title: crate::Key::Status, desc: crate::Key::InstalledRunningVersion, live: true, ctl: Ctl::EvStatus },
+    Spec { title: crate::Key::UseEverythingForSearch, desc: crate::Key::OnByDefaultSubfolderSearchAsksEverything, live: true, ctl: Ctl::Toggle(TG_EV) },
+    Spec { title: crate::Key::GetEverything, desc: crate::Key::StartItWhenItIsInstalledInstall, live: true, ctl: Ctl::EvAct },
+    Spec { title: crate::Key::AutoDetect, desc: crate::Key::VendorWinmerge, live: true, ctl: Ctl::WmStatus },
+    Spec { title: crate::Key::WinmergePath, desc: crate::Key::EmptyUsesAutoDetectFolderOrWinmergeu, live: true, ctl: Ctl::WmPath },
 ];
 
-const EV_HEAD: [&str; 3] = s("Everything", "Everything", "Everything");
-const WM_HEAD: [&str; 3] = s("WinMerge", "WinMerge", "WinMerge");
-const PREVIEW_HEAD: [&str; 3] = s("Preview", "미리보기", "プレビュー");
+const EV_HEAD: crate::Key = crate::Key::Everything;
+const WM_HEAD: crate::Key = crate::Key::VendorWinmerge;
+const PREVIEW_HEAD: crate::Key = crate::Key::Preview;
 const LOOK: &[Spec] = &[
-    Spec { title: s("Theme", "테마", "テーマ"), desc: s("", "", ""), live: true, ctl: Ctl::Theme },
-    Spec { title: s("Accent colour", "강조 색", "アクセント カラー"), desc: s("Light and dark each keep their own colour.", "라이트와 다크에 색을 따로 정할 수 있어요.", "ライトとダークで色を別々に選べます。"), live: true, ctl: Ctl::Accent },
-    Spec { title: s("Show the toolbar", "툴바 표시", "ツールバーを表示"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_BAR) },
-    Spec { title: s("Show drive buttons", "드라이브 버튼 표시", "ドライブボタンを表示"), desc: s("C: D: E: on the tab row. Off, the tabs use that space.", "탭 줄의 C: D: E: 버튼이에요. 끄면 그 자리를 탭이 써요.", "タブ列の C: D: E: です。オフにするとその分をタブが使います。"), live: true, ctl: Ctl::Toggle(TG_DRIVES) },
-    Spec { title: s("Show the status bar", "상태 표시줄 표시", "ステータス バーを表示"), desc: s("Item count and free space on the drive.", "항목 수와 드라이브 남은 공간이에요.", "項目数とドライブの空き容量です。"), live: true, ctl: Ctl::Toggle(TG_STATUS) },
+    Spec { title: crate::Key::Theme, desc: crate::Key::Blank, live: true, ctl: Ctl::Theme },
+    Spec { title: crate::Key::AccentColour, desc: crate::Key::LightAndDarkEachKeepTheirOwn, live: true, ctl: Ctl::Accent },
+    Spec { title: crate::Key::ShowToolbar, desc: crate::Key::Blank, live: true, ctl: Ctl::Toggle(TG_BAR) },
+    Spec { title: crate::Key::ShowDriveButtons, desc: crate::Key::CDEOnTabRowOff, live: true, ctl: Ctl::Toggle(TG_DRIVES) },
+    Spec { title: crate::Key::ShowStatusBar, desc: crate::Key::ItemCountAndFreeSpaceOnDrive, live: true, ctl: Ctl::Toggle(TG_STATUS) },
 ];
 const VIEW: &[Spec] = &[
-    Spec { title: s("Default view for a new pane", "새 패널의 기본 보기", "新しいペインの既定の表示"), desc: s("Used when a pane has no view of its own yet.", "아직 보기가 없는 패널에 써요.", "まだ表示を持たないペインに使います。"), live: true, ctl: Ctl::ViewMode },
-    Spec { title: s("Remember view per folder", "폴더마다 보기 기억", "フォルダーごとに表示を記憶"), desc: s("Sort, columns, view mode, icon size and grouping are restored in any pane. Saved in folder-views.json next to the settings. On by default.", "정렬, 열, 보기 방식, 아이콘 크기, 그룹을 어느 패널에서든 되돌립니다. 설정 옆의 folder-views.json에 저장해요. 기본값은 켜짐.", "並べ替え、列、表示、アイコンの大きさ、グループをどのペインでも戻します。設定の隣の folder-views.json に保存します。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_REMEMBER) },
-    Spec { title: s("Default view for every folder", "모든 폴더의 기본 보기", "すべてのフォルダーの既定の表示"), desc: s("Folders with no saved view use this. Takes the active pane's sort, columns, view mode, icon size and grouping.", "기억된 보기가 없는 폴더가 이것을 씁니다. 활성 패널의 정렬, 열, 보기 방식, 아이콘 크기, 그룹을 가져와요.", "記憶がないフォルダーはこれを使います。アクティブなペインの並べ替え、列、表示、アイコンの大きさ、グループを取り込みます。"), live: true, ctl: Ctl::FolderDefault },
-    Spec { title: s("Reset this folder's view", "이 폴더의 보기 지우기", "このフォルダーの表示を消す"), desc: s("Forgets the active pane's folder. It uses the default view from here on.", "활성 패널의 폴더만 잊습니다. 이제부터 기본 보기를 씁니다.", "アクティブなペインのフォルダーだけ忘れます。ここからは既定の表示を使います。"), live: true, ctl: Ctl::FolderReset },
-    Spec { title: s("Clear all remembered views", "기억한 보기를 모두 지우기", "記憶した表示をすべて消す"), desc: s("Forgets every folder. The default view stays.", "모든 폴더의 기억을 지웁니다. 기본 보기는 남아요.", "すべてのフォルダーの記憶を消します。既定の表示は残ります。"), live: true, ctl: Ctl::FolderClear },
-    Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), live: true, ctl: Ctl::StartDir },
-    Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
-    Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), live: true, ctl: Ctl::Toggle(TG_EXT) },
-    Spec { title: s("Show folder sizes", "폴더 크기 표시", "フォルダーのサイズを表示"), desc: s("The status bar shows the total of a selected folder. Computed in the background. On by default.", "선택한 폴더의 전체 크기를 상태 표시줄에 보여요. 뒤에서 계산해요. 기본값은 켜짐.", "選択したフォルダーの合計をステータス バーに出します。バックグラウンドで計算します。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_FSIZE) },
-    Spec { title: s("Folder sizes for network folders", "네트워크 폴더 크기", "ネットワーク フォルダーのサイズ"), desc: s("UNC and mapped drives. Off by default. A disconnected share is not queried. WSL folders are sized either way and refresh on F5.", "UNC와 매핑된 드라이브예요. 기본값은 꺼짐. 끊긴 공유는 묻지 않아요. WSL 폴더는 어느 쪽이든 계산하고 F5로 다시 구해요.", "UNC と割り当てドライブです。既定はオフです。切断された共有には問い合わせません。WSL フォルダーはどちらでも計算し、F5 で更新します。"), live: true, ctl: Ctl::Toggle(TG_FSIZE_NET) },
-    Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("Favourites and the folder tree share it. Drag the divider between them. This hides both.", "즐겨찾기와 폴더 트리가 같이 있어요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "お気に入りとフォルダー ツリーが入ります。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
-    Spec { title: s("Left panel order", "왼쪽 패널 순서", "左のパネルの順番"), desc: s("Favourites on top, or folder tree on top. The tree keeps its share of the height.", "즐겨찾기 위, 또는 폴더 트리 위. 폴더 트리가 차지하는 높이는 그대로예요.", "お気に入りを上、またはフォルダー ツリーを上。フォルダー ツリーの高さの割合はそのままです。"), live: true, ctl: Ctl::SideOrder },
-    Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_EDGE) },
-    Spec { title: s("Preview with Space", "스페이스로 미리보기", "スペースでプレビュー"), desc: s("Same as F3 in a file list. A space within a second of typing, or while Korean or Japanese IME text is being composed, stays part of the name. On by default.", "파일 목록에서는 F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어가요. 기본값은 켜짐.", "ファイル一覧では F3 と同じです。文字を入れてから 1 秒以内のスペース、または韓国語・日本語の変換中のスペースは名前の一部になります。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_SPACE) },
-    Spec { title: s("Wheel moves to next/previous file", "휠로 다음/이전 파일로 넘기기", "ホイールで次/前のファイルへ"), desc: s("Scrolling past the end of the content moves to the next or previous file.", "내용 끝에서 마우스 휠을 더 돌리면 다음·이전 파일로 넘어가요.", "内容の端でさらにホイールを回すと次・前のファイルに移ります。"), live: true, ctl: Ctl::Toggle(TG_WHEEL) },
+    Spec { title: crate::Key::DefaultViewForNewPane, desc: crate::Key::UsedWhenPaneHasNoViewOf, live: true, ctl: Ctl::ViewMode },
+    Spec { title: crate::Key::RememberViewPerFolder, desc: crate::Key::SortColumnsViewModeIconSizeAnd, live: true, ctl: Ctl::Toggle(TG_REMEMBER) },
+    Spec { title: crate::Key::DefaultViewForEveryFolder, desc: crate::Key::FoldersWithNoSavedViewUseThis, live: true, ctl: Ctl::FolderDefault },
+    Spec { title: crate::Key::ResetThisFolderSView, desc: crate::Key::ForgetsActivePaneSFolderItUses, live: true, ctl: Ctl::FolderReset },
+    Spec { title: crate::Key::ClearAllRememberedViews, desc: crate::Key::ForgetsEveryFolderDefaultViewStays, live: true, ctl: Ctl::FolderClear },
+    Spec { title: crate::Key::StartingFolderForNewPane, desc: crate::Key::UsedWhenNewPaneHasNoFolder, live: true, ctl: Ctl::StartDir },
+    Spec { title: crate::Key::ShowHiddenFiles, desc: crate::Key::SameAsCtrlH, live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
+    Spec { title: crate::Key::ShowFileExtensions2, desc: crate::Key::ThisIsWindowsOwnSettingSoExplorer, live: true, ctl: Ctl::Toggle(TG_EXT) },
+    Spec { title: crate::Key::ShowFolderSizes, desc: crate::Key::StatusBarShowsTotalOfSelectedFolder, live: true, ctl: Ctl::Toggle(TG_FSIZE) },
+    Spec { title: crate::Key::FolderSizesForNetworkFolders, desc: crate::Key::UncAndMappedDrivesOffByDefault, live: true, ctl: Ctl::Toggle(TG_FSIZE_NET) },
+    Spec { title: crate::Key::ShowLeftPanel, desc: crate::Key::FavouritesAndFolderTreeShareItDrag, live: true, ctl: Ctl::Toggle(TG_TREE) },
+    Spec { title: crate::Key::LeftPanelOrder, desc: crate::Key::FavouritesOnTopOrFolderTreeOn, live: true, ctl: Ctl::SideOrder },
+    Spec { title: crate::Key::EmphasiseActivePaneBorder, desc: crate::Key::Blank, live: true, ctl: Ctl::Toggle(TG_EDGE) },
+    Spec { title: crate::Key::PreviewWithSpace, desc: crate::Key::SameAsF3InFileListSpace, live: true, ctl: Ctl::Toggle(TG_SPACE) },
+    Spec { title: crate::Key::WheelMovesNextPreviousFile, desc: crate::Key::ScrollingPastEndOfContentMovesNext, live: true, ctl: Ctl::Toggle(TG_WHEEL) },
 ];
 const FILE: &[Spec] = &[
-    Spec { title: s("Copy / move progress", "복사·이동 진행 창", "コピー / 移動の進行状況"), desc: s("The Windows progress window runs on its own thread (always on).", "Windows 표준 진행 창을 별도 스레드에서 띄워요(항상 켜짐).", "Windows の進行状況ウィンドウを別スレッドで表示します（常にオン）。"), live: true, ctl: Ctl::CopyEng },
-    Spec { title: s("Confirm delete", "삭제할 때 확인", "削除の確認"), desc: s("Del in a pane. Shift+Del is always permanent.", "패널에서 Del. Shift+Del은 항상 완전 삭제예요.", "ペインで Del。Shift+Del は常に完全削除です。"), live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
-    Spec { title: s("Default delete", "기본 삭제 방식", "既定の削除方法"), desc: s("", "", ""), live: true, ctl: Ctl::DelMode },
-    Spec { title: s("New file name", "새 파일 이름", "新しいファイル名"), desc: s("Used by Ctrl+Alt+N. Empty follows the display language.", "Ctrl+Alt+N이 이 이름을 써요. 비우면 표시 언어를 따라요.", "Ctrl+Alt+N が使います。空なら表示言語に従います。"), live: true, ctl: Ctl::NewName },
-    Spec { title: s("Default drag and drop", "끌어 놓기 기본 동작", "ドラッグ アンド ドロップの既定"), desc: s("The ⇄ menu. A drag inside a pane still follows Explorer.", "⇄ 메뉴에 적용돼요. 패널 안 끌어 놓기는 탐색기 그대로예요.", "⇄ メニューに適用します。ペイン内のドラッグはエクスプローラーのままです。"), live: true, ctl: Ctl::Drop },
+    Spec { title: crate::Key::CopyMoveProgress, desc: crate::Key::WindowsProgressWindowRunsOnItsOwn, live: true, ctl: Ctl::CopyEng },
+    Spec { title: crate::Key::ConfirmDelete, desc: crate::Key::DelInPaneShiftDelIsAlways, live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
+    Spec { title: crate::Key::DefaultDelete, desc: crate::Key::Blank, live: true, ctl: Ctl::DelMode },
+    Spec { title: crate::Key::NewFileName, desc: crate::Key::UsedByCtrlAltNEmptyFollows, live: true, ctl: Ctl::NewName },
+    Spec { title: crate::Key::DefaultDragAndDrop, desc: crate::Key::MenuDragInsidePaneStillFollowsExplorer, live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[
-    Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("%APPDATA%\\Panegrid\\panegrid-sessions.", "%APPDATA%\\Panegrid\\panegrid-sessions 폴더예요.", "%APPDATA%\\Panegrid\\panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
-    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes each tab that already has its own session file.", "세션 파일이 연결된 탭마다 그 파일에 저장해요.", "セッション ファイルがあるタブを、それぞれのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
-    Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
+    Spec { title: crate::Key::SessionFolder, desc: crate::Key::AppdataPanegridPanegridSessions, live: true, ctl: Ctl::Sess },
+    Spec { title: crate::Key::SaveOnExit, desc: crate::Key::WritesEachTabThatAlreadyHasIts, live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
+    Spec { title: crate::Key::UnsavedChangesMarkGreenDot, desc: crate::Key::OnSaveButton, live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
-    Spec { title: s("Check for updates on startup", "시작할 때 업데이트 확인", "起動時に更新を確認"), desc: s("Asks GitHub for a newer Panegrid release and offers to install it.", "GitHub에서 새 Panegrid 릴리스를 확인하고 설치를 제안해요.", "GitHub で新しい Panegrid リリースを確認し、インストールを提案します。"), live: true, ctl: Ctl::Toggle(TG_UPDATE) },
-    Spec { title: s("Settings file", "설정 파일", "設定ファイル"), desc: s("portable.txt next to the exe keeps this file there.", "exe 옆 portable.txt가 있으면 이 파일을 그 옆에 둬요.", "exe の隣の portable.txt があると、このファイルをそこに置きます。"), live: true, ctl: Ctl::Adv },
-    Spec { title: s("Reset all settings", "모든 설정 초기화", "すべての設定を初期化"), desc: s("Preferences return to their defaults. The layout, folders and favourites stay.", "환경설정만 기본값으로 돌아가요. 배치, 폴더, 즐겨찾기는 남아요.", "環境設定だけ既定に戻します。レイアウト、フォルダー、お気に入りはそのままです。"), live: true, ctl: Ctl::AdvReset },
+    Spec { title: crate::Key::CheckForUpdatesOnStartup, desc: crate::Key::AsksGithubForNewerPanegridReleaseAnd, live: true, ctl: Ctl::Toggle(TG_UPDATE) },
+    Spec { title: crate::Key::SettingsFile, desc: crate::Key::PortableTxtNextExeKeepsThisFile, live: true, ctl: Ctl::Adv },
+    Spec { title: crate::Key::ResetAllSettings, desc: crate::Key::PreferencesReturnTheirDefaultsLayoutFolde, live: true, ctl: Ctl::AdvReset },
 ];
 
-const KEY_NOTE: [&str; 3] = s(
-    "Double-click a row or press Change, then the new shortcut. Esc cancels. A conflict can be swapped.",
-    "행을 더블클릭하거나 변경을 누른 뒤 새 단축키를 누르세요. Esc는 취소, 겹치면 맞바꿀 수 있어요.",
-    "行をダブルクリックするか変更を押し、新しいキーを押します。Esc で取消。重複は入れ替えできます。",
-);
-const LIST_H: [&str; 3] = s("List", "목록", "一覧");
-const SIDE_FAV: [&str; 3] = s("Favourites on top", "즐겨찾기 위", "お気に入りを上");
-const SIDE_TREE: [&str; 3] = s("Folder tree on top", "폴더 트리 위", "フォルダー ツリーを上");
+const KEY_NOTE: crate::Key = crate::Key::DoubleClickRowOrPressChangeThen;
+const LIST_H: crate::Key = crate::Key::ViewList;
+const SIDE_FAV: crate::Key = crate::Key::FavouritesOnTop;
+const SIDE_TREE: crate::Key = crate::Key::FolderTreeOnTop;
 const ABOUT: &[Spec] = &[Spec {
-    title: s("Panegrid", "Panegrid", "Panegrid"),
-    desc: s(
-        "Panegrid is a fork of efww/grids by efww · fork Samek86/panegrid",
-        "Panegrid는 efww의 efww/grids 포크입니다 · 포크 Samek86/panegrid",
-        "Panegrid は efww による efww/grids のフォークです · フォーク Samek86/panegrid",
-    ),
+    title: crate::Key::Panegrid,
+    desc: crate::Key::PanegridIsForkOfEfwwGridsBy2,
     live: true,
     ctl: Ctl::About,
 }];
@@ -465,11 +449,11 @@ struct CardItem {
 
 enum Item {
     Card(CardItem),
-    Head(RECT, [&'static str; 3]),
+    Head(RECT, crate::Key),
     Table(RECT),
     FavHead(RECT),
     FavRow { i: usize, rect: RECT, rename: RECT, btn: RECT },
-    Note(RECT, [&'static str; 3]),
+    Note(RECT, crate::Key),
     CtxNote(RECT),
     CtxBar { reset: RECT },
     CtxRow {
@@ -525,7 +509,7 @@ fn card_h(spec: &Spec, dpi: i32) -> i32 {
         sc(dpi, 120)
     } else if spec.ctl == Ctl::Adv || spec.ctl == Ctl::EvStatus || spec.ctl == Ctl::EvAct || spec.ctl == Ctl::WmStatus {
         sc(dpi, 84)
-    } else if spec.desc[0].is_empty() {
+    } else if tx(spec.desc).is_empty() {
         sc(dpi, 48)
     } else {
         sc(dpi, 64)
@@ -1232,7 +1216,7 @@ mod tests {
         crate::UI.store(2, Ordering::Relaxed);
         assert_eq!(tx(PAGES[CTX_PAGE]), "右クリックメニュー項目");
         assert_eq!(tx(CTX_RESET_L), "すべて有効に戻す");
-        assert_eq!(tx(CTX_NOTE), CTX_NOTE[2]);
+        assert_eq!(tx(CTX_NOTE), "Panegrid の右クリックメニューに出る項目です。開く、コピー、プロパティなどの Windows の項目はそのままです。新しい項目はオンで始まります。エクスプローラーは変わりません。");
         let (_, page) = commit_search(0, 0, "右クリックメニュー");
         assert_eq!(page, CTX_PAGE);
         let g = geo(client(), &shot(page, "右クリック"));
@@ -1261,16 +1245,30 @@ mod tests {
         let order = VIEW.iter().position(|c| c.ctl == Ctl::SideOrder).unwrap();
         assert_eq!(order, panel + 1);
         let show = &VIEW[panel];
-        assert_eq!(show.title, s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"));
-        assert!(!show.desc[0].contains("on top") && !show.desc[0].contains("below"));
-        assert!(!show.desc[1].contains("위는 폴더"));
-        assert!(!show.desc[2].contains("上はフォルダー"));
-        assert_eq!(VIEW[order].title, s("Left panel order", "왼쪽 패널 순서", "左のパネルの順番"));
-        assert_eq!(SIDE_FAV, s("Favourites on top", "즐겨찾기 위", "お気に入りを上"));
-        assert_eq!(SIDE_TREE, s("Folder tree on top", "폴더 트리 위", "フォルダー ツリーを上"));
-        assert!(VIEW[order].desc[0].contains("Favourites on top") && VIEW[order].desc[0].contains("folder tree on top"));
-        assert!(VIEW[order].desc[1].contains("즐겨찾기 위") && VIEW[order].desc[1].contains("폴더 트리 위"));
-        assert!(VIEW[order].desc[2].contains("お気に入りを上") && VIEW[order].desc[2].contains("フォルダー ツリーを上"));
+        assert_eq!(show.title, crate::Key::ShowLeftPanel);
+        let show_desc = |i: u8| {
+            let prev = crate::UI.load(Ordering::Relaxed);
+            crate::UI.store(i, Ordering::Relaxed);
+            let s = tx(show.desc);
+            crate::UI.store(prev, Ordering::Relaxed);
+            s
+        };
+        assert!(!show_desc(0).contains("on top") && !show_desc(0).contains("below"));
+        assert!(!show_desc(1).contains("위는 폴더"));
+        assert!(!show_desc(2).contains("上はフォルダー"));
+        assert_eq!(VIEW[order].title, crate::Key::LeftPanelOrder);
+        assert_eq!(SIDE_FAV, crate::Key::FavouritesOnTop);
+        assert_eq!(SIDE_TREE, crate::Key::FolderTreeOnTop);
+        let order_desc = |i: u8| {
+            let prev = crate::UI.load(Ordering::Relaxed);
+            crate::UI.store(i, Ordering::Relaxed);
+            let s = tx(VIEW[order].desc);
+            crate::UI.store(prev, Ordering::Relaxed);
+            s
+        };
+        assert!(order_desc(0).contains("Favourites on top") && order_desc(0).contains("folder tree on top"));
+        assert!(order_desc(1).contains("즐겨찾기 위") && order_desc(1).contains("폴더 트리 위"));
+        assert!(order_desc(2).contains("お気に入りを上") && order_desc(2).contains("フォルダー ツリーを上"));
         assert_eq!(ctl_id(Ctl::SideOrder), Some(S_SIDE));
         assert!(VIEW[order].live);
 
