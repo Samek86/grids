@@ -1,6 +1,6 @@
 [package]
 name = "grids"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Fast multi-pane file manager for Windows"
 license = "MIT"
@@ -61,6 +61,8 @@ serde_json = "1"
 regex = "1.11.1"
 # Inflate for ZIP-based documents in the preview. Pure Rust, no C. Not called until F3 opens one.
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+# SHA-256 of a downloaded update. Pure Rust, no C. Used only by the in-app updater.
+sha2 = { version = "0.10.8", default-features = false }
 
 [profile.release]
 opt-level = "z"
