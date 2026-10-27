@@ -11,12 +11,15 @@ use crate::session::*;
 
 static NEXT_WIN: AtomicUsize = AtomicUsize::new(1);
 
-/// A UNC or mapped-drive navigation still resolving off the UI thread.
+/// A UNC or mapped-drive navigation still resolving off the UI thread, or the failure left on screen.
 #[derive(Clone)]
 pub(crate) struct NetUi {
     pub(crate) id: usize,
     pub(crate) path: String,
-    pub(crate) bad: bool, // timed out or the share did not answer; the address shows the error
+    /// Timed out, or the share did not answer. The address keeps `path`; the list shows the error.
+    pub(crate) bad: bool,
+    /// The wait hit `NET_WAIT_MS`. The message names that many seconds.
+    pub(crate) timed_out: bool,
 }
 
 pub(crate) struct Pane {

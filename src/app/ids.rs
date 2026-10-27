@@ -11,6 +11,7 @@ pub(crate) const ID_OPEN_IN: i32 = 105;
 pub(crate) const ID_FILTER: i32 = 106;
 pub(crate) const ID_FAV: i32 = 107; // ☆+ / ★: add or remove the pane's folder from favourites
 pub(crate) const ID_PANE_ADD: i32 = 108; // add a pane tab; shown only while this pane has one tab
+pub(crate) const ID_NETFAIL: i32 = 109; // covers the file list after a share does not answer
 // Chrome buttons (children of the main window), on the right of the tab strip.
 // Drive letters sit in that group, to the left of Layout.
 pub(crate) const ID_TB_LAYOUT: i32 = 201;
