@@ -331,6 +331,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 // Keyboard activation restores focus at once. A click waits until that click is handled.
                 if state == WA_INACTIVE {
                     keep_focus(h);
+                    hide_addr_tip();
                 } else if state == WA_ACTIVE && !min {
                     restore_focus();
                     return LRESULT(0);
@@ -514,14 +515,23 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 if app(|a| a.pane_press.is_none() && a.pane_drag.is_none()) {
                     let at = pane_of(h).and_then(|i| crumb_at(h, i, x, y)).and_then(|hit| hit.map(|(k, ..)| k));
                     crumb_hover(h, at);
+                    let dpi = app(|a| a.dpi);
+                    let addr = addr_rect(h, dpi);
+                    addr_tip_at(h, x >= addr.left && x < addr.right && y >= addr.top && y < addr.bottom);
+                } else {
+                    addr_tip_at(h, false);
                 }
             }
-            WM_MOUSELEAVE => crumb_hover(h, None),
+            WM_MOUSELEAVE => {
+                crumb_hover(h, None);
+                refresh_addr_tip(h);
+            }
             WM_KIDS => kids_show(h, wp.0),
             WM_NET => net_done(h, wp.0),
             WM_TIMER if wp.0 == TIMER_NET => net_timeout(h),
             WM_TIMER if wp.0 == TIMER_KIDS => kids_timeout(h),
             WM_LBUTTONDOWN => {
+                hide_addr_tip();
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
                     if pane_drag_down(h, i, x, y) {

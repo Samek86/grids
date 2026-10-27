@@ -407,6 +407,7 @@ pub(crate) unsafe fn remember_tabs() {
 }
 
 pub(crate) unsafe fn detach_live() {
+    hide_addr_tip();
     for i in 0..MAXP {
         let got = app(|a| {
             a.panes[i].as_mut().map(|p| {
