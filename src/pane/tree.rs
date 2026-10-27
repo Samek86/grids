@@ -92,8 +92,14 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
         let (Some(item), Some(inner)) = (psi.as_ref(), pcmin.as_ref()) else {
             return Err(E_NOTIMPL.into());
         };
-        if !shell_folder(item) {
-            return Err(E_NOTIMPL.into());
+        match unsafe { item_is_container(item) } {
+            Some(true) => {}
+            // Attributes were not ready. The tree's own Open can still launch us.
+            None => {
+                crate::folderapp::note_activate(app(|a| a.main.0 as isize), active_pane(), false);
+                return Err(E_NOTIMPL.into());
+            }
+            Some(false) => return Err(E_NOTIMPL.into()),
         }
         let path = shell_parse(item);
         if path.is_empty() {
@@ -121,6 +127,10 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
 fn tree_keeps_click() -> bool {
     let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
     let middle = unsafe { GetKeyState(VK_MBUTTON.0 as i32) < 0 };
+    // Ctrl and middle stay with the tree, which runs the verb. That is a new tab.
+    // A plain click is recorded too, so a verb that still runs opens in this pane.
+    let main = app(|a| a.main.0 as isize);
+    crate::folderapp::note_activate(main, active_pane(), ctrl || middle);
     crate::folderapp::tree_activate(crate::folderapp::shown_on(), ctrl, middle, true) == crate::folderapp::OpenWhere::Pane
 }
 

@@ -338,16 +338,72 @@ pub(crate) struct OpenIn {
     pub folder: bool,
     pub stream: bool,
     pub browsable: bool,
+    /// `FILE_ATTRIBUTE_DIRECTORY` from the property cache or a local attribute read.
+    /// Set for a real directory, a junction, and a directory symlink even when the
+    /// shell bits above are missing or still wrong.
+    pub directory: bool,
 }
 
 /// Double-click and Enter in the file list. With the setting off, the view
 /// already navigates, so this stays `Shell` and the view is left alone.
 pub(crate) fn list_open(a: OpenIn) -> OpenWhere {
-    if a.registered && !a.ctrl && !a.middle && navigable(a.folder, a.stream, a.browsable) {
+    if a.registered && !a.ctrl && !a.middle && (navigable(a.folder, a.stream, a.browsable) || a.directory) {
         OpenWhere::Pane
     } else {
         OpenWhere::Shell
     }
+}
+
+/// One activated row, as far as the shell could say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActKind {
+    /// A folder, library, zip-like container, junction, or directory symlink.
+    Folder,
+    /// A file. The verb may run.
+    File,
+    /// Attributes were not available (still enumerating, not cached, a network item).
+    Unknown,
+}
+
+/// What the file list does with one activation. Index 0 is the item that was
+/// activated (focused, or the row under the pointer). The rest are other selected rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListAct {
+    /// The hosted view runs the default verb.
+    Shell,
+    /// Browse `index` in this pane. The verb must not run on any row.
+    Browse(usize),
+    /// Open the files. Do not let the verb run: a selected folder would become a new tab.
+    FilesOnly,
+}
+
+/// Enter with several rows selected used to look only at the focused item. When that
+/// item was not a proven folder, the view ran the verb on every selected folder.
+pub(crate) fn list_activation(registered: bool, ctrl: bool, middle: bool, kinds: &[ActKind]) -> ListAct {
+    if !registered || ctrl || middle || kinds.is_empty() {
+        return ListAct::Shell;
+    }
+    let any_folder = kinds.iter().any(|k| *k == ActKind::Folder);
+    if !any_folder {
+        return ListAct::Shell;
+    }
+    if kinds[0] == ActKind::Folder {
+        return ListAct::Browse(0);
+    }
+    if let Some(i) = kinds.iter().position(|k| *k == ActKind::Folder) {
+        if kinds[0] == ActKind::File {
+            return ListAct::FilesOnly;
+        }
+        return ListAct::Browse(i);
+    }
+    ListAct::Shell
+}
+
+/// A context-menu command whose verb string could not be read. The default item
+/// (offset 0, or the menu's default) is Open. Any other empty verb is left alone.
+pub(crate) fn menu_open_item(registered: bool, ctrl: bool, middle: bool, verb: &str, count: usize, file: bool, link: bool, default_item: bool) -> OpenWhere {
+    let verb = if verb.trim().is_empty() && default_item { "open" } else { verb };
+    menu_open(registered, ctrl, middle, verb, count, file, link)
 }
 
 /// A directory, drive, library, or zip-like browsable folder.
@@ -382,6 +438,63 @@ pub(crate) fn tree_activate(registered: bool, ctrl: bool, middle: bool, activati
 /// `C:\a\folder.lnk`. The decision of whether its target is a folder is separate.
 pub(crate) fn link_file(path: &str) -> bool {
     path.trim().rsplit(['\\', '/']).next().unwrap_or("").trim_matches('"').to_ascii_lowercase().ends_with(".lnk")
+}
+
+/// How long a Ctrl or middle-click "open in a new tab" stays in force.
+/// A folder the view still launches inside this window is that tab.
+/// After it, a launch whose parent is this process is the double-click that slipped through.
+pub(crate) const NEW_TAB_INTENT_MS: u64 = 2_000;
+
+/// What the running instance does with a second `panegrid.exe`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Handoff {
+    /// Explorer, Win+E, another app, or a Ctrl/middle-click from this process.
+    NewTab,
+    /// This process spawned the child (the shell view's default verb). Browse in place.
+    InPlace,
+}
+
+/// `parent_pid` is the parent of the `panegrid.exe` that forwarded the launch.
+/// `self_pid` is the running instance. `intent_elapsed_ms` is how long ago a
+/// Ctrl or middle-click asked for a new tab, or `None` when it never did.
+/// `0` is not a process id: a parent that could not be read stays a new tab.
+pub(crate) fn handoff_action(parent_pid: u32, self_pid: u32, intent_elapsed_ms: Option<u64>) -> Handoff {
+    let intent = matches!(intent_elapsed_ms, Some(ms) if ms <= NEW_TAB_INTENT_MS);
+    if parent_pid != 0 && parent_pid == self_pid && !intent {
+        Handoff::InPlace
+    } else {
+        Handoff::NewTab
+    }
+}
+
+/// First line of a handoff. `\u{1}` cannot appear in a Windows path, so a folder
+/// named like this header is still an argument. The line is whole characters.
+pub(crate) fn handoff_text(parent_pid: u32, args: &[String]) -> String {
+    let mut s = format!("\u{1}pg-parent:{parent_pid}");
+    for a in args {
+        s.push('\n');
+        s.push_str(a);
+    }
+    s
+}
+
+/// Inverse of `handoff_text`. A body from an older build has no header: the parent
+/// is 0 and every non-empty line is an argument.
+pub(crate) fn parse_handoff(text: &str) -> (u32, Vec<String>) {
+    let mut parent = 0u32;
+    let mut args = Vec::new();
+    for line in text.split('\n') {
+        if let Some(rest) = line.strip_prefix('\u{1}') {
+            if let Some(n) = rest.strip_prefix("pg-parent:") {
+                parent = n.parse().unwrap_or(0);
+                continue;
+            }
+        }
+        if !line.is_empty() {
+            args.push(line.to_string());
+        }
+    }
+    (parent, args)
 }
 
 /// Quote only when Explorer's parameter would split. `shell:` and `::{...}` stay bare.
@@ -665,7 +778,7 @@ mod tests {
     }
 
     fn folder() -> OpenIn {
-        OpenIn { registered: true, ctrl: false, middle: false, folder: true, stream: false, browsable: false }
+        OpenIn { registered: true, ctrl: false, middle: false, folder: true, stream: false, browsable: false, directory: false }
     }
 
     #[test]
@@ -686,6 +799,15 @@ mod tests {
         assert_eq!(list_open(OpenIn { stream: true, browsable: false, ..plain }), OpenWhere::Shell);
         assert!(navigable(true, false, false));
         assert!(!navigable(false, false, true));
+        // Junction, directory symlink, or a folder whose SFGAO bits were not cached yet.
+        // The directory attribute is enough. Ctrl and middle still ask for a tab.
+        let dir = OpenIn { folder: false, stream: false, browsable: false, directory: true, ..plain };
+        assert_eq!(list_open(dir), OpenWhere::Pane);
+        assert_eq!(list_open(OpenIn { ctrl: true, ..dir }), OpenWhere::Shell);
+        assert_eq!(list_open(OpenIn { middle: true, ..dir }), OpenWhere::Shell);
+        assert_eq!(list_open(OpenIn { registered: false, ..dir }), OpenWhere::Shell);
+        // A file whose attributes did come back is not taken.
+        assert_eq!(list_open(OpenIn { folder: false, directory: false, ..plain }), OpenWhere::Shell);
     }
 
     #[test]
@@ -707,6 +829,67 @@ mod tests {
         assert_eq!(menu_open(true, false, false, "open", 1, true, false), OpenWhere::Shell);
         assert_eq!(menu_open(true, false, false, "open", 1, true, true), OpenWhere::Pane);
         assert!(open_verb("explore") && !open_verb("opennew") && !open_verb(""));
+        // The default item with no verb string is Open. A different empty verb is not.
+        assert_eq!(menu_open_item(true, false, false, "", 1, false, false, true), OpenWhere::Pane);
+        assert_eq!(menu_open_item(true, false, false, "", 1, false, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open_item(true, false, false, "open", 1, false, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open_item(true, true, false, "", 1, false, false, true), OpenWhere::Shell);
+        assert_eq!(menu_open_item(true, false, false, "", 1, true, false, true), OpenWhere::Shell);
+        assert_eq!(menu_open_item(true, false, false, "", 1, true, true, true), OpenWhere::Pane);
+    }
+
+    #[test]
+    fn enter_on_several_rows_does_not_hand_a_folder_to_the_verb() {
+        use ActKind::*;
+        assert_eq!(list_activation(true, false, false, &[Folder]), ListAct::Browse(0));
+        assert_eq!(list_activation(true, false, false, &[File]), ListAct::Shell);
+        assert_eq!(list_activation(true, false, false, &[Unknown]), ListAct::Shell);
+        // Focused row is a folder; other selected files must not make the verb run.
+        assert_eq!(list_activation(true, false, false, &[Folder, File, Folder]), ListAct::Browse(0));
+        // Focused row is a file and a folder is also selected. Open the files only.
+        assert_eq!(list_activation(true, false, false, &[File, Folder]), ListAct::FilesOnly);
+        assert_eq!(list_activation(true, false, false, &[File, File]), ListAct::Shell);
+        // Focus was not available. The first known folder is the one to browse.
+        assert_eq!(list_activation(true, false, false, &[Unknown, Folder]), ListAct::Browse(1));
+        assert_eq!(list_activation(true, true, false, &[Folder, Folder]), ListAct::Shell);
+        assert_eq!(list_activation(true, false, true, &[Folder]), ListAct::Shell);
+        assert_eq!(list_activation(false, false, false, &[Folder]), ListAct::Shell);
+        assert_eq!(list_activation(true, false, false, &[]), ListAct::Shell);
+    }
+
+    #[test]
+    fn a_child_of_this_process_browses_in_place_unless_a_new_tab_was_just_requested() {
+        assert_eq!(handoff_action(10, 10, None), Handoff::InPlace);
+        assert_eq!(handoff_action(10, 10, Some(0)), Handoff::NewTab);
+        assert_eq!(handoff_action(10, 10, Some(NEW_TAB_INTENT_MS)), Handoff::NewTab);
+        assert_eq!(handoff_action(10, 10, Some(NEW_TAB_INTENT_MS + 1)), Handoff::InPlace);
+        // Explorer, Win+E, another app: the parent is not this process.
+        assert_eq!(handoff_action(4, 10, None), Handoff::NewTab);
+        assert_eq!(handoff_action(4, 10, Some(5_000)), Handoff::NewTab);
+        // A parent that could not be read is not "us", even when both ids are 0.
+        assert_eq!(handoff_action(0, 10, None), Handoff::NewTab);
+        assert_eq!(handoff_action(0, 0, None), Handoff::NewTab);
+    }
+
+    #[test]
+    fn handoff_text_roundtrips_non_ascii_paths_without_cutting_a_character() {
+        let paths = vec![
+            r"D:\한글\사진".to_string(),
+            r"\\server\共有\フォルダ".to_string(),
+            "E:\\📁\\work".to_string(),
+            r"C:\Users\Юзер\Документы".to_string(),
+        ];
+        let text = handoff_text(4242, &paths);
+        assert!(text.starts_with('\u{1}'));
+        assert_eq!(parse_handoff(&text), (4242, paths.clone()));
+        // An older sender has no header. Every line is still a path.
+        let legacy = paths.join("\n");
+        assert_eq!(parse_handoff(&legacy), (0, paths));
+        assert_eq!(parse_handoff(""), (0, Vec::<String>::new()));
+        assert_eq!(parse_handoff("\u{1}pg-parent:not-a-number\nC:\\a"), (0, vec!["C:\\a".to_string()]));
+        // A folder whose name merely contains the words of the header is an argument.
+        let tricky = "pg-parent:12".to_string();
+        assert_eq!(parse_handoff(&handoff_text(7, &[tricky.clone()])), (7, vec![tricky]));
     }
 
     #[test]
