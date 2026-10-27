@@ -280,7 +280,7 @@ struct SettingsFile {
     /// Missing means on. The views themselves live in folder-views.json, never in grids.ini.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     remember_folder_view: bool,
-    /// Status line and folder tooltip show folder totals. Missing means on. Omitted while on.
+    /// Status line shows a selected folder's total. Missing means on. Omitted while on.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     show_folder_sizes: bool,
     /// Size UNC and mapped drives. Missing means off. Omitted while off.

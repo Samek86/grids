@@ -1,7 +1,7 @@
-// Folder totals for the status line and the hover tip. The UI thread only reads a cache and
-// enqueues paths. One low-priority thread walks the disk; another watches the open panes with
-// ReadDirectoryChangesW and drops the changed folder plus its ancestors. Nothing here calls the
-// window state: that lives on the UI thread.
+// Folder totals for the status line. Selecting a folder queues a background walk; the result is
+// drawn on the status bar. A change inside that folder drops the cached total so the next status
+// tick can ask again. This module never touches the file list: no Refresh, no SelectItem, no
+// column or view-mode write, no list tooltip.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicIsize, AtomicU64};
@@ -18,12 +18,7 @@ use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority, WaitForMultipleObjects, WaitForSingleObject, THREAD_MODE_BACKGROUND_BEGIN,
     THREAD_PRIORITY_LOWEST,
 };
-use windows::Win32::UI::Controls::{
-    NMLVGETINFOTIPW, TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION, TTS_ALWAYSTIP, TTS_NOPREFIX,
-};
-
 use super::dir_totals;
-use crate::app::*;
 use crate::i18n::*;
 use crate::imports::*;
 use crate::session::*;
@@ -38,8 +33,6 @@ const QUEUE_CAP: usize = 48;
 const CACHE_ENTRIES: usize = 2_048;
 const CACHE_BYTES: usize = 1_500_000;
 const EPOCH_CAP: usize = 8_192;
-const LVN_GETINFOTIPW: u32 = -158i32 as u32;
-const TIP_SUB: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -620,41 +613,6 @@ pub(crate) unsafe fn pick_selection(fv: &IFolderView2, network: bool) -> FolderP
     pick
 }
 
-/// Folders currently on screen in pane `i`, capped. Volume roots are left out.
-pub(crate) unsafe fn visible_folders(i: usize, cap: usize) -> Vec<(String, Place)> {
-    let Some(fv) = view_of::<IFolderView2>(i) else { return Vec::new() };
-    let mut out = Vec::new();
-    for v in 0..cap as i32 {
-        let Ok(idx) = fv.GetVisibleItem(v, false) else { break };
-        if idx < 0 {
-            break;
-        }
-        let Some(path) = folder_at(&fv, idx) else { continue };
-        out.push((path.clone(), classify_ui(&path)));
-        if out.len() >= cap {
-            break;
-        }
-    }
-    out
-}
-
-pub(crate) fn tip_for(pane: usize, path: &str) -> Option<String> {
-    if !SHOW.load(Ordering::Relaxed) || path.is_empty() || is_volume_root(path) {
-        return None;
-    }
-    let place = classify_ui(path);
-    if !allowed(place, NET.load(Ordering::Relaxed)) {
-        return None;
-    }
-    let key = norm_key(path);
-    let hit = lock().cache.get(&key);
-    if let Some(stat) = hit {
-        return view_text(SizeView::Ready { bytes: stat.bytes, files: stat.files, partial: stat.partial });
-    }
-    request_paths(pane, &[(path.to_string(), place)], RANK_HOVER);
-    Some(folder_size_text(true, 0, 0, false))
-}
-
 fn ensure_threads() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -980,214 +938,6 @@ fn apply_events(events: &[(String, bool)]) {
     }
 }
 
-fn merge_tip(existing: &str, extra: &str, max_chars: usize) -> Option<String> {
-    if extra.is_empty() || max_chars < 2 {
-        return None;
-    }
-    let label = extra.split(':').next().unwrap_or("");
-    if !label.is_empty() && existing.contains(label) {
-        return None;
-    }
-    let joined = if existing.is_empty() { extra.to_string() } else { format!("{existing}\r\n{extra}") };
-    let fits = |s: &str| s.encode_utf16().count() + 1 <= max_chars;
-    if fits(&joined) {
-        Some(joined)
-    } else if fits(extra) {
-        Some(extra.to_string())
-    } else {
-        None
-    }
-}
-
-// ---------- hover / infotip (UI thread) ----------
-
-pub(crate) unsafe fn hook_tips(i: usize) {
-    let Some(sv) = view_of::<IShellView>(i) else { return };
-    let Ok(view) = sv.GetWindow() else { return };
-    hook_tip_hwnd(view);
-    let mut after = None;
-    loop {
-        let Ok(c) = FindWindowExW(Some(view), after, PCWSTR::null(), PCWSTR::null()) else { break };
-        if c.0.is_null() {
-            break;
-        }
-        hook_tip_hwnd(c);
-        after = Some(c);
-    }
-}
-
-unsafe fn hook_tip_hwnd(h: HWND) {
-    if h.0.is_null() {
-        return;
-    }
-    let class = crate::wnd_class(h);
-    if matches!(class.as_str(), "SHELLDLL_DefView" | "SysListView32" | "DirectUIHWND") {
-        _ = SetWindowSubclass(h, Some(tip_proc), TIP_SUB, 0);
-    }
-    if class == "SysListView32" {
-        // Ask the list for the infotip notification so a folder row can carry the total.
-        let style = 0x400u32; // LVS_EX_INFOTIP
-        SendMessageW(h, 0x1036, Some(WPARAM(style as usize)), Some(LPARAM(style as isize)));
-    }
-}
-
-unsafe extern "system" fn tip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
-    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { tip_proc_inner(h, msg, wp, lp, _a1, _a2) }))
-}
-unsafe fn tip_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
-    if msg == WM_NOTIFY && lp.0 != 0 && (*(lp.0 as *const NMHDR)).code == LVN_GETINFOTIPW {
-        let r = DefSubclassProc(h, msg, wp, lp);
-        append_infotip(lp);
-        return r;
-    }
-    let class_direct = msg == WM_MOUSEMOVE && crate::wnd_class(h) == "DirectUIHWND";
-    if class_direct {
-        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_HOVER | TME_LEAVE, hwndTrack: h, dwHoverTime: 400 };
-        // Hover time is the system default when left 0; 400ms matches a tip.
-        _ = TrackMouseEvent(&mut t);
-    }
-    if msg == 0x2A1 && crate::wnd_class(h) == "DirectUIHWND" {
-        // WM_MOUSEHOVER
-        if let Some(i) = pane_of(h) {
-            if let Some(path) = hover_folder(i) {
-                if let Some(text) = tip_for(i, &path) {
-                    show_hover_tip(&text);
-                }
-            }
-        }
-    }
-    if msg == WM_MOUSELEAVE {
-        hide_hover_tip();
-    }
-    DefSubclassProc(h, msg, wp, lp)
-}
-
-unsafe fn append_infotip(lp: LPARAM) {
-    let tip = &mut *(lp.0 as *mut NMLVGETINFOTIPW);
-    if tip.pszText.0.is_null() || tip.cchTextMax <= 1 || tip.iItem < 0 {
-        return;
-    }
-    let Some(i) = pane_of(tip.hdr.hwndFrom) else { return };
-    let Some(path) = item_folder(i, tip.iItem) else { return };
-    let Some(extra) = tip_for(i, &path) else { return };
-    let existing = tip.pszText.to_string().unwrap_or_default();
-    let Some(merged) = merge_tip(&existing, &extra, tip.cchTextMax as usize) else { return };
-    let mut wide: Vec<u16> = merged.encode_utf16().collect();
-    wide.push(0);
-    if wide.len() > tip.cchTextMax as usize {
-        return;
-    }
-    std::ptr::copy_nonoverlapping(wide.as_ptr(), tip.pszText.0, wide.len());
-}
-
-unsafe fn item_folder(i: usize, idx: i32) -> Option<String> {
-    let fv = view_of::<IFolderView2>(i)?;
-    folder_at(&fv, idx)
-}
-
-pub(crate) unsafe fn folder_at(fv: &IFolderView2, idx: i32) -> Option<String> {
-    if idx < 0 {
-        return None;
-    }
-    let pidl = fv.Item(idx).ok()?;
-    let item = SHCreateItemFromIDList::<IShellItem>(pidl).ok()?;
-    CoTaskMemFree(Some(pidl as _));
-    let attr = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM).ok()?;
-    if !crate::real_folder(attr.0) {
-        return None;
-    }
-    let p = pwstr(item.GetDisplayName(SIGDN_FILESYSPATH).ok()?);
-    if p.is_empty() || is_volume_root(&p) || !crate::is_fs(&p) { None } else { Some(p) }
-}
-
-unsafe fn hover_folder(i: usize) -> Option<String> {
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
-        return None;
-    }
-    let mut acc: Option<IAccessible> = None;
-    let mut child = VARIANT::default();
-    if AccessibleObjectFromPoint(pt, &mut acc, &mut child).is_err() {
-        return None;
-    }
-    let name = acc.as_ref().and_then(|a| a.get_accName(&child).ok()).map(|s| s.to_string()).unwrap_or_default();
-    _ = VariantClear(&mut child);
-    if name.is_empty() {
-        return None;
-    }
-    let fv = view_of::<IFolderView2>(i)?;
-    for v in 0..48 {
-        let Ok(idx) = fv.GetVisibleItem(v, false) else { break };
-        if idx < 0 {
-            break;
-        }
-        let pidl = fv.Item(idx).ok()?;
-        let item = SHCreateItemFromIDList::<IShellItem>(pidl).ok()?;
-        CoTaskMemFree(Some(pidl as _));
-        let disp = item.GetDisplayName(SIGDN_NORMALDISPLAY).ok().map(|p| pwstr(p)).unwrap_or_default();
-        if disp.eq_ignore_ascii_case(&name) {
-            let attr = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM).ok()?;
-            if !crate::real_folder(attr.0) {
-                return None;
-            }
-            let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|n| pwstr(n)).unwrap_or_default();
-            return (!p.is_empty() && !is_volume_root(&p)).then_some(p);
-        }
-    }
-    None
-}
-
-static HOVER_TIP: AtomicIsize = AtomicIsize::new(0);
-static HOVER_READY: AtomicBool = AtomicBool::new(false);
-
-unsafe fn hover_hwnd() -> HWND {
-    let h = HOVER_TIP.load(Ordering::Relaxed);
-    if h != 0 {
-        return HWND(h as *mut _);
-    }
-    let style = WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX);
-    let tip = CreateWindowExW(WINDOW_EX_STYLE(0), TOOLTIPS_CLASSW, w!(""), style, 0, 0, 0, 0, None, None, None, None).unwrap_or_default();
-    if !tip.0.is_null() {
-        HOVER_TIP.store(tip.0 as isize, Ordering::Relaxed);
-        SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(480)));
-    }
-    tip
-}
-
-unsafe fn show_hover_tip(text: &str) {
-    let tip = hover_hwnd();
-    if tip.0.is_null() {
-        return;
-    }
-    let text = HSTRING::from(text);
-    let mut ti = TTTOOLINFOW {
-        cbSize: size_of::<TTTOOLINFOW>() as u32,
-        uFlags: TTF_TRACK | TTF_ABSOLUTE,
-        uId: 1,
-        lpszText: PWSTR(text.as_ptr() as *mut _),
-        ..Default::default()
-    };
-    let lp = LPARAM(&ti as *const _ as isize);
-    if !HOVER_READY.swap(true, Ordering::Relaxed) {
-        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
-    }
-    ti.lpszText = PWSTR(text.as_ptr() as *mut _);
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(LPARAM(&ti as *const _ as isize)));
-    let mut pt = POINT::default();
-    _ = GetCursorPos(&mut pt);
-    let at = LPARAM((((pt.y + 18) as u32 as isize) << 16) | ((pt.x + 12) as u32 as isize));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
-    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(LPARAM(&ti as *const _ as isize)));
-}
-
-unsafe fn hide_hover_tip() {
-    let h = HOVER_TIP.load(Ordering::Relaxed);
-    if h == 0 || !HOVER_READY.load(Ordering::Relaxed) {
-        return;
-    }
-    let ti = TTTOOLINFOW { cbSize: size_of::<TTTOOLINFOW>() as u32, uId: 1, ..Default::default() };
-    SendMessageW(HWND(h as *mut _), TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
-}
 
 #[cfg(test)]
 mod tests {
@@ -1272,6 +1022,7 @@ mod tests {
 
     #[test]
     fn queue_prefers_the_selection_and_drops_a_pane_that_left() {
+        assert!(RANK_SELECTED < RANK_HOVER && RANK_HOVER < RANK_VISIBLE);
         let mut st = Store::new();
         st.push(0, 0, r"C:\visible", Place::Local, RANK_VISIBLE);
         st.push(0, 0, r"C:\selected", Place::Local, RANK_SELECTED);
@@ -1361,11 +1112,18 @@ mod tests {
     }
 
     #[test]
-    fn tip_appends_when_it_fits() {
-        let extra = "Folder size: 1 B (1 file)";
-        assert_eq!(merge_tip("Type: File folder", extra, 80).as_deref(), Some("Type: File folder\r\nFolder size: 1 B (1 file)"));
-        assert!(merge_tip("Folder size: old", extra, 80).is_none());
-        assert_eq!(merge_tip("too long to keep", extra, extra.encode_utf16().count() + 1).as_deref(), Some(extra));
+    fn a_content_change_drops_the_cached_size_so_the_status_line_can_ask_again() {
+        let mut st = Store::new();
+        st.push(0, 0, r"C:\Work", Place::Local, RANK_SELECTED);
+        let job = st.pop().unwrap();
+        st.cache.insert(job.key.clone(), stat(10, 1, false));
+        st.push(0, 0, r"C:\Work", Place::Local, RANK_SELECTED);
+        assert!(st.queue.is_empty(), "a cached folder is not walked again");
+        st.invalidate(r"c:\work\a.txt", false);
+        assert!(st.cache.peek(r"c:\work").is_none());
+        st.push(0, 0, r"C:\Work", Place::Local, RANK_SELECTED);
+        assert_eq!(st.queue.len(), 1);
+        assert_eq!(st.queue[0].rank, RANK_SELECTED);
     }
 }
 #[cfg(test)]

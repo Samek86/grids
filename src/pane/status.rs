@@ -1,5 +1,3 @@
-use std::sync::atomic::AtomicU64;
-
 use crate::imports::*;
 use crate::app::*;
 use crate::ui::*;
@@ -253,8 +251,6 @@ pub(crate) fn resum_sizes() {
     app(|a| a.status_key.clear());
 }
 
-static VIS_TICK: AtomicU64 = AtomicU64::new(0);
-
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
 // Other ticks only merge the folder size worker's progress into the stored text.
 pub(crate) unsafe fn update_status() {
@@ -275,9 +271,9 @@ pub(crate) unsafe fn update_status() {
         status_base(i, &path, main, &fv, n, sel, &spec, busy, zoom);
         app(|a| a.status_key = key);
     }
-    if show && !busy {
-        schedule_visible(i);
-    }
+    // Selected folders only. Walking visible rows (GetVisibleItem) touched the list every tick
+    // and fought the scroll. A content change drops the cache; this asks for the selection again
+    // and the text below is the only thing that updates.
     let folder = if show {
         app(|a| (!a.status_folders.is_empty()).then(|| (a.status_folders.clone(), a.status_files)))
     } else {
@@ -396,22 +392,4 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
     });
 }
 
-/// Selected folder first is requested by the caller. Visible folders in the active pane
-/// every tick, other panes every fourth, so a background walk stays behind the selection.
-fn schedule_visible(active: usize) {
-    let tick = VIS_TICK.fetch_add(1, Ordering::Relaxed);
-    let n = app(|a| a.s.panes()).min(MAXP);
-    let mut left = 32usize;
-    for i in 0..n {
-        if left == 0 {
-            break;
-        }
-        if i != active && tick % 4 != 0 {
-            continue;
-        }
-        let vis = unsafe { super::visible_folders(i, left.min(12)) };
-        left = left.saturating_sub(vis.len());
-        super::request_paths(i, &vis, super::RANK_VISIBLE);
-    }
-}
 
