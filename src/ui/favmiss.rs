@@ -14,6 +14,11 @@ pub(crate) fn folder_gone_text() -> &'static str {
     tr("Folder not found", "폴더를 찾을 수 없습니다", "フォルダーが見つかりません")
 }
 
+/// Short note under a missing favourite's location. Files and folders both use it.
+pub(crate) fn fav_missing_note() -> &'static str {
+    tr("Not found", "찾을 수 없음", "見つかりません")
+}
+
 /// Remove, then Change location. The ellipsis is the one character, matching the button.
 pub(crate) fn folder_gone_buttons() -> (&'static str, &'static str) {
     (
@@ -405,7 +410,7 @@ unsafe fn miss_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT 
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{folder_gone_buttons, folder_gone_text, hit_of, miss_layout, miss_window, MissHit};
+    use super::{fav_missing_note, folder_gone_buttons, folder_gone_text, hit_of, miss_layout, miss_window, MissHit};
     use crate::i18n::UI;
 
     #[test]
@@ -413,16 +418,19 @@ mod tests {
         let prev = UI.load(Ordering::Relaxed);
         UI.store(0, Ordering::Relaxed);
         assert_eq!(folder_gone_text(), "Folder not found");
+        assert_eq!(fav_missing_note(), "Not found");
         let (remove, change) = folder_gone_buttons();
         assert_eq!(remove, "Remove from favourites");
         assert_eq!(change, "Change location…");
         UI.store(1, Ordering::Relaxed);
         assert_eq!(folder_gone_text(), "폴더를 찾을 수 없습니다");
+        assert_eq!(fav_missing_note(), "찾을 수 없음");
         let (remove, change) = folder_gone_buttons();
         assert_eq!(remove, "즐겨찾기에서 제거");
         assert_eq!(change, "위치 변경…");
         UI.store(2, Ordering::Relaxed);
         assert_eq!(folder_gone_text(), "フォルダーが見つかりません");
+        assert_eq!(fav_missing_note(), "見つかりません");
         let (remove, change) = folder_gone_buttons();
         assert_eq!(remove, "お気に入りから削除");
         assert_eq!(change, "場所を変更…");
