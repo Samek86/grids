@@ -62,6 +62,17 @@ fn main() -> Result<()> {
                 }
             }
         };
+        // Old named sessions that stored every tab are split into one file per tab.
+        // The open window (panegrid.json) is only retargeted in memory: its tabs stay.
+        let split_maps = migrate_named_sessions();
+        if !split_maps.is_empty() {
+            retarget_session_links(&mut s, &split_maps);
+            let pending = take_stashed().into_iter().map(|mut v| {
+                retarget_window_value(&mut v, &split_maps);
+                v
+            }).collect();
+            stash_windows(pending);
+        }
         let boot = s.boot;
         let restore = session_arg(&args).is_none() && args.is_empty();
         if restore {
@@ -865,7 +876,26 @@ mod tests {
         let mut quiet = |_, _| {};
         let root = tree("walk", &[("a.bin".into(), 100), (r"sub\b.bin".into(), 20), (r"sub\deep\c.bin".into(), 3)]);
         assert_eq!(dir_bytes(&root, &never, &never, &mut quiet), Some((123, false)));
+        let totals = dir_totals(&root, &never, &never, &mut quiet, DIR_STACK_CAP).unwrap();
+        assert_eq!((totals.bytes, totals.files, totals.folders, totals.partial), (123, 3, 3, false));
         assert_eq!(dir_bytes(&root.join("missing"), &never, &never, &mut quiet), Some((0, true)));
+        let missing = dir_totals(&root.join("missing"), &never, &never, &mut quiet, DIR_STACK_CAP).unwrap();
+        assert_eq!((missing.bytes, missing.files, missing.folders, missing.partial), (0, 0, 0, true));
+        // a wide folder stops enqueueing past the stack cap and is marked partial; a deep chain stays small
+        let wide_files: Vec<(String, usize)> = ["d0", "d1", "d2", "d3", "d4"].into_iter().map(|d| (format!(r"{d}\a.bin"), 1)).collect();
+        let wide = tree("wide", &wide_files);
+        let capped = dir_totals(&wide, &never, &never, &mut quiet, 2).unwrap();
+        assert!(capped.partial);
+        assert_eq!(capped.folders, 6);
+        assert!(capped.files < 5 && capped.files >= 1, "{capped:?}");
+        let mut rel = String::new();
+        for _ in 0..40 {
+            rel.push_str(r"n\");
+        }
+        rel.push_str("f.bin");
+        let deep = tree("deep", &[(rel, 9)]);
+        let chain = dir_totals(&deep, &never, &never, &mut quiet, 2).unwrap();
+        assert_eq!((chain.bytes, chain.files, chain.folders, chain.partial), (9, 1, 41, false));
         // a junction pointing back up is not followed
         let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join(r"sub\loop")).arg(&root).output();
         assert!(made.is_ok_and(|o| o.status.success()) && root.join(r"sub\loop\a.bin").exists());
@@ -913,7 +943,8 @@ mod tests {
         job.want(&[], true); // what resum_sizes does
         assert!(job.want(&target, false) && !job.done);
         assert_eq!(dir_bytes(&flat, &never, &never, &mut quiet), Some((650, false)));
-        for r in [root, flat, big] {
+
+        for r in [root, flat, big, wide, deep] {
             _ = std::fs::remove_dir_all(r);
         }
     }

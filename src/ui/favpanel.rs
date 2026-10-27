@@ -82,10 +82,33 @@ fn side_view_h() -> i32 {
     rc.bottom
 }
 
+/// Height of the removal error, or 0 when there is nothing to say.
+fn note_band() -> i32 {
+    if pin_file_note().is_empty() { 0 } else { row_h().saturating_mul(3) }
+}
+
+/// The list's visible height. The error band sits under it and does not scroll away.
+fn list_page() -> i32 {
+    (side_view_h() - note_band()).max(0)
+}
+
+unsafe fn paint_pin_note(dc: HDC, rc: RECT, font: HFONT, dpi: i32) {
+    let note = pin_file_note();
+    if note.is_empty() {
+        return;
+    }
+    let s = |v: i32| v * dpi / 96;
+    let top = (rc.bottom - note_band()).max(rc.top);
+    fill(dc, RECT { left: 0, top, right: rc.right, bottom: rc.bottom }, side_ground());
+    let ink = if DARK_ON.load(Ordering::Relaxed) { 0xFFB4AB } else { 0x9F1C14 };
+    fill(dc, RECT { left: 0, top, right: rc.right, bottom: top + s(2).max(1) }, ink);
+    wrap_text(dc, RECT { left: s(8), top: top + s(4), right: rc.right - s(8), bottom: rc.bottom - s(2) }, &note, font, ink, false);
+}
+
 /// Largest vertical scroll offset: total row height minus what the panel shows.
 fn max_side_scroll() -> i32 {
     let total = rows().len() as i32 * row_h();
-    (total - side_view_h()).max(0)
+    (total - list_page()).max(0)
 }
 
 /// Mirror the scroll state into the native vertical scrollbar (hidden while everything fits).
@@ -95,7 +118,7 @@ pub(crate) fn sync_side_scrollbar() {
         return;
     }
     let total = rows().len() as i32 * row_h();
-    let (page, pos) = (side_view_h(), app(|a| a.side_scroll));
+    let (page, pos) = (list_page(), app(|a| a.side_scroll));
     let si = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
         fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
@@ -125,7 +148,7 @@ fn tree_pos(list: &[FavRow], id: &[usize]) -> Option<usize> {
 fn row_at(y: i32) -> Option<usize> {
     let n = rows().len();
     let scroll = app(|a| a.side_scroll);
-    if y < 0 || n == 0 {
+    if y < 0 || y >= list_page() || n == 0 {
         return None;
     }
     let i = (y + scroll) / row_h();
@@ -183,10 +206,12 @@ pub(crate) unsafe fn paint_side(h: HWND) {
     buffered(h, |dc, rc| {
         let s = |v: i32| v * dpi / 96;
         let rh = row_h();
+        let list_bottom = rc.bottom - note_band();
         fill(dc, rc, side_ground());
         if list.is_empty() {
             text(dc, RECT { left: s(12), top: s(8), right: rc.right - s(8), bottom: s(48) }, tr("No favourites yet", "즐겨찾기가 없어요", "お気に入りはまだありません"), font, pal().sub, DT_LEFT);
             text(dc, RECT { left: s(12), top: s(28), right: rc.right - s(8), bottom: s(72) }, tr("Right-click to add a group", "우클릭해서 그룹을 만드세요", "右クリックでグループを作成"), font, pal().sub, DT_LEFT);
+            paint_pin_note(dc, rc, font, dpi);
             return;
         }
         let any_group = list.iter().any(|f| f.group);
@@ -198,7 +223,7 @@ pub(crate) unsafe fn paint_side(h: HWND) {
         };
         for (i, f) in list.iter().enumerate() {
             let y = i as i32 * rh - scroll;
-            if y + rh < 0 || y >= rc.bottom {
+            if y + rh < 0 || y >= list_bottom {
                 continue;
             }
             let r = RECT { left: 0, top: y, right: rc.right, bottom: y + rh };
@@ -251,12 +276,13 @@ pub(crate) unsafe fn paint_side(h: HWND) {
                     let at = if zone == 0 { row } else { after_row(&list, row) };
                     let line_y = if zone == 0 { row as i32 * rh - scroll } else { at as i32 * rh - scroll + rh - s(2) };
                     let indent = s(14) * f.depth.min(8) as i32;
-                    if line_y + s(2) >= 0 && line_y < rc.bottom {
+                    if line_y + s(2) >= 0 && line_y < list_bottom {
                         fill(dc, RECT { left: s(8) + indent, top: line_y, right: rc.right - s(8), bottom: line_y + s(2) }, accent);
                     }
                 }
             }
         }
+        paint_pin_note(dc, rc, font, dpi);
     });
     if list.iter().any(|f| !f.group) {
         arm_icon_prewarm(h);
@@ -550,11 +576,16 @@ fn pin_home(path: &str, name: &str, file: bool) {
 }
 
 fn unpin_path(path: &str, file: bool) {
+    if file {
+        // The row stays until a Home re-read omits it. A verb that returns success and
+        // leaves the file in place used to hide it for 3 seconds, then the next read put it back.
+        shell_unfavorite_file(path);
+        repaint_side();
+        return;
+    }
     forget_pinned(path);
     repaint_side();
-    // Folders leave through the Quick Access child. Favourite files do not: that verb
-    // leaves them in Home's Favourites, and the 3s hide is the only thing that hid the row.
-    let removed = if file { shell_unfavorite_file(path) } else { shell_home_verb(path, false) };
+    let removed = shell_home_verb(path, false);
     refresh_pins_soon();
     if !removed {
         unsafe { _ = MessageBeep(MB_ICONWARNING) };

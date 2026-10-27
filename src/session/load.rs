@@ -361,7 +361,7 @@ pub(crate) unsafe fn paint_load(h: HWND) {
         let link = |r: RECT, label: &str, k: usize, align| {
             text(dc, r, label, font, if hot == Some(k) { pal().text } else { accent }, align);
         };
-        link(g.save_as, tr("+ Save as new", "+ 새 이름으로 저장", "+ 新しい名前で保存"), LOAD_SAVE_AS, DT_LEFT);
+        link(g.save_as, tr("+ Save this tab…", "+ 이 탭 저장…", "+ このタブを保存…"), LOAD_SAVE_AS, DT_LEFT);
         link(g.folder, tr("Open sessions folder", "세션 폴더 열기", "セッション フォルダーを開く"), LOAD_FOLDER, DT_RIGHT);
     });
 }

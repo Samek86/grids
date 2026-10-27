@@ -213,14 +213,19 @@ unsafe fn remove_row(row: &FavRow) {
             commit_favs();
         }
         RowKind::Pins | RowKind::Files => {
-            forget_pinned(&row.path);
-            let removed = if row.file || row.kind == RowKind::Files {
-                shell_unfavorite_file(&row.path)
-            } else {
-                shell_home_verb(&row.path, false)
-            };
-            request_pins(true);
             let side = app(|a| a.side_hwnd);
+            if row.file || row.kind == RowKind::Files {
+                // The row stays until a Home re-read omits it. Hiding it now brought a file
+                // back when the verb returned success and left the favourite in place.
+                shell_unfavorite_file(&row.path);
+                if !side.0.is_null() {
+                    _ = InvalidateRect(Some(side), None, false);
+                }
+                return;
+            }
+            forget_pinned(&row.path);
+            let removed = shell_home_verb(&row.path, false);
+            request_pins(true);
             if !side.0.is_null() {
                 _ = InvalidateRect(Some(side), None, false);
             }
@@ -277,10 +282,10 @@ unsafe fn relocate_home(row: &FavRow, path: &str) -> bool {
     }
     remember_pinned(path, &name, false);
     app(|a| a.s.pins_open = true);
-    forget_pinned(&row.path);
     if row.file || row.kind == RowKind::Files {
-        let _ = shell_unfavorite_file(&row.path);
+        shell_unfavorite_file(&row.path);
     } else {
+        forget_pinned(&row.path);
         let _ = shell_home_verb(&row.path, false);
     }
     request_pins(true);

@@ -7,3 +7,4 @@ mod apply;
 mod plan;
 
 pub(crate) use apply::{reload_shown, repair_moved_exe, set_registered, shown_on, take_launch_args};
+pub(crate) use plan::{link_file, list_open, menu_open, navigable, tree_activate, OpenIn, OpenWhere};
