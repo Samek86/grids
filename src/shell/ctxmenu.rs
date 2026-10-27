@@ -880,7 +880,8 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
         }
         _ = DeleteMenu(menu, i, MF_BYPOSITION);
     }
-    collapse_separators(menu);
+    // Deleting a handler's rows leaves the separators that used to sit around them.
+    normalize_menu(menu);
     for (id, labels) in learned {
         note_labels(&id, &labels);
     }
@@ -1227,20 +1228,176 @@ fn probe_context() -> Option<(*mut ITEMIDLIST, Option<IDataObject>)> {
     })
 }
 
-unsafe fn collapse_separators(menu: HMENU) {
-    loop {
-        let n = GetMenuItemCount(Some(menu)).max(0) as u32;
-        let mut removed = false;
-        let mut i = 0u32;
-        while i + 1 < n {
-            if super::menu_sep(menu, i) && super::menu_sep(menu, i + 1) && DeleteMenu(menu, i + 1, MF_BYPOSITION).is_ok() {
-                removed = true;
-                break;
-            }
-            i += 1;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SepMark {
+    Item,
+    Separator,
+}
+
+/// A menu with no separator at either end, and no two separators in a row.
+fn normalize_separators(items: &[SepMark]) -> Vec<SepMark> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if *item == SepMark::Separator && (out.is_empty() || *out.last().unwrap() == SepMark::Separator) {
+            continue;
         }
-        if !removed {
-            break;
+        out.push(*item);
+    }
+    if out.last() == Some(&SepMark::Separator) {
+        out.pop();
+    }
+    out
+}
+
+/// Which original rows `normalize_separators` keeps. The first separator of a run stays.
+fn separator_keep(is_sep: &[bool]) -> Vec<bool> {
+    let marks: Vec<SepMark> = is_sep.iter().map(|sep| if *sep { SepMark::Separator } else { SepMark::Item }).collect();
+    let want = normalize_separators(&marks);
+    let mut keep = vec![false; is_sep.len()];
+    let mut j = 0;
+    for (i, mark) in marks.iter().enumerate() {
+        if j < want.len() && *mark == want[j] {
+            keep[i] = true;
+            j += 1;
+        }
+    }
+    debug_assert_eq!(j, want.len());
+    keep
+}
+
+unsafe fn item_submenu(menu: HMENU, pos: u32) -> Option<HMENU> {
+    let mut info = MENUITEMINFOW {
+        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_SUBMENU,
+        ..Default::default()
+    };
+    if GetMenuItemInfoW(menu, pos, true, &mut info).is_err() {
+        return None;
+    }
+    let sub = info.hSubMenu;
+    if sub.0.is_null() || sub.0 == menu.0 { None } else { Some(sub) }
+}
+
+/// Drop leading, trailing, and repeated separators. Submenus are cleaned the same way.
+pub(crate) unsafe fn normalize_menu(menu: HMENU) {
+    let mut seen = Vec::new();
+    normalize_menu_into(menu, &mut seen, 0);
+}
+
+unsafe fn normalize_menu_into(menu: HMENU, seen: &mut Vec<isize>, depth: u8) {
+    if menu.0.is_null() || depth > 8 {
+        return;
+    }
+    let key = menu.0 as isize;
+    if seen.contains(&key) {
+        return;
+    }
+    seen.push(key);
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    for i in 0..n {
+        if let Some(sub) = item_submenu(menu, i) {
+            normalize_menu_into(sub, seen, depth + 1);
+        }
+    }
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    let sep: Vec<bool> = (0..n).map(|i| super::menu_sep(menu, i)).collect();
+    let keep = separator_keep(&sep);
+    for i in (0..n).rev() {
+        if !keep[i as usize] {
+            let _ = DeleteMenu(menu, i, MF_BYPOSITION);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NewFolderSlot {
+    Other,
+    /// Top-level "New folder". `panegrid` is a command id at `0x8000` or above.
+    NewFolder { panegrid: bool },
+}
+
+/// Explorer's row wins. A second Explorer row, and Panegrid's own row beside one, go.
+fn keep_new_folder(rows: &[NewFolderSlot]) -> Vec<bool> {
+    let explorer = rows.iter().any(|row| matches!(row, NewFolderSlot::NewFolder { panegrid: false }));
+    let mut seen_explorer = false;
+    let mut seen_own = false;
+    rows.iter()
+        .map(|row| match row {
+            NewFolderSlot::Other => true,
+            NewFolderSlot::NewFolder { panegrid: false } => {
+                if seen_explorer {
+                    false
+                } else {
+                    seen_explorer = true;
+                    true
+                }
+            }
+            NewFolderSlot::NewFolder { panegrid: true } => {
+                if explorer || seen_own {
+                    false
+                } else {
+                    seen_own = true;
+                    true
+                }
+            }
+        })
+        .collect()
+}
+
+fn is_new_folder_verb(verb: &str) -> bool {
+    let v = verb.trim().trim_matches('&').to_ascii_lowercase();
+    v == "newfolder" || v == "windows.newfolder"
+}
+
+/// Shell text (`새 폴더(&N)`, `新しいフォルダー(&F)`) and Panegrid's `tr()` strings.
+fn is_new_folder_label(text: &str) -> bool {
+    matches!(
+        menu_match_key(text).as_str(),
+        "new folder" | "새 폴더" | "新しいフォルダー" | "新しいフォルダ" | "新規フォルダー" | "新規フォルダ"
+    )
+}
+
+fn is_new_folder_item(verb: &str, text: &str) -> bool {
+    is_new_folder_verb(verb) || is_new_folder_label(text)
+}
+
+/// One top-level New folder on a background menu.
+///
+/// Explorer can insert that command twice. `Position=Top` puts it first, and the
+/// same verb is merged again under Paste from `Directory\Background` and
+/// `Folder\Background`. Both rows share the shell string (`새 폴더(&N)` on a
+/// Korean UI, `新しいフォルダー(&F)` on a Japanese one). Panegrid does not add
+/// a row of its own. A command id at `0x8000` or above with that label is removed
+/// when Explorer already has the verb, so the two are never stacked.
+///
+/// Rows Panegrid does add (favourites, batch rename, WinMerge, the Properties
+/// fallback) keep `tr()`, the app UI language. Explorer's rows stay in the
+/// Windows display language. This pass does not relabel either kind.
+pub(crate) unsafe fn dedupe_new_folder(menu: HMENU, cm: Option<&IContextMenu>) {
+    let n = GetMenuItemCount(Some(menu)).max(0) as u32;
+    let mut rows = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        if super::menu_sep(menu, i) || item_submenu(menu, i).is_some() {
+            rows.push(NewFolderSlot::Other);
+            continue;
+        }
+        let id = GetMenuItemID(menu, i as i32);
+        let panegrid = panegrid_menu_id(id);
+        let verb = match cm {
+            Some(cm) if id != u32::MAX && (1..0x8000).contains(&id) => super::cmd_verb(cm, (id - 1) as usize),
+            _ => String::new(),
+        };
+        let text = item_text(menu, i);
+        if is_new_folder_item(&verb, &text) {
+            rows.push(NewFolderSlot::NewFolder { panegrid });
+        } else {
+            rows.push(NewFolderSlot::Other);
+        }
+    }
+    let keep = keep_new_folder(&rows);
+    for i in (0..n).rev() {
+        if !keep[i as usize] {
+            let _ = DeleteMenu(menu, i, MF_BYPOSITION);
         }
     }
 }
@@ -3989,5 +4146,111 @@ mod tests {
         assert!(panegrid_menu_id(0x8021));
         assert!(!panegrid_menu_id(1));
         assert!(!panegrid_menu_id(u32::MAX));
+    }
+
+    fn kept_separators(items: &[SepMark]) -> Vec<SepMark> {
+        let sep: Vec<bool> = items.iter().map(|m| *m == SepMark::Separator).collect();
+        let keep = separator_keep(&sep);
+        items.iter().zip(keep).filter(|(_, k)| *k).map(|(m, _)| *m).collect()
+    }
+
+    #[test]
+    fn separators_drop_a_leading_trailing_or_repeated_bar() {
+        use SepMark::*;
+        assert_eq!(normalize_separators(&[]), Vec::<SepMark>::new());
+        assert_eq!(normalize_separators(&[Separator]), Vec::<SepMark>::new());
+        assert_eq!(normalize_separators(&[Separator, Separator]), Vec::<SepMark>::new());
+        assert_eq!(normalize_separators(&[Item]), vec![Item]);
+        assert_eq!(normalize_separators(&[Item, Item]), vec![Item, Item]);
+        assert_eq!(normalize_separators(&[Separator, Item]), vec![Item]);
+        assert_eq!(normalize_separators(&[Item, Separator]), vec![Item]);
+        assert_eq!(normalize_separators(&[Separator, Item, Separator]), vec![Item]);
+        assert_eq!(normalize_separators(&[Item, Separator, Separator, Item]), vec![Item, Separator, Item]);
+        assert_eq!(
+            normalize_separators(&[Separator, Separator, Item, Separator, Separator, Item, Separator]),
+            vec![Item, Separator, Item]
+        );
+        // The index map keeps the same rows the pure pass keeps, including the first bar of a run.
+        let messy = [Separator, Item, Separator, Separator, Item, Separator];
+        assert_eq!(kept_separators(&messy), normalize_separators(&messy));
+        assert_eq!(kept_separators(&messy), vec![Item, Separator, Item]);
+    }
+
+    #[test]
+    fn one_new_folder_row_and_explorer_wins_when_both_exist() {
+        use NewFolderSlot::*;
+        let shell = NewFolder { panegrid: false };
+        let own = NewFolder { panegrid: true };
+        let other = Other;
+        assert_eq!(keep_new_folder(&[other, shell, other, shell]), vec![true, true, true, false]);
+        assert_eq!(keep_new_folder(&[own, other, shell]), vec![false, true, true]);
+        assert_eq!(keep_new_folder(&[own, other, own]), vec![true, true, false]);
+        assert_eq!(keep_new_folder(&[shell]), vec![true]);
+        assert_eq!(keep_new_folder(&[other, other]), vec![true, true]);
+        assert!(is_new_folder_item("NewFolder", ""));
+        assert!(is_new_folder_item("windows.newfolder", ""));
+        assert!(is_new_folder_item("", "새 폴더(&N)"));
+        assert!(is_new_folder_item("", "새 폴더(N)"));
+        assert!(is_new_folder_item("", "新しいフォルダー(&F)"));
+        assert!(is_new_folder_item("", "New &folder"));
+        assert!(!is_new_folder_item("paste", "貼り付け(&P)"));
+        assert!(!is_new_folder_item("properties", "プロパティ(&R)"));
+        assert!(!is_new_folder_item("new", "新規作成(&W)"));
+        assert!(!is_new_folder_item("", "フォルダー(&F)"));
+    }
+
+    /// Background menu from the report: New folder at the top and again under Paste,
+    /// a repeated bar above Paste, and a bar after Properties.
+    #[test]
+    fn background_menu_keeps_one_new_folder_and_drops_dangling_bars() {
+        use NewFolderSlot::*;
+        use SepMark::*;
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Slot {
+            Sep,
+            Item,
+            New,
+            Own,
+        }
+        let slots = [
+            Slot::New,  // top 새 폴더
+            Slot::Sep,
+            Slot::Sep,  // empty bar above 貼り付け
+            Slot::Item, // 貼り付け
+            Slot::Sep,
+            Slot::New,  // 새 폴더 again
+            Slot::Sep,
+            Slot::Item, // プロパティ
+            Slot::Sep,  // bar after the last item
+        ];
+        let folder: Vec<NewFolderSlot> = slots
+            .iter()
+            .map(|s| match s {
+                Slot::New => NewFolder { panegrid: false },
+                Slot::Own => NewFolder { panegrid: true },
+                _ => Other,
+            })
+            .collect();
+        let left: Vec<Slot> = slots.iter().zip(keep_new_folder(&folder)).filter(|(_, k)| *k).map(|(s, _)| *s).collect();
+        let marks: Vec<SepMark> = left.iter().map(|s| if *s == Slot::Sep { Separator } else { Item }).collect();
+        let keep = separator_keep(&marks.iter().map(|m| *m == Separator).collect::<Vec<_>>());
+        let tidy: Vec<Slot> = left.into_iter().zip(keep).filter(|(_, k)| *k).map(|(s, _)| s).collect();
+        assert_eq!(tidy, vec![Slot::New, Slot::Sep, Slot::Item, Slot::Sep, Slot::Item]);
+
+        // Explorer already has the command, so Panegrid's own row is the one that goes.
+        let both = [Slot::Own, Slot::Sep, Slot::New, Slot::Sep];
+        let folder: Vec<NewFolderSlot> = both
+            .iter()
+            .map(|s| match s {
+                Slot::New => NewFolder { panegrid: false },
+                Slot::Own => NewFolder { panegrid: true },
+                _ => Other,
+            })
+            .collect();
+        let left: Vec<Slot> = both.iter().zip(keep_new_folder(&folder)).filter(|(_, k)| *k).map(|(s, _)| *s).collect();
+        let marks: Vec<SepMark> = left.iter().map(|s| if *s == Slot::Sep { Separator } else { Item }).collect();
+        let keep = separator_keep(&marks.iter().map(|m| *m == Separator).collect::<Vec<_>>());
+        let tidy: Vec<Slot> = left.into_iter().zip(keep).filter(|(_, k)| *k).map(|(s, _)| s).collect();
+        assert_eq!(tidy, vec![Slot::New]);
     }
 }
