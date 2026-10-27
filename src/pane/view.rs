@@ -918,7 +918,7 @@ pub(crate) unsafe fn apply_theme_desk() {
         return;
     }
     // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch).
-    // The address-bar path tip is a tracking tool on this same window.
+    // The address-bar path tip and the favourites location tip are tracking tools on this same window.
     let tip_theme = |t: HWND| {
         if !t.0.is_null() {
             _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());

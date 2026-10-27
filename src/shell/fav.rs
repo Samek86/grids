@@ -54,6 +54,8 @@ pub(crate) unsafe fn favs_changed() {
     settings::refresh();
     refresh_fav_manager();
     across_windows(|| {
+        // The rows under the pointer may have moved. Hide until the pointer moves.
+        dismiss_side_fav_tip();
         repaint_fav_buttons();
         clamp_side_scroll();
         let h = app(|a| a.side_hwnd);

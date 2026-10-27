@@ -10,8 +10,8 @@ use crate::session::*;
 use crate::settings;
 
 use super::{
-    blend, buffered, clear_icon_refresh, drop_side, fav_chevron_rect, fav_editable_indices, fav_head_h, fav_popup_can_drop, fav_row_editable, fav_row_h, files_section_label, fill,
-    hit_fav_board, layout_fav_board, note_side, paint_fav_head, paint_fav_row, pal, pins_section_label, place_edit, popup_rows, text, FavBoard, FavHit,
+    blend, buffered, clear_icon_refresh, drop_pop_fav_tip, drop_side, fav_chevron_rect, fav_editable_indices, fav_head_h, fav_popup_can_drop, fav_row_editable, fav_row_h, files_section_label, fill,
+    hide_pop_fav_tip, hit_fav_board, layout_fav_board, note_side, paint_fav_head, paint_fav_row, pal, pins_section_label, place_edit, popup_rows, show_pop_fav_tip, text, FavBoard, FavHit,
 };
 
 const ID_SEARCH: i32 = 1;
@@ -42,6 +42,10 @@ struct St {
     drag_at: (i32, i32),
     drag_ready: bool,
     drag_moved: bool,
+    /// Client point where a scroll or a content change hid the location tip.
+    tip_hold: Option<(i32, i32)>,
+    /// Identity of the rows last painted. Unchanged pin refreshes keep the tip.
+    rows_mark: Option<u64>,
     font: HFONT,
     small: HFONT,
     icon: HFONT,
@@ -60,6 +64,8 @@ impl Default for St {
             drag_at: (0, 0),
             drag_ready: false,
             drag_moved: false,
+            tip_hold: None,
+            rows_mark: None,
             font: HFONT::default(),
             small: HFONT::default(),
             icon: HFONT::default(),
@@ -174,6 +180,8 @@ pub(crate) unsafe fn refresh_fav_manager() {
         return;
     }
     bind_owner();
+    // The rows on screen may have changed. The tip waits until the pointer moves.
+    pop_tip_hold(h);
     let dpi = GetDpiForWindow(h).max(96) as i32;
     ST.with(|s| s.borrow_mut().dpi = dpi);
     style_window(h);
@@ -481,13 +489,18 @@ unsafe fn reveal(h: HWND, index: usize) {
     let y = fav_head_h(dpi) + index as i32 * fav_row_h(dpi);
     let rh = fav_row_h(dpi);
     let mut scroll = ST.with(|s| s.borrow().scroll);
+    let prev = scroll;
     if y < scroll {
         scroll = y;
     }
     if y + rh > scroll + view {
         scroll = y + rh - view;
     }
-    ST.with(|s| s.borrow_mut().scroll = scroll.max(0));
+    scroll = scroll.max(0);
+    ST.with(|s| s.borrow_mut().scroll = scroll);
+    if scroll != prev {
+        pop_tip_hold(h);
+    }
 }
 
 unsafe fn fav_manager_activate() {
@@ -735,11 +748,15 @@ unsafe fn place(h: HWND, rc: RECT) {
     let content = layout_fav_board(&(0..n).collect::<Vec<_>>(), lay.list.left, lay.list.right, 0, dpi).bottom + hint;
     let view = (lay.list.bottom - lay.list.top).max(1);
     let max_scroll = (content - view).max(0);
+    let prev_scroll = ST.with(|s| s.borrow().scroll);
     let scroll = ST.with(|s| {
         let mut st = s.borrow_mut();
         st.scroll = st.scroll.clamp(0, max_scroll);
         st.scroll
     });
+    if scroll != prev_scroll {
+        pop_tip_hold(h);
+    }
     let info = SCROLLINFO {
         cbSize: size_of::<SCROLLINFO>() as u32,
         fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
@@ -811,6 +828,8 @@ unsafe fn paint(h: HWND) {
     });
     bind_owner();
     let rows = shown();
+    let mark = shown_mark();
+    ST.with(|s| s.borrow_mut().rows_mark = Some(mark));
     buffered(h, |dc, rc| {
         let lay = pop_lay(rc.right, rc.bottom, dpi);
         let accent = settings::chrome_color();
@@ -894,6 +913,63 @@ struct HitRow {
     rect: RECT,
 }
 
+/// Hide the location tip and remember the pointer, so a scroll does not immediately show it again.
+unsafe fn pop_tip_hold(h: HWND) {
+    bind_owner();
+    hide_pop_fav_tip(h);
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() || !ScreenToClient(h, &mut pt).as_bool() {
+        ST.with(|s| s.borrow_mut().tip_hold = None);
+        return;
+    }
+    let mut rc = RECT::default();
+    let _ = GetClientRect(h, &mut rc);
+    if pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom {
+        ST.with(|s| s.borrow_mut().tip_hold = Some((pt.x, pt.y)));
+    } else {
+        ST.with(|s| s.borrow_mut().tip_hold = None);
+    }
+}
+
+unsafe fn pop_tip_at(h: HWND, x: i32, y: i32) {
+    if ST.with(|s| s.borrow().tip_hold) == Some((x, y)) {
+        return;
+    }
+    ST.with(|s| s.borrow_mut().tip_hold = None);
+    bind_owner();
+    let hit = hit_row(h, x, y);
+    show_pop_fav_tip(h, hit.as_ref().map(|hit| &hit.row));
+}
+
+fn shown_mark() -> u64 {
+    let list = shown();
+    let mut h = 0x9E37_79B9u64.wrapping_add(list.len() as u64);
+    for r in &list {
+        h = h.wrapping_mul(31).wrapping_add(r.path.chars().count() as u64);
+        for c in r.path.chars() {
+            h = h.wrapping_mul(31).wrapping_add(c as u64);
+        }
+        h = h.wrapping_mul(31).wrapping_add(r.name.chars().count() as u64);
+        for c in r.name.chars() {
+            h = h.wrapping_mul(31).wrapping_add(c as u64);
+        }
+        h = h.wrapping_mul(31).wrapping_add(r.id.len() as u64);
+        h = h.wrapping_mul(31).wrapping_add(u64::from(r.group));
+        h = h.wrapping_mul(31).wrapping_add(match r.kind {
+            RowKind::Tree => 1,
+            RowKind::Pins => 2,
+            RowKind::Files => 3,
+        });
+    }
+    h
+}
+
+unsafe fn pop_tip_leave(h: HWND) {
+    ST.with(|s| s.borrow_mut().tip_hold = None);
+    bind_owner();
+    hide_pop_fav_tip(h);
+}
+
 fn inside(r: RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -928,6 +1004,7 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
             st.query = q;
             st.scroll = 0;
         });
+        pop_tip_hold(h);
         layout(h);
         let _ = InvalidateRect(Some(h), None, false);
         return;
@@ -1045,6 +1122,8 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
             WM_COMMAND => on_command(h, (wp.0 & 0xffff) as i32, ((wp.0 >> 16) & 0xffff) as u32),
             WM_LBUTTONDOWN => {
+                // Gone before the click is handled, so the tip cannot take the click or the double-click.
+                pop_tip_leave(h);
                 let x = (lp.0 & 0xffff) as i16 as i32;
                 let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
                 let _ = SetFocus(Some(h));
@@ -1093,7 +1172,14 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     let st = s.borrow();
                     (st.drag.clone(), st.drag_ready, st.drag_at)
                 });
-                let Some(from) = from else { return LRESULT(0) };
+                let Some(from) = from else {
+                    pop_tip_at(h, x, y);
+                    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                    let _ = TrackMouseEvent(&mut t);
+                    return LRESULT(0);
+                };
+                // A press that can become a reorder must not keep a tip under the pointer.
+                pop_tip_leave(h);
                 if !ready {
                     if (x - at.0).abs() + (y - at.1).abs() <= DRAG_SLOP {
                         return LRESULT(0);
@@ -1136,6 +1222,7 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     }
                 }
             }
+            WM_MOUSELEAVE => pop_tip_leave(h),
             WM_LBUTTONUP => {
                 let moved = finish_drag();
                 let _ = ReleaseCapture();
@@ -1149,6 +1236,7 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 }
             }
             WM_MOUSEWHEEL => {
+                pop_tip_hold(h);
                 let delta = ((wp.0 >> 16) as i16 as i32) / 120;
                 if delta != 0 {
                     let dpi = ST.with(|s| s.borrow().dpi.max(96));
@@ -1162,6 +1250,7 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 }
             }
             WM_VSCROLL => {
+                pop_tip_hold(h);
                 let mut si = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..Default::default() };
                 let _ = GetScrollInfo(h, SB_VERT, &mut si);
                 let dpi = ST.with(|s| s.borrow().dpi.max(96));
@@ -1183,12 +1272,34 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             crate::WM_FAV_ICON => {
                 clear_icon_refresh();
                 let _ = InvalidateRect(Some(h), None, false);
+                // A row may have just been marked missing. Refresh the note if the pointer is still on it.
+                let idle = ST.with(|s| {
+                    let st = s.borrow();
+                    st.tip_hold.is_none() && st.drag.is_none()
+                });
+                if idle {
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() && ScreenToClient(h, &mut pt).as_bool() {
+                        pop_tip_at(h, pt.x, pt.y);
+                    }
+                }
             }
             WM_TIMER if wp.0 == crate::TIMER_PINS => {
                 let _ = KillTimer(Some(h), crate::TIMER_PINS);
                 crate::request_pins(true);
             }
             crate::WM_PINS => {
+                // Pin reads retry until Explorer answers. Only a real change of the rows hides the tip.
+                let mark = shown_mark();
+                let changed = ST.with(|s| {
+                    let mut st = s.borrow_mut();
+                    let changed = st.rows_mark.is_some_and(|prev| prev != mark);
+                    st.rows_mark = Some(mark);
+                    changed
+                });
+                if changed {
+                    pop_tip_hold(h);
+                }
                 layout(h);
                 let _ = InvalidateRect(Some(h), None, false);
                 if !crate::pins_loaded() {
@@ -1199,6 +1310,9 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let _ = DestroyWindow(h);
             }
             WM_DESTROY => {
+                bind_owner();
+                ST.with(|s| s.borrow_mut().tip_hold = None);
+                drop_pop_fav_tip(h);
                 drop_side(h);
                 crate::drop_pins_hwnd(h);
                 let _ = KillTimer(Some(h), crate::TIMER_PINS);
