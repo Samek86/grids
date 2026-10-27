@@ -454,9 +454,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         bind_hwnd(h);
         let nav = |flags: u32| {
             if let Some(i) = pane_of(h) {
-                set_active(i);
-                browse(i, flags);
-                focus_view(i);
+                nav_pane(i, flags);
             }
         };
         match msg {
@@ -752,12 +750,17 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     _ => return DefWindowProcW(h, msg, wp, lp),
                 }
             }
-            // mouse side buttons
-            WM_APPCOMMAND => match (lp.0 >> 16) & 0x0fff {
-                1 => nav(SBSP_NAVIGATEBACK),
-                2 => nav(SBSP_NAVIGATEFORWARD),
-                _ => return DefWindowProcW(h, msg, wp, lp),
-            },
+            // Back / forward from a mouse driver or a browser key. Over Remote Desktop the
+            // loop handles WM_XBUTTONUP first; a mouse-sourced command for that same click
+            // is claimed there and must not step history again.
+            WM_APPCOMMAND => {
+                let Some((dir, path)) = appcommand_event(lp.0) else {
+                    return DefWindowProcW(h, msg, wp, lp);
+                };
+                if side_claim(dir, path) {
+                    nav(side_flags(dir));
+                }
+            }
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
