@@ -7,7 +7,7 @@ use crate::ui::*;
 use crate::session::*;
 use crate::shell::*;
 use crate::i18n::*;
-use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
+use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetFileAttributesW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, INVALID_FILE_ATTRIBUTES};
 
 // ---------- navigation ----------
 
@@ -1233,25 +1233,29 @@ pub(crate) unsafe fn folder_link_target(path: &str) -> Option<String> {
     }
     let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
     link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(path), STGM_READ).ok()?;
+    let stored = stored_link_path(&link);
     if let Ok(pidl) = link.GetIDList() {
         if !pidl.is_null() {
             let item = SHCreateItemFromIDList::<IShellItem>(pidl).ok();
-            let folder = item.as_ref().and_then(|it| it.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).ok()).is_some_and(place_flags);
-            // A file shortcut stays None so the verb still opens it. The parsing name
-            // covers a library or a zip; GetPath covers a plain directory.
+            // A failed attribute read used to return here and skip the stored target,
+            // so a folder shortcut opened through the verb while the view was still loading.
+            let folder = item.as_ref().and_then(|it| item_is_container(it)) == Some(true);
             let name = folder.then(|| {
                 item.as_ref()
                     .and_then(|it| it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING).ok().map(|p| pwstr(p)))
                     .filter(|s| !s.is_empty())
-                    .or_else(|| stored_link_path(&link))
+                    .or_else(|| stored.clone())
             }).flatten();
             CoTaskMemFree(Some(pidl as _));
-            return name.filter(|s| !s.is_empty());
+            if let Some(name) = name.filter(|s| !s.is_empty()) {
+                return Some(name);
+            }
         }
     }
-    // No pidl. A local directory is still a folder. A share is not stat'd on this thread.
-    let s = stored_link_path(&link)?;
-    if share_path(&s) || std::fs::metadata(&s).is_ok_and(|m| m.is_dir()) {
+    // No pidl, or the shell bits were not ready. A local directory (including a junction
+    // or a directory symlink) is still a folder. A share is not stat'd on this thread.
+    let s = stored?;
+    if share_path(&s) || local_directory(&s) {
         Some(s)
     } else {
         None
@@ -1268,8 +1272,9 @@ unsafe fn stored_link_path(link: &IShellLinkW) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-fn place_flags(flags: SFGAO_FLAGS) -> bool {
-    crate::folderapp::navigable(flags.contains(SFGAO_FOLDER), flags.contains(SFGAO_STREAM), flags.contains(SFGAO_BROWSABLE))
+/// A local directory, junction, or directory symlink. Shares are not stat'd here.
+pub(crate) unsafe fn local_directory(path: &str) -> bool {
+    local_dir_answer(path) == Some(true)
 }
 
 pub(crate) unsafe fn focus_view(i: usize) {
@@ -1430,9 +1435,16 @@ pub(crate) unsafe fn go_edit(i: usize) {
             }
             let (mut pidl, mut sfgao) = (std::ptr::null_mut(), 0u32);
             if SHParseDisplayName(&HSTRING::from(&target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() && !pidl.is_null() {
-                let r = if sfgao & SFGAO_FOLDER.0 != 0 {
+                // SFGAO_FOLDER can still be 0 while the path is a local directory, junction, or symlink.
+                let folder = sfgao & SFGAO_FOLDER.0 != 0 || local_directory(&target) || local_symlink_dir(&target);
+                let r = if folder {
                     eb_of(i).is_some_and(|eb| browse_id(&eb, pidl, SBSP_ABSOLUTE).is_ok()).then_some(true)
                 } else {
+                    // A share, or a folder the shell did not describe, still launches. Record this pane
+                    // so the handoff browses here instead of opening a tab.
+                    if crate::folderapp::shown_on() {
+                        crate::folderapp::note_activate(app(|a| a.main.0 as isize), i, false);
+                    }
                     run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
                 };
                 CoTaskMemFree(Some(pidl as _));
@@ -2699,49 +2711,550 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
 }
 
-/// Double-click / Enter. While Panegrid is the folder handler, a plain activation of a
-/// folder, a folder shortcut, a library, or a zip-like folder browses this pane.
-/// Returning false lets the view run the verb: files, and Ctrl / middle on a folder
-/// (that launch is a new tab). With the setting off, the view already navigates.
-unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
+/// `\??\`, `\\?\`, and the UNC forms of those prefixes. The rest of the path is kept whole.
+fn strip_nt_prefix(path: &str) -> String {
+    let p = path.trim_matches('\0').trim();
+    if let Some(rest) = p.strip_prefix(r"\??\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = p.strip_prefix(r"\??\") {
+        return rest.to_string();
+    }
+    if let Some(rest) = p.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    p.to_string()
+}
+
+/// A relative reparse target is joined to the link's own folder. Drive and UNC targets stay as they are.
+fn join_link_target(link: &str, raw_target: &str) -> String {
+    let target = strip_nt_prefix(raw_target);
+    if target.is_empty() {
+        return target;
+    }
+    let rooted = target.starts_with(['\\', '/']);
+    let mut chars = target.chars();
+    let drive = chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':');
+    if rooted || drive {
+        return target;
+    }
+    let parent = link.trim_end_matches(['\\', '/']);
+    let parent = parent.rsplit_once(['\\', '/']).map(|(p, _)| p).unwrap_or("");
+    if parent.is_empty() {
+        target
+    } else {
+        format!("{parent}\\{target}")
+    }
+}
+
+/// Substitute name inside a symlink (`0xA000000C`) or mount-point (`0xA0000003`) reparse buffer.
+/// The buffer is binary. The name is read as UTF-16 units, never as a slice of a Rust string.
+fn parse_reparse(buf: &[u8]) -> Option<String> {
+    if buf.len() < 20 {
+        return None;
+    }
+    let tag = u32::from_le_bytes(buf.get(0..4)?.try_into().ok()?);
+    let path_base = match tag {
+        0xA000_000C => 20usize, // IO_REPARSE_TAG_SYMLINK: PathBuffer follows the Flags field
+        0xA000_0003 => 16usize, // IO_REPARSE_TAG_MOUNT_POINT
+        _ => return None,
+    };
+    if buf.len() < path_base {
+        return None;
+    }
+    let sub_off = u16::from_le_bytes(buf.get(8..10)?.try_into().ok()?) as usize;
+    let sub_len = u16::from_le_bytes(buf.get(10..12)?.try_into().ok()?) as usize;
+    if sub_len == 0 || sub_len % 2 != 0 {
+        return None;
+    }
+    let start = path_base.checked_add(sub_off)?;
+    let end = start.checked_add(sub_len)?;
+    let bytes = buf.get(start..end)?;
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    while units.last() == Some(&0) {
+        units.pop();
+    }
+    let s = String::from_utf16_lossy(&units);
+    (!s.is_empty()).then_some(s)
+}
+
+unsafe fn reparse_target(path: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+    const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
+    let opened = crate::winpath::win_long_path(path);
+    let handle = CreateFileW(
+        &HSTRING::from(&opened),
+        FILE_READ_ATTRIBUTES.0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    .ok()?;
+    let mut buf = [0u8; 16 * 1024];
+    let mut returned = 0u32;
+    let ok = DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, None, 0, Some(buf.as_mut_ptr() as *mut _), buf.len() as u32, Some(&mut returned), None).is_ok();
+    _ = CloseHandle(handle);
+    if !ok || returned < 8 {
+        return None;
+    }
+    let n = (returned as usize).min(buf.len());
+    parse_reparse(&buf[..n])
+}
+
+/// Attributes of this path, not of a link target. `FindFirstFileW` does not follow a reparse
+/// point, so a symlink to a share cannot stall this thread inside `GetFileAttributesW`.
+unsafe fn link_attributes(path: &str) -> Option<u32> {
+    use windows::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    let query = if trimmed.ends_with(':') {
+        format!("{trimmed}\\")
+    } else if trimmed.is_empty() {
+        path.to_string()
+    } else {
+        trimmed.to_string()
+    };
+    let opened = crate::winpath::win_long_path(&query);
+    let mut data = WIN32_FIND_DATAW::default();
+    let found = FindFirstFileW(&HSTRING::from(&opened), &mut data).ok()?;
+    _ = FindClose(found);
+    Some(data.dwFileAttributes)
+}
+
+/// `Some(true)` for a local directory, junction, directory symlink, or a file symlink whose
+/// target is a local directory. `None` for a share or a path this thread must not stat.
+unsafe fn local_dir_answer(path: &str) -> Option<bool> {
+    let path = path.trim();
+    if path.is_empty() || !is_fs(path) || share_path(path) {
+        return None;
+    }
+    let attr = link_attributes(path)?;
+    if attr & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+        return Some(true);
+    }
+    if attr & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 && symlink_target_is_local_dir(path) {
+        return Some(true);
+    }
+    Some(false)
+}
+
+/// A file symlink (reparse, no directory bit) whose target is a local directory.
+/// A UNC or mapped target is not stat'd. Directory symlinks already have the directory bit.
+unsafe fn symlink_target_is_local_dir(path: &str) -> bool {
+    let Some(raw) = reparse_target(path) else { return false };
+    let full = join_link_target(path, &raw);
+    if full.is_empty() || unc_path(&full) || share_path(&full) {
+        return false;
+    }
+    link_attributes(&full).is_some_and(|attr| attr & FILE_ATTRIBUTE_DIRECTORY.0 != 0)
+}
+
+/// Directory bit, or a reparse point whose target is a local directory. UNC targets are not opened.
+unsafe fn local_symlink_dir(path: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() || !is_fs(path) || share_path(path) {
+        return false;
+    }
+    let Some(attr) = link_attributes(path) else { return false };
+    if attr & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+        return true;
+    }
+    attr & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 && symlink_target_is_local_dir(path)
+}
+
+struct ItemFacts {
+    folder: bool,
+    stream: bool,
+    browsable: bool,
+    directory: bool,
+    /// A positive answer arrived. A failed or pending query stays false so the row stays unknown.
+    answered: bool,
+}
+
+const PKEY_FILE_ATTRIBUTES: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac),
+    pid: 13,
+};
+
+/// Cached directory bit only. `Some(false)` is not an answer: a cold cache must not mark a folder as a file.
+unsafe fn fast_directory(item: &IShellItem) -> Option<bool> {
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    use windows::Win32::UI::Shell::PropertiesSystem::{GPS_FASTPROPERTIESONLY, IPropertyStore};
+    let item2 = item.cast::<IShellItem2>().ok()?;
+    let store = item2.GetPropertyStore::<IPropertyStore>(GPS_FASTPROPERTIESONLY).ok()?;
+    let mut v: PROPVARIANT = store.GetValue(&PKEY_FILE_ATTRIBUTES).ok()?;
+    let dir = prop_directory(&v);
+    _ = PropVariantClear(&mut v);
+    (dir == Some(true)).then_some(true)
+}
+
+fn prop_directory(v: &windows::Win32::System::Com::StructuredStorage::PROPVARIANT) -> Option<bool> {
+    use windows::Win32::System::Variant::{VT_I4, VT_INT, VT_UI4, VT_UINT};
+    unsafe {
+        let head = &*v.Anonymous.Anonymous;
+        let n = if head.vt == VT_UI4 || head.vt == VT_UINT {
+            head.Anonymous.ulVal
+        } else if head.vt == VT_I4 || head.vt == VT_INT {
+            head.Anonymous.lVal as u32
+        } else {
+            return None;
+        };
+        Some(n & 0x10 != 0)
+    }
+}
+
+unsafe fn shell_flag_bits(item: &IShellItem) -> Option<(bool, bool, bool)> {
+    let flags = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).ok()?;
+    Some((flags.contains(SFGAO_FOLDER), flags.contains(SFGAO_STREAM), flags.contains(SFGAO_BROWSABLE)))
+}
+
+struct RelPidl {
+    free: *mut ITEMIDLIST,
+    ptr: *const ITEMIDLIST,
+}
+
+impl Drop for RelPidl {
+    fn drop(&mut self) {
+        if !self.free.is_null() {
+            unsafe { ILFree(Some(self.free as *const ITEMIDLIST)) };
+        }
+    }
+}
+
+unsafe fn child_rel_pidl(item: &IShellItem) -> Option<RelPidl> {
+    if let Ok(pai) = item.cast::<IParentAndItem>() {
+        let mut rel: *mut ITEMIDLIST = std::ptr::null_mut();
+        let ok = pai.GetParentAndItem(None, None, Some(std::ptr::addr_of_mut!(rel))).is_ok();
+        if ok && !rel.is_null() {
+            return Some(RelPidl { free: rel, ptr: rel });
+        }
+        if !rel.is_null() {
+            ILFree(Some(rel as *const ITEMIDLIST));
+        }
+    }
+    let abs = SHGetIDListFromObject(item).ok()?;
+    if abs.is_null() {
+        return None;
+    }
+    let rel = ILFindLastID(abs);
+    if rel.is_null() {
+        ILFree(Some(abs as *const ITEMIDLIST));
+        return None;
+    }
+    // `rel` points into `abs`. Freeing `abs` frees both.
+    Some(RelPidl { free: abs, ptr: rel })
+}
+
+/// `IShellFolder::GetAttributesOf` on the relative pidl. Only a successful call is trusted:
+/// a failed call leaves the mask untouched, which would look like every attribute was set.
+unsafe fn cached_shell_flags(item: &IShellItem) -> Option<(bool, bool, bool)> {
+    let parent = item.GetParent().ok()?;
+    let folder: IShellFolder = parent.BindToHandler(None, &BHID_SFObject).ok()?;
+    let rel = child_rel_pidl(item)?;
+    let mut attr = SFGAO_FOLDER.0 | SFGAO_STREAM.0 | SFGAO_BROWSABLE.0;
+    if folder.GetAttributesOf(&[rel.ptr], &mut attr).is_err() {
+        return None;
+    }
+    Some((attr & SFGAO_FOLDER.0 != 0, attr & SFGAO_STREAM.0 != 0, attr & SFGAO_BROWSABLE.0 != 0))
+}
+
+unsafe fn item_path(item: &IShellItem) -> String {
+    item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).filter(|s| !s.is_empty()).unwrap_or_else(|| shell_parse(item))
+}
+
+unsafe fn item_facts(item: &IShellItem) -> ItemFacts {
+    let mut f = ItemFacts { folder: false, stream: false, browsable: false, directory: false, answered: false };
+    if fast_directory(item) == Some(true) {
+        f.directory = true;
+        f.answered = true;
+    }
+    if let Some((folder, stream, browsable)) = shell_flag_bits(item) {
+        f.folder = folder;
+        f.stream = stream;
+        f.browsable = browsable;
+        f.answered = true;
+    } else if let Some((folder, stream, browsable)) = cached_shell_flags(item) {
+        f.folder = folder;
+        f.stream = stream;
+        f.browsable = browsable;
+        f.answered = true;
+    }
+    if f.directory || crate::folderapp::navigable(f.folder, f.stream, f.browsable) {
+        return f;
+    }
+    let path = item_path(item);
+    if !path.is_empty() {
+        match local_dir_answer(&path) {
+            Some(true) => {
+                f.directory = true;
+                f.answered = true;
+            }
+            Some(false) => f.answered = true,
+            None => {}
+        }
+    }
+    f
+}
+
+/// `Some(true)` is a folder, library, zip-like container, junction, or directory symlink.
+/// `Some(false)` is a file the shell or the filesystem answered for. `None` is still unknown
+/// (enumerating, uncached, or a share this thread will not stat).
+pub(crate) unsafe fn item_is_container(item: &IShellItem) -> Option<bool> {
+    let f = item_facts(item);
+    if f.directory || crate::folderapp::navigable(f.folder, f.stream, f.browsable) {
+        Some(true)
+    } else if f.answered {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+enum ActRow {
+    FolderItem(IShellItem),
+    FolderPath(String),
+    File(IShellItem),
+    Unknown,
+}
+
+fn row_kind(row: &ActRow) -> crate::folderapp::ActKind {
+    match row {
+        ActRow::FolderItem(_) | ActRow::FolderPath(_) => crate::folderapp::ActKind::Folder,
+        ActRow::File(_) => crate::folderapp::ActKind::File,
+        ActRow::Unknown => crate::folderapp::ActKind::Unknown,
+    }
+}
+
+unsafe fn row_of(item: IShellItem) -> ActRow {
+    let path = item_path(&item);
+    if crate::folderapp::link_file(&path) {
+        if let Some(dir) = folder_link_target(&path) {
+            return ActRow::FolderPath(dir);
+        }
+        return match item_is_container(&item) {
+            Some(true) => ActRow::FolderItem(item),
+            Some(false) => ActRow::File(item),
+            None => ActRow::Unknown,
+        };
+    }
+    let facts = item_facts(&item);
+    if facts.directory || crate::folderapp::navigable(facts.folder, facts.stream, facts.browsable) {
+        ActRow::FolderItem(item)
+    } else if facts.answered {
+        ActRow::File(item)
+    } else {
+        ActRow::Unknown
+    }
+}
+
+fn child_name_ok(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['\\', '/', ':'])
+}
+
+fn join_child(folder: &str, name: &str) -> Option<String> {
+    let name = name.trim();
+    if !child_name_ok(name) {
+        return None;
+    }
+    let folder = folder.trim_end_matches(['\\', '/']);
+    if folder.is_empty() {
+        return None;
+    }
+    Some(format!("{folder}\\{name}"))
+}
+
+unsafe fn list_item_text(lv: HWND, idx: i32) -> Option<String> {
+    use windows::Win32::UI::Controls::LVITEMW;
+    if lv.0.is_null() || idx < 0 {
+        return None;
+    }
+    let mut buf = [0u16; 520];
+    let mut item = LVITEMW { pszText: PWSTR(buf.as_mut_ptr()), cchTextMax: buf.len() as i32, ..Default::default() };
+    // LVM_GETITEMTEXTW. The count is in characters. The name is not sliced as bytes.
+    let n = SendMessageW(lv, 0x1073, Some(WPARAM(idx as usize)), Some(LPARAM(&mut item as *mut _ as isize))).0 as usize;
+    let n = n.min(buf.len());
+    let end = buf[..n].iter().position(|&c| c == 0).unwrap_or(n);
+    let s = String::from_utf16_lossy(&buf[..end]);
+    (!s.is_empty()).then_some(s)
+}
+
+unsafe fn acc_name_at_cursor() -> Option<String> {
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return None;
+    }
+    let mut acc: Option<IAccessible> = None;
+    let mut child = VARIANT::default();
+    if AccessibleObjectFromPoint(pt, &mut acc, &mut child).is_err() {
+        return None;
+    }
+    let wide = acc.and_then(|a| a.get_accName(&child).ok());
+    _ = VariantClear(&mut child);
+    let s = wide.map(|b| String::from_utf16_lossy(&b)).unwrap_or_default();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Display name when the shell item itself cannot be read yet. The list index is never
+/// passed to `IFolderView::GetItem` (grouped views do not share that index).
+unsafe fn listed_name(fv: &IFolderView2) -> Option<String> {
+    let lv = view_list(fv);
+    if !lv.0.is_null() {
+        // LVM_GETNEXTITEM, start at -1. LVNI_FOCUSED then LVNI_SELECTED.
+        let mut idx = SendMessageW(lv, 0x100C, Some(WPARAM(usize::MAX)), Some(LPARAM(1))).0 as i32;
+        if idx < 0 {
+            idx = SendMessageW(lv, 0x100C, Some(WPARAM(usize::MAX)), Some(LPARAM(2))).0 as i32;
+        }
+        if let Some(name) = list_item_text(lv, idx) {
+            return Some(name);
+        }
+    }
+    acc_name_at_cursor()
+}
+
+unsafe fn selected_shell(fv: &IFolderView2) -> Vec<IShellItem> {
+    let Ok(arr) = fv.GetSelection(false) else { return Vec::new() };
+    let n = arr.GetCount().unwrap_or(0).min(500);
+    let mut out = Vec::new();
+    for k in 0..n {
+        if let Ok(it) = arr.GetItemAt(k) {
+            out.push(it);
+        }
+    }
+    out
+}
+
+unsafe fn same_shell(a: &IShellItem, b: &IShellItem) -> bool {
+    let pa = item_path(a);
+    let pb = item_path(b);
+    !pa.is_empty() && pa.eq_ignore_ascii_case(&pb)
+}
+
+unsafe fn activation_rows(i: usize, fv: &IFolderView2) -> Vec<ActRow> {
+    let button = GetKeyState(VK_LBUTTON.0 as i32) < 0;
+    let enter = GetKeyState(VK_RETURN.0 as i32) < 0;
+    let focus = fv.GetFocusedItem().ok().filter(|&idx| idx >= 0).and_then(|idx| fv.GetItem::<IShellItem>(idx).ok());
+    let sel = selected_shell(fv);
+    let primary = if button {
+        focus.clone().or_else(|| (sel.len() == 1).then(|| sel[0].clone()))
+    } else {
+        focus.clone().or_else(|| sel.first().cloned())
+    };
+    let mut rows = Vec::new();
+    if let Some(primary) = primary {
+        if enter || sel.len() > 1 {
+            rows.push(row_of(primary.clone()));
+            for it in &sel {
+                if !same_shell(&primary, it) {
+                    rows.push(row_of(it.clone()));
+                }
+            }
+        } else {
+            rows.push(row_of(primary));
+        }
+        return rows;
+    }
+    // Nothing queryable yet: the name under the pointer, joined to this local folder.
+    let Some(name) = listed_name(fv) else { return rows };
+    let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    if !is_fs(&cur) || share_path(&cur) {
+        return rows;
+    }
+    let Some(full) = join_child(&cur, &name) else { return rows };
+    if crate::folderapp::link_file(&full) {
+        if let Some(dir) = folder_link_target(&full) {
+            rows.push(ActRow::FolderPath(dir));
+        }
+    } else if local_directory(&full) {
+        rows.push(ActRow::FolderPath(full));
+    }
+    rows
+}
+
+unsafe fn open_file_item(item: &IShellItem) {
+    if item_is_container(item) == Some(true) {
+        return;
+    }
+    let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).unwrap_or_default();
+    if path.is_empty() || local_directory(&path) {
+        return;
+    }
+    _ = ShellExecuteW(None, w!("open"), &HSTRING::from(&path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+}
+
+/// Double-click / Enter on the file list, including the filter.
+///
+/// Plain activation of a folder browses this pane. These are the cases that used to
+/// return `S_FALSE` and let DefView run the default verb (Panegrid, so a new tab):
+/// focus not assigned yet while the view is enumerating; `GetAttributes` pending or
+/// failed so the flags came back empty; a junction or directory symlink with no
+/// `SFGAO_FOLDER` bit; a file symlink to a directory; a `.lnk` whose pidl existed but
+/// whose attributes were not ready; Enter with several rows selected, only one of
+/// which was inspected; a grouped or filtered row whose shell item could not be read
+/// yet. Ctrl and the middle button still return false: that launch is a new tab.
+/// The pane is recorded either way, so a verb that still slips through is caught by
+/// the single-instance handoff and applied to this pane.
+pub(crate) unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
+    if let Some(sv) = sv {
+        if let Ok(h) = sv.GetWindow() {
+            bind_hwnd(h);
+        }
+    }
+    let i = sv.and_then(|sv| sv.GetWindow().ok()).and_then(pane_of).unwrap_or(i);
     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
-    let registered = crate::folderapp::shown_on();
-    let blank = crate::folderapp::OpenIn { registered, ctrl, middle, folder: false, stream: false, browsable: false };
-    if !registered || ctrl || middle {
-        return crate::folderapp::list_open(blank) == crate::folderapp::OpenWhere::Pane;
+    crate::folderapp::note_activate(app(|a| a.main.0 as isize), i, ctrl || middle);
+    if !crate::folderapp::shown_on() || ctrl || middle {
+        return false;
     }
     let Some(sv) = sv else { return false };
     let Ok(fv) = sv.cast::<IFolderView2>() else { return false };
-    let idx = fv.GetFocusedItem().unwrap_or(-1);
-    if idx < 0 {
-        return false;
-    }
-    let Ok(item) = fv.GetItem::<IShellItem>(idx) else { return false };
-    let flags = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).unwrap_or_default();
-    let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).filter(|s| !s.is_empty()).unwrap_or_else(|| shell_parse(&item));
-    // A `.lnk` is a file. Its target is what navigates. A junction is already a folder
-    // (it can also carry SFGAO_LINK) and falls through to the flag check below.
-    if crate::folderapp::link_file(&path) {
-        let Some(dir) = folder_link_target(&path) else { return false };
-        let ask = crate::folderapp::OpenIn { folder: true, ..blank };
-        if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
-            return false;
+    let rows = activation_rows(i, &fv);
+    let kinds: Vec<_> = rows.iter().map(row_kind).collect();
+    match crate::folderapp::list_activation(true, false, false, &kinds) {
+        crate::folderapp::ListAct::Shell => false,
+        crate::folderapp::ListAct::FilesOnly => {
+            for row in &rows {
+                if let ActRow::File(it) = row {
+                    open_file_item(it);
+                }
+            }
+            true
         }
-        let _ = navigate(i, &dir);
-        focus_view(i);
-        return true;
+        crate::folderapp::ListAct::Browse(at) => {
+            for row in &rows {
+                if let ActRow::File(it) = row {
+                    open_file_item(it);
+                }
+            }
+            let browsed = match rows.get(at) {
+                Some(ActRow::FolderPath(p)) => navigate(i, p),
+                Some(ActRow::FolderItem(it)) => {
+                    browse_item(i, it);
+                    true
+                }
+                _ => false,
+            };
+            if browsed && !net_failed(i) {
+                focus_view(i);
+            }
+            true
+        }
     }
-    let folder = flags.contains(SFGAO_FOLDER);
-    let stream = flags.contains(SFGAO_STREAM);
-    let browsable = flags.contains(SFGAO_BROWSABLE);
-    let ask = crate::folderapp::OpenIn { folder, stream, browsable, ..blank };
-    if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
-        return false;
-    }
-    browse_item(i, &item);
-    focus_view(i);
-    true
 }
 
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
@@ -3164,5 +3677,44 @@ mod utf8_boundary_tests {
         assert_eq!(super::drive_root("😀あ"), None);
         assert_eq!(super::addr_parts(r#""D:\한글폴더""#).unwrap().0, Some(r"D:\한글폴더"));
         assert_eq!(super::addr_parts(r"F:\샘플\한글폴더").unwrap().0, Some(r"F:\샘플\한글폴더"));
+    }
+
+    #[test]
+    fn reparse_names_keep_every_character() {
+        assert_eq!(super::strip_nt_prefix(r"\??\D:\한글"), r"D:\한글");
+        assert_eq!(super::strip_nt_prefix(r"\\?\UNC\server\共有"), r"\\server\共有");
+        assert_eq!(super::strip_nt_prefix(r"\??\UNC\server\share\폴더"), r"\\server\share\폴더");
+        assert_eq!(super::strip_nt_prefix(r"C:\plain"), r"C:\plain");
+        assert_eq!(super::join_link_target(r"D:\한글\link", r"하위"), r"D:\한글\하위");
+        assert_eq!(super::join_link_target(r"D:\한글\link", r"\??\E:\📁"), r"E:\📁");
+        assert_eq!(super::join_link_target(r"D:\a\link", r"\\?\UNC\srv\共有"), r"\\srv\共有");
+
+        let name = "D:\\한글";
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let mut buf = vec![0u8; 20 + units.len() * 2];
+        buf[0..4].copy_from_slice(&0xA000_000Cu32.to_le_bytes());
+        buf[10..12].copy_from_slice(&((units.len() * 2) as u16).to_le_bytes());
+        for (i, unit) in units.iter().enumerate() {
+            buf[20 + i * 2..22 + i * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        assert_eq!(super::parse_reparse(&buf).as_deref(), Some(name));
+
+        buf[0..4].copy_from_slice(&0xA000_0003u32.to_le_bytes());
+        // Mount-point PathBuffer starts at 16. Shift the name down and drop the symlink tail.
+        let mount = {
+            let mut m = vec![0u8; 16 + units.len() * 2];
+            m[0..4].copy_from_slice(&0xA000_0003u32.to_le_bytes());
+            m[10..12].copy_from_slice(&((units.len() * 2) as u16).to_le_bytes());
+            for (i, unit) in units.iter().enumerate() {
+                m[16 + i * 2..18 + i * 2].copy_from_slice(&unit.to_le_bytes());
+            }
+            m
+        };
+        assert_eq!(super::parse_reparse(&mount).as_deref(), Some(name));
+        assert!(super::parse_reparse(&buf[..8]).is_none());
+        assert!(super::parse_reparse(&[0, 1, 2, 3]).is_none());
+        let mut odd = mount.clone();
+        odd[10..12].copy_from_slice(&1u16.to_le_bytes());
+        assert!(super::parse_reparse(&odd).is_none());
     }
 }
