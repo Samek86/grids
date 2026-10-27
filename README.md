@@ -23,6 +23,8 @@
   English | <a href="README.ko.md">한국어</a>
 </p>
 
+<p align="center">▶ <a href="docs/panegrid-demo.mp4">Watch the demo video</a> (38 s, no sound, recorded from the real app)</p>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.png">
@@ -33,6 +35,10 @@
 Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Lay out up to 16 of them in one window, then save the current tab as a session.
 
 ## Features
+
+[![Panegrid in motion](docs/panegrid-demo.gif)](docs/panegrid-demo.mp4)
+
+Splitting one pane with ⇄, favourites with their full path on hover, layout presets, quick preview (F3), pane search, tabs, dark theme and settings. Click the animation for the full-quality video.
 
 ### 🧩 Multi-pane layouts & sessions
 
