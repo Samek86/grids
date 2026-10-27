@@ -7,7 +7,7 @@ use crate::imports::*;
 use crate::i18n::tr;
 use crate::session::{home_rows, short_name, tree_rows, visible_rows, FavNode, FavRow, Pinned, RowKind};
 
-use super::{draw_fav_icon, fill, pal, shell_icon, text};
+use super::{draw_fav_icon, fill, known_missing, pal, shell_icon, text};
 
 fn px(dpi: i32, v: i32) -> i32 {
     v * dpi / 96
@@ -298,7 +298,8 @@ pub(crate) unsafe fn paint_fav_row(dc: HDC, row: Option<&FavRow>, r: RECT, dpi: 
         text(dc, icon, glyph, icon_font, pal().sub, DT_CENTER);
     }
     let name_r = RECT { left: icon.right + s(4), right: name_right.max(icon.right + s(4)), ..r };
-    text(dc, name_r, &row.name, font, pal().text, DT_LEFT);
+    let name_ink = if !row.group && known_missing(&row.path) { pal().sub } else { pal().text };
+    text(dc, name_r, &row.name, font, name_ink, DT_LEFT);
     // Explorer rows have no rename or delete button, so the path can use that space.
     let reserve = if row.in_tree() { s(180) } else { s(12) };
     let path_r = RECT { left: name_right + s(8), right: r.right - reserve, ..r };
