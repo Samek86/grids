@@ -1493,6 +1493,127 @@ pub(crate) unsafe fn go_edit(i: usize) {
     }
 }
 
+/// What is selected when ⇄ is clicked. Files are not a folder, so they do not pick a destination.
+/// The button asks about `Files` (that case must not copy). `None` and `Folder` are the other
+/// rows of the same decision, constructed by the unit test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum SwapPick {
+    None,
+    Folder,
+    Files,
+}
+
+/// One pane splits. Two or more keep the menu that opens, copies, or moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SwapDup {
+    /// Split side by side and open the selected folder in the new right pane.
+    SplitOpen,
+    /// Split side by side and open this pane's folder in the new right pane.
+    /// Nothing selected, and a selection of only files, both land here. Files are not copied.
+    SplitDuplicate,
+    /// The existing ⇄ menu.
+    Menu,
+}
+
+/// `panes` is the tab's pane count. One pane always splits: a selected folder opens there,
+/// and nothing or only files duplicates the current folder. Two or more panes keep the menu.
+pub(crate) fn swap_dup(panes: usize, pick: SwapPick) -> SwapDup {
+    if panes > 1 {
+        return SwapDup::Menu;
+    }
+    match pick {
+        SwapPick::Folder => SwapDup::SplitOpen,
+        SwapPick::None | SwapPick::Files => SwapDup::SplitDuplicate,
+    }
+}
+
+/// True when ⇄ should split instead of opening the menu. A files-only selection still splits:
+/// there is no other pane to copy or move into.
+pub(crate) fn swap_dup_splits(panes: usize) -> bool {
+    matches!(swap_dup(panes, SwapPick::Files), SwapDup::SplitDuplicate | SwapDup::SplitOpen)
+}
+
+/// Side-by-side grid: one row in each of two columns. The layout button's 1 × 2 click, and
+/// `set_heights`, give this the same even split.
+pub(crate) fn side_by_side() -> Vec<usize> {
+    layout_heights_for(0)
+}
+
+/// Path, view mode, icon size, and columns of `src` land on `dst`. Pane tabs on `dst` go,
+/// so the right side is one folder rather than a previously hidden strip.
+fn copy_pane_view(s: &mut Session, src: usize, dst: usize) {
+    if src == dst || src >= MAXP || dst >= MAXP {
+        return;
+    }
+    if src < s.paths.len() && dst < s.paths.len() {
+        s.paths[dst] = s.paths[src].clone();
+    }
+    if src < s.views.len() && dst < s.views.len() {
+        s.views[dst] = s.views[src];
+    }
+    if src < s.cols.len() && dst < s.cols.len() {
+        s.cols[dst] = s.cols[src].clone();
+    }
+    if dst < s.pane_folders.len() {
+        s.pane_folders[dst].clear();
+    }
+    if dst < s.pane_cur.len() {
+        s.pane_cur[dst] = 0;
+    }
+}
+
+/// Slot that `remap` will place in the right column, before `set_layout` permutes.
+fn right_slot_before(heights: &[usize], home: &Homes) -> Option<usize> {
+    let (perm, _) = remap(heights, &side_by_side(), home);
+    perm.get(1).copied().filter(|&slot| slot < MAXP)
+}
+
+// ⇄ on a one-pane tab. The grid becomes the layout button's side-by-side split (new pane
+// on the right, even columns). The right pane then opens the same target `open_in` would:
+// the selected folder, or this folder when nothing or only files are selected.
+pub(crate) unsafe fn split_and_open(src: usize) {
+    save_view(src);
+    let slot = app(|a| right_slot_before(&a.s.heights, &a.home)).filter(|&slot| slot != src);
+    if let Some(slot) = slot {
+        app(|a| {
+            copy_pane_view(&mut a.s, src, slot);
+            a.live_filters[slot].clear();
+        });
+        FILTERS.lock().unwrap_or_else(|e| e.into_inner())[slot].clear();
+    }
+    set_layout(side_by_side());
+    let dst = 1;
+    let ready = app(|a| dst < a.s.panes() && dst != src && a.s.heights.len() >= 2);
+    if !ready {
+        return;
+    }
+    // `set_layout` saved the source view again while permuting. Put that on the right pane
+    // so the browse below uses this mode, icon size, and columns, and the tab keeps it.
+    app(|a| {
+        copy_pane_view(&mut a.s, src, dst);
+        a.s.anchor();
+        let _ = pull_dirty(a);
+    });
+    refresh_save_button();
+    open_in(src, dst);
+    let hwnd = app(|a| a.panes.get(dst).and_then(|p| p.as_ref()).map(|p| p.hwnd).unwrap_or_default());
+    set_active(dst);
+    if !hwnd.0.is_null() {
+        app(|a| a.focus_req = hwnd);
+    }
+    focus_view(dst);
+}
+
+/// ⇄. One pane splits and opens there. Two or more open the menu.
+pub(crate) unsafe fn open_in_click(h: HWND, src: usize) {
+    if swap_dup_splits(app(|a| a.s.panes())) {
+        split_and_open(src);
+    } else {
+        open_in_menu(h, src);
+    }
+}
+
 // The selected folder (or, with none selected, the folder on display) of `src` opens in `dst`.
 pub(crate) unsafe fn open_in(src: usize, dst: usize) {
     let Some(fv) = view_of::<IFolderView2>(src) else { return };
@@ -3717,5 +3838,39 @@ mod utf8_boundary_tests {
         let mut odd = mount.clone();
         odd[10..12].copy_from_slice(&1u16.to_le_bytes());
         assert!(super::parse_reparse(&odd).is_none());
+    }
+}
+
+#[cfg(test)]
+mod swap_dup_tests {
+    use super::{right_slot_before, side_by_side, swap_dup, swap_dup_splits, SwapDup, SwapPick};
+    use crate::session::Session;
+
+    #[test]
+    fn one_pane_splits_and_duplicates_otherwise_the_menu() {
+        assert_eq!(swap_dup(1, SwapPick::None), SwapDup::SplitDuplicate);
+        assert_eq!(swap_dup(1, SwapPick::Files), SwapDup::SplitDuplicate);
+        assert_eq!(swap_dup(1, SwapPick::Folder), SwapDup::SplitOpen);
+        assert!(swap_dup_splits(1));
+        for n in [2usize, 3, 4, 16] {
+            assert_eq!(swap_dup(n, SwapPick::None), SwapDup::Menu, "{n}");
+            assert_eq!(swap_dup(n, SwapPick::Files), SwapDup::Menu, "{n}");
+            assert_eq!(swap_dup(n, SwapPick::Folder), SwapDup::Menu, "{n}");
+            assert!(!swap_dup_splits(n), "{n}");
+        }
+        // Same grid the layout button applies for two columns: one row each, even split.
+        assert_eq!(side_by_side(), vec![1, 1]);
+        let mut s = Session::default();
+        s.set_heights(vec![1]);
+        assert_eq!(s.panes(), 1);
+        assert_eq!(swap_dup(s.panes(), SwapPick::None), SwapDup::SplitDuplicate);
+        s.set_heights(side_by_side());
+        assert_eq!(s.heights, vec![1, 1]);
+        assert_eq!(s.colr, crate::even(2));
+        assert_eq!(s.rowr, vec![vec![1.0], vec![1.0]]);
+        assert_eq!(swap_dup(s.panes(), SwapPick::Files), SwapDup::Menu);
+        // The only visible pane stays on the left. The right column is a different slot.
+        let home = [None; crate::MAXP];
+        assert_eq!(right_slot_before(&[1], &home), Some(1));
     }
 }

@@ -33,7 +33,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
         (ID_BACK, tr("Back", "뒤로", "戻る"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더", "戻る  (Alt+←) · 右クリック: 最近のフォルダー")),
         (ID_FWD, tr("Forward", "앞으로", "進む"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더", "進む  (Alt+→) · 右クリック: 最近のフォルダー")),
         (ID_UP, tr("Parent folder", "상위 폴더", "上のフォルダー"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)", "上のフォルダー  (Alt+↑)")),
-        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기", "別のペインで開く"), tr("Open in / copy or move to another pane", "다른 패널에서 열기 / 복사·이동", "別のペインで開く / コピー・移動")),
+        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기", "別のペインで開く"), tr("Open in / copy or move to another pane. One pane: split side by side and open there", "다른 패널에서 열기 / 복사·이동. 패널이 하나면 좌우로 나누고 거기서 열기", "別のペインで開く / コピー・移動。ペインが一つなら左右に分けてそこで開く")),
         (ID_PANE_ADD, tr("New pane tab", "새 패널 탭", "新しいペイン タブ"), tr("New pane tab  (Ctrl+Alt+T)", "새 패널 탭  (Ctrl+Alt+T)", "新しいペイン タブ  (Ctrl+Alt+T)")),
         (ID_FAV, tr("Favourite", "즐겨찾기", "お気に入り"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)", "お気に入りに追加（塗りつぶしの星: 削除）")),
     ];
