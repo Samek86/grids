@@ -289,7 +289,9 @@ pub(crate) unsafe fn hide_side_fav_tip() {
     let (owner, on) = app(|a| (a.side_hwnd, a.fav_tip));
     app(|a| a.fav_tip_hold = None);
     if on {
-        app(|a| a.fav_tip = place_fav_tip(owner, FAV_TIP_ID, true, ""));
+        // place_fav_tip borrows the app state itself, so it runs outside app().
+        let now = place_fav_tip(owner, FAV_TIP_ID, true, "");
+        app(|a| a.fav_tip = now);
     }
 }
 
@@ -298,7 +300,8 @@ pub(crate) unsafe fn dismiss_side_fav_tip() {
     let h = app(|a| a.side_hwnd);
     let on = app(|a| a.fav_tip);
     if on {
-        app(|a| a.fav_tip = place_fav_tip(h, FAV_TIP_ID, true, ""));
+        let now = place_fav_tip(h, FAV_TIP_ID, true, "");
+        app(|a| a.fav_tip = now);
     }
     app(|a| a.fav_tip_hold = cursor_in_client(h));
 }
@@ -331,7 +334,8 @@ pub(crate) unsafe fn show_pop_fav_tip(owner: HWND, row: Option<&FavRow>) {
 pub(crate) unsafe fn hide_pop_fav_tip(owner: HWND) {
     let on = app(|a| a.fav_pop_tip);
     if on {
-        app(|a| a.fav_pop_tip = place_fav_tip(owner, FAV_POP_TIP_ID, true, ""));
+        let now = place_fav_tip(owner, FAV_POP_TIP_ID, true, "");
+        app(|a| a.fav_pop_tip = now);
     }
 }
 
