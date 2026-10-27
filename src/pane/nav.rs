@@ -1651,9 +1651,14 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     };
-    if fv.SetViewModeAndIconSize(FOLDERVIEWMODE(mode), icon).is_err() {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
+    let (mut live_m, mut live_z) = (FOLDERVIEWMODE(0), 0);
+    let known = fv.GetViewModeAndIconSize(&mut live_m, &mut live_z).is_ok();
+    // Same mode and size: do not call SetViewModeAndIconSize. It rebuilds the list and jumps the scroll.
+    if !known || crate::folderview::mode_needs_set(mode, icon, live_m.0, live_z) {
+        if fv.SetViewModeAndIconSize(FOLDERVIEWMODE(mode), icon).is_err() {
+            _ = MessageBeep(MB_ICONWARNING);
+            return;
+        }
     }
     let (remember, path) = app(|a| (a.s.remember_views, a.s.paths.get(i).cloned().unwrap_or_default()));
     let key = remember.then(|| crate::folderview::normalize_folder_key(&path)).flatten();
@@ -1720,19 +1725,29 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
     });
 }
 
-/// Put Name, Date modified, Size on the view and keep putting them back while the shell rebuilds.
+/// Put Name, Date modified, Size on the view once. A later timer may fix a floored width.
+/// It does not call SetColumns again: that rebuilds the list and jumps the scroll.
 unsafe fn arm_builtin_columns(i: usize, fv: &IFolderView2) {
     let text = crate::folderview::default_details_columns();
-    let lv = view_list(fv);
-    free_min_widths(lv);
-    apply_cols(fv, &text, lv);
+    apply_planned(fv, 0, 0, 0, &text);
+    mark_view_written(i, Some(text));
+}
+
+/// This folder has had its one view write. `widths` schedules a single width check, not another SetColumns.
+unsafe fn mark_view_written(i: usize, widths: Option<String>) {
+    let arm = widths.as_ref().is_some_and(|c| !c.is_empty());
     let h = app(|a| {
         let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return None };
-        p.settle = Some((text, 4));
+        p.view_writes = 1;
+        p.settle = widths.filter(|c| !c.is_empty()).map(|c| (c, 1));
         Some(p.hwnd)
     });
     if let Some(h) = h {
-        SetTimer(Some(h), TIMER_SETTLE, 50, None);
+        if arm {
+            SetTimer(Some(h), TIMER_SETTLE, 200, None);
+        } else {
+            _ = KillTimer(Some(h), TIMER_SETTLE);
+        }
     }
 }
 
@@ -1900,13 +1915,9 @@ pub(crate) unsafe fn save_view(i: usize) {
         return;
     }
     let mut live = crate::folderview::ViewSnap { mode: m.0, icon: z, columns: cols.unwrap_or_default(), group };
-    // The built-in Name / Date modified / Size set is not a user edit. If the shell put Type back, try again.
+    // The built-in Name / Date modified / Size set is not a user edit. Type coming back is shell noise.
+    // Do not write the columns again: SetColumns jumps the scroll back to the focused row.
     if crate::folderview::settle_builtin_columns(&mut watch, &live.columns) {
-        if let Some(fv) = view_of::<IFolderView2>(i) {
-            let lv = view_list(&fv);
-            free_min_widths(lv);
-            apply_cols(&fv, &watch.applied.columns, lv);
-        }
         app(|a| {
             if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
                 p.view_watch = Some(watch);
@@ -2048,37 +2059,26 @@ unsafe fn apply_snap_to_pane(i: usize, snap: &crate::folderview::ViewSnap, key: 
         snap.columns = crate::folderview::default_details_columns();
     }
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
-    let lv = view_list(&fv);
-    free_min_widths(lv);
-    if snap.mode != 0 {
-        let _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(snap.mode), snap.icon);
-    }
-    if !snap.columns.is_empty() {
-        apply_cols(&fv, &snap.columns, lv);
-    }
+    free_min_widths(view_list(&fv));
+    // The user asked for this view. writes = 0 so the navigation cap does not block them.
+    apply_planned(&fv, 0, snap.mode, snap.icon, &snap.columns);
     if let Some(g) = &snap.group {
-        apply_group(&fv, g);
+        if crate::folderview::group_needs_set(&Some(g.clone()), &read_group(&fv)) {
+            apply_group(&fv, g);
+        }
     }
-    let h = app(|a| {
+    app(|a| {
         if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
-            if !snap.columns.is_empty() {
-                p.settle = Some((snap.columns.clone(), 4));
-            }
             p.view_watch = Some(crate::folderview::ViewWatch {
                 key: key.to_string(),
                 applied: snap.clone(),
                 baseline: None,
                 quiet: crate::folderview::watch_quiet(&snap.columns),
             });
-            return Some(p.hwnd);
         }
-        None
     });
-    if let Some(h) = h {
-        if !snap.columns.is_empty() {
-            SetTimer(Some(h), TIMER_SETTLE, 50, None);
-        }
-    }
+    let widths = (!snap.columns.is_empty()).then(|| snap.columns.clone());
+    mark_view_written(i, widths);
 }
 
 unsafe fn read_group(fv: &IFolderView2) -> Option<String> {
@@ -2267,6 +2267,41 @@ pub(crate) unsafe fn put_widths(fv: &IFolderView2, text: &str, lv: HWND) {
     }
 }
 
+/// Write mode, columns, sort, or widths. `writes >= 1` writes nothing: this navigation already did.
+/// Returns 1 once `SetViewModeAndIconSize` or `SetColumns` has been used, otherwise `writes`.
+unsafe fn apply_planned(fv: &IFolderView2, writes: u8, mode: i32, icon: i32, cols: &str) -> u8 {
+    let (mut live_m, mut live_z) = (FOLDERVIEWMODE(0), 0);
+    let _ = fv.GetViewModeAndIconSize(&mut live_m, &mut live_z);
+    let lv = view_list(fv);
+    let live = read_cols(fv, lv).unwrap_or_default();
+    let plan = crate::folderview::shell_write(writes, mode, icon, live_m.0, live_z, cols, &live);
+    if !plan.mode && !plan.columns && !plan.sort && !plan.widths {
+        return writes;
+    }
+    if plan.mode {
+        let _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(mode), icon);
+    }
+    if plan.columns || plan.sort || plan.widths {
+        free_min_widths(lv);
+    }
+    if plan.columns {
+        apply_cols(fv, cols, lv);
+    } else if plan.sort {
+        apply_sort(fv, cols);
+    } else if plan.widths {
+        put_widths(fv, cols, lv);
+    }
+    if plan.mode || plan.columns { 1 } else { writes }
+}
+
+unsafe fn apply_sort(fv: &IFolderView2, text: &str) {
+    let (_, sort) = parse_cols(text);
+    if sort.is_empty() {
+        return;
+    }
+    _ = fv.SetSortColumns(&sort.iter().map(|&(propkey, d)| SORTCOLUMN { propkey, direction: SORTDIRECTION(d) }).collect::<Vec<_>>());
+}
+
 pub(crate) unsafe fn apply_cols(fv: &IFolderView2, text: &str, lv: HWND) {
     let (cols, sort) = parse_cols(text);
     if let (false, Ok(cm)) = (cols.is_empty(), fv.cast::<IColumnManager>()) {
@@ -2283,37 +2318,26 @@ pub(crate) unsafe fn apply_cols(fv: &IFolderView2, text: &str, lv: HWND) {
     }
 }
 
-// A few passes after a folder change (50, 150, 400, 1000 ms) put narrow widths back as the view builds
-// its columns at its own floor; then the pane's columns are read from the view again.
+/// One width check after a folder change. Never `SetColumns` or `SetViewModeAndIconSize`:
+/// each of those rebuilds the list and pulls the scroll back to the focused row.
 pub(crate) unsafe fn settle_cols(h: HWND) {
     _ = KillTimer(Some(h), TIMER_SETTLE);
     let Some(i) = pane_of(h) else { return };
-    let Some((cols, left)) = app(|a| a.panes[i].as_ref().and_then(|p| p.settle.clone())) else { return };
+    let Some((cols, _)) = app(|a| {
+        let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
+        p.settle.take()
+    }) else {
+        return;
+    };
     if let Some(fv) = view_of::<IFolderView2>(i) {
-        let lv = view_list(&fv); // the new folder's list exists by now
+        let lv = view_list(&fv);
         free_min_widths(lv);
-        // The built-in set has to be put back whole: the shell rebuilds Name, Date modified, Type, Size.
-        if crate::folderview::is_builtin_default(&cols) && !crate::folderview::same_column_keys(&cols, &read_cols(&fv, lv).unwrap_or_default()) {
-            apply_cols(&fv, &cols, lv);
-        } else {
+        let live = read_cols(&fv, lv).unwrap_or_default();
+        if crate::folderview::widths_need_put(&cols, &live) {
             put_widths(&fv, &cols, lv);
         }
     }
-    let left = left - 1;
-    app(|a| {
-        if let Some(p) = a.panes[i].as_mut() {
-            p.settle = (left > 0).then(|| (cols, left));
-        }
-    });
-    if left > 0 {
-        let delays = [1000u32, 400, 150];
-        let idx = (left as usize).saturating_sub(1);
-        if let Some(&ms) = delays.get(idx) {
-            SetTimer(Some(h), TIMER_SETTLE, ms, None);
-        }
-    } else {
-        note_save();
-    }
+    note_save();
 }
 
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
@@ -2410,26 +2434,25 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
         _ = InvalidateRect(Some(b), None, false);
     }
     if let Ok(fv) = eb.GetCurrentView::<IFolderView2>() {
-        if view.0 != 0 {
-            _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(view.0), view.1);
-        }
-        let lv = view_list(&fv);
-        free_min_widths(lv);
-        if let Some(cols) = cols {
-            apply_cols(&fv, &cols, lv);
-            app(|a| {
-                if let Some(p) = a.panes[i].as_mut() {
-                    p.settle = Some((cols, 4));
+        let writes = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.view_writes).unwrap_or(0));
+        let first = writes == 0;
+        let cols_text = cols.clone().unwrap_or_default();
+        if first {
+            free_min_widths(view_list(&fv));
+            apply_planned(&fv, writes, view.0, view.1, &cols_text);
+            if let Some(g) = &group {
+                if crate::folderview::group_needs_set(&Some(g.clone()), &read_group(&fv)) {
+                    apply_group(&fv, g);
                 }
-            });
-            SetTimer(Some(h), TIMER_SETTLE, 50, None);
+            }
+            // No full-row select: a drag that starts in the size/date cells draws a selection box
+            // (and selects the names it covers) instead of grabbing that row's file.
+            // Only when the flag is still on. Setting it again rebuilds the view.
+            if fv.GetCurrentFolderFlags().is_ok_and(|f| f & FWF_FULLROWSELECT.0 as u32 != 0) {
+                _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
+            }
+            mark_view_written(i, cols.filter(|c| !c.is_empty()));
         }
-        if let Some(g) = group {
-            apply_group(&fv, &g);
-        }
-        // No full-row select: a drag that starts in the size/date cells draws a selection box
-        // (and selects the names it covers) instead of grabbing that row's file.
-        _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
     }
     if DARK_ON.load(Ordering::Relaxed) {
         dark_list(h);
@@ -2449,7 +2472,6 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
     hook_ctx(i);
     let here = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
     pane_here(i, &here, classify_ui(&here));
-    hook_tips(i);
     find_retarget(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {
@@ -2489,6 +2511,17 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
             }
             rec_event(i, Nav::Pending, pidl);
             save_view(i);
+            // The folder we are leaving has had its view writes. The next complete starts from zero,
+            // and a settle timer still armed must not touch the new list.
+            if let Some(h) = pane_hwnd(i) {
+                _ = KillTimer(Some(h), TIMER_SETTLE);
+            }
+            app(|a| {
+                if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                    p.settle = None;
+                    p.view_writes = 0;
+                }
+            });
         }
         Ok(())
     }
@@ -2591,6 +2624,8 @@ impl ICommDlgBrowser_Impl for Host_Impl {
         if unsafe { take_default(self.0.load(Ordering::SeqCst), sv.as_ref()) } { Ok(()) } else { Err(S_FALSE.into()) }
     }
     fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
+        // The status line reads the new selection. Do not SelectItem or EnsureVisible here:
+        // that scrolls the list back to the focused row while the user is scrolling.
         if change == CDBOSC_SELCHANGE {
             SEL_REV[self.0.load(Ordering::SeqCst)].fetch_add(1, Ordering::Relaxed); // same count, other items: the status line still updates
         }
