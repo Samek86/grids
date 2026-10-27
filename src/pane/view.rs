@@ -1001,7 +1001,6 @@ pub(crate) unsafe fn apply_theme_desk() {
             _ = RedrawWindow(Some(h), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
         }
     }
-    schedule_theme_panes();
 }
 
 /// Folder tree: the namespace host and the SysTreeView32 inside it, including its scrollbar.
@@ -1029,12 +1028,13 @@ pub(crate) unsafe fn theme_sync() {
         note_theme_epoch();
         across_windows(|| apply_theme_desk());
         note_save();
+        prompt_theme_restart();
     }
 }
 
-/// Applies the current theme. Chrome updates at once. Each visible shell view is restyled and, when
-/// the dark bit actually changed, rebuilt in the background so DefView's list, header and scrollbars
-/// follow. A hidden tab is rebuilt when it is shown. History, filter, selection, focus and scroll stay.
+/// Applies the current theme. Chrome, the tree, headers and scrollbars update at once.
+/// A DefView list keeps the colours it was created with, so a real dark-bit change asks
+/// to restart. The new process is born in the new mode and opens the same tabs.
 pub(crate) unsafe fn apply_theme() {
     let dark = resolve_dark(app(|a| a.s.theme));
     let changed = app(|a| {
@@ -1051,6 +1051,96 @@ pub(crate) unsafe fn apply_theme() {
     settings::refresh();
     crate::rename::refresh();
     refresh_fav_manager();
+    if changed {
+        prompt_theme_restart();
+    }
+}
+
+/// Folder lists do not pick up a theme that changed after they were created.
+/// Restart now saves and starts Panegrid again with the same tabs. Later leaves this process running.
+unsafe fn prompt_theme_restart() {
+    let owner = {
+        let fg = GetForegroundWindow();
+        if !fg.0.is_null() && IsWindow(Some(fg)).as_bool() { fg } else { app(|a| a.main) }
+    };
+    if !ask_theme_restart(owner) {
+        return;
+    }
+    save_session();
+    if app(|a| a.save_after.is_some()) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    if !relaunch_same_session() {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+}
+
+fn ask_theme_restart(owner: HWND) -> bool {
+    match unsafe { theme_restart_dialog(owner) } {
+        Some(restart) => restart,
+        None => {
+            let text = HSTRING::from(tr(
+                "The theme fully applies after a restart.\n\nYes: Restart now\nNo: Later",
+                "테마는 다시 시작하면 완전히 적용됩니다.\n\n예: 지금 다시 시작\n아니요: 나중에",
+                "テーマは再起動すると完全に適用されます。\n\nはい: 今すぐ再起動\nいいえ: 後で",
+            ));
+            let title = HSTRING::from(tr("Theme", "테마", "テーマ"));
+            unsafe { MessageBoxW(Some(owner), &text, &title, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES }
+        }
+    }
+}
+
+unsafe fn theme_restart_dialog(owner: HWND) -> Option<bool> {
+    use windows::Win32::UI::Controls::{TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION};
+    let title = HSTRING::from(tr("Theme", "테마", "テーマ"));
+    let head = HSTRING::from(tr(
+        "The theme fully applies after a restart.",
+        "테마는 다시 시작하면 완전히 적용됩니다.",
+        "テーマは再起動すると完全に適用されます。",
+    ));
+    let body = HSTRING::from(tr(
+        "The window has changed. Folder lists use the new colours the next time Panegrid starts.",
+        "창 모양은 바뀌었습니다. 폴더 목록의 색은 Panegrid를 다시 시작할 때 새 테마로 바뀝니다.",
+        "ウィンドウの色は変わりました。フォルダー一覧の色は、Panegrid を再起動したときに新しいテーマになります。",
+    ));
+    let now = HSTRING::from(tr("Restart now", "지금 다시 시작", "今すぐ再起動"));
+    let later = HSTRING::from(tr("Later", "나중에", "後で"));
+    let buttons = [
+        TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(now.as_ptr()) },
+        TASKDIALOG_BUTTON { nButtonID: 101, pszButtonText: PCWSTR(later.as_ptr()) },
+    ];
+    let cfg = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner,
+        hInstance: HINSTANCE::default(),
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
+        dwCommonButtons: Default::default(),
+        pszWindowTitle: PCWSTR(title.as_ptr()),
+        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: PCWSTR::null() },
+        pszMainInstruction: PCWSTR(head.as_ptr()),
+        pszContent: PCWSTR(body.as_ptr()),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: 101,
+        cRadioButtons: 0,
+        pRadioButtons: std::ptr::null(),
+        nDefaultRadioButton: 0,
+        pszVerificationText: PCWSTR::null(),
+        pszExpandedInformation: PCWSTR::null(),
+        pszExpandedControlText: PCWSTR::null(),
+        pszCollapsedControlText: PCWSTR::null(),
+        Anonymous2: TASKDIALOGCONFIG_1 { hFooterIcon: HICON::default() },
+        pszFooter: PCWSTR::null(),
+        pfCallback: None,
+        lpCallbackData: 0,
+        cxWidth: 0,
+    };
+    let mut pressed = 0i32;
+    if TaskDialogIndirect(&cfg, Some(&mut pressed), None, None).is_err() {
+        return None;
+    }
+    Some(pressed == 100)
 }
 
 pub(crate) unsafe fn pick_accent() {
