@@ -80,7 +80,7 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 ## 설치
 
-[Releases](https://github.com/Samek86/panegrid/releases/latest)에서 최신 zip `panegrid-<version>-x64.zip`을 받습니다. 안에 `panegrid.exe`가 들어 있습니다. 아무 폴더에 풀고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다.
+[Releases](https://github.com/Samek86/panegrid/releases/latest)에서 최신 `panegrid.exe`를 받습니다. 아무 폴더에 두고 실행합니다. 설치 없이 쓰는 exe 하나이고, 크기는 약 1.2 MB입니다. 릴리스는 zip이 아니라 이 exe만 올립니다.
 
 코드 서명이 없는 exe라 처음 실행할 때 Windows SmartScreen 경고가 뜰 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
