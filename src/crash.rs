@@ -81,7 +81,7 @@ pub(crate) fn catch_ui<R>(fallback: R, f: impl FnOnce() -> R + std::panic::Unwin
     match guard(f) {
         Ok(v) => v,
         Err(payload) => {
-            let detail = panic_payload(&payload);
+            let detail = panic_payload(&*payload);
             log(&format!("ui panic: {detail}"));
             show_panic_dialog(&detail);
             fallback
