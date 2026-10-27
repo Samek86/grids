@@ -12,11 +12,15 @@
 // not used for the popup.
 //
 // When a handler is off for this click, `popup_ctx` builds that normal menu and then
-// deletes only the disabled handler's commands. Static verbs match the registry verb.
-// A COM handler is CoCreated into a throwaway menu solely to learn the strings it
-// adds; those strings are deleted from the real menu. The shell has already loaded
-// every handler on the real menu, including ones that are off — that is the cost of
-// an identical item set. Disabled handlers are never given their own visible menu.
+// deletes only the disabled handler's commands. A static verb matches its registry
+// verb and the menu text this Windows language resolved, including MuiVerb.
+// A COM handler is CoCreated into a throwaway menu to learn the strings it inserts;
+// those strings are deleted from the real menu. With a selection, the handler is
+// asked with the data object alone and again with the parent folder pidl. WinMerge
+// counts that pidl as a second selected path, so the two calls insert different
+// items, and every inserted string is eligible for deletion. The shell has already
+// loaded every handler on the real menu, including ones that are off — that is the
+// cost of an identical item set. Disabled handlers are never given their own visible menu.
 //
 // Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
 //
@@ -27,8 +31,11 @@
 // handler in that row. Recording never inserts, deletes, or reorders the menu.
 //
 // A handler that was asked and added no visible item is remembered (`ctx_quiet`) and
-// left off the settings list. The shell menu still loads it. WinMerge starts off:
-// its own commands and its shell handler share one row, and an explicit on is `ctx_on`.
+// left off the settings list. The shell menu still loads it. Handlers whose product
+// is the generic Windows operating system, and Screen saver, stay off that list
+// before any probe: they do not insert a row in this menu. A label recorded from a
+// real menu lists them again. WinMerge starts off: its own commands and its shell
+// handler share one row, and an explicit on is `ctx_on`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -803,81 +810,192 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
     let cat = catalogue();
     let mut verbs = Vec::new();
     let mut names = Vec::new();
+    let mut marks: Vec<HandlerMarks> = Vec::new();
     for r in &cat {
         if !blocked(r, targets, &off, &on) {
             continue;
         }
-        // A static verb's registry name is the menu verb. Its label is the menu text.
+        let mut mv = Vec::new();
+        let mut mn = Vec::new();
+        // The registry verb is language-independent. MuiVerb is the text this UI language shows.
         if !r.verb.is_empty() {
-            verbs.push(r.verb.to_ascii_lowercase());
-            if !r.name.is_empty() {
-                names.push(fold_menu(&r.name));
+            mv.push(r.verb.to_ascii_lowercase());
+            push_mark(&mut mn, &r.name);
+            for label in &r.static_labels {
+                push_mark(&mut mn, label);
             }
         }
-        // A COM handler's catalogue name is a product or class name, not the menu text
-        // ("지금 동기화"). Ask it on a throwaway menu, then delete those strings.
-        // Static verbs, including DelegateExecute, already match on the registry verb.
+        // A COM handler's catalogue name is a product or class name, not the menu text.
+        // Ask it what it inserts, then delete those strings. DelegateExecute verbs already
+        // matched on the registry verb above.
         if r.clsid.is_some() && r.verb.is_empty() {
-            if let Some((vs, ns)) = probe_marks(r, targets) {
-                verbs.extend(vs);
-                names.extend(ns);
+            if let Some(items) = probe_marks(r, targets) {
+                for item in items {
+                    if !item.verb.is_empty() && !mv.iter().any(|v| v == &item.verb) {
+                        mv.push(item.verb);
+                    }
+                    if !item.folded.is_empty() && !mn.iter().any(|n| n == &item.folded) {
+                        mn.push(item.folded);
+                    }
+                }
             }
         }
+        if mv.is_empty() && mn.is_empty() {
+            continue;
+        }
+        verbs.extend(mv.iter().cloned());
+        names.extend(mn.iter().cloned());
+        marks.push(HandlerMarks { id: r.id.clone(), verbs: mv, names: mn });
     }
     let n = GetMenuItemCount(Some(menu));
     if n <= 0 {
         return;
     }
+    let mut learned: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for i in (0..n as u32).rev() {
         if super::menu_sep(menu, i) {
             continue;
         }
         let id = GetMenuItemID(menu, i as i32);
-        if id != u32::MAX && id >= 0x8000 {
+        // Panegrid's own commands (batch rename, favourites, WinMerge) use ids at 0x8000 and above.
+        if panegrid_menu_id(id) {
             continue;
         }
+        let raw = item_text(menu, i);
         let verb = if id != u32::MAX && id >= 1 && id < 0x8000 { super::cmd_verb(cm, (id - 1) as usize) } else { String::new() };
-        let verb_l = verb.trim().to_ascii_lowercase();
-        if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
+        if !item_dropped(&verb, &raw, &verbs, &names) {
             continue;
         }
-        let text = fold_menu(&item_text(menu, i));
-        let drop_verb = !verb_l.is_empty() && verbs.iter().any(|v| v == &verb_l);
-        let drop_name = !text.is_empty() && names.iter().any(|n| n == &text);
-        if drop_verb || drop_name {
-            _ = DeleteMenu(menu, i, MF_BYPOSITION);
+        let verb_l = verb.trim().to_ascii_lowercase();
+        let key = menu_match_key(&raw);
+        let label = menu_label(&raw);
+        if !label.is_empty() {
+            for m in &marks {
+                let hit_verb = !verb_l.is_empty() && m.verbs.iter().any(|v| v == &verb_l);
+                let hit_name = !key.is_empty() && m.names.iter().any(|n| n == &key);
+                if hit_verb || hit_name {
+                    learned.entry(m.id.clone()).or_default().push(label.clone());
+                }
+            }
         }
+        _ = DeleteMenu(menu, i, MF_BYPOSITION);
     }
     collapse_separators(menu);
+    for (id, labels) in learned {
+        note_labels(&id, &labels);
+    }
+}
+
+struct HandlerMarks {
+    id: String,
+    verbs: Vec<String>,
+    names: Vec<String>,
+}
+
+fn push_mark(names: &mut Vec<String>, text: &str) {
+    let key = menu_match_key(text);
+    if key.is_empty() || names.iter().any(|n| n == &key) {
+        return;
+    }
+    names.push(key);
+}
+
+/// Panegrid appends its own commands at 0x8000 and above. The shell's range stops at 0x7FFF.
+fn panegrid_menu_id(id: u32) -> bool {
+    id != u32::MAX && id >= 0x8000
+}
+
+/// A shell row belongs to a disabled handler. Builtin verbs stay. Comparison uses the verb
+/// or the strings the handler inserted, after accelerators and ellipsis are folded.
+fn item_dropped(verb: &str, text: &str, verbs: &[String], names: &[String]) -> bool {
+    let verb_l = verb.trim().to_ascii_lowercase();
+    if !verb_l.is_empty() && (builtin_verb(&verb_l) || shell_owned(&verb_l)) {
+        return false;
+    }
+    if !verb_l.is_empty() && verbs.iter().any(|v| v == &verb_l) {
+        return true;
+    }
+    let key = menu_match_key(text);
+    !key.is_empty() && names.iter().any(|n| n == &key)
 }
 
 struct ProbeItem {
     verb: String,
-    /// `fold_menu` of the raw item text. Deletion compares this, not the cleaned label.
+    /// `menu_match_key` of the raw item text. Deletion compares this, not the cleaned label.
     folded: String,
     /// What the settings page shows: accelerators and a trailing shortcut suffix removed.
     label: String,
 }
 
-/// Verbs and folded labels a disabled COM handler adds. The menu is destroyed; nothing is shown.
-unsafe fn probe_marks(row: &Row, targets: u8) -> Option<(Vec<String>, Vec<String>)> {
+/// Strings a disabled COM handler inserts. An empty menu is remembered as quiet.
+/// Labels for the settings row are taken from the real menu, once a row is actually removed.
+unsafe fn probe_marks(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
     let items = probe_items(row, targets)?;
-    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).filter(|s| !s.is_empty()).collect();
-    if labels.is_empty() {
+    if items.iter().all(|i| i.verb.is_empty() && i.folded.is_empty()) {
         note_quiet(&row.id);
-    } else {
-        note_labels(&row.id, &labels);
     }
-    let verbs = items.iter().filter(|i| !i.verb.is_empty()).map(|i| i.verb.clone()).collect();
-    let names = items.iter().map(|i| i.folded.clone()).filter(|s| !s.is_empty()).collect();
-    Some((verbs, names))
+    Some(items)
 }
 
-/// Top-level strings a COM handler adds on a throwaway menu. Nothing is shown.
+/// How the shell might have called `IShellExtInit::Initialize` for this click.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ProbeContract {
+    /// Selected items only. The parent folder is not also a selected path.
+    Selection,
+    /// Parent folder and the selection together.
+    FolderAndData,
+    /// Empty space. The folder itself, and no data object.
+    Folder,
+}
+
+/// A selection is asked without the parent folder, then with it. WinMerge appends a
+/// resolvable folder pidl to the dropped paths, so the folder-and-data call inserts
+/// one "Compare" item where the real one-item menu inserted "Select Left" and "Compare...".
+fn probe_contracts(has_folder: bool, has_data: bool) -> Vec<ProbeContract> {
+    let mut out = Vec::new();
+    if has_data {
+        out.push(ProbeContract::Selection);
+    }
+    if has_folder && has_data {
+        out.push(ProbeContract::FolderAndData);
+    } else if has_folder {
+        out.push(ProbeContract::Folder);
+    }
+    out
+}
+
+/// Top-level strings a COM handler adds. Each init contract is a fresh object. Nothing is shown.
 unsafe fn probe_items(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
     let guid = row.clsid?;
     let (folder_pidl, data) = probe_context()?;
-    let cm = cocreate(&guid, &row.anchor, folder_pidl, data.as_ref())?;
+    let contracts = probe_contracts(!folder_pidl.is_null(), data.is_some());
+    if contracts.is_empty() {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut any_ok = false;
+    for contract in contracts {
+        let folder = match contract {
+            ProbeContract::Selection => std::ptr::null(),
+            ProbeContract::Folder | ProbeContract::FolderAndData => folder_pidl,
+        };
+        let use_data = matches!(contract, ProbeContract::Selection | ProbeContract::FolderAndData);
+        let Some(found) = probe_contract(row, &guid, folder, if use_data { data.as_ref() } else { None }, targets) else {
+            continue;
+        };
+        any_ok = true;
+        for item in found {
+            if items.iter().any(|e: &ProbeItem| e.verb == item.verb && e.folded == item.folded) {
+                continue;
+            }
+            items.push(item);
+        }
+    }
+    if any_ok { Some(items) } else { None }
+}
+
+unsafe fn probe_contract(row: &Row, guid: &GUID, folder_pidl: *const ITEMIDLIST, data: Option<&IDataObject>, targets: u8) -> Option<Vec<ProbeItem>> {
+    let cm = cocreate(guid, &row.anchor, folder_pidl, data)?;
     let menu = CreatePopupMenu().ok()?;
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
     if targets & BACKGROUND == 0 {
@@ -906,7 +1024,7 @@ unsafe fn probe_items(row: &Row, targets: u8) -> Option<Vec<ProbeItem>> {
             continue;
         }
         let raw = item_text(menu, i);
-        let folded = fold_menu(&raw);
+        let folded = menu_match_key(&raw);
         let label = menu_label(&raw);
         if verb_l.is_empty() && folded.is_empty() && label.is_empty() {
             continue;
@@ -961,28 +1079,28 @@ unsafe fn learn_unknown_com(cat: &[Row], targets: u8) {
         (a.s.ctx_off.clone(), a.s.ctx_on.clone(), seen, a.s.ctx_quiet.clone())
     });
     let mut order: Vec<&Row> = Vec::new();
-    for row in cat {
-        if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
-            continue;
-        }
-        if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off, &on) {
-            continue;
-        }
-        if !quiet.contains(&row.id) {
-            order.push(row);
+    let mut later: Vec<&Row> = Vec::new();
+    for quiet_pass in [false, true] {
+        for row in cat {
+            if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
+                continue;
+            }
+            if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off, &on) {
+                continue;
+            }
+            if quiet.contains(&row.id) != quiet_pass {
+                continue;
+            }
+            // Generic Windows and screen-saver handlers rarely insert a row. Ask them after
+            // products the settings list is still waiting to name, so they do not use the budget first.
+            if shell_dormant(row) {
+                later.push(row);
+            } else {
+                order.push(row);
+            }
         }
     }
-    for row in cat {
-        if row.builtin || row.clsid.is_none() || !row.verb.is_empty() || row.targets & targets == 0 {
-            continue;
-        }
-        if seen.contains(&row.id) || missed_label(&row.id, targets) || blocked(row, targets, &off, &on) {
-            continue;
-        }
-        if quiet.contains(&row.id) {
-            order.push(row);
-        }
-    }
+    order.extend(later);
     let mut tried = 0u32;
     for row in order {
         if tried >= 8 {
@@ -1410,6 +1528,16 @@ fn menu_label(s: &str) -> String {
     let t = generalize_filenames(t);
     let t = strip_shortcut_suffix(&t);
     if label_is_placeholder(&t) { String::new() } else { t }
+}
+
+/// Identity of a menu row for deletion. Accelerators, a trailing `(L)`, and `...` / `…` fold together.
+/// `比較` and `比較...` stay distinct: they are different commands.
+fn menu_match_key(s: &str) -> String {
+    let t = menu_label(s);
+    if t.is_empty() {
+        return String::new();
+    }
+    fold_menu(&t.replace("...", "\u{2026}"))
 }
 
 fn strip_shortcut_suffix(s: &str) -> String {
@@ -2100,7 +2228,9 @@ unsafe fn cocreate(guid: &GUID, class: &str, folder_pidl: *const ITEMIDLIST, dat
     if let Ok(init) = cm.cast::<IShellExtInit>() {
         let key = open_hkcr(class);
         let hk = key.unwrap_or_default();
-        let _ = init.Initialize(Some(folder_pidl), data, Some(hk));
+        // `Option<*const _>` uses a null pointer as None. Some(null) is not a value we can pass.
+        let pidl = if folder_pidl.is_null() { None } else { Some(folder_pidl) };
+        let _ = init.Initialize(pidl, data, Some(hk));
         if let Some(k) = key {
             _ = RegCloseKey(k);
         }
@@ -2167,10 +2297,39 @@ fn listed(r: &Row, seen: &BTreeMap<String, Vec<String>>, quiet: &BTreeSet<String
     if r.builtin || r.targets == 0 {
         return false;
     }
-    if quiet.contains(&r.id) && seen.get(&r.id).map(Vec::is_empty).unwrap_or(true) && r.static_labels.is_empty() {
+    if seen.get(&r.id).is_some_and(|v| !v.is_empty()) {
+        return true;
+    }
+    // Registered, but this menu never shows a row. Hidden before a probe marks them quiet.
+    if shell_dormant(r) {
+        return false;
+    }
+    if quiet.contains(&r.id) && r.static_labels.is_empty() {
         return false;
     }
     true
+}
+
+/// The generic Windows product name, or a screen saver. Neither inserts a row in a folder menu.
+fn shell_dormant(r: &Row) -> bool {
+    generic_windows_product(&title_of(r))
+        || generic_windows_product(&r.product)
+        || generic_windows_product(&r.name)
+        || screen_saver_title(&title_of(r))
+        || screen_saver_title(&r.product)
+        || screen_saver_title(&r.name)
+        || screen_saver_title(&r.raw)
+        || screen_saver_title(&r.verb)
+}
+
+fn generic_windows_product(s: &str) -> bool {
+    let n = fold_menu(&polish_name(s));
+    n.contains("windows") && n.contains("operating system")
+}
+
+fn screen_saver_title(s: &str) -> bool {
+    let n: String = fold_menu(&polish_name(s)).chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    n == "screensaver" || n.contains("スクリーンセーバー") || n.contains("화면보호기")
 }
 
 fn app_winmerge_row() -> Row {
@@ -2502,7 +2661,7 @@ unsafe fn scan_verbs(root: HKEY, full: &str, rel: &str, targets: u8, rows: &mut 
         if command.is_empty() && delegate_guid.is_none() {
             continue;
         }
-        // `name` stays the registry menu text. Deletion matches that string; the product title is separate.
+        // `name` stays the registry menu text. Deletion also matches the resolved MuiVerb. The product title is separate.
         let friendly = {
             let raw = if display.is_empty() { name.as_str() } else { display.as_str() };
             let shown = clean_label(raw);
@@ -3665,11 +3824,19 @@ mod tests {
         assert_eq!(kept.detail, "반디집으로 압축하기");
         assert_eq!(kept.raw, "BdzShell");
 
-        // Not yet asked: still listed, with an empty label line and the faint internal name.
-        let pending = shown(&[os.clone()], &BTreeMap::new(), &BTreeMap::new(), &seen, &BTreeSet::new());
-        assert_eq!(pending.len(), 1);
-        assert!(pending[0].detail.is_empty());
-        assert_eq!(pending[0].raw, "ShellExt");
+        // Hidden before any probe. A third-party handler with no learned label stays listed.
+        let pending = shown(&[os.clone(), saver.clone()], &BTreeMap::new(), &BTreeMap::new(), &seen, &BTreeSet::new());
+        assert!(pending.is_empty());
+        let syno = com_row("clsid:syno", "Synology Drive", "SynoFolderContextMenu Class");
+        let waiting = shown(&[syno], &BTreeMap::new(), &BTreeMap::new(), &seen, &BTreeSet::new());
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].detail.is_empty());
+        assert_eq!(waiting[0].raw, "SynoFolderContextMenu Class");
+
+        // A screen-saver verb still has registry text. It stays hidden until a real menu shows it.
+        let saver_verb = sample_row("verb:screensaver", "Screen saver", "Microsoft Windows Operating System", "screensaver", BACKGROUND);
+        assert!(shell_dormant(&saver_verb));
+        assert!(!listed(&saver_verb, &BTreeMap::new(), &BTreeSet::new()));
 
         // A later menu that does add an item brings the handler back.
         let mut seen = BTreeMap::new();
@@ -3768,5 +3935,59 @@ mod tests {
     fn the_filtered_key_builder_stays_compiled() {
         let _compose: unsafe fn(HWND, &IShellFolder, &[*const ITEMIDLIST], u8, &[String]) -> Option<IContextMenu> = compose;
         let _paths: unsafe fn(HWND, &[(String, bool)], u8) -> Option<IContextMenu> = compose_paths;
+    }
+
+    #[test]
+    fn menu_keys_fold_accelerators_without_merging_distinct_commands() {
+        assert_eq!(menu_match_key("左側として選択(&L)"), menu_match_key("左側として選択(L)"));
+        assert_eq!(menu_match_key("比較..."), menu_match_key("比較…"));
+        assert_eq!(menu_match_key("Visual Studio で開く(&V)"), menu_match_key("Visual Studio で開く(V)"));
+        assert_ne!(menu_match_key("比較"), menu_match_key("比較..."));
+        assert_eq!(menu_match_key("Select Left"), "select left");
+        assert!(generic_windows_product("Microsoft® Windows® Operating System"));
+        assert!(!generic_windows_product("Microsoft Office"));
+        assert!(!generic_windows_product("WinMerge"));
+        assert!(screen_saver_title("Screen saver"));
+        assert!(screen_saver_title("Screensaver"));
+        assert!(screen_saver_title("スクリーンセーバー"));
+        assert!(!screen_saver_title("Screen"));
+        assert!(!shell_dormant(&com_row(WINMERGE_CLSID, "WinMerge", "WinMerge")));
+    }
+
+    #[test]
+    fn a_selection_is_probed_without_counting_the_parent_folder() {
+        assert_eq!(probe_contracts(true, true), vec![ProbeContract::Selection, ProbeContract::FolderAndData]);
+        assert_eq!(probe_contracts(true, false), vec![ProbeContract::Folder]);
+        assert_eq!(probe_contracts(false, true), vec![ProbeContract::Selection]);
+        assert!(probe_contracts(false, false).is_empty());
+    }
+
+    #[test]
+    fn disabled_handlers_drop_inserted_text_in_the_ui_language() {
+        // What the handler inserted on a one-item menu, in Japanese.
+        let inserted = vec![menu_match_key("左側として選択(&L)"), menu_match_key("比較...")];
+        assert!(item_dropped("", "左側として選択(L)", &[], &inserted));
+        assert!(item_dropped("", "比較…", &[], &inserted));
+        // The two-path probe inserts a different command. That string does not remove the ellipsis item.
+        let two_paths = vec![menu_match_key("比較")];
+        assert!(!item_dropped("", "比較...", &[], &two_paths));
+        assert!(!item_dropped("", "左側として選択(L)", &[], &two_paths));
+        // English catalogue text is not a stand-in for the inserted Japanese rows.
+        let english = vec![menu_match_key("WinMerge"), menu_match_key("Select Left"), menu_match_key("Compare...")];
+        assert!(!item_dropped("", "左側として選択(L)", &[], &english));
+        assert!(!item_dropped("", "比較...", &[], &english));
+        // A resolved MuiVerb does remove the localized row, and the registry verb does too.
+        let mui = vec![menu_match_key("比較...")];
+        assert!(item_dropped("", "比較...", &[], &mui));
+        assert!(item_dropped("WinMerge", "比較...", &["winmerge".into()], &[]));
+        // Neighbouring commands and the shell's own verbs stay.
+        assert!(!item_dropped("", "SVN Checkout...", &[], &inserted));
+        assert!(!item_dropped("properties", "プロパティ", &[], &inserted));
+        assert!(!item_dropped("open", "開く(O)", &["open".into()], &inserted));
+        // Panegrid's own WinMerge commands sit at 0x8020 and are not shell rows.
+        assert!(panegrid_menu_id(0x8020));
+        assert!(panegrid_menu_id(0x8021));
+        assert!(!panegrid_menu_id(1));
+        assert!(!panegrid_menu_id(u32::MAX));
     }
 }
