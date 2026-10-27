@@ -92,14 +92,9 @@ pub(crate) unsafe fn open_fav_row(row: &FavRow) {
     if row.group || row.path.is_empty() {
         return;
     }
-    let share = share_path(&row.path);
-    let place = if share {
-        PathPlace::Share
-    } else if is_fs(&row.path) {
-        PathPlace::Local
-    } else {
-        PathPlace::Other
-    };
+    let unc = unc_path(&row.path);
+    // Mapped drives are remote only when the path is not already a UNC. share_path stats a drive root, never the share itself.
+    let place = path_place(unc, !unc && share_path(&row.path), is_fs(&row.path));
     let hit = if place == PathPlace::Local { Some(probe_local(&row.path)) } else { None };
     match fav_act(place, hit) {
         FavAct::Missing => {
