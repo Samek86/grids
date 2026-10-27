@@ -1,5 +1,6 @@
 //! Startup update check against the latest GitHub release, and the self-replace that installs it.
-//! No token and no Actions: one unauthenticated GET to the public releases API, then the zip asset.
+//! No token and no Actions: one unauthenticated GET to the public releases API, then the raw
+//! `panegrid.exe` asset. A release that only has a zip is reported and is not extracted.
 
 use crate::*;
 use std::path::{Path, PathBuf};
@@ -16,15 +17,28 @@ pub(crate) const APP_VERSION: &str = match option_env!("PANEGRID_FAKE_VERSION") 
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
-/// Largest panegrid.exe the updater accepts from a zip.
+/// Largest panegrid.exe the updater will download.
 const EXE_MAX: usize = 64 << 20;
+/// GitHub release asset the updater downloads. Releases upload this raw exe, not a zip.
+const EXE_ASSET: &str = "panegrid.exe";
+/// Downloaded build, next to the running exe, until the swap moves it into place.
+const NEW_EXE: &str = "panegrid.new.exe";
 const OLD_EXE: &str = "panegrid.old.exe";
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Release {
-    pub(crate) tag: String,
-    pub(crate) url: String,
-    pub(crate) size: u64,
+pub(crate) enum Release {
+    /// Raw `panegrid.exe` asset.
+    Exe { tag: String, url: String, size: u64 },
+    /// Newer release that published a zip and no `panegrid.exe`. Shown, never extracted.
+    ZipOnly { tag: String },
+}
+
+impl Release {
+    fn tag(&self) -> &str {
+        match self {
+            Release::Exe { tag, .. } | Release::ZipOnly { tag } => tag,
+        }
+    }
 }
 
 static FOUND: Mutex<Option<Release>> = Mutex::new(None);
@@ -47,22 +61,27 @@ pub(crate) fn is_newer(tag: &str, current: &str) -> bool {
     false
 }
 
-/// The tag and the first .zip asset of a releases/latest response.
+fn asset_file_name(asset: &serde_json::Value) -> Option<&str> {
+    let name = asset.get("name")?.as_str()?;
+    Some(name.rsplit(['/', '\\']).next().unwrap_or(name))
+}
+
+/// The tag plus the `panegrid.exe` asset, or a zip-only release when that exe is absent.
+/// The exe wins when both are published. A zip is never returned as something to download.
 pub(crate) fn parse_release(json: &str) -> Option<Release> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let tag = v.get("tag_name")?.as_str()?.to_string();
-    let asset = v.get("assets")?.as_array()?.iter().find(|a| {
-        a.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.to_ascii_lowercase().ends_with(".zip"))
-    })?;
-    Some(Release {
-        tag,
-        url: asset.get("browser_download_url")?.as_str()?.to_string(),
-        size: asset.get("size")?.as_u64()?,
-    })
+    let assets = v.get("assets")?.as_array()?;
+    if let Some(asset) = assets.iter().find(|a| asset_file_name(a).is_some_and(|n| n.eq_ignore_ascii_case(EXE_ASSET))) {
+        return Some(Release::Exe {
+            tag,
+            url: asset.get("browser_download_url")?.as_str()?.to_string(),
+            size: asset.get("size")?.as_u64()?,
+        });
+    }
+    let zip_only = assets.iter().any(|a| asset_file_name(a).is_some_and(|n| n.to_ascii_lowercase().ends_with(".zip")));
+    zip_only.then_some(Release::ZipOnly { tag })
 }
-
-/// Largest body the updater reads (release JSON or zip).
-const BODY_MAX: usize = 128 << 20;
 
 /// Closes a WinHTTP handle when dropped.
 struct Hnd(*mut core::ffi::c_void);
@@ -74,9 +93,9 @@ impl Drop for Hnd {
     }
 }
 
-/// One GET over WinHTTP (no cache layer; redirects followed). Some(body) only on HTTP 200.
-/// Blocking: callers run it on the update worker thread.
-fn http_get(url: &str) -> Option<Vec<u8>> {
+/// One GET over WinHTTP (no cache layer; redirects followed). Some(body) only on HTTP 200
+/// and when the body is at most `max` bytes. Blocking: callers run it on the update worker thread.
+fn http_get(url: &str, max: usize) -> Option<Vec<u8>> {
     let wide: Vec<u16> = url.encode_utf16().collect();
     let mut host = [0u16; 256];
     let mut path = vec![0u16; 4096];
@@ -141,7 +160,7 @@ fn http_get(url: &str) -> Option<Vec<u8>> {
                 break;
             }
             body.extend_from_slice(&buf[..got as usize]);
-            if body.len() > BODY_MAX {
+            if body.len() > max {
                 return None;
             }
         }
@@ -151,7 +170,7 @@ fn http_get(url: &str) -> Option<Vec<u8>> {
 
 fn download(url: &str, dest: &Path) -> bool {
     _ = std::fs::remove_file(dest);
-    http_get(url).is_some_and(|b| std::fs::write(dest, b).is_ok())
+    http_get(url, EXE_MAX).is_some_and(|b| std::fs::write(dest, b).is_ok())
 }
 
 fn exe_path() -> Option<PathBuf> {
@@ -174,42 +193,45 @@ pub(crate) fn startup(main: HWND, check: bool) {
         if !check {
             return;
         }
-        let text = http_get(API).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let text = http_get(API, 1 << 20).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
         let Some(rel) = parse_release(&text) else { return };
-        if is_newer(&rel.tag, APP_VERSION) {
+        if is_newer(rel.tag(), APP_VERSION) {
+            let stage = match &rel {
+                Release::Exe { .. } => 0,
+                Release::ZipOnly { .. } => 3,
+            };
             *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(rel);
-            unsafe { _ = PostMessageW(Some(HWND(h as _)), WM_UPDATE, WPARAM(0), LPARAM(0)); }
+            unsafe { _ = PostMessageW(Some(HWND(h as _)), WM_UPDATE, WPARAM(stage), LPARAM(0)); }
         }
     });
 }
 
-/// Download, verify, extract and swap. On any failure the running exe stays where it was.
+/// Download the raw exe next to the running one, then swap. On any failure the running exe stays.
 fn install(rel: &Release) -> std::result::Result<(), &'static str> {
+    let Release::Exe { url, size, .. } = rel else { return Err("zip"); };
     let exe = exe_path().ok_or("exe path")?;
     let dir = exe.parent().ok_or("exe folder")?.to_path_buf();
-    let zip = dir.join("panegrid.update.zip");
-    let new = dir.join("panegrid.new.exe");
+    let new = dir.join(NEW_EXE);
     let res = (|| {
-        if !download(&rel.url, &zip) {
-            return Err("download");
-        }
-        if std::fs::metadata(&zip).map(|m| m.len()).ok() != Some(rel.size) {
+        if *size == 0 || *size > EXE_MAX as u64 {
             return Err("size");
         }
-        let mut f = std::fs::File::open(&zip).map_err(|_| "open")?;
-        let es = zip_entries(&mut f).ok_or("not a zip")?;
-        let e = es
-            .iter()
-            .find(|e| e.name.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("panegrid.exe")))
-            .ok_or("no panegrid.exe")?;
-        let bytes = zip_read(&mut f, e, EXE_MAX).ok_or("extract")?;
-        if bytes.len() as u64 != e.size || !bytes.starts_with(b"MZ") {
-            return Err("bad exe");
+        if !download(url, &new) {
+            return Err("download");
         }
-        std::fs::write(&new, &bytes).map_err(|_| "write")?;
+        if std::fs::metadata(&new).map(|m| m.len()).ok() != Some(*size) {
+            return Err("size");
+        }
+        let mut magic = [0u8; 2];
+        {
+            let mut f = std::fs::File::open(&new).map_err(|_| "open")?;
+            if std::io::Read::read(&mut f, &mut magic).ok() != Some(2) || &magic != b"MZ" {
+                return Err("bad exe");
+            }
+        }
         swap(&exe, &new, &dir.join(OLD_EXE))
     })();
-    _ = std::fs::remove_file(&zip);
+    // Success renamed `new` onto the exe. A failure leaves it behind; drop it either way.
     _ = std::fs::remove_file(&new);
     res
 }
@@ -240,12 +262,13 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
     match stage {
         0 => {
             let Some(rel) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
+            let Release::Exe { tag, .. } = &rel else { return };
             let text = tr(
                 "Panegrid {new} is available. You have {cur}.\n\nUpdate now? Panegrid restarts after the download.",
                 "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\n지금 업데이트할까요? 다운로드가 끝나면 Panegrid가 다시 시작돼요.",
                 "Panegrid {new} が公開されています。現在は {cur} です。\n\n今すぐ更新しますか？ダウンロード後に Panegrid が再起動します。",
             )
-            .replace("{new}", &rel.tag)
+            .replace("{new}", tag)
             .replace("{cur}", &format!("v{APP_VERSION}"));
             let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
             if MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES {
@@ -263,6 +286,10 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
             if spawned.is_err() {
                 INSTALLING.store(false, Ordering::SeqCst);
             }
+        }
+        3 => {
+            let Some(Release::ZipOnly { tag }) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
+            zip_only(h, &tag);
         }
         1 => {
             let Some(exe) = exe_path() else { return };
@@ -286,6 +313,21 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
             failed(h);
         }
     }
+}
+
+/// A newer release published only a zip. Tell the user; do not download or extract it.
+unsafe fn zip_only(h: HWND, tag: &str) {
+    let url = format!("{HOME}/releases/latest");
+    let text = tr(
+        "Panegrid {new} is available. You have {cur}.\n\nThis release only includes a zip. Panegrid installs the raw panegrid.exe and does not extract zip files.\n\nDownload panegrid.exe from the release page and replace this file yourself:\n{url}",
+        "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\n이 릴리스에는 zip만 있어요. Panegrid는 panegrid.exe만 설치하고 zip은 풀지 않아요.\n\n릴리스 페이지에서 panegrid.exe를 받아 이 파일을 직접 바꾸세요:\n{url}",
+        "Panegrid {new} が公開されています。現在は {cur} です。\n\nこのリリースには zip しかありません。Panegrid は panegrid.exe だけをインストールし、zip は展開しません。\n\nリリースページから panegrid.exe をダウンロードして、このファイルを差し替えてください:\n{url}",
+    )
+    .replace("{new}", tag)
+    .replace("{cur}", &format!("v{APP_VERSION}"))
+    .replace("{url}", &url);
+    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONINFORMATION);
 }
 
 unsafe fn failed(h: HWND) {
@@ -346,12 +388,32 @@ mod tests {
     }
 
     #[test]
-    fn release_json_picks_zip_asset() {
+    fn release_json_picks_exe_asset() {
         let j = r#"{"tag_name":"v0.2.0","assets":[{"name":"notes.txt","size":3,"browser_download_url":"x"},
-            {"name":"panegrid-v0.2.0.zip","size":1234,"browser_download_url":"https://e/p.zip"}]}"#;
-        assert_eq!(parse_release(j), Some(Release { tag: "v0.2.0".into(), url: "https://e/p.zip".into(), size: 1234 }));
+            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"},
+            {"name":"Panegrid.EXE","size":1234,"browser_download_url":"https://e/panegrid.exe"}]}"#;
+        assert_eq!(
+            parse_release(j),
+            Some(Release::Exe { tag: "v0.2.0".into(), url: "https://e/panegrid.exe".into(), size: 1234 })
+        );
         assert_eq!(parse_release(r#"{"tag_name":"v1","assets":[]}"#), None);
         assert_eq!(parse_release("not json"), None);
+    }
+
+    #[test]
+    fn release_json_zip_only_is_not_an_exe() {
+        let j = r#"{"tag_name":"v0.1.4","assets":[
+            {"name":"panegrid-v0.1.4-x64.zip","size":1252190,"browser_download_url":"https://e/p.zip"}]}"#;
+        assert_eq!(parse_release(j), Some(Release::ZipOnly { tag: "v0.1.4".into() }));
+        // Some other exe is not the update asset. A zip beside it is still zip-only.
+        let other = r#"{"tag_name":"v0.2.0","assets":[
+            {"name":"setup.exe","size":10,"browser_download_url":"https://e/setup.exe"},
+            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
+        assert_eq!(parse_release(other), Some(Release::ZipOnly { tag: "v0.2.0".into() }));
+        assert_eq!(
+            parse_release(r#"{"tag_name":"v9","assets":[{"name":"readme.txt","size":1,"browser_download_url":"x"}]}"#),
+            None
+        );
     }
 
     #[test]

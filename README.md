@@ -80,7 +80,7 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 ## Install
 
-Download the latest release zip, `panegrid-<version>-x64.zip`, from [Releases](https://github.com/Samek86/panegrid/releases/latest). It contains `panegrid.exe`. Unzip it into any folder and run it. One portable exe, about 1.2 MB. Nothing to install.
+Download the latest `panegrid.exe` from [Releases](https://github.com/Samek86/panegrid/releases/latest). Put it in any folder and run it. One portable exe, about 1.2 MB. Nothing to install. Releases ship that raw exe, not a zip.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 

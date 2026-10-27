@@ -11,7 +11,6 @@ mod tree;
 mod view;
 mod drag;
 
-pub(crate) use docparse::{zip_entries, zip_read};
 pub(crate) use find::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;
