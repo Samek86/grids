@@ -62,6 +62,17 @@ fn main() -> Result<()> {
                 }
             }
         };
+        // Old named sessions that stored every tab are split into one file per tab.
+        // The open window (panegrid.json) is only retargeted in memory: its tabs stay.
+        let split_maps = migrate_named_sessions();
+        if !split_maps.is_empty() {
+            retarget_session_links(&mut s, &split_maps);
+            let pending = take_stashed().into_iter().map(|mut v| {
+                retarget_window_value(&mut v, &split_maps);
+                v
+            }).collect();
+            stash_windows(pending);
+        }
         let boot = s.boot;
         let restore = session_arg(&args).is_none() && args.is_empty();
         if restore {
