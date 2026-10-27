@@ -1094,6 +1094,53 @@ pub(crate) unsafe fn browse_item(i: usize, si: &IShellItem) {
     }
 }
 
+/// Folder a `.lnk` points at. `None` for a file shortcut, or a link that does not resolve.
+/// No `Resolve`: that can search the network and show UI. The stored target is enough.
+pub(crate) unsafe fn folder_link_target(path: &str) -> Option<String> {
+    if !crate::folderapp::link_file(path) {
+        return None;
+    }
+    let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+    link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(path), STGM_READ).ok()?;
+    if let Ok(pidl) = link.GetIDList() {
+        if !pidl.is_null() {
+            let item = SHCreateItemFromIDList::<IShellItem>(pidl).ok();
+            let folder = item.as_ref().and_then(|it| it.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).ok()).is_some_and(place_flags);
+            // A file shortcut stays None so the verb still opens it. The parsing name
+            // covers a library or a zip; GetPath covers a plain directory.
+            let name = folder.then(|| {
+                item.as_ref()
+                    .and_then(|it| it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING).ok().map(|p| pwstr(p)))
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| stored_link_path(&link))
+            }).flatten();
+            CoTaskMemFree(Some(pidl as _));
+            return name.filter(|s| !s.is_empty());
+        }
+    }
+    // No pidl. A local directory is still a folder. A share is not stat'd on this thread.
+    let s = stored_link_path(&link)?;
+    if share_path(&s) || std::fs::metadata(&s).is_ok_and(|m| m.is_dir()) {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+unsafe fn stored_link_path(link: &IShellLinkW) -> Option<String> {
+    let mut buf = [0u16; 1024];
+    if link.GetPath(&mut buf, std::ptr::null_mut(), 0).is_err() || buf[0] == 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let s = String::from_utf16_lossy(&buf[..end]);
+    (!s.is_empty()).then_some(s)
+}
+
+fn place_flags(flags: SFGAO_FLAGS) -> bool {
+    crate::folderapp::navigable(flags.contains(SFGAO_FOLDER), flags.contains(SFGAO_STREAM), flags.contains(SFGAO_BROWSABLE))
+}
+
 pub(crate) unsafe fn focus_view(i: usize) {
     if let Some(sv) = view_of::<IShellView>(i) {
         _ = sv.UIActivate(SVUIA_ACTIVATE_FOCUS.0 as u32);
@@ -1218,7 +1265,13 @@ pub(crate) unsafe fn go_edit(i: usize) {
                 None => false,
             };
             let exists = full.as_ref().is_some_and(|f| !full_share && std::fs::metadata(f).is_ok());
-            let target = edit_target(p, full_owned.as_deref(), full_share, exists).to_string();
+            let mut target = edit_target(p, full_owned.as_deref(), full_share, exists).to_string();
+            // A shortcut to a folder would otherwise ShellExecute, and that verb is us.
+            if crate::folderapp::shown_on() && crate::folderapp::link_file(&target) {
+                if let Some(dir) = folder_link_target(&target) {
+                    target = dir;
+                }
+            }
             if share_path(&target) {
                 // A bare `cmd` while this pane is on a share still runs if the name is not a file there.
                 let bare = is_rel(p) && !p.contains(['\\', '/']);
@@ -2289,6 +2342,51 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
 }
 
+/// Double-click / Enter. While Panegrid is the folder handler, a plain activation of a
+/// folder, a folder shortcut, a library, or a zip-like folder browses this pane.
+/// Returning false lets the view run the verb: files, and Ctrl / middle on a folder
+/// (that launch is a new tab). With the setting off, the view already navigates.
+unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
+    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+    let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
+    let registered = crate::folderapp::shown_on();
+    let blank = crate::folderapp::OpenIn { registered, ctrl, middle, folder: false, stream: false, browsable: false };
+    if !registered || ctrl || middle {
+        return crate::folderapp::list_open(blank) == crate::folderapp::OpenWhere::Pane;
+    }
+    let Some(sv) = sv else { return false };
+    let Ok(fv) = sv.cast::<IFolderView2>() else { return false };
+    let idx = fv.GetFocusedItem().unwrap_or(-1);
+    if idx < 0 {
+        return false;
+    }
+    let Ok(item) = fv.GetItem::<IShellItem>(idx) else { return false };
+    let flags = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).unwrap_or_default();
+    let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).filter(|s| !s.is_empty()).unwrap_or_else(|| shell_parse(&item));
+    // A `.lnk` is a file. Its target is what navigates. A junction is already a folder
+    // (it can also carry SFGAO_LINK) and falls through to the flag check below.
+    if crate::folderapp::link_file(&path) {
+        let Some(dir) = folder_link_target(&path) else { return false };
+        let ask = crate::folderapp::OpenIn { folder: true, ..blank };
+        if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
+            return false;
+        }
+        let _ = navigate(i, &dir);
+        focus_view(i);
+        return true;
+    }
+    let folder = flags.contains(SFGAO_FOLDER);
+    let stream = flags.contains(SFGAO_STREAM);
+    let browsable = flags.contains(SFGAO_BROWSABLE);
+    let ask = crate::folderapp::OpenIn { folder, stream, browsable, ..blank };
+    if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
+        return false;
+    }
+    browse_item(i, &item);
+    focus_view(i);
+    true
+}
+
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
 #[implement(IServiceProvider, ICommDlgBrowser)]
 pub(crate) struct Host(pub(crate) Arc<AtomicUsize>);
@@ -2307,8 +2405,9 @@ impl IServiceProvider_Impl for Host_Impl {
 }
 
 impl ICommDlgBrowser_Impl for Host_Impl {
-    fn OnDefaultCommand(&self, _: Ref<IShellView>) -> Result<()> {
-        Err(S_FALSE.into()) // let the view do its default action (open)
+    fn OnDefaultCommand(&self, sv: Ref<IShellView>) -> Result<()> {
+        // S_OK: we browsed. S_FALSE: the view runs the verb (a file, or Ctrl / middle on a folder).
+        if unsafe { take_default(self.0.load(Ordering::SeqCst), sv.as_ref()) } { Ok(()) } else { Err(S_FALSE.into()) }
     }
     fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
         if change == CDBOSC_SELCHANGE {
