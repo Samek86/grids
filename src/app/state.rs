@@ -31,6 +31,8 @@ pub(crate) struct Pane {
     pub(crate) settle: Option<(String, u8)>, // one later width check; the count is unused. Never SetColumns from the timer.
     /// SetColumns / SetViewMode already used for the folder now showing. Automatic re-apply stops at one.
     pub(crate) view_writes: u8,
+    /// The user released a column divider in this folder. The width is stored even during quiet/settle.
+    pub(crate) user_width: bool,
     /// Folder whose view we last applied here. None while per-folder memory is off.
     pub(crate) view_watch: Option<crate::folderview::ViewWatch>,
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
