@@ -382,6 +382,8 @@ pub(crate) unsafe fn relayout() {
     // Paint now: WM_PAINT is only generated once the message queue is empty, which never happens
     // while the mouse keeps moving, so mid-drag the views would keep showing the previous frame.
     _ = RedrawWindow(Some(main), None, None, RDW_UPDATENOW | RDW_ALLCHILDREN);
+    // A tab or a layout that needs more room grows the window. A smaller one does not shrink it.
+    ensure_window_fits();
 }
 
 // Splitter drag shows translucent guide bars where the boundaries will land; the panes move once, on release.
