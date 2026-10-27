@@ -580,11 +580,40 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
     }
 }
 
-/// F6 ring: 0 file list, 1 address, 2 filter, then the left panel's folder tree and favourites.
-/// A hidden panel drops the last two stops.
+/// F6 ring: 0 file list, 1 address, 2 filter, then the upper left-panel half and the lower one.
+/// Favourites lead when they are on top. A hidden panel drops the last two stops.
 pub(crate) fn focus_ring(pos: usize, back: bool, panel: bool) -> usize {
     let n = if panel { 5 } else { 3 };
     (pos.min(n - 1) + if back { n - 1 } else { 1 }) % n
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PanelStop {
+    Tree,
+    Fav,
+}
+
+/// Upper half, then lower half.
+pub(crate) fn panel_stops(fav_top: bool) -> [PanelStop; 2] {
+    if fav_top { [PanelStop::Fav, PanelStop::Tree] } else { [PanelStop::Tree, PanelStop::Fav] }
+}
+
+/// 0 file list, 1 address, 2 filter, 3 upper left-panel half, 4 lower half.
+pub(crate) fn focus_at(addr: bool, filt: bool, in_tree: bool, in_fav: bool, fav_top: bool) -> usize {
+    if addr {
+        return 1;
+    }
+    if filt {
+        return 2;
+    }
+    let [top, _] = panel_stops(fav_top);
+    if in_tree {
+        return if top == PanelStop::Tree { 3 } else { 4 };
+    }
+    if in_fav {
+        return if top == PanelStop::Fav { 3 } else { 4 };
+    }
+    0
 }
 
 /// A key Panegrid handled (Ctrl+Tab, F6, …) must not count as input in the tree.
@@ -596,13 +625,13 @@ pub(crate) fn tree_input_after(prev: bool, in_tree: bool, used: bool) -> bool {
 unsafe fn cycle_focus(back: bool) {
     let a = active_pane();
     let f = GetFocus();
-    let (panel, th, side) = app(|x| (x.s.tree_on, x.tree_hwnd, x.side_hwnd));
+    let (panel, th, side, fav_top) = app(|x| (x.s.tree_on, x.tree_hwnd, x.side_hwnd, x.s.fav_top));
     let shown = panel && !th.0.is_null() && IsWindowVisible(th).as_bool();
     let addr = pane_ctl(a, ID_EDIT) == Some(f);
     let filt = pane_ctl(a, ID_FILTER) == Some(f);
     let in_tree = !th.0.is_null() && (th == f || IsChild(th, f).as_bool());
     let in_fav = !side.0.is_null() && (side == f || IsChild(side, f).as_bool());
-    let pos = if addr { 1 } else if filt { 2 } else if in_tree { 3 } else if in_fav { 4 } else { 0 };
+    let pos = focus_at(addr, filt, in_tree, in_fav, fav_top);
     match focus_ring(pos, back, shown) {
         1 => {
             _ = focus_ctl(a, ID_EDIT);
@@ -610,25 +639,27 @@ unsafe fn cycle_focus(back: bool) {
         2 => {
             _ = focus_ctl(a, ID_FILTER);
         }
-        3 => {
-            let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or(th);
-            _ = SetFocus(Some(tv));
-            reveal_tree_selection();
-        }
-        4 => {
-            if app(|x| x.side_sel.is_none()) {
-                app(|x| x.side_sel = Some(0));
+        n @ 3 | n @ 4 => match panel_stops(fav_top)[n - 3] {
+            PanelStop::Tree => {
+                let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or(th);
+                _ = SetFocus(Some(tv));
+                reveal_tree_selection();
             }
-            _ = SetFocus(Some(side));
-            _ = InvalidateRect(Some(side), None, false);
-        }
+            PanelStop::Fav => {
+                if app(|x| x.side_sel.is_none()) {
+                    app(|x| x.side_sel = Some(0));
+                }
+                _ = SetFocus(Some(side));
+                _ = InvalidateRect(Some(side), None, false);
+            }
+        },
         _ => focus_view(a),
     }
 }
 
 #[cfg(test)]
 mod focus_tests {
-    use super::{focus_ring, tree_input_after};
+    use super::{focus_at, focus_ring, panel_stops, tree_input_after, PanelStop};
 
     #[test]
     fn focus_rings() {
@@ -640,6 +671,27 @@ mod focus_tests {
         // A stop that only exists while the panel is open falls back into the short ring.
         assert_eq!(focus_ring(4, false, false), 0);
         assert_eq!(focus_ring(3, true, false), 1);
+    }
+
+    #[test]
+    fn focus_follows_the_panel_order() {
+        assert_eq!(panel_stops(true), [PanelStop::Fav, PanelStop::Tree]);
+        assert_eq!(panel_stops(false), [PanelStop::Tree, PanelStop::Fav]);
+        assert_eq!(focus_at(false, false, false, true, true), 3);
+        assert_eq!(focus_at(false, false, true, false, true), 4);
+        assert_eq!(focus_at(false, false, true, false, false), 3);
+        assert_eq!(focus_at(false, false, false, true, false), 4);
+        assert_eq!(focus_at(true, false, true, false, true), 1);
+        assert_eq!(focus_at(false, true, false, true, false), 2);
+        assert_eq!(focus_at(false, false, false, false, true), 0);
+        // F6 from the filter lands on whichever half is on top, then the other half.
+        assert_eq!(focus_ring(2, false, true), 3);
+        assert_eq!(panel_stops(true)[focus_ring(2, false, true) - 3], PanelStop::Fav);
+        assert_eq!(panel_stops(false)[focus_ring(2, false, true) - 3], PanelStop::Tree);
+        assert_eq!(focus_ring(3, false, true), 4);
+        assert_eq!(panel_stops(true)[focus_ring(3, false, true) - 3], PanelStop::Tree);
+        assert_eq!(focus_ring(4, true, true), 3);
+        assert_eq!(panel_stops(false)[focus_ring(4, true, true) - 3], PanelStop::Tree);
     }
 
     #[test]

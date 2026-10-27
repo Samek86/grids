@@ -258,6 +258,18 @@ mod tests {
         assert_eq!(round.theme, 0);
         assert_eq!((round.bar, round.stat, round.view_new, round.start_new), (true, true, 4, 0));
         assert_eq!((round.ext, round.tree_on, round.edge, round.confirm, round.del), (true, true, true, true, 0));
+        assert!(round.fav_top && fresh.fav_top);
+        assert!(!fresh.to_ini().contains("sideorder"));
+        let tree_top = Session::parse("sideorder=tree\nsplit=0.3\n");
+        assert!(!tree_top.fav_top && tree_top.to_ini().contains("sideorder=tree\n"));
+        assert!((Session::parse(&tree_top.to_ini()).side_split - 0.3).abs() < 1e-9);
+        assert!(!Session::parse(&tree_top.to_ini()).fav_top);
+        assert!(Session::parse("sideorder=fav\n").fav_top);
+        assert!(!Session::parse("sideorder=fav\n").to_ini().contains("sideorder"));
+        assert!(Session::parse("tree=1\nsplit=0.25\n").fav_top);
+        let mut kept = Session::default();
+        kept.take_layout(&Session::parse("sideorder=tree\n"));
+        assert!(kept.fav_top);
         assert_eq!((round.dropm, round.layout_new, round.boot, round.autosave, round.dot), (0, 0, 0, false, true));
         assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
         // An older file has dark= and no theme=. That stays an explicit choice, and new keys keep defaults.
