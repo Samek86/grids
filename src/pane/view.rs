@@ -129,6 +129,7 @@ unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LP
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
+    pane_left(i);
     NAV_GEN.fetch_add(1, Ordering::SeqCst);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(h) = sv.GetWindow() {

@@ -280,6 +280,12 @@ struct SettingsFile {
     /// Missing means on. The views themselves live in folder-views.json, never in grids.ini.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     remember_folder_view: bool,
+    /// Status line and folder tooltip show folder totals. Missing means on. Omitted while on.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    show_folder_sizes: bool,
+    /// Size UNC and mapped drives. Missing means off. Omitted while off.
+    #[serde(default, skip_serializing_if = "is_off")]
+    folder_sizes_network: bool,
     /// Quick look window size in DIP, per kind. Omitted until the user resizes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peek: Option<PeekJson>,
@@ -377,6 +383,8 @@ impl SettingsFile {
             space_preview: true,
             peek_wheel_nav: true,
             remember_folder_view: true,
+            show_folder_sizes: true,
+            folder_sizes_network: false,
             peek: None,
             ev_asked: false,
             winmerge_path: String::new(),
@@ -471,6 +479,8 @@ impl SettingsFile {
             space_preview: s.space_preview,
             peek_wheel_nav: s.peek_wheel_nav,
             remember_folder_view: s.remember_views,
+            show_folder_sizes: s.folder_sizes,
+            folder_sizes_network: s.folder_sizes_network,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
             winmerge_path: s.winmerge_path.trim().to_string(),
@@ -521,6 +531,8 @@ impl SettingsFile {
         self.extra.remove("space_preview");
         self.extra.remove("peek_wheel_nav");
         self.extra.remove("remember_folder_view");
+        self.extra.remove("show_folder_sizes");
+        self.extra.remove("folder_sizes_network");
         self.extra.remove("layout_new");
         self.extra.remove("ctx_menu");
         self.extra.remove("ctx_labels");
@@ -616,6 +628,8 @@ impl SettingsFile {
         s.space_preview = self.space_preview;
         s.peek_wheel_nav = self.peek_wheel_nav;
         s.remember_views = self.remember_folder_view;
+        s.folder_sizes = self.show_folder_sizes;
+        s.folder_sizes_network = self.folder_sizes_network;
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
@@ -1746,6 +1760,41 @@ mod tests {
         file.merge_forward(&file.clone());
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["remember_folder_view"], false);
+        assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn folder_sizes_default_on_network_off_and_round_trip() {
+        assert!(Session::default().folder_sizes);
+        assert!(!Session::default().folder_sizes_network);
+        assert!(adopt("{}").unwrap().folder_sizes);
+        assert!(!adopt("{}").unwrap().folder_sizes_network);
+        assert!(Session::parse("side=1\n").folder_sizes);
+        assert!(!Session::parse("side=1\n").folder_sizes_network);
+        assert!(!Session::parse("foldersize=0").folder_sizes);
+        assert!(Session::parse("foldersizenet=1").folder_sizes_network);
+        assert!(!Session::parse("foldersizenet=0").folder_sizes_network);
+        let mut s = Session::default();
+        s.folder_sizes = false;
+        s.folder_sizes_network = true;
+        let back = Session::parse(&s.to_ini());
+        assert!(!back.folder_sizes && back.folder_sizes_network);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"show_folder_sizes\": false"), "{text}");
+        assert!(text.contains("\"folder_sizes_network\": true"), "{text}");
+        let loaded = adopt(&text).unwrap();
+        assert!(!loaded.folder_sizes && loaded.folder_sizes_network);
+        let def = pretty(&SettingsFile::from_session(&Session::default()));
+        assert!(!def.contains("show_folder_sizes") && !def.contains("folder_sizes_network"), "{def}");
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("show_folder_sizes".into(), serde_json::json!(true));
+        file.extra.insert("folder_sizes_network".into(), serde_json::json!(false));
+        file.extra.insert("future_flag".into(), serde_json::json!(1));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["show_folder_sizes"], false);
+        assert_eq!(saved["folder_sizes_network"], true);
+        assert_eq!(saved["future_flag"], 1);
         assert!(saved.get("extra").is_none());
     }
 

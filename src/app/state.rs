@@ -79,6 +79,10 @@ pub(crate) struct Desk {
     pub(crate) status: String,
     pub(crate) status_key: String,
     pub(crate) status_base: (String, Option<(u64, bool, bool)>, String), // text before / after the selection size, (file bytes, has folders, partial)
+    /// Selected folders whose totals the status line is waiting on. Empty uses the file-size parenthetical.
+    pub(crate) status_folders: Vec<String>,
+    /// Local file bytes, file count, and a partial flag mixed into the folder-size line.
+    pub(crate) status_files: (u64, u64, bool),
     pub(crate) view_menu: HMENU,
     pub(crate) base: Option<Session>, // last loaded/saved (or startup) state; differs -> green dot
     pub(crate) dirty: bool,
@@ -232,6 +236,8 @@ pub(crate) fn blank_desk() -> Desk {
         status: String::new(),
         status_key: String::new(),
         status_base: Default::default(),
+        status_folders: Vec::new(),
+        status_files: (0, 0, false),
         view_menu: HMENU::default(),
         base: None,
         dirty: false,
@@ -508,6 +514,8 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.space_preview = src.space_preview;
     dst.peek_wheel_nav = src.peek_wheel_nav;
     dst.remember_views = src.remember_views;
+    dst.folder_sizes = src.folder_sizes;
+    dst.folder_sizes_network = src.folder_sizes_network;
     dst.peek_image = src.peek_image;
     dst.peek_doc = src.peek_doc;
     dst.hotkey = src.hotkey;
