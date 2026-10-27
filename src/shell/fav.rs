@@ -161,12 +161,18 @@ unsafe fn open_present(path: &str, file: bool) {
 /// Open / Explore / our verb on one folder browses this pane while Panegrid is the
 /// folder handler. A file shortcut is not taken, so the verb still opens it.
 /// Returns true when the command must not reach the shell (that launch is a new tab).
-unsafe fn claim_folder_open(pane: usize, verb: &str, items: &[(String, bool)]) -> bool {
+unsafe fn claim_folder_open(pane: usize, verb: &str, items: &[(String, bool)], default_item: bool) -> bool {
     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
+    // New-window verbs and a multi-selection Open are meant to become tabs. Record that
+    // before the verb runs, or the handoff would treat the child process as a slipped double-click.
+    let opening = crate::folderapp::open_verb(verb) || (verb.trim().is_empty() && default_item);
+    let new_window = matches!(verb.trim().to_ascii_lowercase().as_str(), "opennew" | "opennewwindow");
+    let wants_tab = ctrl || middle || new_window || (items.len() > 1 && opening);
+    crate::folderapp::note_activate(app(|a| a.main.0 as isize), pane, wants_tab);
     let file = items.len() == 1 && items[0].1;
     let link = items.len() == 1 && crate::folderapp::link_file(&items[0].0);
-    if crate::folderapp::menu_open(crate::folderapp::shown_on(), ctrl, middle, verb, items.len(), file, link) != crate::folderapp::OpenWhere::Pane {
+    if crate::folderapp::menu_open_item(crate::folderapp::shown_on(), ctrl, middle, verb, items.len(), file, link, default_item) != crate::folderapp::OpenWhere::Pane {
         return false;
     }
     let path = &items[0].0;
@@ -466,7 +472,9 @@ pub(crate) unsafe fn selected_items(i: usize) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     for k in 0..n {
         let Ok(it) = arr.GetItemAt(k) else { continue };
-        let file = !it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0);
+        // A failed attribute read is not a file. Leaving it unknown keeps Open from claiming it;
+        // the handoff still browses this pane if the verb launches us.
+        let file = item_is_container(&it) != Some(true);
         if let Ok(p) = it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
             let p = pwstr(p);
             if !p.is_empty() {
@@ -705,7 +713,8 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     } else if crate::winmerge::ctx_command(owner, cmd, pane, items) {
     } else if cmd > 0 {
         let verb = cmd_verb(&cm, (cmd as u32 - 1) as usize);
-        if !claim_folder_open(pane, &verb, items) {
+        let default_item = GetMenuDefaultItem(menu, 0, GET_MENU_DEFAULT_ITEM_FLAGS(0)) as i32 == cmd;
+        if !claim_folder_open(pane, &verb, items, default_item) {
             let mut ici = CMINVOKECOMMANDINFO {
                 cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
                 hwnd: owner,
@@ -726,6 +735,29 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     // Label probes CoCreate handlers. The popup is already gone, so this is not the wait to open it.
     super::ctxmenu::learn_pending(targets);
     true
+}
+
+unsafe fn eat_list_activation(h: HWND, data: usize) -> bool {
+    bind_hwnd(h);
+    let pane = pane_of(h).unwrap_or(data);
+    let sv = view_of::<IShellView>(pane);
+    take_default(pane, sv.as_ref())
+}
+
+fn list_notify_item(lp: LPARAM) -> i32 {
+    use windows::Win32::UI::Controls::NMLISTVIEW;
+    unsafe { (*(lp.0 as *const NMLISTVIEW)).iItem }
+}
+
+/// Empty space in the list. Eating that double-click would open the focused folder
+/// instead of going up a level.
+unsafe fn dblclick_on_background(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> bool {
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return false;
+    }
+    let probe = MSG { hwnd: h, message: msg, wParam: wp, lParam: lp, pt, ..Default::default() };
+    on_background(&probe)
 }
 
 pub(crate) unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, data: usize) -> LRESULT {
@@ -757,6 +789,27 @@ unsafe fn ctx_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, 
     }
     if msg == WM_PARENTNOTIFY && (wp.0 & 0xFFFF) == WM_CREATE as usize {
         hook_ctx_hwnd(HWND(lp.0 as _), data);
+    }
+    if msg == WM_NOTIFY && wnd_class(h) == "SHELLDLL_DefView" {
+        let hdr = &*(lp.0 as *const NMHDR);
+        let from = wnd_class(hdr.hwndFrom);
+        // NM_DBLCLK (-3) and LVN_ITEMACTIVATE (-114). A header click auto-sizes a column and is not an open.
+        let activate = hdr.code == (-3i32 as u32) || hdr.code == (-114i32 as u32);
+        let background = hdr.code == (-3i32 as u32) && from == "SysListView32" && list_notify_item(lp) < 0;
+        if activate && from != "SysHeader32" && !background && eat_list_activation(h, data) {
+            return LRESULT(0);
+        }
+    }
+    if msg == WM_LBUTTONDBLCLK && wnd_class(h) != "SHELLDLL_DefView" && ctx_surface(h) && !dblclick_on_background(h, msg, wp, lp) && eat_list_activation(h, data) {
+        return LRESULT(0);
+    }
+    if msg == WM_KEYDOWN && wp.0 as u16 == VK_RETURN.0 && ctx_surface(h) && eat_list_activation(h, data) {
+        return LRESULT(1);
+    }
+    if matches!(msg, WM_MBUTTONDOWN | WM_MBUTTONDBLCLK) && ctx_surface(h) {
+        bind_hwnd(h);
+        let pane = pane_of(h).unwrap_or(data);
+        crate::folderapp::note_activate(app(|a| a.main.0 as isize), pane, true);
     }
     if msg == WM_CONTEXTMENU {
         let pt = if lp.0 == -1 {
@@ -817,8 +870,10 @@ impl IContextMenu_Impl for FavCtx_Impl {
             if !pici.is_null() {
                 if let Some(offset) = verb_offset(pici) {
                     let verb = cmd_verb(&self.inner, offset as usize);
+                    // Offset 0 with an empty verb is the menu default (Open) when the string could not be read.
+                    let default_item = offset == 0 && verb.trim().is_empty();
                     let item = [(self.path.clone(), false)];
-                    if claim_folder_open(active_pane(), &verb, &item) {
+                    if claim_folder_open(active_pane(), &verb, &item, default_item) {
                         return Ok(());
                     }
                 }
@@ -897,7 +952,7 @@ pub(crate) fn verb_offset(ici: *const CMINVOKECOMMANDINFO) -> Option<u32> {
 }
 
 pub(crate) fn shell_folder(it: &IShellItem) -> bool {
-    unsafe { it.GetAttributes(SFGAO_FOLDER).is_ok_and(|f| f.0 & SFGAO_FOLDER.0 != 0) }
+    unsafe { item_is_container(it) == Some(true) }
 }
 
 pub(crate) fn shell_parse(it: &IShellItem) -> String {
