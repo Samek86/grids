@@ -243,6 +243,8 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     _ = ShowWindow(add, if pg.add.right > pg.add.left { SW_SHOWNA } else { SW_HIDE });
     show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);
+    // After the browser is placed, so a share error stays above the file list.
+    sync_net_fail(h);
 }
 
 pub(crate) unsafe fn relayout() {
