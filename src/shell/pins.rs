@@ -396,10 +396,11 @@ fn menu_label(raw: &str) -> String {
     let open = label.rfind(['(', '（']);
     if let Some(open) = open {
         if open > 0 {
-            let inner = label[open..].trim_start_matches(['(', '（']).trim_end_matches([')', '）']).trim();
-            let tail = label[open..].chars().last();
+            let Some(tail_src) = label.get(open..) else { return label.to_string() };
+            let inner = tail_src.trim_start_matches(['(', '（']).trim_end_matches([')', '）']).trim();
+            let tail = tail_src.chars().last();
             if (tail == Some(')') || tail == Some('）')) && inner.chars().count() == 1 {
-                return label[..open].trim().to_string();
+                return label.get(..open).unwrap_or(label).trim().to_string();
             }
         }
     }
@@ -1638,5 +1639,17 @@ mod tests {
         let back = super::merge_read(read, &[], &mut fresh, &[]);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].path, note);
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_menu_labels_do_not_panic() {
+        assert_eq!(super::menu_label("削除(&R)"), "削除");
+        assert_eq!(super::menu_label("샘플(&S)"), "샘플");
+        assert_eq!(super::menu_label("サンプル(あ)"), "サンプル");
+        assert_eq!(super::menu_label("한글폴더"), "한글폴더");
+        assert_eq!(super::menu_label("😀あ"), "😀あ");
+        assert_eq!(super::menu_label("abcdサ"), "abcdサ");
     }
 }

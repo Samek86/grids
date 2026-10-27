@@ -1197,6 +1197,9 @@ unsafe fn start_handler(h: HWND, gen: usize) {
 
 // The handler's parent: the plate's colour (and "Opening…") until the handler draws over it.
 pub(crate) extern "system" fn peek_host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| peek_host_proc_inner(h, msg, wp, lp)))
+}
+fn peek_host_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         // With two windows open, act on the window this popup belongs to.
         bind_hwnd(h);
@@ -2727,6 +2730,9 @@ unsafe fn restore_under_cursor(h: HWND) {
 }
 
 pub(crate) extern "system" fn peek_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| peek_proc_inner(h, msg, wp, lp)))
+}
+fn peek_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         // With two windows open, act on the window this popup belongs to.
         bind_hwnd(h);

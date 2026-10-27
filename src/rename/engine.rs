@@ -569,7 +569,7 @@ fn reserved_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name);
     let u = stem.to_ascii_uppercase();
     matches!(u.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || ((u.starts_with("COM") || u.starts_with("LPT")) && u.len() == 4 && u.as_bytes()[3].is_ascii_digit())
+        || ((u.starts_with("COM") || u.starts_with("LPT")) && u.len() == 4 && u.as_bytes().get(3).is_some_and(|b| b.is_ascii_digit()))
 }
 
 fn bad_tail(name: &str) -> bool {
@@ -1219,4 +1219,19 @@ mod tests {
         assert!(broken[0].issues.contains(&Issue::BadPattern));
     }
 
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_names_are_not_device_names() {
+        assert!(!super::reserved_name("샘플"));
+        assert!(!super::reserved_name("한글폴더"));
+        assert!(!super::reserved_name("サンプル"));
+        assert!(!super::reserved_name("😀"));
+        assert!(!super::reserved_name("abcdサ"));
+        assert!(super::reserved_name("COM1"));
+        assert!(super::reserved_name("lpt9.txt"));
+        assert!(!super::reserved_name("COM"));
+        assert!(!super::reserved_name("COM10"));
+    }
 }
