@@ -257,6 +257,22 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             && !svh.0.is_null()
             && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())
     });
+    // A failed share keeps its path. F5 retries that path; the shell's refresh would reload the
+    // previous folder and leave the failure behind. The error view's Retry button does the same.
+    if VIRTUAL_KEY(vk) == VK_F5 && !ctrl && !alt && !shift && net_failed(a) {
+        if m.lParam.0 & (1 << 30) == 0 {
+            retry_failed(a);
+        }
+        return true;
+    }
+    if pane_ctl(a, ID_NETFAIL) == Some(m.hwnd) {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN if !ctrl && !alt => retry_failed(a),
+            VK_ESCAPE if !ctrl && !alt => leave_net_fail(a),
+            _ => return false,
+        }
+        return true;
+    }
     // Explorer's find-as-you-type: a letter, digit, punctuation or IME process key in the list
     // starts the one-second window in which Space stays part of the name.
     if list && !ctrl && !alt && types_char(VIRTUAL_KEY(vk)) {
