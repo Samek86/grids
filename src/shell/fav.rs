@@ -277,7 +277,8 @@ pub(crate) struct MenuBridge {
 
 thread_local! {
     static MENU_BRIDGE: RefCell<Option<MenuBridge>> = const { RefCell::new(None) };
-    static CTX_MENU: Cell<isize> = const { Cell::new(0) }; // HMENU we inserted into; submenus are left alone
+    static CTX_MENU: Cell<isize> = const { Cell::new(0) }; // top HMENU; separator cleanup also walks its submenus
+    static CTX_BACKGROUND: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(crate) static CTX_OPEN: AtomicBool = AtomicBool::new(false);
@@ -287,6 +288,7 @@ impl Drop for ClearBridge {
     fn drop(&mut self) {
         MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
         CTX_MENU.with(|m| m.set(0));
+        CTX_BACKGROUND.with(|c| c.set(false));
         CTX_OPEN.store(false, Ordering::Release);
     }
 }
@@ -503,7 +505,29 @@ unsafe fn menu_for_paths(paths: &[String]) -> Option<IContextMenu> {
     menu
 }
 
+fn open_cm() -> Option<IContextMenu> {
+    MENU_BRIDGE.with(|b| {
+        let b = b.borrow();
+        let b = b.as_ref()?;
+        if let Some(cm) = &b.cm3 {
+            if let Ok(cm) = cm.cast() {
+                return Some(cm);
+            }
+        }
+        b.cm2.as_ref().and_then(|cm| cm.cast().ok())
+    })
+}
+
+/// One New folder on a background menu, then no dangling separators.
+unsafe fn finish_shell_menu(menu: HMENU, cm: Option<&IContextMenu>, background: bool) {
+    if background {
+        super::ctxmenu::dedupe_new_folder(menu, cm);
+    }
+    super::ctxmenu::normalize_menu(menu);
+}
+
 unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, pane_selection: bool, props_folder: &str, pt: POINT, pane: usize) -> bool {
+    CTX_BACKGROUND.with(|c| c.set(background));
     let Ok(menu) = CreatePopupMenu() else { return false };
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
     if !background {
@@ -568,6 +592,9 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
         crate::winmerge::insert_ctx(menu, at, pane, items);
     }
+    // After every removal and insertion. The shell can still add a row when the menu opens.
+    finish_shell_menu(menu, Some(&cm), background);
+    tidy_fav_item(menu, ID_CTX_FAV as usize);
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
     });
@@ -611,10 +638,18 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
 
 pub(crate) unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT {
     if msg == WM_INITMENUPOPUP {
-        // The shell may insert its own separator while the menu opens. Collapse after that.
+        // The shell may insert its own separator, or a second New folder, while the menu opens.
         let lr = forward_menu(msg, wp, lp);
         let popup = HMENU(wp.0 as _);
-        if CTX_MENU.with(|m| m.get() != 0 && m.get() == popup.0 as isize) {
+        let top = CTX_MENU.with(|m| m.get() != 0 && m.get() == popup.0 as isize);
+        let background = CTX_BACKGROUND.with(|c| c.get());
+        if top && background {
+            finish_shell_menu(popup, open_cm().as_ref(), true);
+        } else if !popup.0.is_null() {
+            super::ctxmenu::normalize_menu(popup);
+        }
+        // Favourites keeps its one separator after New folder and the bars are settled.
+        if top {
             tidy_fav_item(popup, ID_CTX_FAV as usize);
         }
         if let Some(lr) = lr {
