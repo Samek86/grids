@@ -149,11 +149,6 @@ const CTX_NOTE: [&str; 3] = s(
 );
 const CTX_RESET_L: [&str; 3] = s("Reset to all enabled", "모두 사용", "すべて有効に戻す");
 const CTX_EMPTY: [&str; 3] = s("No third-party menu items", "타사 메뉴 항목이 없어요", "サードパーティの項目はありません");
-const CTX_PENDING: [&str; 3] = s(
-    "Open the menu once to show these",
-    "메뉴를 한 번 열면 표시됩니다",
-    "メニューを一度開くと表示されます",
-);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ctl {
@@ -478,7 +473,6 @@ enum Item {
         name: String,
         detail: String,
         raw: String,
-        pending: bool,
         tick: crate::shell::ctxmenu::Tick,
         chips: Vec<(u8, RECT)>,
     },
@@ -669,8 +663,8 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         g.items.push(Item::CtxNote(RECT { left, top: y, right, bottom: y + h }));
         y += h + sc(dpi, 8);
     }
-    let (off, seen) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_labels.clone()));
-    let rows = crate::shell::ctxmenu::ui_rows(&off, &seen, rq);
+    let (off, on, seen, quiet) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_on.clone(), a.s.ctx_labels.clone(), a.s.ctx_quiet.clone()));
+    let rows = crate::shell::ctxmenu::ui_rows(&off, &on, &seen, &quiet, rq);
     let bw = sc(dpi, 220);
     let bh = sc(dpi, 32);
     let reset = RECT { left: (right - bw).max(left), top: y, right, bottom: y + bh };
@@ -681,7 +675,7 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         return y + sc(dpi, 44);
     }
     for row in rows {
-        let sub = row.pending || !row.detail.is_empty() || !row.raw.is_empty();
+        let sub = !row.detail.is_empty() || !row.raw.is_empty();
         let h = sc(dpi, if sub { 64 } else { 48 });
         let rect = RECT { left, top: y, right, bottom: y + h };
         let tick = sc(dpi, 16);
@@ -700,7 +694,6 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
             name: row.name,
             detail: row.detail,
             raw: row.raw,
-            pending: row.pending,
             tick: row.tick,
             chips,
         });
@@ -1188,7 +1181,6 @@ mod tests {
         assert_eq!(tx(PAGES[CTX_PAGE]), "우클릭 메뉴 항목");
         assert_eq!(tx(CTX_RESET_L), "모두 사용");
         assert_eq!(tx(CTX_EMPTY), "타사 메뉴 항목이 없어요");
-        assert_eq!(tx(CTX_PENDING), "메뉴를 한 번 열면 표시됩니다");
         let (_, page) = commit_search(0, 0, "우클릭 메뉴 항목");
         assert_eq!(page, CTX_PAGE);
         let g = geo(client(), &shot(page, "우클릭"));
