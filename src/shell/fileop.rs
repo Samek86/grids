@@ -272,6 +272,7 @@ pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
     let lang = ui();
     let job = std::thread::Builder::new().name("panegrid-image".into()).spawn(move || {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe {
         let png = match pic {
             Pic::Png(b) => Ok(b),
             Pic::Dib(d) => dib_to_bmp(&d)
@@ -301,6 +302,7 @@ pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
                 MessageBoxW(None, &HSTRING::from(format!("{what}{e}")), w!("Panegrid"), MB_ICONWARNING);
             }
         }
+        }));
         if com {
             CoUninitialize();
         }
@@ -381,8 +383,9 @@ fn keep_job(job: std::thread::JoinHandle<()>) {
 pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> bool {
     let busy = Busy::new();
     let job = std::thread::Builder::new().spawn(move || {
-        let _busy = busy;
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe {
+        let _busy = busy;
         if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ", "移動できませんでした: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ", "コピーできませんでした: ") };
@@ -390,6 +393,7 @@ pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv
                 MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
             }
         }
+        }));
         if com {
             CoUninitialize();
         }

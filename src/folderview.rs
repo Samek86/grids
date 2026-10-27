@@ -395,8 +395,7 @@ impl Store {
         let Some(key) = normalize_folder_key(path) else {
             return Choice::None;
         };
-        if self.map.contains_key(&key) {
-            let view = self.map.get(&key).cloned().unwrap();
+        if let Some(view) = self.map.get(&key).cloned() {
             self.touch(&key);
             return Choice::Saved(view);
         }

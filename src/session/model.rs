@@ -313,6 +313,9 @@ pub(crate) struct Session {
     /// Handler ids that were asked and added no visible menu item. They leave the settings list.
     /// The shell menu is unchanged. panegrid.json only.
     pub(crate) ctx_quiet: std::collections::BTreeSet<String>,
+    /// DLL file names that must not load inside this process. Empty means nothing extra is blocked.
+    /// panegrid.json only. The registry is not written, and a .grids file does not carry this.
+    pub(crate) blocked_shell_extensions: Vec<String>,
 }
 
 /// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
@@ -440,6 +443,7 @@ impl Default for Session {
             ctx_labels: std::collections::BTreeMap::new(),
             ctx_on: std::collections::BTreeMap::new(),
             ctx_quiet: std::collections::BTreeSet::new(),
+            blocked_shell_extensions: Vec::new(),
         };
         // A first-ever start: layout_new 0 is two panes, left and right.
         s.set_heights(s.layout_heights());
@@ -514,6 +518,7 @@ impl PartialEq for Session {
             && self.ctx_labels == o.ctx_labels
             && self.ctx_on == o.ctx_on
             && self.ctx_quiet == o.ctx_quiet
+            && self.blocked_shell_extensions == o.blocked_shell_extensions
     }
 }
 
@@ -1722,10 +1727,9 @@ pub(crate) fn crumbs(parse: &str) -> Vec<(String, String)> {
             (root.clone(), root, it.next().unwrap_or(""))
         }
         None => {
-            if parse.len() < 3 {
-                return Vec::new();
-            }
-            (parse[..2].to_string(), parse[..3].to_string(), &parse[3..])
+            let Some(root) = crate::winpath::split_prefix(parse, 2) else { return Vec::new() };
+            let Some(go) = crate::winpath::split_prefix(parse, 3) else { return Vec::new() };
+            (root.to_string(), go.to_string(), parse.get(3..).unwrap_or(""))
         }
     };
     let mut path = root.clone();
@@ -1975,6 +1979,7 @@ mod crumb_tests {
         assert!(crumbs("C:").is_empty());
         let p = r"D:\x\y y\z";
         assert!(crumbs(p).iter().all(|(_, g)| p.starts_with(g.as_str())));
+        assert_eq!(c(r"F:\CAC\サンプル"), [r"F:=F:\", r"CAC=F:\CAC", "サンプル=F:\\CAC\\サンプル"]);
     }
 
     #[test]

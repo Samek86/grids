@@ -17,6 +17,8 @@ mod everything;
 mod rename;
 mod winmerge;
 mod folderapp;
+mod crash;
+mod winpath;
 
 use imports::*;
 
@@ -29,6 +31,13 @@ pub(crate) use ui::*;
 pub(crate) use settings::store;
 
 fn main() -> Result<()> {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if crash::helper(&raw) {
+        return Ok(());
+    }
+    // Hooks and the fast-fail watcher go in before settings, COM, or a window, so a fault
+    // while a folder opens still leaves a report. Helper processes above must not install them.
+    crash::install();
     unsafe {
         // A moved exe keeps the folder registration pointed at the binary that is running.
         folderapp::repair_moved_exe();
@@ -209,6 +218,10 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         UI.store(s.lang.resolve(), Ordering::Relaxed);
+        // After COM is up and before the hosted Explorer view is created, so a listed DLL
+        // is not loaded into this process. The registry is not written.
+        crash::show_previous();
+        shell::blockext::apply(&s.blocked_shell_extensions);
         let main = open_window(s)?;
         apply_ext(app(|a| a.s.ext));
         if restore && boot != 0 {

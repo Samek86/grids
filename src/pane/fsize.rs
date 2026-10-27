@@ -737,7 +737,13 @@ fn run_job(job: Job) {
     };
     let paused = || crate::COPYING.load(Ordering::Relaxed) > 0;
     let mut quiet = |_, _| {};
-    let result = dir_totals(Path::new(&job.path), &stop, &paused, &mut quiet, super::DIR_STACK_CAP);
+    let result = match crate::crash::guard(std::panic::AssertUnwindSafe(|| dir_totals(Path::new(&job.path), &stop, &paused, &mut quiet, super::DIR_STACK_CAP))) {
+        Ok(v) => v,
+        Err(_) => {
+            halt.set(Halt::Drop);
+            None
+        }
+    };
     let (now_epoch, now_base) = lock().epoch_of(&job.key);
     let fresh = now_base == base && now_epoch == epoch;
     if let Some(t) = result {
@@ -853,8 +859,9 @@ fn note_failed(path: &str, failed: bool) {
 
 fn open_watch(path: &str) -> Option<Open> {
     unsafe {
+        let opened = crate::winpath::win_long_path(path);
         let handle = CreateFileW(
-            &HSTRING::from(path),
+            &HSTRING::from(&opened),
             FILE_LIST_DIRECTORY.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
@@ -934,21 +941,30 @@ fn win32_code(e: &windows::core::Error) -> u32 {
 const FILE_ACTION_REMOVED: u32 = 2;
 const FILE_ACTION_RENAMED_OLD: u32 = 4;
 
+fn le_u32(buf: &[u8], off: usize) -> Option<u32> {
+    let b = buf.get(off..off + 4)?;
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 pub(crate) fn parse_notify(buf: &[u8], root: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut off = 0usize;
     while off + 12 <= buf.len() {
-        let next = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()) as usize;
-        let action = u32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
-        let len = u32::from_le_bytes(buf[off + 8..off + 12].try_into().unwrap()) as usize;
+        let Some(next) = le_u32(buf, off) else { break };
+        let Some(action) = le_u32(buf, off + 4) else { break };
+        let Some(len) = le_u32(buf, off + 8) else { break };
+        let len = len as usize;
         let end = off.saturating_add(12).saturating_add(len);
         if end > buf.len() || len % 2 != 0 {
             break;
         }
-        let name = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(buf[off + 12..end].as_ptr() as *const u16, len / 2) });
+        let name_bytes = &buf[off + 12..end];
+        let units: Vec<u16> = name_bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let name = String::from_utf16_lossy(&units);
         let full = if name.is_empty() { norm_key(root) } else { norm_key(&format!("{root}\\{name}")) };
         let removed = action == FILE_ACTION_REMOVED || action == FILE_ACTION_RENAMED_OLD;
         out.push((full, removed));
+        let next = next as usize;
         if next == 0 || off.saturating_add(next) <= off {
             break;
         }
@@ -1196,6 +1212,25 @@ mod tests {
         assert!(under(r"c:\a\b", r"c:\a"));
         assert!(!under(r"c:\ab", r"c:\a"));
         assert!(under(r"c:\a\b", r"c:\"));
+    }
+
+    #[test]
+    fn notify_copies_japanese_names_and_stops_on_a_short_buffer() {
+        let name: Vec<u16> = "サンプル.jpg".encode_utf16().collect();
+        let mut buf = Vec::new();
+        buf.extend(0u32.to_le_bytes());
+        buf.extend(1u32.to_le_bytes());
+        buf.extend(((name.len() * 2) as u32).to_le_bytes());
+        for u in &name {
+            buf.extend(u.to_le_bytes());
+        }
+        let ev = parse_notify(&buf, r"F:\CAC");
+        assert_eq!(ev.len(), 1);
+        assert!(ev[0].0.contains("サンプル.jpg"), "{}", ev[0].0);
+        assert!(parse_notify(&buf[..10], r"F:\CAC").is_empty());
+        let mut bad = buf.clone();
+        bad[8..12].copy_from_slice(&3u32.to_le_bytes());
+        assert!(parse_notify(&bad, r"F:\CAC").is_empty());
     }
 
     #[test]

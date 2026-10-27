@@ -1,4 +1,6 @@
 mod docparse;
+mod imgjob;
+mod jpeg;
 mod find;
 mod fsize;
 mod icon;
@@ -13,6 +15,7 @@ mod view;
 mod drag;
 
 pub(crate) use find::*;
+pub(crate) use imgjob::image_main;
 pub(crate) use fsize::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;

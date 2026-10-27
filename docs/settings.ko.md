@@ -32,3 +32,8 @@
 | `one_window` | 창 하나만 쓰기. 줄이 없으면 꺼져 있습니다. 켜면 다시 실행할 때 최소화된 창을 되돌리고, 경로 인자는 그 창의 탭으로 엽니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 새 창 대신 이 창의 탭을 엽니다. |
 | `lang` | `"auto"`, `"en"`, `"ko"`, `"ja"`. 키가 없거나 `"auto"`이면 Windows 표시 언어(한국어, 일본어, 영어)를 따르고, 그 외에는 영어입니다. |
 | `font_face` | 창 전체의 글꼴. 글꼴 크기는 저장하지 않습니다. 예전 `font` 값은 무시됩니다. |
+| `blocked_shell_extensions` | Panegrid가 불러오지 않을 DLL 파일 이름. 예: `"codec.dll"`. 비어 있으면 막지 않으며 키는 빠집니다. Panegrid 안에서만 적용됩니다. 레지스트리에는 쓰지 않고, 탐색기는 그대로이며, `grids.ini`에도 들어가지 않습니다. System32, SysWOW64, WinSxS 아래의 Windows DLL(`shell32.dll`, `explorerframe.dll` 포함)은 막지 않습니다. 목록을 고친 뒤에는 Panegrid를 다시 시작합니다. CLSID 없이 경로로만 불러오는 핸들러는 이 설정으로 막을 수 없고, 그 DLL 이름은 충돌 보고서에 남습니다. |
+
+## 충돌 보고서
+
+Panegrid가 패닉, 접근 위반, 또는 셸 확장 안의 fail-fast로 끝나면, 다음 실행에서 “Panegrid closed unexpectedly last time”(한국어 화면에서는 번역된 문장), 보고서 경로, 폴더 열기가 나옵니다. 보고서는 설정 폴더의 `crashes` 안에 있는 텍스트 파일입니다(`%APPDATA%\Panegrid\crashes`, `portable.txt`가 있으면 exe 옆). grids 폴더에는 쓰지 않습니다. 보고서에는 버전, 스레드, 패닉 또는 예외 코드와 주소, 오류가 난 모듈 이름과 오프셋, 마지막으로 연 폴더, 불러온 타사 모듈, 불러온 셸 확장 DLL이 들어갑니다. 폴더 열기는 그 `crashes` 폴더를 엽니다.

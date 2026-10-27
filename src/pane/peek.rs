@@ -202,7 +202,16 @@ pub(crate) fn peek_worker() {
 }
 
 unsafe fn render_peek(gen: usize, req: &PeekReq) {
-    let body = content(req);
+    let body = match crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe { content(req) })) {
+        Ok(b) => b,
+        Err(_) => Body::Card {
+            icon: None,
+            rows: vec![(
+                tr("Preview", "미리보기", "プレビュー").to_string(),
+                tr("This file could not be previewed", "이 파일을 미리볼 수 없습니다", "このファイルはプレビューできません").to_string(),
+            )],
+        },
+    };
     let (icon, meta) = meta(&req.path, &body);
     let more = match &body {
         Body::Pages { pages, total } if (pages.len() as u32) < *total => Some(*total),
@@ -291,7 +300,7 @@ unsafe fn render_zoom() {
                 continue;
             }
         }
-        let Some(mut pix) = pdf_page(&doc, i, rw, rh) else { break };
+        let Some(mut pix) = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe { pdf_page(&doc, i, rw, rh) })).ok().flatten() else { break };
         (pix.lay_w, pix.lay_h) = lay;
         if !peek_job().put_zoom_page(z.gen, z.seq, i as usize, pix) {
             return;
