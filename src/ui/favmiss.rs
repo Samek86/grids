@@ -321,6 +321,9 @@ unsafe fn paint_btn(dc: HDC, r: RECT, label: &str, font: HFONT, hot: bool, accen
 }
 
 unsafe extern "system" fn miss_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { miss_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn miss_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     bind_hwnd(h);
     match msg {
         WM_PAINT => paint_miss(h),
