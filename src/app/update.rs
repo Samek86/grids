@@ -365,14 +365,10 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
         0 => {
             let Some(rel) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
             let Release::Exe { tag, .. } = &rel else { return };
-            let text = tr(
-                "Panegrid {new} is available. You have {cur}.\n\nUpdate now? Panegrid restarts after the download.",
-                "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\n지금 업데이트할까요? 다운로드가 끝나면 Panegrid가 다시 시작돼요.",
-                "Panegrid {new} が公開されています。現在は {cur} です。\n\n今すぐ更新しますか？ダウンロード後に Panegrid が再起動します。",
-            )
+            let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur)
             .replace("{new}", tag)
             .replace("{cur}", &format!("v{APP_VERSION}"));
-            let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+            let title = tr(crate::Key::PanegridUpdate);
             if MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES {
                 return;
             }
@@ -433,49 +429,33 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
 /// A newer release published only a zip. Tell the user; do not download or extract it.
 unsafe fn zip_only(h: HWND, tag: &str) {
     let url = format!("{HOME}/releases/latest");
-    let text = tr(
-        "Panegrid {new} is available. You have {cur}.\n\nThis release only includes a zip. Panegrid installs the raw panegrid.exe and does not extract zip files.\n\nDownload panegrid.exe from the release page and replace this file yourself:\n{url}",
-        "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\n이 릴리스에는 zip만 있어요. Panegrid는 panegrid.exe만 설치하고 zip은 풀지 않아요.\n\n릴리스 페이지에서 panegrid.exe를 받아 이 파일을 직접 바꾸세요:\n{url}",
-        "Panegrid {new} が公開されています。現在は {cur} です。\n\nこのリリースには zip しかありません。Panegrid は panegrid.exe だけをインストールし、zip は展開しません。\n\nリリースページから panegrid.exe をダウンロードして、このファイルを差し替えてください:\n{url}",
-    )
+    let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur2)
     .replace("{new}", tag)
     .replace("{cur}", &format!("v{APP_VERSION}"))
     .replace("{url}", &url);
-    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    let title = tr(crate::Key::PanegridUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONINFORMATION);
 }
 
 /// The release has no `panegrid.exe.sha256`, or that file could not be downloaded. Nothing was installed.
 unsafe fn sha_missing(h: HWND, tag: &str) {
-    let text = tr(
-        "Panegrid {new} is available. You have {cur}.\n\nThe SHA-256 file (panegrid.exe.sha256) is missing from the release, or it could not be downloaded. Panegrid did not install the update and did not keep a temporary file.",
-        "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\nSHA-256 확인 파일(panegrid.exe.sha256)이 릴리스에 없거나 받지 못했어요. 업데이트를 설치하지 않았고, 임시 파일은 남기지 않았어요.",
-        "Panegrid {new} が公開されています。現在は {cur} です。\n\nSHA-256 の確認ファイル (panegrid.exe.sha256) がリリースにないか、ダウンロードできませんでした。更新はインストールせず、一時ファイルは残していません。",
-    )
+    let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur3)
     .replace("{new}", tag)
     .replace("{cur}", &format!("v{APP_VERSION}"));
-    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    let title = tr(crate::Key::PanegridUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
 /// The downloaded exe does not match `panegrid.exe.sha256`. The temp file is already deleted.
 unsafe fn sha_mismatch(h: HWND) {
-    let text = tr(
-        "The downloaded panegrid.exe does not match panegrid.exe.sha256. Panegrid did not install it, and the temporary file was deleted.",
-        "다운로드한 panegrid.exe의 SHA-256이 릴리스의 panegrid.exe.sha256과 달라요. 설치하지 않았고, 임시 파일은 지웠어요.",
-        "ダウンロードした panegrid.exe の SHA-256 がリリースの panegrid.exe.sha256 と一致しません。インストールせず、一時ファイルは削除しました。",
-    );
-    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    let text = tr(crate::Key::DownloadedPanegridExeDoesNotMatchPanegri);
+    let title = tr(crate::Key::PanegridUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
 unsafe fn failed(h: HWND) {
-    let text = tr(
-        "The update could not be installed. Panegrid was left as it was.",
-        "업데이트를 설치하지 못했어요. Panegrid는 그대로 두었어요.",
-        "更新をインストールできませんでした。Panegrid はそのままです。",
-    );
-    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    let text = tr(crate::Key::UpdateCouldNotBeInstalledPanegridWas);
+    let title = tr(crate::Key::PanegridUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 

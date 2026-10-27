@@ -57,11 +57,11 @@ pub(crate) fn rows_for_query(tree: &[FavNode], q: &str) -> Vec<FavRow> {
 }
 
 pub(crate) fn pins_section_label() -> &'static str {
-    tr("Explorer pins", "탐색기 고정", "エクスプローラーのピン留め")
+    tr(crate::Key::ExplorerPins)
 }
 
 pub(crate) fn files_section_label() -> &'static str {
-    tr("Explorer favourite files", "탐색기 즐겨찾기 파일", "エクスプローラーのお気に入りファイル")
+    tr(crate::Key::ExplorerFavouriteFiles)
 }
 
 /// Rename, delete, and drag apply to Panegrid favourites. Explorer rows are display and navigate.
@@ -251,8 +251,8 @@ pub(crate) unsafe fn paint_fav_head(dc: HDC, r: RECT, dpi: i32, font: HFONT) {
     let dpi = dpi.max(96);
     let s = |v: i32| px(dpi, v);
     let name = RECT { left: r.left + s(40), right: r.left + (r.right - r.left) * 32 / 100, ..r };
-    text(dc, name, tr("Name", "이름", "名前"), font, pal().sub, DT_LEFT);
-    text(dc, RECT { left: r.left + (r.right - r.left) * 32 / 100, ..r }, tr("Path", "경로", "パス"), font, pal().sub, DT_LEFT);
+    text(dc, name, tr(crate::Key::Name), font, pal().sub, DT_LEFT);
+    text(dc, RECT { left: r.left + (r.right - r.left) * 32 / 100, ..r }, tr(crate::Key::Path), font, pal().sub, DT_LEFT);
     fill(dc, RECT { top: r.bottom - 1, ..r }, pal().line);
 }
 
@@ -264,11 +264,7 @@ pub(crate) unsafe fn paint_fav_row(dc: HDC, row: Option<&FavRow>, r: RECT, dpi: 
         text(
             dc,
             r,
-            tr(
-                "No favourites yet · add one with ☆+ in a pane header",
-                "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가",
-                "お気に入りはまだありません · ペインヘッダーの ☆+ で追加",
-            ),
+            tr(crate::Key::NoFavouritesYetAddOneWithIn),
             small,
             pal().sub,
             DT_CENTER,
@@ -306,7 +302,7 @@ pub(crate) unsafe fn paint_fav_row(dc: HDC, row: Option<&FavRow>, r: RECT, dpi: 
     let path = if !row.group {
         row.path.clone()
     } else if row.in_tree() {
-        tr("Group", "그룹", "グループ").to_string()
+        tr(crate::Key::Group).to_string()
     } else {
         String::new()
     };

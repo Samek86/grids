@@ -117,11 +117,7 @@ fn show_panic_dialog(detail: &str) {
     }
     let text = format!(
         "{}\n\n{detail}",
-        crate::tr(
-            "Panegrid hit an error and kept this window open.",
-            "Panegrid에 오류가 났습니다. 이 창은 그대로 열려 있습니다.",
-            "Panegrid でエラーが起きました。このウィンドウは開いたままです。",
-        )
+        crate::tr(crate::Key::PanegridHitErrorAndKeptThisWindow)
     );
     unsafe {
         let _ = MessageBoxW(None, &HSTRING::from(text), w!("Panegrid"), MB_OK | MB_ICONWARNING);
@@ -604,20 +600,12 @@ unsafe fn task_dialog(report: &str) -> Option<bool> {
         TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1, TASKDIALOG_BUTTON, TDCBF_CLOSE_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
     };
     let title = HSTRING::from("Panegrid");
-    let head = HSTRING::from(crate::tr(
-        "Panegrid closed unexpectedly last time",
-        "지난번에 Panegrid가 예기치 않게 종료되었습니다",
-        "前回 Panegrid が予期せず終了しました",
-    ));
+    let head = HSTRING::from(crate::tr(crate::Key::PanegridClosedUnexpectedlyLastTime));
     let body = HSTRING::from(format!(
         "{report}\n\n{}",
-        crate::tr(
-            "The report is in the folder above. Add a DLL file name to blocked_shell_extensions in panegrid.json and restart to skip that extension inside Panegrid. Explorer is not changed.",
-            "보고서는 위 폴더에 있습니다. panegrid.json의 blocked_shell_extensions에 DLL 파일 이름을 넣고 다시 시작하면 Panegrid 안에서만 그 확장을 건너뜁니다. 탐색기는 바뀌지 않습니다.",
-            "レポートは上のフォルダーにあります。panegrid.json の blocked_shell_extensions に DLL のファイル名を入れて再起動すると、Panegrid の中だけでその拡張を読み込みません。エクスプローラーは変わりません。",
-        )
+        crate::tr(crate::Key::ReportIsInFolderAboveAddDll)
     ));
-    let open = HSTRING::from(crate::tr("Open folder", "폴더 열기", "フォルダーを開く"));
+    let open = HSTRING::from(crate::tr(crate::Key::OpenFolder));
     let button = TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(open.as_ptr()) };
     let cfg = TASKDIALOGCONFIG {
         cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
@@ -655,12 +643,8 @@ unsafe fn task_dialog(report: &str) -> Option<bool> {
 fn message_fallback(_folder: &Path, report: &str) -> bool {
     let text = HSTRING::from(format!(
         "{}\n\n{report}\n\n{}",
-        crate::tr(
-            "Panegrid closed unexpectedly last time",
-            "지난번에 Panegrid가 예기치 않게 종료되었습니다",
-            "前回 Panegrid が予期せず終了しました",
-        ),
-        crate::tr("Open folder?", "폴더를 열까요?", "フォルダーを開きますか?"),
+        crate::tr(crate::Key::PanegridClosedUnexpectedlyLastTime),
+        crate::tr(crate::Key::OpenFolder2),
     ));
     unsafe { MessageBoxW(None, &text, w!("Panegrid"), MB_YESNO | MB_ICONWARNING) == IDYES }
 }

@@ -24,9 +24,8 @@ pub(crate) const ID_HIDDEN: usize = 1100;
 pub(crate) const ID_KEYS: usize = 1101;
 pub(crate) const ID_DBLUP: usize = 1103;
 pub(crate) const ID_LANG_AUTO: usize = 1110;
-pub(crate) const ID_LANG_EN: usize = 1111;
-pub(crate) const ID_LANG_KO: usize = 1112;
-pub(crate) const ID_LANG_JA: usize = 1113;
+/// Language files, in [`language_choices`] order. English is the first.
+pub(crate) const ID_LANG_FIRST: usize = 1800;
 pub(crate) const ID_SETTINGS: usize = 1114;
 pub(crate) const ID_PANEL: usize = 1116; // left panel (folder tree and favourites)
 pub(crate) const ID_EXT: usize = 1117; // show file extensions (Windows setting)

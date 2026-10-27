@@ -476,11 +476,7 @@ fn store_flag_sets() -> &'static [u32] {
 }
 
 fn remove_failed_text() -> String {
-    crate::tr(
-        "Could not remove this file from Explorer favourites",
-        "탐색기 즐겨찾기에서 이 파일을 빼지 못했어요",
-        "エクスプローラーのお気に入りからこのファイルを削除できませんでした",
-    )
+    crate::tr(crate::Key::CouldNotRemoveThisFileFromExplorer)
     .to_string()
 }
 

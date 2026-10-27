@@ -204,10 +204,10 @@ pub(crate) enum Tick {
 
 pub(crate) fn target_label(bit: u8) -> &'static str {
     match bit {
-        FILE => tr("File", "파일", "ファイル"),
-        FOLDER => tr("Folder", "폴더", "フォルダー"),
-        BACKGROUND => tr("Empty space", "빈 곳", "空白"),
-        DRIVE => tr("Drive", "드라이브", "ドライブ"),
+        FILE => tr(crate::Key::File),
+        FOLDER => tr(crate::Key::Folder3),
+        BACKGROUND => tr(crate::Key::EmptySpace),
+        DRIVE => tr(crate::Key::Drive),
         _ => "",
     }
 }
@@ -1930,25 +1930,25 @@ fn known_product(s: &str) -> Option<String> {
         || has_word(&tokens.all, "cscript")
         || (has_word(&tokens.plain, "windows") && has_word(&tokens.plain, "script") && has_word(&tokens.plain, "host"));
     if script_host {
-        return Some(tr("Windows Script Host", "Windows 스크립트 호스트", "Windows スクリプト ホスト").to_string());
+        return Some(tr(crate::Key::WindowsScriptHost).to_string());
     }
     let n = norm_component(s);
-    const VENDORS: &[(&[&str], &str, &str, &str)] = &[
-        (&["bdzshell", "aabdzctx", "bandizip"], "Bandizip", "반디집", "Bandizip"),
-        (&["lhshellext", "lockhunter"], "LockHunter", "LockHunter", "LockHunter"),
-        (&["synofoldercontextmenu", "synologydrive"], "Synology Drive", "Synology Drive", "Synology Drive"),
-        (&["hvshell", "hvcontext", "honeyview"], "Honeyview", "허니뷰", "Honeyview"),
-        (&["tortoisesvn"], "TortoiseSVN", "TortoiseSVN", "TortoiseSVN"),
-        (&["tortoisegit"], "TortoiseGit", "TortoiseGit", "TortoiseGit"),
-        (&["7zip", "sevenzip"], "7-Zip", "7-Zip", "7-Zip"),
-        (&["winrar"], "WinRAR", "WinRAR", "WinRAR"),
-        (&["winmerge"], "WinMerge", "WinMerge", "WinMerge"),
+    const VENDORS: &[(&[&str], crate::Key)] = &[
+        (&["bdzshell", "aabdzctx", "bandizip"], crate::Key::VendorBandizip),
+        (&["lhshellext", "lockhunter"], crate::Key::VendorLockhunter),
+        (&["synofoldercontextmenu", "synologydrive"], crate::Key::VendorSynology),
+        (&["hvshell", "hvcontext", "honeyview"], crate::Key::VendorHoneyview),
+        (&["tortoisesvn"], crate::Key::VendorTsvn),
+        (&["tortoisegit"], crate::Key::VendorTgit),
+        (&["7zip", "sevenzip"], crate::Key::Vendor7zip),
+        (&["winrar"], crate::Key::VendorWinrar),
+        (&["winmerge"], crate::Key::VendorWinmerge),
     ];
-    for (keys, en, ko, ja) in VENDORS {
+    for (keys, label) in VENDORS {
         let word = tokens.all.iter().any(|w| keys.iter().any(|k| w == *k));
         let compact = n.len() >= 4 && keys.iter().any(|k| n == *k || (n.starts_with(k) && n.len() - k.len() <= 3));
         if word || compact {
-            return Some(tr(en, ko, ja).to_string());
+            return Some(tr(*label).to_string());
         }
     }
     None

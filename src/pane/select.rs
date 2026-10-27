@@ -38,9 +38,9 @@ pub(crate) fn match_geo(label_w: i32, fh: i32, dpi: i32) -> MatchGeo {
 
 pub(crate) fn match_label(desel: bool) -> &'static str {
     if desel {
-        tr("Deselect", "선택 해제", "選択解除")
+        tr(crate::Key::Deselect)
     } else {
-        tr("Select", "선택", "選択")
+        tr(crate::Key::Select)
     }
 }
 
@@ -114,7 +114,7 @@ pub(crate) unsafe fn set_note(note: String) {
 pub(crate) unsafe fn bulk_select(fv: &IFolderView2, mut each: impl FnMut(i32) -> bool) -> Option<usize> {
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0).max(0);
     if n as u32 > SEND_MAX {
-        set_note(tr("Too many items to match (over 10,000)", "항목이 너무 많아 선택하지 않음 (1만 개 초과)", "項目が多すぎて選べません（1万件超）").into());
+        set_note(tr(crate::Key::TooManyItemsMatchOver10000).into());
         return None;
     }
     _ = fv.SetRedraw(false);
@@ -164,22 +164,16 @@ pub(crate) unsafe fn run_match(flip: bool) {
     let Some(n) = n else { return };
     if n == 0 {
         _ = MessageBeep(MB_ICONWARNING);
-        set_note(match ui() {
-            1 => format!("맞는 파일 없음: {text}"),
-            2 => format!("一致なし: {text}"),
-            _ => format!("No match: {text}"),
-        });
+        set_note(tf(Key::NoMatch, &[("text", &text)]));
         return;
     }
     _ = DestroyWindow(h);
     focus_view(i);
-    set_note(match (ui(), desel) {
-        (1, false) => format!("{text} {n}개 선택"),
-        (1, true) => format!("{text} {n}개 선택 해제"),
-        (2, false) => format!("{n} 件選択 · {text}"),
-        (2, true) => format!("{n} 件解除 · {text}"),
-        (_, true) => format!("Deselected {n} · {text}"),
-        _ => format!("Selected {n} · {text}"),
+    let n = n.to_string();
+    set_note(if desel {
+        tf(Key::DeselectedN, &[("n", &n), ("text", &text)])
+    } else {
+        tf(Key::SelectedN, &[("n", &n), ("text", &text)])
     });
 }
 
@@ -194,11 +188,7 @@ pub(crate) unsafe fn invert_selection(i: usize) {
         fv.SelectItem(k, flag.0 as u32).is_ok()
     });
     if let Some(n) = n {
-        set_note(match ui() {
-            1 => format!("선택 반전 ({n}개)"),
-            2 => format!("選択を反転（{n} 件）"),
-            _ => format!("Selection inverted ({n})"),
-        });
+        set_note(tf(Key::InvertN, &[("n", &n.to_string())]));
     }
 }
 

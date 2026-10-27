@@ -55,14 +55,14 @@ pub(crate) fn size_text(file_bytes: u64, has_dirs: bool, dirs: Option<(u64, bool
     let (bytes, partial) = (file_bytes + b, partial || collect_partial);
     if !done {
         return match bytes {
-            0 => tr(" (calculating…)", " (계산 중…)", " (計算中…)").into(),
+            0 => tr(crate::Key::Calculating2).into(),
             b => format!(" ({}…)", human(b)),
         };
     }
     match (bytes, partial) {
         (0, false) if !has_dirs => String::new(),
-        (0, true) if !has_dirs => tr(" (size unknown)", " (크기 모름)", " (サイズ不明)").into(),
-        (b, true) => format!(" ({}, {})", human(b), tr("partial", "일부만", "一部のみ")),
+        (0, true) if !has_dirs => tr(crate::Key::SizeUnknown).into(),
+        (b, true) => format!(" ({}, {})", human(b), tr(crate::Key::Partial)),
         (b, false) => format!(" ({})", human(b)),
     }
 }
@@ -319,11 +319,7 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
     if text_of(main) != title {
         _ = SetWindowTextW(main, &HSTRING::from(title));
     }
-    let mut parts = vec![match ui() {
-        1 => format!("항목 {n}개"),
-        2 => format!("項目 {n} 個"),
-        _ => format!("{n} items"),
-    }];
+    let mut parts = vec![tf(Key::ItemsN, &[("n", &n.to_string())])];
     let mut size = None;
     let mut dirs = Vec::new();
     let mut folders = Vec::new();
@@ -346,11 +342,7 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
                 dirs = s.dirs;
             }
         }
-        parts.push(match ui() {
-            1 => format!("{sel}개 선택"),
-            2 => format!("{sel} 個を選択"),
-            _ => format!("{sel} selected"),
-        });
+        parts.push(tf(Key::SelectedCount, &[("sel", &sel.to_string())]));
     }
     if show {
         if !size_job().target.is_empty() {
@@ -362,28 +354,24 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
     let head = parts.join("     ·     ");
     let mut parts = vec![String::new()];
     if !spec.is_empty() {
-        parts.push(format!("{} {spec}", tr("Filter", "필터", "フィルター")));
+        parts.push(format!("{} {spec}", tr(crate::Key::Filter)));
     }
     let drive = path.get(1..2) == Some(":");
     // A UNC or mapped drive is not asked for free space here. GetDiskFreeSpaceExW waits out a dead
     // share, including a pane restored from the session before its off-thread navigate finishes.
     let share = unsafe { super::share_path(path) };
     if busy {
-        parts.push(tr("Copying / moving…", "복사·이동 중…", "コピー / 移動中…").into());
+        parts.push(tr(crate::Key::CopyingMoving).into());
     } else if !share && (drive || path.starts_with(r"\\")) {
         let (mut free, mut total) = (0, 0);
         if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
-            let label = if drive { path.get(..2).unwrap_or("") } else { tr("Network", "네트워크", "ネットワーク") };
-            parts.push(format!("{label} {} {} / {}", tr("free", "여유", "空き"), human(free), human(total)));
+            let label = if drive { path.get(..2).unwrap_or("") } else { tr(crate::Key::Network) };
+            parts.push(format!("{label} {} {} / {}", tr(crate::Key::Free), human(free), human(total)));
         }
     }
     if let Some(z) = zoom {
         let z = z + 1;
-        parts.push(match ui() {
-            1 => format!("패널 {z} 크게 보는 중 · Ctrl+Shift+M 또는 머리줄 더블클릭으로 복원"),
-            2 => format!("ペイン {z} を最大化中 · Ctrl+Shift+M またはヘッダーのダブルクリックで戻す"),
-            _ => format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore"),
-        });
+        parts.push(tf(Key::PaneMaximized, &[("z", &z.to_string())]));
     }
     app(|a| {
         a.status_folders = folders;

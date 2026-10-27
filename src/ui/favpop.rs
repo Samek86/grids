@@ -343,11 +343,11 @@ fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
 }
 
 unsafe fn retitle(h: HWND) {
-    let _ = SetWindowTextW(h, &HSTRING::from(tr("Favourites", "즐겨찾기", "お気に入り")));
-    let _ = SetWindowTextW(ctl(h, ID_GROUP), &HSTRING::from(tr("New group", "새 그룹", "新しいグループ")));
-    let _ = SetWindowTextW(ctl(h, ID_FOLDER), &HSTRING::from(tr("Add folder", "폴더 추가", "フォルダーを追加")));
-    let rename = tr("Rename", "이름 변경", "名前の変更");
-    let delete = tr("Delete", "삭제", "削除");
+    let _ = SetWindowTextW(h, &HSTRING::from(tr(crate::Key::Favourites)));
+    let _ = SetWindowTextW(ctl(h, ID_GROUP), &HSTRING::from(tr(crate::Key::NewGroup)));
+    let _ = SetWindowTextW(ctl(h, ID_FOLDER), &HSTRING::from(tr(crate::Key::AddFolder)));
+    let rename = tr(crate::Key::Rename2);
+    let delete = tr(crate::Key::Delete);
     for i in 0..BTN_MAX {
         let r = ctl(h, ID_REN + i);
         let d = ctl(h, ID_DEL + i);
@@ -361,7 +361,7 @@ unsafe fn retitle(h: HWND) {
             let _ = SetWindowTextW(d, &HSTRING::from(delete));
         }
     }
-    cue(ctl(h, ID_SEARCH), tr("Search favourites", "즐겨찾기 검색", "お気に入りを検索"));
+    cue(ctl(h, ID_SEARCH), tr(crate::Key::SearchFavourites));
 }
 
 unsafe fn cue(edit: HWND, text: &str) {
@@ -402,13 +402,9 @@ fn show_fav_hint(rows: &[FavRow], query: &str) -> bool {
 
 fn empty_msg(query: &str) -> &'static str {
     if query.trim().is_empty() {
-        tr(
-            "No favourites yet · add one with ☆+ in a pane header",
-            "즐겨찾기가 없습니다 · 패널 머리줄의 ☆+로 추가",
-            "お気に入りはまだありません · ペインヘッダーの ☆+ で追加",
-        )
+        tr(crate::Key::NoFavouritesYetAddOneWithIn)
     } else {
-        tr("No matches", "결과 없음", "一致なし")
+        tr(crate::Key::NoMatches)
     }
 }
 
@@ -615,7 +611,7 @@ unsafe fn delete_id(id: &[usize]) {
 }
 
 unsafe fn rename_id(owner: HWND, row: &FavRow) {
-    let Some(name) = settings::ask(owner, tr("Rename", "이름 변경", "名前の変更"), &row.name) else { return };
+    let Some(name) = settings::ask(owner, tr(crate::Key::Rename2), &row.name) else { return };
     let name = name.trim().to_string();
     if name.is_empty() {
         return;
@@ -632,7 +628,7 @@ unsafe fn rename_id(owner: HWND, row: &FavRow) {
 unsafe fn on_add_group(owner: HWND) {
     bind_owner();
     let parent = group_parent(&shown());
-    let name = tr("Group", "그룹", "グループ").to_string();
+    let name = tr(crate::Key::Group).to_string();
     let id = app(|a| {
         a.s.ensure_fav_tree();
         if !parent.is_empty() {
@@ -660,7 +656,7 @@ unsafe fn on_add_group(owner: HWND) {
     }
     layout(owner);
     let _ = InvalidateRect(Some(owner), None, false);
-    if let Some(typed) = settings::ask(owner, tr("Group name", "그룹 이름", "グループ名"), &name) {
+    if let Some(typed) = settings::ask(owner, tr(crate::Key::GroupName), &name) {
         let typed = typed.trim().to_string();
         if !typed.is_empty() && typed != name {
             app(|a| {
@@ -770,11 +766,11 @@ unsafe fn place(h: HWND, rc: RECT) {
     let board = board_at(n, &lay, scroll, dpi);
     let font = ST.with(|s| s.borrow().font);
     place_edit(ctl(h, ID_SEARCH), lay.edit, true);
-    cue(ctl(h, ID_SEARCH), tr("Search favourites", "즐겨찾기 검색", "お気に入りを検索"));
+    cue(ctl(h, ID_SEARCH), tr(crate::Key::SearchFavourites));
     move_to(ctl(h, ID_GROUP), lay.group, true);
     move_to(ctl(h, ID_FOLDER), lay.folder, true);
-    let rename = tr("Rename", "이름 변경", "名前の変更");
-    let delete = tr("Delete", "삭제", "削除");
+    let rename = tr(crate::Key::Rename2);
+    let delete = tr(crate::Key::Delete);
     let edit = fav_editable_indices(&rows);
     let mut placed = 0i32;
     for (n, &row_i) in edit.iter().enumerate() {
@@ -1078,8 +1074,8 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let font = ST.with(|s| s.borrow().font);
                 let edit = crate::child(h, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32 | 0x00010000, WINDOW_EX_STYLE(0), ID_SEARCH, font);
                 theme_ctl(edit);
-                let _ = make_btn(h, ID_GROUP, tr("New group", "새 그룹", "新しいグループ"), font);
-                let _ = make_btn(h, ID_FOLDER, tr("Add folder", "폴더 추가", "フォルダーを追加"), font);
+                let _ = make_btn(h, ID_GROUP, tr(crate::Key::NewGroup), font);
+                let _ = make_btn(h, ID_FOLDER, tr(crate::Key::AddFolder), font);
                 theme_ctl(ctl(h, ID_GROUP));
                 theme_ctl(ctl(h, ID_FOLDER));
                 note_side(h);

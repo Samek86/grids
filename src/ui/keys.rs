@@ -147,7 +147,7 @@ pub(crate) unsafe fn open_keys() {
     let y = ((rc.top + rc.bottom - h) / 2).clamp(work.top, (work.bottom - h).max(work.top));
     let prev = GetFocus();
     app(|a| (a.keys_prev, a.keys_scroll) = (prev, 0));
-    let title = HSTRING::from(tr("Keyboard shortcuts", "단축키", "ショートカット キー"));
+    let title = HSTRING::from(tr(crate::Key::KeyboardShortcuts2));
     let Ok(p) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridKeys"), &title, WS_POPUP | WS_VISIBLE, x, y, w, h, Some(main), None, None, None) else {
         return;
     };
@@ -204,7 +204,7 @@ pub(crate) unsafe fn paint_keys(h: HWND) {
     let down = |r: RECT| RECT { top: r.top + head - scroll, bottom: r.bottom + head - scroll, ..r };
     buffered(h, |dc, rc| {
         fill(dc, rc, pal().card);
-        let names = [tr("Keyboard", "키보드", "キーボード"), tr("Mouse and buttons", "마우스·버튼", "マウスとボタン")];
+        let names = [tr(crate::Key::Keyboard), tr(crate::Key::MouseAndButtons)];
         for (t, r) in names.iter().zip(g.titles) {
             text(dc, down(r), t, small, pal().sub, DT_LEFT);
         }
@@ -228,7 +228,7 @@ pub(crate) unsafe fn paint_keys(h: HWND) {
         let bar = RECT { bottom: head, ..rc };
         fill(dc, bar, pal().card);
         fill(dc, RECT { top: head - 1, ..bar }, pal().line);
-        text(dc, RECT { left: s(KEYS_PAD), ..bar }, tr("Keyboard shortcuts", "단축키", "ショートカット キー"), font, pal().text, DT_LEFT);
+        text(dc, RECT { left: s(KEYS_PAD), ..bar }, tr(crate::Key::KeyboardShortcuts2), font, pal().text, DT_LEFT);
         text(dc, keys_close(rc.right, dpi), "\u{E711}", icon_font, pal().sub, DT_CENTER);
         let page = rc.bottom - head;
         if g.h > page && g.h > 0 {

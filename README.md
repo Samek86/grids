@@ -148,12 +148,20 @@ Defaults; every one can be changed in Settings → Shortcuts.
 
 The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
 
-Language (Auto, English, 한국어, 日本語), font, light / dark theme, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `panegrid.json` key table are in [docs/settings.md](docs/settings.md).
+Language (Auto, English, and every language file), font, light / dark theme, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `panegrid.json` key table are in [docs/settings.md](docs/settings.md).
+
+## Language files
+
+English is compiled into the program and is the fallback. Korean, Japanese, French, and German ship as `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, and `lang/lang.de.ini`. On first run, and again whenever the version changes, Panegrid writes those four files into the `lang` folder next to the settings file (`%APPDATA%\Panegrid\lang`, or beside `panegrid.exe` when `portable.txt` is there). It always overwrites those four. It never writes, overwrites, or deletes a `lang.xx.user.ini`, or any other `lang.xx.ini` you add.
+
+A file is UTF-8 (a leading BOM is ignored). Lines are `key = text`. One space after `=` is the separator. `\\` is a backslash and `\n` is a newline. A line that starts with `#` or `;` is a comment. `[meta]` `name` is the label in the language list. `[meta]` `font` is an optional UI font (Korean and Japanese default to Malgun Gothic and Yu Gothic UI; other languages use Segoe UI). A missing key uses the English text.
+
+`lang.xx.user.ini` (for example `lang.ko.user.ini`) is loaded on top of `lang.xx.ini` and wins. Add `lang.es.ini` and Spanish appears in the list. Auto matches the Windows display language when a file for that ISO code is present, and otherwise uses English. Saved values `en`, `ko`, and `ja` still work.
 
 ## Roadmap
 
 - [ ] Code-signed builds, so SmartScreen does not warn the first time you run `panegrid.exe`
-- [ ] Interface languages beyond English, 한국어, and 日本語
+- [x] Interface languages beyond English, 한국어, and 日本語
 
 ## Credits
 
