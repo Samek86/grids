@@ -432,7 +432,7 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
                     focus_view(i);
                 }
             }
-            6 => unpin_path(&row.path),
+            6 => unpin_path(&row.path, row.kind == RowKind::Files),
             _ => {}
         }
         return;
@@ -452,7 +452,7 @@ unsafe fn side_menu(h: HWND, index: Option<usize>, x: i32, y: i32) {
             changed();
         }
         4 => open_fav_target(&row.path, row.file),
-        6 => unpin_path(&row.path),
+        6 => unpin_path(&row.path, row.kind == RowKind::Files),
         5 => {
             if let Some(parent) = parent_of(&row.path) {
                 let i = active_pane();
@@ -547,13 +547,14 @@ fn pin_home(path: &str, name: &str, file: bool) {
     refresh_pins_soon();
 }
 
-fn unpin_path(path: &str) {
+fn unpin_path(path: &str, file: bool) {
     forget_pinned(path);
     repaint_side();
-    if shell_home_verb(path, false) {
-        refresh_pins_soon();
-    } else {
-        refresh_pins_soon();
+    // Folders leave through the Quick Access child. Favourite files do not: that verb
+    // leaves them in Home's Favourites, and the 3s hide is the only thing that hid the row.
+    let removed = if file { shell_unfavorite_file(path) } else { shell_home_verb(path, false) };
+    refresh_pins_soon();
+    if !removed {
         unsafe { _ = MessageBeep(MB_ICONWARNING) };
     }
 }
