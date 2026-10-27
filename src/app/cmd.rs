@@ -114,6 +114,54 @@ pub(crate) fn space_opens(typed_ago: Option<Duration>, composing: bool, enabled:
     enabled && !composing && space_peeks(typed_ago)
 }
 
+/// What a plain F5 does. A failed network folder is retried before any binding.
+/// A hold is eaten so the refresh or the retry does not run again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum F5Act {
+    /// The pane is showing a network-folder error: try that path again.
+    Retry,
+    /// Reload the active pane.
+    Refresh,
+    /// Handled, but a key repeat: do nothing.
+    Eat,
+    /// Not this key, or a binding owns the chord.
+    Pass,
+}
+
+/// `plain` is F5 with no Ctrl, Alt, or Shift. `repeat` is the key-down repeat bit.
+/// `failed` is the active pane's network-folder error. `bound` means the keymap owns this chord.
+/// The error wins over a binding. Otherwise an unbound F5 reloads the pane, once per press.
+pub(crate) fn f5_act(plain: bool, repeat: bool, failed: bool, bound: bool) -> F5Act {
+    if !plain {
+        return F5Act::Pass;
+    }
+    if failed {
+        return if repeat { F5Act::Eat } else { F5Act::Retry };
+    }
+    if bound {
+        return F5Act::Pass;
+    }
+    if repeat {
+        F5Act::Eat
+    } else {
+        F5Act::Refresh
+    }
+}
+
+/// F5: reload the active pane and sum selected folders again. Missing icons are rechecked.
+unsafe fn refresh_pane(a: usize) {
+    resum_sizes();
+    crate::ui::forget_missing();
+    if let Some(side) = app(|x| (!x.side_hwnd.is_invalid()).then_some(x.side_hwnd)) {
+        _ = InvalidateRect(Some(side), None, false);
+    }
+    // The view leaves F5 to its frame, as Explorer's does, so this works when the list
+    // does not have focus (address bar, filter, folder tree, favourites).
+    if let Some(sv) = view_of::<IShellView>(a) {
+        _ = sv.Refresh();
+    }
+}
+
 /// Korean and Japanese IMEs keep a composition string while a syllable or a reading is open.
 /// Space then belongs to the IME (commit or convert), not to the preview.
 fn ime_composing(hwnd: HWND) -> bool {
@@ -259,8 +307,11 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     });
     // A failed share keeps its path. F5 retries that path; the shell's refresh would reload the
     // previous folder and leave the failure behind. The error view's Retry button does the same.
-    if VIRTUAL_KEY(vk) == VK_F5 && !ctrl && !alt && !shift && net_failed(a) {
-        if m.lParam.0 & (1 << 30) == 0 {
+    // A hold does not retry again. This runs before key bindings, so a rebound F5 still retries.
+    let repeat = m.lParam.0 & (1 << 30) != 0;
+    let plain_f5 = VIRTUAL_KEY(vk) == VK_F5 && !ctrl && !alt && !shift;
+    if net_failed(a) && plain_f5 {
+        if f5_act(true, repeat, true, false) == F5Act::Retry {
             retry_failed(a);
         }
         return true;
@@ -287,6 +338,18 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         if matches!(id, "focus.next" | "focus.prev" | "app.keys") {
             return dispatch(id, vk, a, list, shell);
         }
+    }
+    // Plain F5 reloads the active pane from anywhere in the window: file list, address bar,
+    // filter, folder tree, favourites. A hold does not refresh again. A rebound F5 keeps that
+    // command. A failed share was retried above.
+    let bound = crate::keys::lookup(vk, ctrl, shift, alt, win).is_some();
+    match f5_act(plain_f5, repeat, false, bound) {
+        F5Act::Refresh => {
+            refresh_pane(a);
+            return true;
+        }
+        F5Act::Eat => return true,
+        _ => {}
     }
     // Address, filter, and tab rename keep every key except Enter and Esc.
     // A rebound letter must not land in the middle of a name.
@@ -351,8 +414,8 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return dispatch(id, vk, a, list, shell);
     }
-    // Not an app shortcut. F5, Del, and Ctrl+V still belong to the file list
-    // unless the user has bound that chord above.
+    // Not an app shortcut. Del and Ctrl+V still belong to the file list
+    // unless the user has bound that chord above. F5 was handled above.
     // Read the typing clock before a composing Space refreshes it.
     let ch = VIRTUAL_KEY(vk);
     let typed_ago = last_typed_ago();
@@ -361,14 +424,6 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         note_typed();
     }
     match ch {
-        VK_F5 if list => {
-            resum_sizes();
-            crate::ui::forget_missing();
-            if let Some(side) = app(|a| (!a.side_hwnd.is_invalid()).then_some(a.side_hwnd)) {
-                _ = InvalidateRect(Some(side), None, false);
-            }
-            shell()
-        }
         VK_DELETE if !ctrl && !alt && list => {
             delete_selection(a, shift);
             true
@@ -435,6 +490,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "tab.next" => switch_rel(1),
         "tab.prev" => switch_rel(-1),
         "tab.reopen" => reopen_closed_at(0),
+        "tab.dup" => duplicate_tab(app(|x| x.s.tab)),
         "pane.next" => cycle(1),
         "pane.prev" => cycle(-1),
         "pane.goto" => {
@@ -718,6 +774,24 @@ mod tests {
         assert!(!space_opens(Some(Duration::from_millis(300)), false, true));
         assert!(!space_opens(None, true, true)); // IME composition: the space stays in the name
         assert!(!space_opens(None, false, false)); // space_preview off
+    }
+
+    #[test]
+    fn f5_retries_a_failed_share_and_refreshes_once_everywhere_else() {
+        use super::{f5_act, F5Act};
+        // The error view: first press retries that path, a hold does not, and a binding cannot steal it.
+        assert_eq!(f5_act(true, false, true, false), F5Act::Retry);
+        assert_eq!(f5_act(true, false, true, true), F5Act::Retry);
+        assert_eq!(f5_act(true, true, true, false), F5Act::Eat);
+        assert_eq!(f5_act(true, true, true, true), F5Act::Eat);
+        // Anywhere else, with the list or not: one refresh. A hold is eaten.
+        assert_eq!(f5_act(true, false, false, false), F5Act::Refresh);
+        assert_eq!(f5_act(true, true, false, false), F5Act::Eat);
+        // Ctrl/Alt/Shift, and a rebound F5, stay with their own command (including its repeats).
+        assert_eq!(f5_act(false, false, true, false), F5Act::Pass);
+        assert_eq!(f5_act(false, false, false, false), F5Act::Pass);
+        assert_eq!(f5_act(true, false, false, true), F5Act::Pass);
+        assert_eq!(f5_act(true, true, false, true), F5Act::Pass);
     }
 }
 
