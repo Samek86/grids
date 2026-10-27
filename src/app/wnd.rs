@@ -695,7 +695,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 (ID_UP, _) => nav(SBSP_PARENT),
                 (ID_OPEN_IN, _) => {
                     if let Some(i) = pane_of(h) {
-                        open_in_menu(h, i);
+                        open_in_click(h, i);
                     }
                 }
                 (ID_PANE_ADD, _) => {
