@@ -249,7 +249,7 @@ unsafe fn relocate_row(owner: HWND, row: &FavRow) {
                 let ok = if !row.id.is_empty() && retarget_leaf(&mut a.s.tree, &row.id, &path) {
                     true
                 } else {
-                    retarget_path(&mut a.s.tree, &row.path, &path)
+                    retarget_fav_path(&mut a.s.tree, &row.path, &path)
                 };
                 if ok {
                     a.s.sync_favs();
