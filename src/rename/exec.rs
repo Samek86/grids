@@ -56,6 +56,52 @@ pub(crate) fn last_undo() -> Option<Vec<(String, String, String)>> {
     HISTORY.lock().ok().and_then(|g| g.last().map(pairs_of))
 }
 
+/// Split an undo batch into names still on disk and the count that are gone.
+/// `pairs` are `(dir, now, was)`. `exists` is asked for `(dir, now)` — the name the rename left behind.
+pub(crate) fn partition_undo(
+    pairs: &[(String, String, String)],
+    exists: impl Fn(&str, &str) -> bool,
+) -> (Vec<(String, String, String)>, usize) {
+    let mut keep = Vec::new();
+    let mut skipped = 0usize;
+    for triple in pairs {
+        if exists(&triple.0, &triple.1) {
+            keep.push(triple.clone());
+        } else {
+            skipped += 1;
+        }
+    }
+    (keep, skipped)
+}
+
+/// `Ok` is still there. `NotFound` was deleted or renamed again. Any other error (a share
+/// that did not answer, access denied) stays in the batch so the undo can report it.
+pub(crate) fn still_there(meta: std::io::Result<()>) -> bool {
+    match meta {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+pub(crate) fn file_still_there(dir: &str, name: &str) -> bool {
+    if name.is_empty() || name.contains(['\\', '/', ':']) {
+        return false;
+    }
+    // Undo folders are Windows paths (`C:\pics\a.txt`). A host that is not Windows
+    // (the unit tests) stores a native directory, so try that join when the
+    // backslash form is simply not a path.
+    let joined = super::engine::join_path(dir, name);
+    let meta = std::fs::metadata(&joined).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            std::fs::metadata(std::path::Path::new(dir).join(name))
+        } else {
+            Err(e)
+        }
+    });
+    still_there(meta.map(|_| ()))
+}
+
 pub(crate) fn push_undo(pairs: Vec<(String, String, String)>) {
     if pairs.is_empty() {
         return;
@@ -258,6 +304,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
         push_batch(&mut hist, Batch { entries: Vec::new() });
         assert_eq!(hist.len(), 20);
+    }
+
+    #[test]
+    fn undo_keeps_names_that_are_still_there() {
+        let pairs = vec![
+            (r"C:\pics".into(), "new-a".into(), "old-a".into()),
+            (r"C:\pics".into(), "new-b".into(), "old-b".into()),
+            (r"D:\docs".into(), "new-c".into(), "old-c".into()),
+        ];
+        let (keep, skipped) = partition_undo(&pairs, |dir, name| !(dir.starts_with('D') || name == "new-b"));
+        assert_eq!(skipped, 2);
+        assert_eq!(keep, vec![(r"C:\pics".into(), "new-a".into(), "old-a".into())]);
+        let (all, none) = partition_undo(&pairs, |_, _| true);
+        assert!(none == 0 && all.len() == 3);
+        let (gone, n) = partition_undo(&pairs, |_, _| false);
+        assert!(gone.is_empty() && n == 3);
+    }
+
+    #[test]
+    fn missing_file_is_skipped_and_other_errors_are_kept() {
+        assert!(!still_there(Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))));
+        assert!(still_there(Ok(())));
+        assert!(still_there(Err(std::io::Error::other("denied"))));
+        let dir = std::env::temp_dir().join(format!("panegrid-undo-exists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let folder = dir.to_string_lossy().into_owned();
+        assert!(!file_still_there(&folder, "gone.txt"));
+        assert!(!file_still_there(&folder, ""));
+        std::fs::write(dir.join("kept.txt"), b"x").unwrap();
+        assert!(file_still_there(&folder, "kept.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
