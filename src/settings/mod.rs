@@ -193,7 +193,7 @@ struct Spec {
 const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language (Korean, Japanese, or English); otherwise English. A change applies right away.", "기본값은 Windows 표시 언어(한국어, 일본어, 영어)를 따라요. 그 외에는 영어예요. 바꾸면 바로 적용돼요.", "既定は Windows の表示言語（韓国語、日本語、英語）に従います。それ以外は英語です。変えるとすぐに適用されます。"), live: true, ctl: Ctl::Lang },
     Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), live: true, ctl: Ctl::Face },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), live: true, ctl: Ctl::Start },
+    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every open tab and the window, or open one saved tab.", "열려 있던 모든 탭과 창을 복원하거나, 저장한 탭 하나를 열어요.", "開いていたすべてのタブとウィンドウを復元するか、保存したタブを一つ開きます。"), live: true, ctl: Ctl::Start },
     Spec { title: s("Use as default folder app", "기본 폴더 앱으로 사용", "既定のフォルダーアプリとして使用"), desc: s("Win+E and special folders stay with Explorer.", "Win+E와 특수 폴더는 탐색기 그대로예요.", "Win+E と特殊フォルダーはエクスプローラーのままです。"), live: true, ctl: Ctl::Toggle(TG_FOLDER) },
     Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
@@ -242,7 +242,7 @@ const FILE: &[Spec] = &[
 ];
 const SESS: &[Spec] = &[
     Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("%APPDATA%\\Panegrid\\panegrid-sessions.", "%APPDATA%\\Panegrid\\panegrid-sessions 폴더예요.", "%APPDATA%\\Panegrid\\panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
-    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
+    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes each tab that already has its own session file.", "세션 파일이 연결된 탭마다 그 파일에 저장해요.", "セッション ファイルがあるタブを、それぞれのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
