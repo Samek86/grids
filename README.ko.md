@@ -23,8 +23,6 @@
   <a href="README.md">English</a> | 한국어
 </p>
 
-<p align="center">▶ <a href="docs/panegrid-demo.mp4">데모 영상 보기</a> (38초, 소리 없음, 실제 앱으로 녹화)</p>
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.ko.png">
@@ -35,10 +33,6 @@
 각 패널은 진짜 Windows 탐색기 화면입니다. 탐색기 우클릭 메뉴 전체, 끌어다 놓기, 썸네일, Windows 표준 복사·이동 창이 그대로 동작합니다. 한 창에 패널을 최대 16개 배치하고, 지금 탭을 세션으로 저장하세요.
 
 ## 기능
-
-[![Panegrid 동작 모습](docs/panegrid-demo.gif)](docs/panegrid-demo.mp4)
-
-⇄로 패널 하나 나누기, 마우스를 올리면 전체 경로가 보이는 즐겨찾기, 레이아웃 프리셋, 빠른 미리보기(F3), 패널 검색, 탭, 어두운 테마와 설정. 애니메이션을 누르면 고화질 영상이 열립니다.
 
 ### 🧩 다중 패널 레이아웃과 세션
 
