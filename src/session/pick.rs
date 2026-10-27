@@ -16,11 +16,12 @@ const ID_CANCEL: i32 = 2;
 const ID_SAVE: i32 = 3;
 const ID_RENAME: i32 = 4;
 const ID_DELETE: i32 = 5;
+const ID_SEVERAL: i32 = 6;
 const ID_SEARCH: i32 = 10;
 const EM_SETCUEBANNER: u32 = 0x1501;
 
 thread_local! {
-    static OUT: RefCell<Option<Option<PathBuf>>> = const { RefCell::new(None) };
+    static OUT: RefCell<Option<Option<Vec<PathBuf>>>> = const { RefCell::new(None) };
     static SAVE_ASKED: Cell<bool> = const { Cell::new(false) };
     static UI: RefCell<PickUi> = const { RefCell::new(PickUi::empty()) };
 }
@@ -98,6 +99,7 @@ pub(crate) struct ButtonWidths {
     pub delete: i32,
     pub cancel: i32,
     pub save: i32,
+    pub several: i32,
 }
 
 pub(crate) struct PickLayout {
@@ -109,6 +111,7 @@ pub(crate) struct PickLayout {
     pub delete: BoxPx,
     pub cancel: BoxPx,
     pub save: Option<BoxPx>,
+    pub several: Option<BoxPx>,
     pub row_h: i32,
     pub rows: Vec<BoxPx>,
     pub scroll: i32,
@@ -144,28 +147,6 @@ pub(crate) fn session_list(dir: &Path) -> Vec<SessionEntry> {
     v
 }
 
-fn pane_key(k: &str) -> bool {
-    let mut cs = k.chars();
-    let Some(p) = cs.next() else { return false };
-    if !matches!(p, 'p' | 'v' | 'c' | 'b' | 't') {
-        return false;
-    }
-    let rest: String = cs.collect();
-    rest.parse::<usize>().ok().is_some_and(|i| i < MAXP)
-}
-
-/// A line this build knows how to load. Anything else (plain text, a foreign `.qdr`) is not a session.
-fn recognizable_session(text: &str) -> bool {
-    text.lines().any(|line| {
-        let Some((k, _)) = line.split_once('=') else { return false };
-        let k = k.trim();
-        matches!(
-            k,
-            "win" | "side" | "sidedpi" | "split" | "cols" | "grid" | "colr" | "rowr" | "active" | "order" | "tabs" | "session" | "layout" | "theme" | "dark" | "accent"
-        ) || pane_key(k)
-    })
-}
-
 fn tab_preview(t: &Tab) -> TabPreview {
     let columns: Vec<usize> = t.heights.iter().copied().filter(|&n| n > 0).collect();
     let columns = if columns.is_empty() { vec![1] } else { columns };
@@ -177,7 +158,7 @@ fn tab_preview(t: &Tab) -> TabPreview {
 /// Tabs, columns, and pane folders from session text. Unreadable text has `readable: false` and no tabs.
 pub(crate) fn preview_summary(text: &str) -> SessionPreview {
     let text = text.trim_start_matches('\u{feff}').trim();
-    if !recognizable_session(text) {
+    if !looks_like_session(text) {
         return SessionPreview { readable: false, tabs: Vec::new() };
     }
     let tabs = Session::parse(text).view_tabs().into_iter().map(|t| tab_preview(&t)).collect();
@@ -240,7 +221,11 @@ pub(crate) fn detail_plan(name: &str, preview: &SessionPreview, dpi: i32) -> Vec
         DetailLine {
             kind: DetailKind::Meta,
             text: if preview.readable {
-                tab_count_line(preview.tabs.len())
+                if preview.tabs.len() <= 1 {
+                    preview.tabs.first().map(|t| layout_label(&t.columns)).filter(|s| !s.is_empty()).unwrap_or_else(|| tr("One tab", "탭 하나", "タブ 1 個").to_string())
+                } else {
+                    tab_count_line(preview.tabs.len())
+                }
             } else {
                 tr("This session can't be read.", "이 세션을 읽을 수 없어요.", "このセッションは読み取れません。").to_string()
             },
@@ -253,8 +238,11 @@ pub(crate) fn detail_plan(name: &str, preview: &SessionPreview, dpi: i32) -> Vec
     }
     for (i, tab) in preview.tabs.iter().enumerate() {
         lines.push(DetailLine { kind: DetailKind::Gap, text: String::new(), columns: Vec::new(), h: dip(dpi, 10) });
-        let head = format!("{}   {}", tab_heading(&tab.name, i), layout_label(&tab.columns));
-        lines.push(DetailLine { kind: DetailKind::TabHead, text: head, columns: Vec::new(), h: dip(dpi, 22) });
+        // A session is one tab. The window title already names it, so an automatic "Tab 1" is skipped.
+        if preview.tabs.len() != 1 || custom_tab_name(&tab.name).is_some() {
+            let head = format!("{}   {}", tab_heading(&tab.name, i), layout_label(&tab.columns));
+            lines.push(DetailLine { kind: DetailKind::TabHead, text: head, columns: Vec::new(), h: dip(dpi, 22) });
+        }
         lines.push(DetailLine { kind: DetailKind::Schematic, text: String::new(), columns: tab.columns.clone(), h: dip(dpi, 72) });
         if tab.paths.is_empty() {
             lines.push(DetailLine { kind: DetailKind::Path, text: path_line(0, ""), columns: Vec::new(), h: dip(dpi, 18) });
@@ -286,6 +274,10 @@ pub(crate) fn pick_layout(w: i32, h: i32, dpi: i32, row_count: usize, scroll: i3
     let detail = BoxPx { left: list.right + gap, top: body_top, right: w - pad, bottom: body_bot };
     let cancel = BoxPx { left: w - pad - widths.cancel, top: btn_top, right: w - pad, bottom: btn_top + btn_h };
     let open = BoxPx { left: cancel.left - gap - widths.open, top: btn_top, right: cancel.left - gap, bottom: btn_top + btn_h };
+    let several = (widths.several > 0).then(|| {
+        let right = open.left - gap;
+        BoxPx { left: right - widths.several, top: btn_top, right, bottom: btn_top + btn_h }
+    });
     let delete = BoxPx { left: pad, top: btn_top, right: pad + widths.delete, bottom: btn_top + btn_h };
     let rename = BoxPx { left: delete.right + gap, top: btn_top, right: delete.right + gap + widths.rename, bottom: btn_top + btn_h };
     let save = with_save.then(|| {
@@ -314,6 +306,7 @@ pub(crate) fn pick_layout(w: i32, h: i32, dpi: i32, row_count: usize, scroll: i3
         delete,
         cancel,
         save,
+        several,
         row_h,
         rows,
         scroll,
@@ -352,6 +345,9 @@ struct PickUi {
     rows: Vec<Listed>,
     shown: Vec<usize>,
     sel: Option<usize>,
+    /// Indexes into `shown`. Open several uses these, in list order.
+    picked: Vec<usize>,
+    anchor: usize,
     hot: Option<usize>,
     scroll: i32,
     detail_scroll: i32,
@@ -369,6 +365,8 @@ impl PickUi {
             rows: Vec::new(),
             shown: Vec::new(),
             sel: None,
+            picked: Vec::new(),
+            anchor: 0,
             hot: None,
             scroll: 0,
             detail_scroll: 0,
@@ -412,7 +410,51 @@ fn button_widths(dc: HDC, font: HFONT, with_save: bool, dpi: i32) -> ButtonWidth
         rename: w(tr("Rename", "이름 바꾸기", "名前の変更")),
         delete: w(tr("Delete", "삭제", "削除")),
         cancel: w(tr("Cancel", "취소", "キャンセル")),
-        save: if with_save { (text_width(dc, font, tr("Save current as…", "현재 상태 저장…", "現在の状態を保存…")) + pad).max(dip(dpi, 120)) } else { 0 },
+        save: if with_save { (text_width(dc, font, tr("Save this tab…", "이 탭 저장…", "このタブを保存…")) + pad).max(dip(dpi, 120)) } else { 0 },
+        several: if with_save { (text_width(dc, font, tr("Open several", "여러 개 열기", "まとめて開く")) + pad).max(dip(dpi, 120)) } else { 0 },
+    }
+}
+
+/// Click on row `index`. Shift extends from the anchor. Ctrl toggles that row. A plain click selects only it.
+pub(crate) fn selection_after_click(picked: &[usize], anchor: usize, index: usize, count: usize, ctrl: bool, shift: bool) -> (Vec<usize>, usize, usize) {
+    if count == 0 {
+        return (Vec::new(), 0, 0);
+    }
+    let index = index.min(count - 1);
+    if shift {
+        let anchor = anchor.min(count - 1);
+        let (lo, hi) = if anchor <= index { (anchor, index) } else { (index, anchor) };
+        let mut next: Vec<usize> = if ctrl { picked.iter().copied().filter(|k| *k < count && !(lo..=hi).contains(k)).collect() } else { Vec::new() };
+        next.extend(lo..=hi);
+        next.sort_unstable();
+        next.dedup();
+        return (next, index, anchor);
+    }
+    if ctrl {
+        let mut next: Vec<usize> = picked.iter().copied().filter(|k| *k < count && *k != index).collect();
+        if !picked.contains(&index) {
+            next.push(index);
+        }
+        next.sort_unstable();
+        next.dedup();
+        return (next, index, index);
+    }
+    (vec![index], index, index)
+}
+
+/// Arrow keys. Shift extends the range from the anchor; otherwise the row becomes the only selection.
+pub(crate) fn selection_after_key(anchor: usize, sel: Option<usize>, count: usize, delta: i32, extend: bool) -> (Vec<usize>, usize, usize) {
+    if count == 0 {
+        return (Vec::new(), 0, 0);
+    }
+    let cur = sel.unwrap_or(0).min(count - 1) as i32;
+    let next = (cur + delta).clamp(0, count as i32 - 1) as usize;
+    if extend {
+        let anchor = anchor.min(count - 1);
+        let (lo, hi) = if anchor <= next { (anchor, next) } else { (next, anchor) };
+        ((lo..=hi).collect(), next, anchor)
+    } else {
+        (vec![next], next, next)
     }
 }
 
@@ -534,16 +576,20 @@ unsafe fn place_buttons(h: HWND, lay: &PickLayout) {
     if let Some(b) = lay.save {
         mv(ID_SAVE, b);
     }
+    if let Some(b) = lay.several {
+        mv(ID_SEVERAL, b);
+    }
     let inset = dip(UI.with(|u| u.borrow().dpi), crate::settings::FIELD_INSET_DIP);
     let edit = BoxPx { left: lay.search.left + inset, top: lay.search.top + inset, right: lay.search.right - inset, bottom: lay.search.bottom - inset };
     crate::place_edit(UI.with(|u| u.borrow().search), edit.rect(), true);
 }
 
 unsafe fn sync_buttons(h: HWND) {
-    let (has, readable) = UI.with(|u| {
+    let (has, readable, several) = UI.with(|u| {
         let ui = u.borrow();
         let row = ui.sel.and_then(|i| ui.shown.get(i).copied()).map(|i| ui.rows[i].preview.readable);
-        (ui.sel.is_some(), row.unwrap_or(false))
+        let several = ui.picked.iter().filter(|&&i| ui.shown.get(i).is_some_and(|&row| ui.rows.get(row).is_some_and(|r| r.preview.readable))).count() >= 2;
+        (ui.sel.is_some(), row.unwrap_or(false), several)
     });
     let en = |id: i32, on: bool| {
         if let Ok(c) = GetDlgItem(Some(h), id) {
@@ -554,6 +600,7 @@ unsafe fn sync_buttons(h: HWND) {
     en(ID_OPEN, readable);
     en(ID_RENAME, has);
     en(ID_DELETE, has);
+    en(ID_SEVERAL, several);
 }
 
 unsafe fn layout_window(h: HWND) {
@@ -570,6 +617,8 @@ fn apply_filter(keep: Option<PathBuf>) {
         ui.sel = keep
             .and_then(|p| ui.shown.iter().position(|&i| ui.rows[i].path == p))
             .or_else(|| if ui.shown.is_empty() { None } else { Some(0) });
+        ui.picked = ui.sel.into_iter().collect();
+        ui.anchor = ui.sel.unwrap_or(0);
         ui.hot = None;
         ui.scroll = 0;
         ui.detail_scroll = 0;
@@ -598,17 +647,40 @@ fn selected_readable() -> bool {
     })
 }
 
+fn picked_paths() -> Vec<PathBuf> {
+    UI.with(|u| {
+        let ui = u.borrow();
+        let mut idx = ui.picked.clone();
+        idx.sort_unstable();
+        idx.dedup();
+        idx.into_iter().filter_map(|i| {
+            let row = *ui.shown.get(i)?;
+            let listed = ui.rows.get(row)?;
+            listed.preview.readable.then(|| listed.path.clone())
+        }).collect()
+    })
+}
+
+unsafe fn finish_open(h: HWND, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        let _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    OUT.with(|o| *o.borrow_mut() = Some(Some(paths)));
+    let _ = DestroyWindow(h);
+}
+
 unsafe fn finish(h: HWND, pick: bool) {
     if pick && !selected_readable() {
         let _ = MessageBeep(MB_ICONWARNING);
         return;
     }
-    let path = if pick { selected_path() } else { None };
-    if pick && path.is_none() {
+    let paths = if pick { selected_path().into_iter().collect() } else { Vec::new() };
+    if pick && paths.is_empty() {
         let _ = MessageBeep(MB_ICONWARNING);
         return;
     }
-    OUT.with(|o| *o.borrow_mut() = Some(path));
+    OUT.with(|o| *o.borrow_mut() = Some((!paths.is_empty()).then_some(paths)));
     let _ = DestroyWindow(h);
 }
 
@@ -709,18 +781,18 @@ unsafe fn do_delete(h: HWND) {
     reload(h, next);
 }
 
-unsafe fn move_sel(h: HWND, d: i32) {
+unsafe fn move_sel(h: HWND, d: i32, extend: bool) {
     let path = UI.with(|u| {
         let mut ui = u.borrow_mut();
-        let n = ui.shown.len() as i32;
-        if n == 0 {
+        let (picked, sel, anchor) = selection_after_key(ui.anchor, ui.sel, ui.shown.len(), d, extend);
+        if ui.shown.is_empty() {
             return None;
         }
-        let cur = ui.sel.unwrap_or(0) as i32;
-        let next = (cur + d).clamp(0, n - 1) as usize;
-        ui.sel = Some(next);
+        ui.picked = picked;
+        ui.sel = Some(sel);
+        ui.anchor = anchor;
         ui.detail_scroll = 0;
-        Some(ui.rows[ui.shown[next]].path.clone())
+        Some(ui.rows[ui.shown[sel]].path.clone())
     });
     if path.is_none() {
         return;
@@ -794,10 +866,10 @@ unsafe fn paint(h: HWND) {
     let accent = crate::settings::chrome_color();
     let dpi = UI.with(|u| u.borrow().dpi.max(96));
     let lay = current_layout(h);
-    let (font, small, semi, shown, sel, hot, when_bad) = UI.with(|u| {
+    let (font, small, semi, shown, sel, hot, when_bad, picked) = UI.with(|u| {
         let ui = u.borrow();
         let shown: Vec<Listed> = ui.shown.iter().filter_map(|&i| ui.rows.get(i).cloned()).collect();
-        (ui.font, ui.small, ui.semi, shown, ui.sel, ui.hot, ui.rows.is_empty())
+        (ui.font, ui.small, ui.semi, shown, ui.sel, ui.hot, ui.rows.is_empty(), ui.picked.clone())
     });
     let query_empty = UI.with(|u| ui_query(&u.borrow()).trim().is_empty());
     crate::buffered(h, |dc, rc| {
@@ -823,9 +895,11 @@ unsafe fn paint(h: HWND) {
                 continue;
             }
             let on = sel == Some(i);
+            let marked = picked.contains(&i);
             let over = hot == Some(i);
-            if on {
-                rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, 0.16), None);
+            if on || marked {
+                let mix = if on { 0.16 } else { 0.10 };
+                rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, mix), None);
                 crate::fill(dc, RECT { left: b.left, top: b.top + dip(dpi, 8), right: b.left + dip(dpi, 3), bottom: b.bottom - dip(dpi, 8) }, accent);
             } else if over {
                 rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, 0.08), None);
@@ -863,6 +937,16 @@ unsafe fn paint(h: HWND) {
             let mut y = lay.detail.top + pad - lay.detail_scroll;
             let left = lay.detail.left + pad;
             let right = lay.detail.right - pad;
+            if picked.len() > 1 {
+                let note = format!(
+                    "{}{}",
+                    picked.len(),
+                    tr(" selected. Open several opens each as its own tab.", "개 선택. 여러 개 열기는 각각 새 탭으로 엽니다.", " 件選択。まとめて開くはそれぞれ新しいタブで開きます。")
+                );
+                let r = RECT { left, top: y, right, bottom: y + dip(dpi, 22) };
+                crate::text(dc, r, &note, small, crate::pal().sub, DT_LEFT);
+                y += dip(dpi, 22);
+            }
             for line in &plan {
                 let r = RECT { left, top: y, right, bottom: y + line.h };
                 if r.bottom > lay.detail.top && r.top < lay.detail.bottom {
@@ -915,18 +999,42 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     crate::text(d.hDC, d.rcItem, &crate::text_of(d.hwndItem), font, ink, DT_CENTER);
 }
 
-unsafe fn on_click(h: HWND, x: i32, y: i32, dbl: bool) {
+unsafe fn on_click(h: HWND, x: i32, y: i32, dbl: bool, ctrl: bool, shift: bool) {
     let lay = current_layout(h);
     let Some(i) = lay.rows.iter().position(|r| r.contains(x, y) && lay.list.contains(x, y)) else { return };
     UI.with(|u| {
-        u.borrow_mut().sel = Some(i);
-        u.borrow_mut().detail_scroll = 0;
+        let mut ui = u.borrow_mut();
+        if dbl {
+            ui.sel = Some(i);
+            ui.picked = vec![i];
+            ui.anchor = i;
+        } else {
+            let (picked, sel, anchor) = selection_after_click(&ui.picked, ui.anchor, i, ui.shown.len(), ctrl, shift);
+            ui.picked = picked;
+            ui.sel = Some(sel);
+            ui.anchor = anchor;
+        }
+        ui.detail_scroll = 0;
     });
     sync_buttons(h);
     layout_window(h);
     if dbl {
         finish(h, true);
     }
+}
+
+unsafe fn open_several(h: HWND) {
+    let paths = picked_paths();
+    if paths.len() < 2 {
+        let why = tr(
+            "Select two or more sessions with Ctrl+click or Shift+click, then Open several. Each one opens as its own tab.",
+            "Ctrl+클릭이나 Shift+클릭으로 세션을 둘 이상 고른 뒤 여러 개 열기를 누르세요. 세션마다 새 탭이 열려요.",
+            "Ctrl+クリックまたは Shift+クリックでセッションを二つ以上選び、まとめて開くを押します。それぞれ新しいタブで開きます。",
+        );
+        MessageBoxW(Some(h), &HSTRING::from(why), &HSTRING::from(tr("Open several", "여러 개 열기", "まとめて開く")), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    finish_open(h, paths);
 }
 
 unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -954,7 +1062,8 @@ unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             btn(ID_DELETE, tr("Delete", "삭제", "削除"));
             btn(ID_CANCEL, tr("Cancel", "취소", "キャンセル"));
             if UI.with(|u| u.borrow().with_save) {
-                btn(ID_SAVE, tr("Save current as…", "현재 상태 저장…", "現在の状態を保存…"));
+                btn(ID_SAVE, tr("Save this tab…", "이 탭 저장…", "このタブを保存…"));
+                btn(ID_SEVERAL, tr("Open several", "여러 개 열기", "まとめて開く"));
             }
             let rows = read_rows();
             UI.with(|u| u.borrow_mut().rows = rows);
@@ -970,7 +1079,7 @@ unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 let font = UI.with(|u| u.borrow().font);
                 let search = UI.with(|u| u.borrow().search);
                 SendMessageW(search, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-                for id in [ID_OPEN, ID_RENAME, ID_DELETE, ID_CANCEL, ID_SAVE] {
+                for id in [ID_OPEN, ID_RENAME, ID_DELETE, ID_CANCEL, ID_SAVE, ID_SEVERAL] {
                     if let Ok(c) = GetDlgItem(Some(h), id) {
                         SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
                     }
@@ -1017,6 +1126,7 @@ unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             }
             match id {
                 ID_OPEN => finish(h, true),
+                ID_SEVERAL => open_several(h),
                 ID_CANCEL => finish(h, false),
                 ID_SAVE => {
                     SAVE_ASKED.with(|c| c.set(true));
@@ -1028,8 +1138,12 @@ unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             }
             return LRESULT(0);
         }
-        WM_LBUTTONDOWN => on_click(h, (lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32, false),
-        WM_LBUTTONDBLCLK => on_click(h, (lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32, true),
+        WM_LBUTTONDOWN => {
+            let ctrl = wp.0 & MK_CONTROL.0 as usize != 0;
+            let shift = wp.0 & MK_SHIFT.0 as usize != 0;
+            on_click(h, (lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32, false, ctrl, shift);
+        }
+        WM_LBUTTONDBLCLK => on_click(h, (lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32, true, false, false),
         WM_MOUSEMOVE => {
             let x = (lp.0 & 0xffff) as i16 as i32;
             let y = ((lp.0 >> 16) & 0xffff) as i16 as i32;
@@ -1126,12 +1240,13 @@ unsafe fn outer_size(dpi: i32) -> (i32, i32) {
 }
 
 /// Small modal window listing the sessions in the sessions folder. None means cancel.
+/// One session: startup uses this. The load window can return more than one.
 pub(crate) unsafe fn pick_session(owner: HWND, title: &str) -> Option<PathBuf> {
-    pick_session_ex(owner, title, false)
+    pick_session_ex(owner, title, false).and_then(|v| v.into_iter().next())
 }
 
-/// `with_save` adds "Save current as…". Pressing it closes the list and sets SAVE_ASKED.
-unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<PathBuf> {
+/// `with_save` adds "Save this tab…" and "Open several". Pressing Save closes the list and sets SAVE_ASKED.
+unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<Vec<PathBuf>> {
     ensure_class();
     let dir = sessions_dir();
     _ = std::fs::create_dir_all(&dir);
@@ -1171,7 +1286,8 @@ unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<P
                 continue;
             }
             if key == VK_UP.0 as usize || key == VK_DOWN.0 as usize {
-                move_sel(h, if key == VK_UP.0 as usize { -1 } else { 1 });
+                let extend = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                move_sel(h, if key == VK_UP.0 as usize { -1 } else { 1 }, extend);
                 continue;
             }
             if key == VK_DELETE.0 as usize && GetFocus() != UI.with(|u| u.borrow().search) {
@@ -1193,11 +1309,11 @@ unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<P
     OUT.with(|o| o.borrow_mut().take().flatten())
 }
 
-/// Toolbar Load: the list window, then load the picked session.
+/// Toolbar Load: the list window. Each chosen session opens as a new tab beside the current one.
 pub(crate) unsafe fn open_session_list() {
     let main = app(|a| a.main);
-    if let Some(p) = pick_session_ex(main, tr("Load session", "세션 불러오기", "セッションを読み込む"), true) {
-        load_session_file(&p);
+    if let Some(paths) = pick_session_ex(main, tr("Open session", "세션 열기", "セッションを開く"), true) {
+        load_session_files(&paths);
     } else if SAVE_ASKED.with(|c| c.replace(false)) {
         _ = save_session_as();
     }
@@ -1313,7 +1429,7 @@ mod tests {
 
     #[test]
     fn layout_puts_the_list_beside_the_detail_and_scales() {
-        let widths = ButtonWidths { open: 88, rename: 120, delete: 88, cancel: 88, save: 160 };
+        let widths = ButtonWidths { open: 88, rename: 120, delete: 88, cancel: 88, save: 160, several: 0 };
         let lay = pick_layout(920, 600, 96, 4, 0, 400, 0, true, widths);
         assert!(lay.search.bottom <= lay.list.top);
         assert!(lay.list.right <= lay.detail.left);
@@ -1336,6 +1452,46 @@ mod tests {
         assert_eq!(many.scroll, many.scroll_max);
         assert_eq!(reveal_row(0, many.scroll_max, 200, 500, 52), 352);
         assert_eq!(reveal_row(400, many.scroll_max, 200, 100, 52), 100);
+    }
+
+    #[test]
+    fn one_tab_detail_shows_the_layout_and_skips_an_automatic_name() {
+        let p = preview_summary("grid=2,2\np0=C:\\a\n");
+        let lines = detail_plan("Work", &p, 96);
+        let meta = lines.iter().find(|l| l.kind == DetailKind::Meta).unwrap();
+        assert_eq!(meta.text, "2 × 2");
+        assert!(lines.iter().all(|l| l.kind != DetailKind::TabHead));
+    }
+
+    #[test]
+    fn click_and_shift_build_a_multi_selection() {
+        let (picked, sel, anchor) = selection_after_click(&[], 0, 1, 5, false, false);
+        assert_eq!((picked.as_slice(), sel, anchor), ([1].as_slice(), 1, 1));
+        let (picked, sel, anchor) = selection_after_click(&[1], 1, 3, 5, true, false);
+        assert_eq!((picked.as_slice(), sel, anchor), ([1, 3].as_slice(), 3, 3));
+        let (picked, sel, anchor) = selection_after_click(&[1, 3], 1, 4, 5, false, true);
+        assert_eq!((picked.as_slice(), sel, anchor), ([1, 2, 3, 4].as_slice(), 4, 1));
+        let (picked, sel, anchor) = selection_after_click(&[0], 0, 3, 5, true, true);
+        assert_eq!((picked.as_slice(), sel, anchor), ([0, 1, 2, 3].as_slice(), 3, 0));
+        let (picked, _, _) = selection_after_click(&[1], 1, 1, 5, true, false);
+        assert!(picked.is_empty());
+        let (picked, sel, anchor) = selection_after_key(1, Some(1), 5, 2, true);
+        assert_eq!((picked.as_slice(), sel, anchor), ([1, 2, 3].as_slice(), 3, 1));
+        let (picked, sel, anchor) = selection_after_key(0, Some(2), 5, -1, false);
+        assert_eq!((picked.as_slice(), sel, anchor), ([1].as_slice(), 1, 1));
+    }
+
+    #[test]
+    fn open_several_sits_between_save_and_open() {
+        let widths = ButtonWidths { open: 88, rename: 120, delete: 88, cancel: 88, save: 160, several: 140 };
+        let lay = pick_layout(920, 600, 96, 4, 0, 400, 0, true, widths);
+        let save = lay.save.unwrap();
+        let several = lay.several.unwrap();
+        assert!(save.right <= several.left);
+        assert!(several.right <= lay.open.left);
+        assert_eq!(several.top, lay.open.top);
+        let startup = ButtonWidths { several: 0, ..widths };
+        assert!(pick_layout(920, 600, 96, 4, 0, 400, 0, false, startup).several.is_none());
     }
 
     #[test]
