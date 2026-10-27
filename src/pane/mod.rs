@@ -1,5 +1,6 @@
 mod docparse;
 mod find;
+mod fsize;
 mod icon;
 mod nav;
 mod peek;
@@ -12,6 +13,7 @@ mod view;
 mod drag;
 
 pub(crate) use find::*;
+pub(crate) use fsize::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;
 pub(crate) use peek::*;

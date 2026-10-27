@@ -1123,6 +1123,22 @@ fn flip(id: u8) {
         }
         TG_SPACE => app(|a| a.s.space_preview ^= true),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav ^= true),
+        TG_FSIZE => {
+            app(|a| a.s.folder_sizes ^= true);
+            let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
+            crate::set_opts(show, net);
+            if !show {
+                crate::clear_pending();
+            }
+            app(|a| a.status_key.clear());
+        }
+        TG_FSIZE_NET => {
+            app(|a| a.s.folder_sizes_network ^= true);
+            let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
+            crate::set_opts(show, net);
+            crate::clear_pending();
+            app(|a| a.status_key.clear());
+        }
         TG_REMEMBER => {
             app(|a| a.s.remember_views ^= true);
             let on = app(|a| a.s.remember_views);
