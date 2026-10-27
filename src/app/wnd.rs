@@ -159,7 +159,7 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     let min = 60 * a.dpi / 96;
                     match d {
                         Hit::Side => a.s.side = x - g.gap / 2,
-                        Hit::SideSplit => a.s.side_split = split_ratio_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi)),
+                        Hit::SideSplit => a.s.side_split = tree_share_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi), a.s.fav_top),
                         Hit::Col(k) => drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, g.w - g.pad - g.gx, g.gap, min),
                         Hit::Row(c, k) => drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, g.bot - g.top, g.gap, min),
                     }
@@ -195,6 +195,8 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 id if id == ID_TB_LAYOUT as usize => open_grid(),
                 id if id == ID_TB_SAVE as usize => save_current(),
                 id if id == ID_TB_LOAD as usize => open_session_list(),
+                ID_SESS_SAVE => save_current(),
+                ID_SESS_OPEN => open_session_list(),
                 id if id == ID_TB_FAV as usize => open_fav_manager(h),
                 id if id == ID_TB_SET as usize => popup_menu(app(|a| a.view_menu), ID_TB_SET),
                 id if (ID_DRIVE as usize..ID_DRIVE as usize + 26).contains(&id) => {
@@ -286,6 +288,10 @@ pub(crate) extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         crate::keys::chord_text(i)
                     );
                     _ = ModifyMenuW(menu, ID_GATHER as u32, MF_BYCOMMAND | MF_STRING, ID_GATHER as usize, &HSTRING::from(label));
+                }
+                if let Some(i) = crate::keys::index("sess.save") {
+                    let label = format!("{}\t{}", tr("Save this tab", "이 탭 저장", "このタブを保存"), crate::keys::chord_text(i));
+                    _ = ModifyMenuW(menu, ID_SESS_SAVE as u32, MF_BYCOMMAND | MF_STRING, ID_SESS_SAVE, &HSTRING::from(label));
                 }
                 check(ID_DBLUP, dblup);
                 check(ID_LANG_AUTO, lang == Lang::Auto);
@@ -925,8 +931,8 @@ pub(crate) unsafe fn about(owner: HWND) {
 pub(crate) fn toolbar_tips() -> [(i32, &'static str, &'static str); 5] {
     [
         (ID_TB_LAYOUT, "", tr("Layout: click = even grid, drag = rows per column", "레이아웃: 클릭 = 균등, 끌기 = 열마다 칸 수", "レイアウト: クリック = 均等、ドラッグ = 列ごとの行数")),
-        (ID_TB_SAVE, tr("Save session", "세션 저장", "セッションを保存"), ""), // tooltip set by refresh_save_button
-        (ID_TB_LOAD, tr("Load", "불러오기", "読み込み"), tr("Load a session", "세션 불러오기", "セッションを読み込む")),
+        (ID_TB_SAVE, tr("Save this tab", "이 탭 저장", "このタブを保存"), ""), // tooltip set by refresh_save_button
+        (ID_TB_LOAD, tr("Open session", "세션 열기", "セッションを開く"), tr("Open a session as a new tab", "세션을 새 탭으로 열기", "セッションを新しいタブで開く")),
         (
             ID_TB_FAV,
             tr("Favourites", "즐겨찾기", "お気に入り"),
@@ -982,6 +988,10 @@ pub(crate) unsafe fn set_language(lang: Lang) {
 pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     let view = CreatePopupMenu()?;
     let item = |menu: HMENU, flags: MENU_ITEM_FLAGS, id: usize, text: &str| AppendMenuW(menu, flags, id, &HSTRING::from(text));
+    let save_chord = crate::keys::index("sess.save").map(crate::keys::chord_text).unwrap_or_default();
+    item(view, MF_STRING, ID_SESS_SAVE, &format!("{}\t{}", tr("Save this tab", "이 탭 저장", "このタブを保存"), save_chord))?;
+    item(view, MF_STRING, ID_SESS_OPEN, tr("Open session...", "세션 열기...", "セッションを開く..."))?;
+    AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
     item(view, MF_STRING, ID_HIDDEN, tr("Show hidden files\tCtrl+H", "숨김 파일 표시\tCtrl+H", "隠しファイルを表示\tCtrl+H"))?;
     item(view, MF_STRING, ID_PANEL, tr("Left panel\tCtrl+Shift+E", "왼쪽 패널\tCtrl+Shift+E", "左のパネル\tCtrl+Shift+E"))?;
     item(

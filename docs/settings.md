@@ -18,7 +18,8 @@ View → Show file extensions is Windows' own setting, the same one Explorer use
 
 | Key | Notes |
 | --- | --- |
-| `side_split` | Divider between the folder tree and favourites. Restored on startup. Settings can hide the whole left panel. |
+| `side_split` | The folder tree's share of the left panel. Favourites use the rest. Restored on startup, in either order. Settings can hide the whole left panel. |
+| `side_order` | Which half of the left panel is on top. Missing means favourites on top. `"tree"` puts the folder tree on top. The divider still drags, and `side_split` stays the folder tree's share of the height. Settings → Panes & view applies it right away. The key is omitted while favourites are on top, and it is not written into `grids.ini`. |
 | `use_everything` | On unless `"use_everything": false`. Subfolder search then asks Everything when it is running. Settings → General shows Installed and running, Installed but not running, or Not installed, plus the version when Everything answers. Start Everything launches the installed `Everything.exe`. Install runs `winget install --id voidtools.Everything -e` when winget is available, and otherwise opens the voidtools download page. |
 | `winmerge_path` | Empty means auto-detect, and the key is omitted. Settings → General → WinMerge shows whether WinMerge was found and accepts a custom `WinMergeU.exe` or its folder. Detection looks at that path, then `HKLM`/`HKCU` `Software\Thingamahoochie\WinMerge` (`Executable`), App Paths for `WinMergeU.exe`, Program Files, and `PATH`. Compare folders with Ctrl+Alt+C, the gear menu, or the file-list menu. |
 | `ev_asked` | Remembers the answer to the one-time install prompt. The first subfolder search without Everything installed asks once. |

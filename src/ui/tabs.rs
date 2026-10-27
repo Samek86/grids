@@ -622,6 +622,50 @@ pub(crate) unsafe fn duplicate_tab(i: usize) {
     }
 }
 
+/// Insert `tabs` immediately after the tab on screen and show the first of them.
+/// Tabs that were already open are not changed.
+pub(crate) unsafe fn open_tabs_beside(tabs: Vec<Tab>) {
+    if tabs.is_empty() {
+        return;
+    }
+    end_rename(true);
+    remember_tabs();
+    let at = app(|a| {
+        fit_park(a);
+        let at = if a.s.tabs.is_empty() { 0 } else { (a.s.tab + 1).min(a.s.tabs.len()) };
+        for (k, t) in tabs.iter().enumerate() {
+            let j = at + k;
+            a.s.tabs.insert(j, t.clone());
+            a.park.insert(j, no_panes());
+            insert_tab_base(a, j, t);
+            lru_insert_shift(a, j);
+        }
+        at
+    });
+    if at == app(|a| a.s.tab) {
+        let filters = app(|a| {
+            let i = at.min(a.s.tabs.len().saturating_sub(1));
+            a.s.tab = i;
+            a.s.publish();
+            a.s.order.clear();
+            mark_tab_clean(a, i);
+            let _ = pull_dirty(a);
+            a.s.tabs[i].filters.clone()
+        });
+        put_filters(&filters);
+        show_active_tab();
+        relayout();
+        sync_filter_edits();
+        redraw_all();
+        focus_view(active_pane());
+        tabs_invalidate();
+        note_save();
+        refresh_save_button();
+    } else {
+        switch_tab(at);
+    }
+}
+
 pub(crate) unsafe fn close_tab(i: usize) {
     end_rename(true);
     if !app(|a| can_close_tab(&a.s.tabs, i)) {
@@ -804,10 +848,16 @@ pub(crate) unsafe fn tab_menu(i: usize, x: i32, y: i32) {
     };
     add(1, tr("Rename tab", "탭 이름 바꾸기", "タブ名の変更"), true);
     add(2, if locked { tr("Unlock tab", "탭 잠금 해제", "タブのロックを解除") } else { tr("Lock tab", "탭 잠금", "タブをロック") }, true);
-    add(3, tr("Duplicate tab", "탭 복제", "タブを複製"), true);
+    let dup_key = crate::keys::index("tab.dup").map(crate::keys::chord_text).unwrap_or_default();
+    let dup = if dup_key.is_empty() {
+        tr("Duplicate tab", "탭 복제", "タブを複製").to_string()
+    } else {
+        format!("{}\t{dup_key}", tr("Duplicate tab", "탭 복제", "タブを複製"))
+    };
+    add(3, &dup, true);
     add(6, tr("Move to new window", "새 창으로 이동", "新しいウィンドウへ移動"), true);
     add(4, tr("Close other tabs", "다른 탭 모두 닫기", "他のタブをすべて閉じる"), others);
-    add(5, tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存"), true);
+    add(5, tr("Save this tab…", "이 탭 저장…", "このタブを保存…"), true);
     let Ok(colors) = CreatePopupMenu() else {
         _ = DestroyMenu(menu);
         return;

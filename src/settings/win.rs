@@ -186,7 +186,7 @@ unsafe fn build_children(h: HWND) {
     combo(S_LANG, true);
     combo(S_FACE, true);
     combo(S_THEME, true);
-    for id in [S_START, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT] {
+    for id in [S_START, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE] {
         combo(id, true);
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
@@ -209,7 +209,7 @@ unsafe fn build_children(h: HWND) {
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -267,6 +267,8 @@ unsafe fn fill_strings(h: HWND) {
     fill_combo(h, S_DROP, &[tx(s("Windows rules (same drive = move)", "Windows 규칙(같은 드라이브=이동)", "Windows の規則（同じドライブ=移動）")).into(), tx(s("Always copy", "항상 복사", "常にコピー")).into(), tx(s("Always ask", "항상 묻기", "常に確認")).into()], dropm.min(2));
     let layout_new = app(|a| a.s.layout_new) as usize;
     fill_combo(h, S_LAYOUT, &[tx(s("Two panes, side by side", "좌우 2개", "左右に2つ")).into(), tx(s("Two panes, top and bottom", "위아래 2개", "上下に2つ")).into(), tx(s("2×2 (four panes)", "2×2 (4개)", "2×2（4つ）")).into(), tx(s("One pane", "1개", "1つ")).into()], layout_new.min(3));
+    let side_i = usize::from(!app(|a| a.s.fav_top));
+    fill_combo(h, S_SIDE, &[tx(SIDE_FAV).into(), tx(SIDE_TREE).into()], side_i.min(1));
     let labels = [
         (S_CLOSE, tx(CLOSE_L)),
         (S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す"))),
@@ -402,7 +404,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -1121,6 +1123,22 @@ fn flip(id: u8) {
         }
         TG_SPACE => app(|a| a.s.space_preview ^= true),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav ^= true),
+        TG_FSIZE => {
+            app(|a| a.s.folder_sizes ^= true);
+            let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
+            crate::set_opts(show, net);
+            if !show {
+                crate::clear_pending();
+            }
+            app(|a| a.status_key.clear());
+        }
+        TG_FSIZE_NET => {
+            app(|a| a.s.folder_sizes_network ^= true);
+            let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
+            crate::set_opts(show, net);
+            crate::clear_pending();
+            app(|a| a.status_key.clear());
+        }
         TG_REMEMBER => {
             app(|a| a.s.remember_views ^= true);
             let on = app(|a| a.s.remember_views);
@@ -1408,6 +1426,28 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
         S_LAYOUT => {
             app(|a| a.s.layout_new = sel.min(3) as u8);
             unsafe { crate::save_session() };
+        }
+        S_SIDE => {
+            let fav_top = sel != 1;
+            let changed = app(|a| {
+                if a.s.fav_top == fav_top {
+                    false
+                } else {
+                    a.s.fav_top = fav_top;
+                    true
+                }
+            });
+            if changed {
+                unsafe {
+                    crate::publish_shared();
+                    crate::save_session();
+                    crate::across_windows(|| {
+                        crate::relayout();
+                        crate::redraw_all();
+                    });
+                    redraw();
+                }
+            }
         }
         S_START => {
             if sel == 1 {

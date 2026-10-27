@@ -65,6 +65,8 @@ const CMDS: &[Cmd] = &[
     cmd("tab.next", TAB, s("Next tab", "다음 탭", "次のタブ"), 0x09, true, false, false, false, false),
     cmd("tab.prev", TAB, s("Previous tab", "이전 탭", "前のタブ"), 0x09, true, true, false, false, false),
     cmd("tab.reopen", TAB, s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), 0x54, true, true, false, false, false),
+    // Ctrl+K stays free. Duplicate tab is Ctrl+Alt+K; the tab right-click menu does the same.
+    cmd("tab.dup", TAB, s("Duplicate tab", "탭 복제", "タブを複製"), 0x4B, true, false, true, false, false),
     cmd("pane.next", PANE, s("Next pane", "다음 패널", "次のペイン"), 0x22, true, false, false, false, false),
     cmd("pane.prev", PANE, s("Previous pane", "이전 패널", "前のペイン"), 0x21, true, false, false, false, false),
     cmd("pane.goto", PANE, s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), 0x31, true, false, false, false, true),
@@ -108,7 +110,7 @@ const CMDS: &[Cmd] = &[
     cmd("file.mkdir", FILE, s("New folder in this pane", "이 패널에 새 폴더", "このペインに新しいフォルダー"), 0x76, false, false, false, false, false),
     // Ctrl+Alt+C is free (copy path is Ctrl+Shift+C, batch rename is Ctrl+Shift+R).
     cmd("file.winmerge", FILE, s("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較"), 0x43, true, false, true, false, false),
-    cmd("sess.save", SESS, s("Save session", "세션 저장", "セッションを保存"), 0x53, true, false, false, false, false),
+    cmd("sess.save", SESS, s("Save this tab", "이 탭 저장", "このタブを保存"), 0x53, true, false, false, false, false),
     cmd("fav.list", FAV, s("Favourites", "즐겨찾기", "お気に入り"), 0x42, true, false, false, false, false),
     cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false, false),
     cmd("app.help", HELP, s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), 0x70, false, false, false, false, false),
@@ -536,13 +538,13 @@ fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
 }
 
 const EXPLORER: [&str; 3] = [
-    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer\n\
+    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer. F5 reloads the active pane from anywhere in the window; a failed network folder is tried again\n\
 Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\
 Space\tQuick look, same as F3. A space within a second of typing, or during IME composition, stays part of the name. Settings → Panes & view can turn this off\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일\n\
+    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일. F5는 창의 어디서나 활성 패널을 새로고침하고, 네트워크 폴더 오류면 그 경로를 다시 시도\n\
 Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\
 Space\t빠른 미리보기. F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어 조합 중에는 이름의 일부로 들어가요. 설정 → 패널·보기에서 끌 수 있어요\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ\n\
+    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ。F5 はウィンドウのどこからでもアクティブなペインを再読み込みし、ネットワーク フォルダーのエラーではそのパスを再試行\n\
 Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\
 Space\tクイックルック。F3 と同じです。入力から 1 秒以内、または日本語・韓国語の変換中のスペースは名前の一部になります。設定 → ペインと表示でオフにできます\n\n",
 ];
@@ -551,8 +553,8 @@ const NOTES_EN: &str = "\
 Address bar: click a folder in the path to go there; click a › to list the folders inside; click the current folder or empty space, or press Ctrl+L, to type a path\n\
 Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
 ⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns; or copy / move the selected files to another pane's folder (up to 10,000)\n\
-Save (Ctrl+S): overwrite the current session file; green dot = unsaved layout changes (not folder moves)\n\
-Load: pick a saved session by its layout preview\n\
+Save (Ctrl+S): save this tab (pane layout, folders, view, colour labels). A green dot means this tab's layout is unsaved (not folder moves)\n\
+Open session: open the saved tab as a new tab beside the current one. Open several opens each selected session as its own tab\n\
 Double-click a splitter: split evenly\n\
 Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
 Pane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
@@ -564,8 +566,8 @@ const NOTES_KO: &str = "\
 주소 칸: 경로의 폴더를 누르면 그리로 이동, › 를 누르면 그 안의 폴더 목록, 현재 폴더·빈 곳을 누르거나 Ctrl+L이면 경로 입력\n\
 레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
 ⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개)\n\
-저장 (Ctrl+S): 지금 세션 파일에 바로 덮어쓰기, 초록 점 = 저장 안 된 배치 변경(폴더 이동은 제외)\n\
-불러오기: 저장한 세션을 배치 미리보기로 보고 한 번 클릭\n\
+저장 (Ctrl+S): 이 탭을 저장 (패널 배치, 폴더, 보기, 색 라벨). 초록 점 = 이 탭의 저장 안 된 배치 변경(폴더 이동은 제외)\n\
+세션 열기: 저장한 탭을 현재 탭 옆에 새 탭으로 엽니다. 여러 개 열기는 고른 세션마다 탭 하나씩\n\
 스플리터 더블클릭: 균등 분할\n\
 패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
 패널 탭: 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 폴더가 하나면 탭 줄이 숨고, ⇄ 오른쪽 버튼으로 탭을 추가합니다(Ctrl+Alt+T). 둘 이상이면 탭 줄이 나옵니다. 기본은 Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
@@ -577,8 +579,8 @@ const NOTES_JA: &str = "\
 アドレス バー: パスのフォルダーをクリックするとそこへ移動。› で中のフォルダー一覧。現在のフォルダーか空き、または Ctrl+L でパスを入力\n\
 レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
 ⇄ ボタン: 選択したフォルダー（なければ現在のフォルダー）を別ペインで開く。列の順序・幅・並べ替えも引き継ぐ。または選択したファイルを別ペインのフォルダーへコピー / 移動（最大 10,000 個）\n\
-保存 (Ctrl+S): 現在のセッション ファイルに上書き。緑の点 = 未保存のレイアウト変更（フォルダー移動は含まない）\n\
-読み込み: 保存したセッションをレイアウトプレビューで見てクリック\n\
+保存 (Ctrl+S): このタブを保存（ペインの配置、フォルダー、表示、色ラベル）。緑の点 = このタブの未保存のレイアウト変更（フォルダー移動は含まない）\n\
+セッションを開く: 保存したタブを現在のタブの隣に新しいタブで開きます。まとめて開くは選んだセッションをそれぞれタブにします\n\
 スプリッターをダブルクリック: 均等に分割\n\
 ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
 ペイン タブ: 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。フォルダーが一つならタブ列は隠れ、⇄ の右のボタンでタブを追加します（Ctrl+Alt+T）。二つ以上でタブ列が出ます。既定は Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、フォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
@@ -616,6 +618,7 @@ mod tests {
             ("tab.next", "Ctrl+Tab"),
             ("tab.prev", "Ctrl+Shift+Tab"),
             ("tab.reopen", "Ctrl+Shift+T"),
+            ("tab.dup", "Ctrl+Alt+K"),
             ("pane.next", "Ctrl+PageDown"),
             ("pane.prev", "Ctrl+PageUp"),
             ("pane.goto", "Ctrl+1 … Ctrl+9"),
@@ -678,6 +681,20 @@ mod tests {
         assert_eq!(lookup(b'E' as u16, false, false, true, false), None);
         assert_eq!(lookup(b'C' as u16, true, false, true, false), index("file.winmerge"));
         assert_eq!(lookup(b'C' as u16, true, true, false, false), index("file.path"));
+        assert_eq!(lookup(0x74, false, false, false, false), None); // F5 stays a pane refresh, not a binding
+        let dup = index("tab.dup").unwrap();
+        assert_eq!(CMDS[dup].cat, TAB);
+        assert_eq!(CMDS[dup].act, ["Duplicate tab", "탭 복제", "タブを複製"]);
+        assert_eq!(lookup(b'K' as u16, true, false, true, false), Some(dup));
+        assert!(help_text().lines().any(|l| l == "Ctrl+Alt+K\tDuplicate tab"));
+        assert_eq!(lookup(b'K' as u16, true, false, false, false), None); // Ctrl+K stays free
+        assert_eq!(lookup(b'K' as u16, true, true, true, false), None);
+        let chord = default_chord(dup).unwrap();
+        for (i, c) in CMDS.iter().enumerate() {
+            if i != dup {
+                assert!(!overlaps(c.chord(), chord), "{} collides with tab.dup", c.id);
+            }
+        }
     }
 
     #[test]

@@ -101,14 +101,135 @@ pub(crate) fn net_fail_text() -> &'static str {
     net_bar_text(true)
 }
 
-/// Address-bar line while a share is in flight or has failed. The pill is shared with the
-/// buttons, so the failure line stays a few words and does not repeat the path.
+/// Address-bar line while a share is in flight. A failure keeps the path in the edit instead.
 pub(crate) fn net_bar_text(bad: bool) -> &'static str {
     if bad {
         tr("Unreachable", "연결 실패", "接続失敗")
     } else {
         tr("Connecting…", "연결 중…", "接続中…")
     }
+}
+
+/// Seconds named in the timeout message. The same wait the worker is given.
+pub(crate) fn net_wait_secs() -> u32 {
+    NET_WAIT_MS / 1000
+}
+
+/// Sentence for the in-pane error. `secs` is set only when the wait ran out.
+pub(crate) fn net_fail_message(path: &str, secs: Option<u32>) -> String {
+    let n = secs.unwrap_or(0);
+    match (ui(), secs) {
+        (1, Some(_)) => format!("{path}에 연결하지 못했습니다 (시간 초과 {n}초)"),
+        (2, Some(_)) => format!("{path} に接続できませんでした（タイムアウト {n}秒）"),
+        (_, Some(_)) => format!("Couldn't connect to {path} (timed out after {n} seconds)"),
+        (1, None) => format!("{path}에 연결하지 못했습니다"),
+        (2, None) => format!("{path} に接続できませんでした"),
+        _ => format!("Couldn't connect to {path}"),
+    }
+}
+
+/// [Retry] and [Previous folder], in the UI language.
+pub(crate) fn net_fail_buttons() -> (&'static str, &'static str) {
+    (tr("Retry", "다시 시도", "再試行"), tr("Previous folder", "이전 폴더로", "前のフォルダー"))
+}
+
+/// Path a Retry or F5 opens. An empty address falls back to the path that failed.
+pub(crate) fn retry_path<'a>(stored: &'a str, typed: &'a str) -> &'a str {
+    let t = typed.trim();
+    if t.is_empty() { stored } else { t }
+}
+
+/// Unfocused empty address after a failure shows the attempt again, so the bar cannot go blank.
+pub(crate) fn addr_keep<'a>(attempted: &'a str, typed: &str, focused: bool) -> Option<&'a str> {
+    if focused || !typed.trim().is_empty() { None } else { Some(attempted) }
+}
+
+/// Back and Forward while the error is up. The failed path was not opened, so they reveal the
+/// folder already current instead of walking the browser's history.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FolderStep {
+    Stay,
+    History,
+}
+
+pub(crate) fn folder_step(failed: bool, history: bool) -> FolderStep {
+    if failed && history { FolderStep::Stay } else { FolderStep::History }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct BoxI {
+    pub(crate) l: i32,
+    pub(crate) t: i32,
+    pub(crate) r: i32,
+    pub(crate) b: i32,
+}
+
+impl BoxI {
+    pub(crate) fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.l && x < self.r && y >= self.t && y < self.b
+    }
+
+    fn to_rect(self) -> RECT {
+        RECT { left: self.l, top: self.t, right: self.r, bottom: self.b }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FailLayout {
+    pub(crate) message: BoxI,
+    pub(crate) retry: BoxI,
+    pub(crate) back: BoxI,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FailHit {
+    Retry,
+    Back,
+    None,
+}
+
+/// Message above, the two buttons centred just under the middle of the list.
+pub(crate) fn fail_layout(w: i32, h: i32, dpi: i32, retry_w: i32, back_w: i32) -> FailLayout {
+    let s = |v: i32| v * dpi / 96;
+    let pad = s(16);
+    let gap = s(8);
+    let bh = s(30).clamp(1, h.max(1));
+    let mut rw = (retry_w + pad * 2).max(s(80));
+    let mut bw = (back_w + pad * 2).max(s(80));
+    // A narrow pane still shows both buttons. Widths shrink together; they do not run off the list.
+    let room = (w - gap).max(0);
+    let buttons = rw.saturating_add(bw);
+    if buttons > room && buttons > 0 {
+        rw = (rw as i64 * i64::from(room) / i64::from(buttons)) as i32;
+        bw = room - rw;
+    }
+    let total = rw + gap + bw;
+    let left = ((w - total) / 2).max(0);
+    let max_top = (h - bh).max(0);
+    let btn_top = (h / 2 + s(6)).clamp(0, max_top);
+    let retry = BoxI { l: left, t: btn_top, r: left + rw, b: btn_top + bh };
+    let back_l = retry.r + gap;
+    let back = BoxI { l: back_l, t: btn_top, r: back_l + bw, b: btn_top + bh };
+    let inset = s(20).min((w / 4).max(0));
+    let msg_top = s(8).min(btn_top);
+    let msg_b = (btn_top - s(8)).max(msg_top);
+    let message = BoxI { l: inset, t: msg_top, r: (w - inset).max(inset), b: msg_b };
+    FailLayout { message, retry, back }
+}
+
+pub(crate) fn fail_hit(lay: &FailLayout, x: i32, y: i32) -> FailHit {
+    if lay.retry.contains(x, y) {
+        FailHit::Retry
+    } else if lay.back.contains(x, y) {
+        FailHit::Back
+    } else {
+        FailHit::None
+    }
+}
+
+/// Break a long UNC path inside DrawText without changing the characters the user reads.
+fn fail_draw_text(msg: &str) -> String {
+    msg.replace('\\', "\\\u{200B}").replace('/', "/\u{200B}")
 }
 
 fn clear_net_notes(a: &mut App, path: &str) {
@@ -281,6 +402,7 @@ pub(crate) unsafe fn end_share(i: usize, h: HWND) {
         Some(())
     });
     if cleared.is_some() {
+        sync_net_fail(h);
         repaint_link(h);
     }
 }
@@ -303,7 +425,7 @@ unsafe fn show_link(i: usize, h: HWND, id: usize, path: &str) {
         if p.hwnd != h {
             return false;
         }
-        p.net = Some(NetUi { id, path: path.to_string(), bad: false });
+        p.net = Some(NetUi { id, path: path.to_string(), bad: false, timed_out: false });
         // The folder we were in stays painted until a new icon arrives. Drop it for the wait.
         retire_folder_icon(p);
         a.lost = 0;
@@ -312,6 +434,7 @@ unsafe fn show_link(i: usize, h: HWND, id: usize, path: &str) {
     });
     if armed {
         drop_icon_request(h);
+        sync_net_fail(h);
     }
     repaint_link(h);
 }
@@ -335,32 +458,304 @@ unsafe fn clear_link(i: usize, h: HWND, id: usize, path: &str) {
         true
     });
     if on {
+        sync_net_fail(h);
         repaint_link(h);
     } else {
         update_status();
     }
 }
 
-unsafe fn show_link_fail(i: usize, h: HWND, id: usize, path: &str) {
+/// This pane is showing the share error, not a folder.
+pub(crate) fn net_failed(i: usize) -> bool {
+    app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.net.as_ref()).is_some_and(|n| n.bad))
+}
+
+/// Put the failed path back in the address and cover the list. The browser is not moved:
+/// the last good folder stays the current history entry.
+unsafe fn show_link_fail(i: usize, h: HWND, id: usize, path: &str, timed_out: bool) {
     let shown = app(|a| {
-        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return false };
+        let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return None };
         if p.hwnd != h {
-            return false;
+            return None;
         }
         match p.net.as_mut() {
-            Some(n) if n.id == id => n.bad = true,
-            Some(_) => return false,
-            None => p.net = Some(NetUi { id, path: path.to_string(), bad: true }),
+            Some(n) if n.id == id => {
+                n.bad = true;
+                n.timed_out = timed_out;
+                if n.path.is_empty() {
+                    n.path = path.to_string();
+                }
+            }
+            Some(_) => return None,
+            None => p.net = Some(NetUi { id, path: path.to_string(), bad: true, timed_out }),
         }
+        let path = p.net.as_ref().map(|n| n.path.clone()).unwrap_or_default();
         retire_folder_icon(p);
         a.lost = 0;
-        a.note = Some((net_fail_text().to_string(), Instant::now() + std::time::Duration::from_secs(8)));
-        true
+        clear_net_notes(a, &path);
+        Some(path)
     });
-    if shown {
-        drop_icon_request(h);
-        repaint_link(h);
+    let Some(path) = shown else { return };
+    drop_icon_request(h);
+    if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
+        _ = SetWindowTextW(e, &HSTRING::from(path.as_str()));
+        _ = ShowWindow(e, SW_SHOWNA);
+        show_path_end(e, &path);
     }
+    sync_net_fail(h);
+    repaint_link(h);
+    // The active pane's address is ready to edit. Enter retries. Another pane keeps the focus it has.
+    if app(|a| a.s.active == i) {
+        if let Some(e) = pane_ctl(i, ID_EDIT) {
+            _ = SetFocus(Some(e));
+            SendMessageW(e, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+        }
+    }
+}
+
+/// Open the path in the address, or the path that failed when the address is empty.
+pub(crate) unsafe fn retry_failed(i: usize) {
+    let stored = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.net.as_ref()).filter(|n| n.bad).map(|n| n.path.clone()));
+    let Some(stored) = stored else { return };
+    let typed = pane_ctl(i, ID_EDIT).map(|e| text_of(e)).unwrap_or_default();
+    let path = retry_path(&stored, &typed).to_string();
+    if path.is_empty() || !navigate(i, &path) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    // Still failed means the attempt ended before it left this call. Leave the address focused.
+    // Otherwise the list takes focus so a hidden error view does not keep it.
+    if !net_failed(i) {
+        focus_view(i);
+    }
+}
+
+/// Drop the error and show the folder the browser is already on. History is not walked.
+pub(crate) unsafe fn leave_net_fail(i: usize) {
+    let Some(h) = pane_hwnd(i) else { return };
+    if !net_failed(i) {
+        return;
+    }
+    let disp = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.disp.clone())).unwrap_or_default();
+    if let Some(e) = pane_ctl(i, ID_EDIT) {
+        _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
+    }
+    end_share(i, h);
+    if let Some(e) = pane_ctl(i, ID_EDIT) {
+        show_path_end(e, &disp);
+        sync_addr(h);
+    }
+    focus_view(i);
+}
+
+/// Show or hide the error view over this pane's file list. The browser window stays where it is.
+pub(crate) unsafe fn sync_net_fail(pane: HWND) {
+    if pane.0.is_null() {
+        return;
+    }
+    let show = app(|a| a.panes.iter().flatten().any(|p| p.hwnd == pane && p.net.as_ref().is_some_and(|n| n.bad)));
+    if !show {
+        if let Ok(f) = GetDlgItem(Some(pane), ID_NETFAIL) {
+            _ = ShowWindow(f, SW_HIDE);
+        }
+        return;
+    }
+    let f = ensure_net_fail(pane);
+    if f.0.is_null() {
+        return;
+    }
+    let mut rc = RECT::default();
+    _ = GetClientRect(pane, &mut rc);
+    let view = pane_geo_of(pane, rc.right, rc.bottom, app(|a| a.dpi)).view;
+    let (w, hgt) = ((view.right - view.left).max(0), (view.bottom - view.top).max(0));
+    _ = SetWindowPos(f, Some(HWND_TOP), view.left, view.top, w, hgt, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    let msg = app(|a| {
+        let n = a.panes.iter().flatten().find(|p| p.hwnd == pane)?.net.as_ref().filter(|n| n.bad)?;
+        Some(net_fail_message(&n.path, n.timed_out.then_some(net_wait_secs())))
+    });
+    if let Some(msg) = msg {
+        _ = SetWindowTextW(f, &HSTRING::from(msg.as_str()));
+    }
+    _ = InvalidateRect(Some(f), None, false);
+}
+
+unsafe fn ensure_net_fail(pane: HWND) -> HWND {
+    if let Ok(h) = GetDlgItem(Some(pane), ID_NETFAIL) {
+        if IsWindow(Some(h)).as_bool() {
+            return h;
+        }
+    }
+    static CLASS: Once = Once::new();
+    CLASS.call_once(|| {
+        let arrow = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+        let hinst = GetModuleHandleW(None).unwrap_or_default();
+        _ = RegisterClassW(&WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(net_fail_proc),
+            hInstance: hinst.into(),
+            hCursor: arrow,
+            lpszClassName: w!("PanegridNetFail"),
+            ..Default::default()
+        });
+    });
+    CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("PanegridNetFail"),
+        w!(""),
+        WS_CHILD | WS_CLIPSIBLINGS,
+        0,
+        0,
+        0,
+        0,
+        Some(pane),
+        Some(HMENU(ID_NETFAIL as isize as _)),
+        None,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+static FAIL_PRESS: Mutex<Option<(isize, i32)>> = Mutex::new(None);
+
+fn fail_code(hit: FailHit) -> i32 {
+    match hit {
+        FailHit::Retry => 1,
+        FailHit::Back => 2,
+        FailHit::None => 0,
+    }
+}
+
+unsafe fn text_px(dc: HDC, font: HFONT, s: &str) -> i32 {
+    let old = SelectObject(dc, font.into());
+    let w: Vec<u16> = s.encode_utf16().collect();
+    let mut sz = SIZE::default();
+    if !w.is_empty() {
+        _ = GetTextExtentPoint32W(dc, &w, &mut sz);
+    }
+    SelectObject(dc, old);
+    sz.cx
+}
+
+unsafe fn fail_boxes(h: HWND, dc: HDC) -> Option<(FailLayout, String, String, String)> {
+    let (path, timed, dpi, font) = app(|a| {
+        let i = pane_of(h)?;
+        let n = a.panes.get(i).and_then(|p| p.as_ref())?.net.as_ref().filter(|n| n.bad)?;
+        Some((n.path.clone(), n.timed_out, a.dpi, a.font))
+    })?;
+    let msg = net_fail_message(&path, timed.then_some(net_wait_secs()));
+    let (retry, back) = net_fail_buttons();
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    let lay = fail_layout(rc.right.max(0), rc.bottom.max(0), dpi, text_px(dc, font, retry), text_px(dc, font, back));
+    Some((lay, msg, retry.to_string(), back.to_string()))
+}
+
+unsafe fn fail_at(h: HWND, x: i32, y: i32) -> FailHit {
+    let dc = GetDC(Some(h));
+    let hit = fail_boxes(h, dc).map(|(lay, ..)| fail_hit(&lay, x, y)).unwrap_or(FailHit::None);
+    _ = ReleaseDC(Some(h), dc);
+    hit
+}
+
+unsafe fn paint_message(dc: HDC, r: RECT, msg: &str, font: HFONT) {
+    if r.right <= r.left || r.bottom <= r.top {
+        return;
+    }
+    let mut w: Vec<u16> = fail_draw_text(msg).encode_utf16().collect();
+    if w.is_empty() {
+        return;
+    }
+    let old = SelectObject(dc, font.into());
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, cref(pal().text));
+    let flags = DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX;
+    let mut measure = r;
+    DrawTextW(dc, &mut w, &mut measure, flags | DT_CALCRECT);
+    let th = measure.bottom - measure.top;
+    let room = r.bottom - r.top;
+    let mut dest = r;
+    if th > 0 && th < room {
+        dest.top += (room - th) / 2;
+        dest.bottom = dest.top + th;
+    }
+    DrawTextW(dc, &mut w, &mut dest, flags);
+    SelectObject(dc, old);
+}
+
+unsafe fn paint_fail_btn(dc: HDC, r: RECT, label: &str, font: HFONT, hot: bool, accent: u32) {
+    fill(dc, r, if hot { blend(pal().pill, pal().text, 0.10) } else { pal().pill });
+    frame(dc, r, 1, if hot { accent } else { pal().line });
+    text(dc, r, label, font, pal().text, DT_CENTER);
+}
+
+unsafe fn paint_net_fail(h: HWND) {
+    let hot = GetWindowLongPtrW(h, GWLP_USERDATA) as i32;
+    let (accent, font) = app(|a| (a.s.accent_now(), a.font));
+    buffered(h, |dc, rc| {
+        fill(dc, rc, pal().card);
+        let Some((lay, msg, retry, back)) = fail_boxes(h, dc) else { return };
+        paint_message(dc, lay.message.to_rect(), &msg, font);
+        paint_fail_btn(dc, lay.retry.to_rect(), &retry, font, hot == 1, accent);
+        paint_fail_btn(dc, lay.back.to_rect(), &back, font, hot == 2, accent);
+    });
+}
+
+pub(crate) unsafe extern "system" fn net_fail_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let pane = GetParent(h).unwrap_or_default();
+    bind_hwnd(h);
+    match msg {
+        WM_PAINT => paint_net_fail(h),
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_MOUSEMOVE => {
+            let (x, y) = xy(lp);
+            let code = fail_code(fail_at(h, x, y));
+            let prev = GetWindowLongPtrW(h, GWLP_USERDATA) as i32;
+            if prev != code {
+                _ = SetWindowLongPtrW(h, GWLP_USERDATA, code as isize);
+                _ = InvalidateRect(Some(h), None, false);
+                if code != 0 && prev == 0 {
+                    let mut t = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: h,
+                        dwHoverTime: 0,
+                    };
+                    _ = TrackMouseEvent(&mut t);
+                }
+            }
+        }
+        WM_MOUSELEAVE => {
+            _ = SetWindowLongPtrW(h, GWLP_USERDATA, 0);
+            _ = InvalidateRect(Some(h), None, false);
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            let (x, y) = xy(lp);
+            let code = fail_code(fail_at(h, x, y));
+            *FAIL_PRESS.lock().unwrap_or_else(|e| e.into_inner()) = Some((h.0 as isize, code));
+            _ = SetCapture(h);
+            _ = SetWindowLongPtrW(h, GWLP_USERDATA, code as isize);
+            _ = InvalidateRect(Some(h), None, false);
+        }
+        WM_LBUTTONUP => {
+            let (x, y) = xy(lp);
+            _ = ReleaseCapture();
+            let down = FAIL_PRESS.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let hit = fail_at(h, x, y);
+            let same = down.is_some_and(|(hwnd, code)| hwnd == h.0 as isize && code == fail_code(hit) && code != 0);
+            if same {
+                if let Some(i) = pane_of(pane) {
+                    set_active(i);
+                    match hit {
+                        FailHit::Retry => retry_failed(i),
+                        FailHit::Back => leave_net_fail(i),
+                        FailHit::None => {}
+                    }
+                }
+            }
+        }
+        _ => return DefWindowProcW(h, msg, wp, lp),
+    }
+    LRESULT(0)
 }
 
 unsafe fn run_cmd(prog: &str, args: &str, dir: Option<&str>) -> bool {
@@ -404,7 +799,7 @@ unsafe fn finish_stop(h: HWND, id: usize, stop: NetStop) {
         }
         return;
     }
-    show_link_fail(i, h, id, &stop.path);
+    show_link_fail(i, h, id, &stop.path, true);
 }
 
 /// `SHParseDisplayName` off the UI thread. The PIDL is cloned (`ILClone`) before it is posted,
@@ -515,7 +910,7 @@ pub(crate) unsafe fn net_done(h: HWND, id: usize) {
             }
             return;
         }
-        show_link_fail(i, h, id, &done.path);
+        show_link_fail(i, h, id, &done.path, false);
         return;
     }
     let pidl = done.pidl as *mut ITEMIDLIST;
@@ -537,7 +932,7 @@ pub(crate) unsafe fn net_done(h: HWND, id: usize) {
     if ok {
         focus_view(i);
     } else {
-        show_link_fail(i, h, id, &done.path);
+        show_link_fail(i, h, id, &done.path, false);
     }
 }
 
@@ -675,6 +1070,11 @@ pub(crate) unsafe fn rec_event(i: usize, ev: Nav, pidl: *const ITEMIDLIST) {
 }
 
 pub(crate) unsafe fn browse(i: usize, flags: u32) {
+    let history = flags == SBSP_NAVIGATEBACK || flags == SBSP_NAVIGATEFORWARD;
+    if folder_step(net_failed(i), history) == FolderStep::Stay {
+        leave_net_fail(i);
+        return;
+    }
     if let Some(h) = pane_hwnd(i) {
         end_share(i, h);
     }
@@ -692,6 +1092,53 @@ pub(crate) unsafe fn browse_item(i: usize, si: &IShellItem) {
         _ = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
         CoTaskMemFree(Some(pidl as _));
     }
+}
+
+/// Folder a `.lnk` points at. `None` for a file shortcut, or a link that does not resolve.
+/// No `Resolve`: that can search the network and show UI. The stored target is enough.
+pub(crate) unsafe fn folder_link_target(path: &str) -> Option<String> {
+    if !crate::folderapp::link_file(path) {
+        return None;
+    }
+    let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+    link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(path), STGM_READ).ok()?;
+    if let Ok(pidl) = link.GetIDList() {
+        if !pidl.is_null() {
+            let item = SHCreateItemFromIDList::<IShellItem>(pidl).ok();
+            let folder = item.as_ref().and_then(|it| it.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).ok()).is_some_and(place_flags);
+            // A file shortcut stays None so the verb still opens it. The parsing name
+            // covers a library or a zip; GetPath covers a plain directory.
+            let name = folder.then(|| {
+                item.as_ref()
+                    .and_then(|it| it.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING).ok().map(|p| pwstr(p)))
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| stored_link_path(&link))
+            }).flatten();
+            CoTaskMemFree(Some(pidl as _));
+            return name.filter(|s| !s.is_empty());
+        }
+    }
+    // No pidl. A local directory is still a folder. A share is not stat'd on this thread.
+    let s = stored_link_path(&link)?;
+    if share_path(&s) || std::fs::metadata(&s).is_ok_and(|m| m.is_dir()) {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+unsafe fn stored_link_path(link: &IShellLinkW) -> Option<String> {
+    let mut buf = [0u16; 1024];
+    if link.GetPath(&mut buf, std::ptr::null_mut(), 0).is_err() || buf[0] == 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let s = String::from_utf16_lossy(&buf[..end]);
+    (!s.is_empty()).then_some(s)
+}
+
+fn place_flags(flags: SFGAO_FLAGS) -> bool {
+    crate::folderapp::navigable(flags.contains(SFGAO_FOLDER), flags.contains(SFGAO_STREAM), flags.contains(SFGAO_BROWSABLE))
 }
 
 pub(crate) unsafe fn focus_view(i: usize) {
@@ -769,6 +1216,10 @@ pub(crate) fn is_rel(p: &str) -> bool {
 }
 
 pub(crate) unsafe fn addr_reset(i: usize, e: HWND) {
+    if net_failed(i) {
+        leave_net_fail(i);
+        return;
+    }
     let disp = app(|x| x.panes[i].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
     _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
     focus_view(i);
@@ -814,7 +1265,13 @@ pub(crate) unsafe fn go_edit(i: usize) {
                 None => false,
             };
             let exists = full.as_ref().is_some_and(|f| !full_share && std::fs::metadata(f).is_ok());
-            let target = edit_target(p, full_owned.as_deref(), full_share, exists).to_string();
+            let mut target = edit_target(p, full_owned.as_deref(), full_share, exists).to_string();
+            // A shortcut to a folder would otherwise ShellExecute, and that verb is us.
+            if crate::folderapp::shown_on() && crate::folderapp::link_file(&target) {
+                if let Some(dir) = folder_link_target(&target) {
+                    target = dir;
+                }
+            }
             if share_path(&target) {
                 // A bare `cmd` while this pane is on a share still runs if the name is not a file there.
                 let bare = is_rel(p) && !p.contains(['\\', '/']);
@@ -854,7 +1311,9 @@ pub(crate) unsafe fn go_edit(i: usize) {
         run(SHELLEXECUTEINFOW { fMask: SEE_MASK_FLAG_NO_UI, lpFile: PCWSTR(prog.as_ptr()), lpParameters: PCWSTR(args.as_ptr()), ..Default::default() }).then_some(false)
     };
     match done {
-        Some(true) => focus_view(i),
+        // A share that failed before this returns keeps the address: Enter is how the path is retried.
+        Some(true) if !net_failed(i) => focus_view(i),
+        Some(true) => {}
         Some(false) => addr_reset(i, e),
         None if addr_jumps(done, resolved) => {
             let picked = app(|a| {
@@ -865,7 +1324,11 @@ pub(crate) unsafe fn go_edit(i: usize) {
                 jump_pick(&raw, &a.s.recent, &favs, &a.s.paths[i]).map(str::to_string)
             });
             match picked {
-                Some(p) if go_near(i, &p) => focus_view(i),
+                Some(p) if go_near(i, &p) => {
+                    if !net_failed(i) {
+                        focus_view(i);
+                    }
+                }
                 Some(_) => {
                     _ = MessageBeep(MB_ICONWARNING);
                     focus_view(i);
@@ -1173,7 +1636,10 @@ pub(crate) unsafe fn recent_menu(i: usize) {
     if pick > 0 && !navigate(i, &items[pick as usize - 1]) {
         _ = MessageBeep(MB_ICONWARNING); // gone or unreachable
     }
-    focus_view(i);
+    // An immediate share failure leaves the address selected. The list is still the last good folder.
+    if !net_failed(i) {
+        focus_view(i);
+    }
 }
 
 /// Filter icon and Alt+↓ while the filter has focus. Pictures, video, music, documents, archives, programs.
@@ -1814,6 +2280,9 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         }
     }
     hook_ctx(i);
+    let here = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    pane_here(i, &here, classify_ui(&here));
+    hook_tips(i);
     find_retarget(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {
@@ -1834,6 +2303,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
         let i = self.0.load(Ordering::SeqCst);
+        pane_left(i);
         unsafe {
             // The shell is browsing. A share resolve still out for this pane is stale.
             if let Some(h) = pane_hwnd(i) {
@@ -1854,9 +2324,67 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
     fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { rec_event(self.0.load(Ordering::SeqCst), Nav::Failed, pidl) };
+        let i = self.0.load(Ordering::SeqCst);
+        unsafe {
+            rec_event(i, Nav::Failed, pidl);
+            let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+            pane_here(i, &cur, classify_ui(&cur));
+            let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+            // The shell did not open it, so this path is not a history entry. The address
+            // keeps it and the list shows the error over the folder that is still current.
+            if !path.is_empty() && share_path(&path) {
+                if let Some(h) = pane_hwnd(i) {
+                    show_link_fail(i, h, 0, &path, false);
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Double-click / Enter. While Panegrid is the folder handler, a plain activation of a
+/// folder, a folder shortcut, a library, or a zip-like folder browses this pane.
+/// Returning false lets the view run the verb: files, and Ctrl / middle on a folder
+/// (that launch is a new tab). With the setting off, the view already navigates.
+unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
+    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+    let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
+    let registered = crate::folderapp::shown_on();
+    let blank = crate::folderapp::OpenIn { registered, ctrl, middle, folder: false, stream: false, browsable: false };
+    if !registered || ctrl || middle {
+        return crate::folderapp::list_open(blank) == crate::folderapp::OpenWhere::Pane;
+    }
+    let Some(sv) = sv else { return false };
+    let Ok(fv) = sv.cast::<IFolderView2>() else { return false };
+    let idx = fv.GetFocusedItem().unwrap_or(-1);
+    if idx < 0 {
+        return false;
+    }
+    let Ok(item) = fv.GetItem::<IShellItem>(idx) else { return false };
+    let flags = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM | SFGAO_BROWSABLE).unwrap_or_default();
+    let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).filter(|s| !s.is_empty()).unwrap_or_else(|| shell_parse(&item));
+    // A `.lnk` is a file. Its target is what navigates. A junction is already a folder
+    // (it can also carry SFGAO_LINK) and falls through to the flag check below.
+    if crate::folderapp::link_file(&path) {
+        let Some(dir) = folder_link_target(&path) else { return false };
+        let ask = crate::folderapp::OpenIn { folder: true, ..blank };
+        if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
+            return false;
+        }
+        let _ = navigate(i, &dir);
+        focus_view(i);
+        return true;
+    }
+    let folder = flags.contains(SFGAO_FOLDER);
+    let stream = flags.contains(SFGAO_STREAM);
+    let browsable = flags.contains(SFGAO_BROWSABLE);
+    let ask = crate::folderapp::OpenIn { folder, stream, browsable, ..blank };
+    if crate::folderapp::list_open(ask) != crate::folderapp::OpenWhere::Pane {
+        return false;
+    }
+    browse_item(i, &item);
+    focus_view(i);
+    true
 }
 
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
@@ -1877,8 +2405,9 @@ impl IServiceProvider_Impl for Host_Impl {
 }
 
 impl ICommDlgBrowser_Impl for Host_Impl {
-    fn OnDefaultCommand(&self, _: Ref<IShellView>) -> Result<()> {
-        Err(S_FALSE.into()) // let the view do its default action (open)
+    fn OnDefaultCommand(&self, sv: Ref<IShellView>) -> Result<()> {
+        // S_OK: we browsed. S_FALSE: the view runs the verb (a file, or Ctrl / middle on a folder).
+        if unsafe { take_default(self.0.load(Ordering::SeqCst), sv.as_ref()) } { Ok(()) } else { Err(S_FALSE.into()) }
     }
     fn OnStateChange(&self, _: Ref<IShellView>, change: u32) -> Result<()> {
         if change == CDBOSC_SELCHANGE {
@@ -2023,7 +2552,10 @@ impl IDropTarget_Impl for PaneDrop_Impl {
 
 #[cfg(test)]
 mod missing_tests {
-    use super::{drive_root, edit_cur_ok, edit_target, near_dir, net_bar_text, net_fail_text, net_wait_text, rec_step, share_kind, unc_path, Nav, NetBook, NetOpen, NetWait, NET_WAIT_MS};
+    use super::{
+        addr_keep, drive_root, edit_cur_ok, edit_target, fail_hit, fail_layout, folder_step, near_dir, net_bar_text, net_fail_buttons, net_fail_message, net_fail_text, net_wait_secs, net_wait_text,
+        rec_step, retry_path, share_kind, unc_path, FailHit, FolderStep, Nav, NetBook, NetOpen, NetWait, NET_WAIT_MS,
+    };
     use crate::i18n::UI;
     use std::io;
     use std::path::Path;
@@ -2115,6 +2647,53 @@ mod missing_tests {
         assert_eq!(net_wait_text(), "接続中…");
         assert_eq!(net_fail_text(), "接続失敗");
         UI.store(prev, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn share_failure_keeps_the_path_and_says_why() {
+        let prev = UI.load(Ordering::Relaxed);
+        let path = r"\\server\share";
+        assert_eq!(net_wait_secs(), 8);
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(net_fail_message(path, Some(8)), r"\\server\share에 연결하지 못했습니다 (시간 초과 8초)");
+        assert_eq!(net_fail_message(path, None), r"\\server\share에 연결하지 못했습니다");
+        assert_eq!(net_fail_buttons(), ("다시 시도", "이전 폴더로"));
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(net_fail_message(path, Some(8)), "\\\\server\\share に接続できませんでした（タイムアウト 8秒）");
+        assert_eq!(net_fail_message(path, None), "\\\\server\\share に接続できませんでした");
+        assert_eq!(net_fail_buttons(), ("再試行", "前のフォルダー"));
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(net_fail_message(path, Some(net_wait_secs())), r"Couldn't connect to \\server\share (timed out after 8 seconds)");
+        assert_eq!(net_fail_message(path, None), r"Couldn't connect to \\server\share");
+        assert_eq!(net_fail_buttons(), ("Retry", "Previous folder"));
+        assert_eq!(retry_path(path, "  "), path);
+        assert_eq!(retry_path(path, r"  \\server\other  "), r"\\server\other");
+        assert_eq!(addr_keep(path, "", false), Some(path));
+        assert_eq!(addr_keep(path, "", true), None);
+        assert_eq!(addr_keep(path, path, false), None);
+        // Back/Forward while the error is up stay on the folder that is already open.
+        assert_eq!(folder_step(true, true), FolderStep::Stay);
+        assert_eq!(folder_step(true, false), FolderStep::History);
+        assert_eq!(folder_step(false, true), FolderStep::History);
+        UI.store(prev, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn failure_buttons_sit_in_the_list_and_do_not_overlap() {
+        let lay = fail_layout(480, 320, 96, 48, 96);
+        assert!(lay.retry.t >= lay.message.b);
+        assert!(lay.back.t == lay.retry.t && lay.back.l >= lay.retry.r);
+        assert!(lay.retry.r <= 480 && lay.back.r <= 480);
+        assert!(lay.retry.b <= 320 && lay.back.b <= 320);
+        assert_eq!(fail_hit(&lay, lay.retry.l + 1, lay.retry.t + 1), FailHit::Retry);
+        assert_eq!(fail_hit(&lay, lay.back.l + 1, lay.back.t + 1), FailHit::Back);
+        assert_eq!(fail_hit(&lay, 0, 0), FailHit::None);
+        assert_eq!(fail_hit(&lay, lay.retry.r, lay.retry.t), FailHit::None);
+        let narrow = fail_layout(40, 20, 96, 10, 10);
+        assert!(narrow.retry.t >= 0 && narrow.retry.b <= 20);
+        assert!(narrow.retry.r <= 40 && narrow.back.r <= 40);
+        assert!(narrow.back.l >= narrow.retry.r);
+        assert_eq!(fail_hit(&narrow, -1, -1), FailHit::None);
     }
 
     #[test]

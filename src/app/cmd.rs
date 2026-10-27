@@ -114,6 +114,54 @@ pub(crate) fn space_opens(typed_ago: Option<Duration>, composing: bool, enabled:
     enabled && !composing && space_peeks(typed_ago)
 }
 
+/// What a plain F5 does. A failed network folder is retried before any binding.
+/// A hold is eaten so the refresh or the retry does not run again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum F5Act {
+    /// The pane is showing a network-folder error: try that path again.
+    Retry,
+    /// Reload the active pane.
+    Refresh,
+    /// Handled, but a key repeat: do nothing.
+    Eat,
+    /// Not this key, or a binding owns the chord.
+    Pass,
+}
+
+/// `plain` is F5 with no Ctrl, Alt, or Shift. `repeat` is the key-down repeat bit.
+/// `failed` is the active pane's network-folder error. `bound` means the keymap owns this chord.
+/// The error wins over a binding. Otherwise an unbound F5 reloads the pane, once per press.
+pub(crate) fn f5_act(plain: bool, repeat: bool, failed: bool, bound: bool) -> F5Act {
+    if !plain {
+        return F5Act::Pass;
+    }
+    if failed {
+        return if repeat { F5Act::Eat } else { F5Act::Retry };
+    }
+    if bound {
+        return F5Act::Pass;
+    }
+    if repeat {
+        F5Act::Eat
+    } else {
+        F5Act::Refresh
+    }
+}
+
+/// F5: reload the active pane and sum selected folders again. Missing icons are rechecked.
+unsafe fn refresh_pane(a: usize) {
+    resum_sizes();
+    crate::ui::forget_missing();
+    if let Some(side) = app(|x| (!x.side_hwnd.is_invalid()).then_some(x.side_hwnd)) {
+        _ = InvalidateRect(Some(side), None, false);
+    }
+    // The view leaves F5 to its frame, as Explorer's does, so this works when the list
+    // does not have focus (address bar, filter, folder tree, favourites).
+    if let Some(sv) = view_of::<IShellView>(a) {
+        _ = sv.Refresh();
+    }
+}
+
 /// Korean and Japanese IMEs keep a composition string while a syllable or a reading is open.
 /// Space then belongs to the IME (commit or convert), not to the preview.
 fn ime_composing(hwnd: HWND) -> bool {
@@ -257,6 +305,25 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
             && !svh.0.is_null()
             && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())
     });
+    // A failed share keeps its path. F5 retries that path; the shell's refresh would reload the
+    // previous folder and leave the failure behind. The error view's Retry button does the same.
+    // A hold does not retry again. This runs before key bindings, so a rebound F5 still retries.
+    let repeat = m.lParam.0 & (1 << 30) != 0;
+    let plain_f5 = VIRTUAL_KEY(vk) == VK_F5 && !ctrl && !alt && !shift;
+    if net_failed(a) && plain_f5 {
+        if f5_act(true, repeat, true, false) == F5Act::Retry {
+            retry_failed(a);
+        }
+        return true;
+    }
+    if pane_ctl(a, ID_NETFAIL) == Some(m.hwnd) {
+        match VIRTUAL_KEY(vk) {
+            VK_RETURN if !ctrl && !alt => retry_failed(a),
+            VK_ESCAPE if !ctrl && !alt => leave_net_fail(a),
+            _ => return false,
+        }
+        return true;
+    }
     // Explorer's find-as-you-type: a letter, digit, punctuation or IME process key in the list
     // starts the one-second window in which Space stays part of the name.
     if list && !ctrl && !alt && types_char(VIRTUAL_KEY(vk)) {
@@ -271,6 +338,18 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         if matches!(id, "focus.next" | "focus.prev" | "app.keys") {
             return dispatch(id, vk, a, list, shell);
         }
+    }
+    // Plain F5 reloads the active pane from anywhere in the window: file list, address bar,
+    // filter, folder tree, favourites. A hold does not refresh again. A rebound F5 keeps that
+    // command. A failed share was retried above.
+    let bound = crate::keys::lookup(vk, ctrl, shift, alt, win).is_some();
+    match f5_act(plain_f5, repeat, false, bound) {
+        F5Act::Refresh => {
+            refresh_pane(a);
+            return true;
+        }
+        F5Act::Eat => return true,
+        _ => {}
     }
     // Address, filter, and tab rename keep every key except Enter and Esc.
     // A rebound letter must not land in the middle of a name.
@@ -335,8 +414,8 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         }
         return dispatch(id, vk, a, list, shell);
     }
-    // Not an app shortcut. F5, Del, and Ctrl+V still belong to the file list
-    // unless the user has bound that chord above.
+    // Not an app shortcut. Del and Ctrl+V still belong to the file list
+    // unless the user has bound that chord above. F5 was handled above.
     // Read the typing clock before a composing Space refreshes it.
     let ch = VIRTUAL_KEY(vk);
     let typed_ago = last_typed_ago();
@@ -345,14 +424,6 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         note_typed();
     }
     match ch {
-        VK_F5 if list => {
-            resum_sizes();
-            crate::ui::forget_missing();
-            if let Some(side) = app(|a| (!a.side_hwnd.is_invalid()).then_some(a.side_hwnd)) {
-                _ = InvalidateRect(Some(side), None, false);
-            }
-            shell()
-        }
         VK_DELETE if !ctrl && !alt && list => {
             delete_selection(a, shift);
             true
@@ -419,6 +490,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         "tab.next" => switch_rel(1),
         "tab.prev" => switch_rel(-1),
         "tab.reopen" => reopen_closed_at(0),
+        "tab.dup" => duplicate_tab(app(|x| x.s.tab)),
         "pane.next" => cycle(1),
         "pane.prev" => cycle(-1),
         "pane.goto" => {
@@ -564,11 +636,40 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
     }
 }
 
-/// F6 ring: 0 file list, 1 address, 2 filter, then the left panel's folder tree and favourites.
-/// A hidden panel drops the last two stops.
+/// F6 ring: 0 file list, 1 address, 2 filter, then the upper left-panel half and the lower one.
+/// Favourites lead when they are on top. A hidden panel drops the last two stops.
 pub(crate) fn focus_ring(pos: usize, back: bool, panel: bool) -> usize {
     let n = if panel { 5 } else { 3 };
     (pos.min(n - 1) + if back { n - 1 } else { 1 }) % n
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PanelStop {
+    Tree,
+    Fav,
+}
+
+/// Upper half, then lower half.
+pub(crate) fn panel_stops(fav_top: bool) -> [PanelStop; 2] {
+    if fav_top { [PanelStop::Fav, PanelStop::Tree] } else { [PanelStop::Tree, PanelStop::Fav] }
+}
+
+/// 0 file list, 1 address, 2 filter, 3 upper left-panel half, 4 lower half.
+pub(crate) fn focus_at(addr: bool, filt: bool, in_tree: bool, in_fav: bool, fav_top: bool) -> usize {
+    if addr {
+        return 1;
+    }
+    if filt {
+        return 2;
+    }
+    let [top, _] = panel_stops(fav_top);
+    if in_tree {
+        return if top == PanelStop::Tree { 3 } else { 4 };
+    }
+    if in_fav {
+        return if top == PanelStop::Fav { 3 } else { 4 };
+    }
+    0
 }
 
 /// A key Panegrid handled (Ctrl+Tab, F6, …) must not count as input in the tree.
@@ -580,13 +681,13 @@ pub(crate) fn tree_input_after(prev: bool, in_tree: bool, used: bool) -> bool {
 unsafe fn cycle_focus(back: bool) {
     let a = active_pane();
     let f = GetFocus();
-    let (panel, th, side) = app(|x| (x.s.tree_on, x.tree_hwnd, x.side_hwnd));
+    let (panel, th, side, fav_top) = app(|x| (x.s.tree_on, x.tree_hwnd, x.side_hwnd, x.s.fav_top));
     let shown = panel && !th.0.is_null() && IsWindowVisible(th).as_bool();
     let addr = pane_ctl(a, ID_EDIT) == Some(f);
     let filt = pane_ctl(a, ID_FILTER) == Some(f);
     let in_tree = !th.0.is_null() && (th == f || IsChild(th, f).as_bool());
     let in_fav = !side.0.is_null() && (side == f || IsChild(side, f).as_bool());
-    let pos = if addr { 1 } else if filt { 2 } else if in_tree { 3 } else if in_fav { 4 } else { 0 };
+    let pos = focus_at(addr, filt, in_tree, in_fav, fav_top);
     match focus_ring(pos, back, shown) {
         1 => {
             _ = focus_ctl(a, ID_EDIT);
@@ -594,25 +695,27 @@ unsafe fn cycle_focus(back: bool) {
         2 => {
             _ = focus_ctl(a, ID_FILTER);
         }
-        3 => {
-            let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or(th);
-            _ = SetFocus(Some(tv));
-            reveal_tree_selection();
-        }
-        4 => {
-            if app(|x| x.side_sel.is_none()) {
-                app(|x| x.side_sel = Some(0));
+        n @ 3 | n @ 4 => match panel_stops(fav_top)[n - 3] {
+            PanelStop::Tree => {
+                let tv = FindWindowExW(Some(th), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or(th);
+                _ = SetFocus(Some(tv));
+                reveal_tree_selection();
             }
-            _ = SetFocus(Some(side));
-            _ = InvalidateRect(Some(side), None, false);
-        }
+            PanelStop::Fav => {
+                if app(|x| x.side_sel.is_none()) {
+                    app(|x| x.side_sel = Some(0));
+                }
+                _ = SetFocus(Some(side));
+                _ = InvalidateRect(Some(side), None, false);
+            }
+        },
         _ => focus_view(a),
     }
 }
 
 #[cfg(test)]
 mod focus_tests {
-    use super::{focus_ring, tree_input_after};
+    use super::{focus_at, focus_ring, panel_stops, tree_input_after, PanelStop};
 
     #[test]
     fn focus_rings() {
@@ -624,6 +727,27 @@ mod focus_tests {
         // A stop that only exists while the panel is open falls back into the short ring.
         assert_eq!(focus_ring(4, false, false), 0);
         assert_eq!(focus_ring(3, true, false), 1);
+    }
+
+    #[test]
+    fn focus_follows_the_panel_order() {
+        assert_eq!(panel_stops(true), [PanelStop::Fav, PanelStop::Tree]);
+        assert_eq!(panel_stops(false), [PanelStop::Tree, PanelStop::Fav]);
+        assert_eq!(focus_at(false, false, false, true, true), 3);
+        assert_eq!(focus_at(false, false, true, false, true), 4);
+        assert_eq!(focus_at(false, false, true, false, false), 3);
+        assert_eq!(focus_at(false, false, false, true, false), 4);
+        assert_eq!(focus_at(true, false, true, false, true), 1);
+        assert_eq!(focus_at(false, true, false, true, false), 2);
+        assert_eq!(focus_at(false, false, false, false, true), 0);
+        // F6 from the filter lands on whichever half is on top, then the other half.
+        assert_eq!(focus_ring(2, false, true), 3);
+        assert_eq!(panel_stops(true)[focus_ring(2, false, true) - 3], PanelStop::Fav);
+        assert_eq!(panel_stops(false)[focus_ring(2, false, true) - 3], PanelStop::Tree);
+        assert_eq!(focus_ring(3, false, true), 4);
+        assert_eq!(panel_stops(true)[focus_ring(3, false, true) - 3], PanelStop::Tree);
+        assert_eq!(focus_ring(4, true, true), 3);
+        assert_eq!(panel_stops(false)[focus_ring(4, true, true) - 3], PanelStop::Tree);
     }
 
     #[test]
@@ -650,6 +774,24 @@ mod tests {
         assert!(!space_opens(Some(Duration::from_millis(300)), false, true));
         assert!(!space_opens(None, true, true)); // IME composition: the space stays in the name
         assert!(!space_opens(None, false, false)); // space_preview off
+    }
+
+    #[test]
+    fn f5_retries_a_failed_share_and_refreshes_once_everywhere_else() {
+        use super::{f5_act, F5Act};
+        // The error view: first press retries that path, a hold does not, and a binding cannot steal it.
+        assert_eq!(f5_act(true, false, true, false), F5Act::Retry);
+        assert_eq!(f5_act(true, false, true, true), F5Act::Retry);
+        assert_eq!(f5_act(true, true, true, false), F5Act::Eat);
+        assert_eq!(f5_act(true, true, true, true), F5Act::Eat);
+        // Anywhere else, with the list or not: one refresh. A hold is eaten.
+        assert_eq!(f5_act(true, false, false, false), F5Act::Refresh);
+        assert_eq!(f5_act(true, true, false, false), F5Act::Eat);
+        // Ctrl/Alt/Shift, and a rebound F5, stay with their own command (including its repeats).
+        assert_eq!(f5_act(false, false, true, false), F5Act::Pass);
+        assert_eq!(f5_act(false, false, false, false), F5Act::Pass);
+        assert_eq!(f5_act(true, false, false, true), F5Act::Pass);
+        assert_eq!(f5_act(true, true, false, true), F5Act::Pass);
     }
 }
 

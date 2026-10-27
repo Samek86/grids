@@ -66,11 +66,25 @@ pub(crate) fn split_heights(height: i32, ratio: f64, gap: i32, min: i32) -> (i32
 }
 
 /// Ratio that places the splitter so its top edge is at `pos`. Both parts stay at least `min` px.
+/// The value is the upper half's share. `tree_share_at` turns that into the folder tree's share.
 pub(crate) fn split_ratio_at(pos: i32, top: i32, height: i32, gap: i32, min: i32) -> f64 {
     let avail = (height - gap).max(1);
     let raw = (pos - top).clamp(0, avail) as f64 / avail as f64;
     let (tree, _) = split_heights(height, raw, gap, min);
     tree as f64 / avail as f64
+}
+
+/// Folder tree's share after a drag that puts the splitter's top edge at `pos`.
+/// `side_split` is that share in either order. When favourites are on top, `pos` measures
+/// their height and the tree keeps what is left.
+pub(crate) fn tree_share_at(pos: i32, top: i32, height: i32, gap: i32, min: i32, fav_top: bool) -> f64 {
+    let top_share = split_ratio_at(pos, top, height, gap, min);
+    if !fav_top {
+        return top_share;
+    }
+    let avail = (height - gap).max(1);
+    let (top_h, _) = split_heights(height, top_share, gap, min);
+    (avail - top_h).max(0) as f64 / avail as f64
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -92,7 +106,8 @@ pub(crate) struct Geo {
     pub(crate) pad: i32,
     pub(crate) gap: i32,
     pub(crate) side: i32,   // sidebar plate width
-    pub(crate) tree_h: i32, // folder-tree height inside the plate; favourites sit below the gap
+    pub(crate) tree_h: i32, // folder-tree height inside the plate
+    pub(crate) fav_top: bool, // favourites above the tree; false puts the tree on top
     pub(crate) gx: i32,     // grid left
     pub(crate) xs: Vec<(i32, i32)>,
     pub(crate) ys: Vec<Vec<(i32, i32)>>, // per column
@@ -126,9 +141,40 @@ pub(crate) fn geo(a: &App) -> Geo {
         gap,
         side,
         tree_h,
+        fav_top: a.s.fav_top,
         gx,
         zoom: a.zoom.is_some(),
     }
+}
+
+impl Geo {
+    /// Height of the upper half, above the divider. `tree_h` is always the folder tree.
+    pub(crate) fn side_top_h(&self) -> i32 {
+        if self.fav_top {
+            let plate = (self.bot - self.top).max(0);
+            (plate - self.gap - self.tree_h).max(0)
+        } else {
+            self.tree_h
+        }
+    }
+}
+
+/// Gap between the two halves of the left panel. None when the panel or the divider is hidden.
+pub(crate) fn side_gap_rect(g: &Geo) -> Option<RECT> {
+    if g.side <= 0 || g.tree_h <= 0 || g.gap <= 0 {
+        return None;
+    }
+    let top = g.top + g.side_top_h();
+    Some(RECT { left: 0, top, right: g.side, bottom: top + g.gap })
+}
+
+/// Folder-tree rect, then the favourites rect. `inset` pads the plate's outer edges, not the gap.
+pub(crate) fn side_panes(g: &Geo, inset: i32) -> (RECT, RECT) {
+    let sr = side_rect(g);
+    let top_h = g.side_top_h();
+    let upper = RECT { left: sr.left + inset, top: sr.top + inset, right: sr.right - inset, bottom: sr.top + top_h };
+    let lower = RECT { left: sr.left + inset, top: sr.top + top_h + g.gap, right: sr.right - inset, bottom: sr.bottom - inset };
+    if g.fav_top { (lower, upper) } else { (upper, lower) }
 }
 
 pub(crate) fn side_rect(g: &Geo) -> RECT {
@@ -361,9 +407,10 @@ pub(crate) fn gap_line(g: &Geo, d: Hit, t: i32) -> Option<RECT> {
     let vbar = |x: i32| RECT { left: x - t / 2, top: g.top, right: x - t / 2 + t, bottom: g.bot };
     match d {
         Hit::Side if g.side > 0 => Some(vbar(g.side + g.gap / 2)),
-        Hit::SideSplit if g.side > 0 && g.tree_h > 0 && g.gap > 0 => {
-            let y = g.top + g.tree_h + g.gap / 2;
-            Some(RECT { left: 0, top: y - t / 2, right: g.side, bottom: y - t / 2 + t })
+        Hit::SideSplit => {
+            let gap = side_gap_rect(g)?;
+            let y = gap.top + (gap.bottom - gap.top) / 2;
+            Some(RECT { left: gap.left, top: y - t / 2, right: gap.right, bottom: y - t / 2 + t })
         }
         Hit::Col(k) if !g.zoom => {
             g.xs.get(k + 1)?;
@@ -383,9 +430,8 @@ pub(crate) fn hit(g: &Geo, x: i32, y: i32) -> Option<Hit> {
     if y < g.top || y >= g.bot {
         return None;
     }
-    if g.side > 0 && x >= 0 && x < g.side {
-        let y0 = g.top + g.tree_h;
-        if y >= y0 && y < y0 + g.gap {
+    if let Some(gap) = side_gap_rect(g) {
+        if x >= gap.left && x < gap.right && y >= gap.top && y < gap.bottom {
             return Some(Hit::SideSplit);
         }
     }
@@ -649,6 +695,7 @@ mod tests {
             gap: 8,
             side: 240,
             tree_h: 200,
+            fav_top: false,
             gx: 248,
             zoom: false,
             xs: vec![(256, 620), (628, 992)],
@@ -776,6 +823,7 @@ mod tests {
             gap: 8,
             side: 240,
             tree_h: 300,
+            fav_top: false,
             gx: 248,
             xs: vec![(248, 600), (608, 992)],
             ys: vec![vec![(66, 700)], vec![(66, 700)]],
@@ -784,8 +832,77 @@ mod tests {
         assert_eq!(hit(&g, 100, 66 + 300 + 3), Some(Hit::SideSplit));
         assert_eq!(hit(&g, 100, 66 + 200), None);
         assert_eq!(hit(&g, 244, 66 + 300 + 3), Some(Hit::Side));
-        let closed = Geo { side: 0, tree_h: 0, gx: 8, ..g };
+        let closed = Geo { side: 0, tree_h: 0, gx: 8, ..g.clone() };
         assert_eq!(hit(&closed, 4, 400), None);
+        let line = gap_line(&g, Hit::SideSplit, 2).unwrap();
+        let gap = side_gap_rect(&g).unwrap();
+        assert!(line.top >= gap.top && line.bottom <= gap.bottom);
+    }
+
+    fn plate(fav_top: bool, tree_h: i32) -> Geo {
+        Geo {
+            w: 1000,
+            h: 800,
+            top: 66,
+            bot: 700,
+            pad: 8,
+            gap: 8,
+            side: 240,
+            tree_h,
+            fav_top,
+            gx: 248,
+            xs: vec![(248, 600)],
+            ys: vec![vec![(66, 700)]],
+            zoom: false,
+        }
+    }
+
+    #[test]
+    fn both_orders_place_the_divider_and_keep_the_tree_share() {
+        let (height, gap, min) = (400, 8, 80);
+        for fav_top in [false, true] {
+            for pos in [0, 50, 196, 250, 400] {
+                let share = tree_share_at(pos, 0, height, gap, min, fav_top);
+                let (tree, fav) = split_heights(height, share, gap, min);
+                let top_h = if fav_top { fav } else { tree };
+                let again = tree_share_at(top_h, 0, height, gap, min, fav_top);
+                assert!((share - again).abs() < 1e-9, "{fav_top} {pos} {share} {again}");
+                assert!(tree >= 1 && fav >= 1, "{tree} {fav}");
+            }
+        }
+        // Dragging onto the top edge leaves the upper half at the minimum.
+        assert!((tree_share_at(0, 0, height, gap, min, false) - 80.0 / 392.0).abs() < 1e-9);
+        assert!((tree_share_at(0, 0, height, gap, min, true) - 312.0 / 392.0).abs() < 1e-9);
+        assert!((tree_share_at(400, 0, height, gap, min, true) - 80.0 / 392.0).abs() < 1e-9);
+        // An even split stays even after the halves trade places.
+        assert_eq!(split_heights(height, 0.5, gap, min), (196, 196));
+
+        let tree_on_top = plate(false, 300);
+        let fav_on_top = plate(true, 300);
+        assert_eq!(tree_on_top.side_top_h(), 300);
+        assert_eq!(fav_on_top.side_top_h(), 634 - 8 - 300);
+        assert_eq!(hit(&tree_on_top, 100, 66 + 300 + 3), Some(Hit::SideSplit));
+        assert_eq!(hit(&fav_on_top, 100, 66 + 300 + 3), None);
+        let fav_gap = side_gap_rect(&fav_on_top).unwrap();
+        assert_eq!(hit(&fav_on_top, 100, fav_gap.top + 3), Some(Hit::SideSplit));
+        assert_eq!(hit(&fav_on_top, 100, fav_gap.bottom + 4), None);
+        assert_eq!(hit(&fav_on_top, 244, fav_gap.top + 3), Some(Hit::Side));
+        let (tree, fav) = side_panes(&fav_on_top, 2);
+        assert!(fav.top < tree.top, "favourites sit above the tree");
+        assert_eq!(tree.top - fav.bottom, 8);
+        assert_eq!((fav.left, fav.right, tree.left, tree.right), (2, 238, 2, 238));
+        let (tree, fav) = side_panes(&tree_on_top, 2);
+        assert!(tree.top < fav.top);
+        assert_eq!(fav.top - tree.bottom, 8);
+        for g in [&tree_on_top, &fav_on_top] {
+            let gap = side_gap_rect(g).unwrap();
+            let line = gap_line(g, Hit::SideSplit, 2).unwrap();
+            assert_eq!((line.left, line.right), (gap.left, gap.right));
+            assert!(line.top >= gap.top && line.bottom <= gap.bottom, "{line:?} {gap:?}");
+            assert_eq!(line.bottom - line.top, 2);
+        }
+        assert!(side_gap_rect(&Geo { side: 0, tree_h: 0, ..fav_on_top.clone() }).is_none());
+        assert_eq!(gap_line(&Geo { side: 0, tree_h: 0, ..fav_on_top }, Hit::SideSplit, 2), None);
     }
 
     #[test]

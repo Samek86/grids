@@ -24,6 +24,12 @@ fn yes() -> bool {
 fn half_split() -> f64 {
     0.5
 }
+fn side_fav() -> String {
+    "fav".into()
+}
+fn side_is_fav(v: &String) -> bool {
+    v != "tree"
+}
 fn pins_open() -> bool {
     true
 }
@@ -211,6 +217,11 @@ struct SettingsFile {
     /// Folder tree's share of the left panel. Favourites use the rest. Missing means even.
     #[serde(default = "half_split", skip_serializing_if = "is_half_split")]
     side_split: f64,
+    /// Which half is on top. `"tree"` puts the folder tree above favourites.
+    /// Missing, `"fav"`, or anything else is favourites on top, and the key is omitted.
+    /// Not written into grids.ini.
+    #[serde(default = "side_fav", skip_serializing_if = "side_is_fav")]
+    side_order: String,
     /// Explorer pins group expanded. The pinned folders themselves are not stored.
     #[serde(default = "pins_open", skip_serializing_if = "pins_are_open")]
     explorer_pins_open: bool,
@@ -269,6 +280,12 @@ struct SettingsFile {
     /// Missing means on. The views themselves live in folder-views.json, never in grids.ini.
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     remember_folder_view: bool,
+    /// Status line and folder tooltip show folder totals. Missing means on. Omitted while on.
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    show_folder_sizes: bool,
+    /// Size UNC and mapped drives. Missing means off. Omitted while off.
+    #[serde(default, skip_serializing_if = "is_off")]
+    folder_sizes_network: bool,
     /// Quick look window size in DIP, per kind. Omitted until the user resizes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peek: Option<PeekJson>,
@@ -343,6 +360,7 @@ impl SettingsFile {
             tree: true,
             panel: String::new(),
             side_split: 0.5,
+            side_order: side_fav(),
             explorer_pins_open: true,
             explorer_files_open: true,
             edge: true,
@@ -365,6 +383,8 @@ impl SettingsFile {
             space_preview: true,
             peek_wheel_nav: true,
             remember_folder_view: true,
+            show_folder_sizes: true,
+            folder_sizes_network: false,
             peek: None,
             ev_asked: false,
             winmerge_path: String::new(),
@@ -436,6 +456,7 @@ impl SettingsFile {
             tree: s.tree_on,
             panel: String::new(),
             side_split: crate::sane_split(s.side_split),
+            side_order: if s.fav_top { side_fav() } else { "tree".into() },
             explorer_pins_open: s.pins_open,
             explorer_files_open: s.files_open,
             edge: s.edge,
@@ -458,6 +479,8 @@ impl SettingsFile {
             space_preview: s.space_preview,
             peek_wheel_nav: s.peek_wheel_nav,
             remember_folder_view: s.remember_views,
+            show_folder_sizes: s.folder_sizes,
+            folder_sizes_network: s.folder_sizes_network,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
             winmerge_path: s.winmerge_path.trim().to_string(),
@@ -508,6 +531,8 @@ impl SettingsFile {
         self.extra.remove("space_preview");
         self.extra.remove("peek_wheel_nav");
         self.extra.remove("remember_folder_view");
+        self.extra.remove("show_folder_sizes");
+        self.extra.remove("folder_sizes_network");
         self.extra.remove("layout_new");
         self.extra.remove("ctx_menu");
         self.extra.remove("ctx_labels");
@@ -580,6 +605,7 @@ impl SettingsFile {
         s.ext = self.ext;
         s.tree_on = self.tree;
         s.side_split = crate::sane_split(self.side_split);
+        s.fav_top = self.side_order != "tree";
         s.pins_open = self.explorer_pins_open;
         s.files_open = self.explorer_files_open;
         s.edge = self.edge;
@@ -602,6 +628,8 @@ impl SettingsFile {
         s.space_preview = self.space_preview;
         s.peek_wheel_nav = self.peek_wheel_nav;
         s.remember_views = self.remember_folder_view;
+        s.folder_sizes = self.show_folder_sizes;
+        s.folder_sizes_network = self.folder_sizes_network;
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
@@ -1496,6 +1524,77 @@ mod tests {
         assert!(dropped.get("panel").is_none());
         let wide = adopt(r#"{"side_split":9}"#).unwrap();
         assert!((wide.side_split - 1.0).abs() < 1e-9);
+        assert!(even.get("side_order").is_none());
+        assert!(Session::default().fav_top);
+    }
+
+    #[test]
+    fn side_order_defaults_to_favourites_and_round_trips_the_tree() {
+        let fresh = adopt("{}").unwrap();
+        assert!(fresh.fav_top);
+        let saved: Value = serde_json::from_str(&sync_text(&fresh)).unwrap();
+        assert!(saved.get("side_order").is_none());
+        assert!(!fresh.to_ini().contains("sideorder"));
+
+        let mut s = Session::default();
+        s.fav_top = false;
+        s.side_split = 0.25;
+        let text = sync_text(&s);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["side_order"], "tree");
+        assert!((v["side_split"].as_f64().unwrap() - 0.25).abs() < 1e-9);
+        let back = adopt(&text).unwrap();
+        assert!(!back.fav_top);
+        assert!((back.side_split - 0.25).abs() < 1e-9);
+        assert!(back.to_ini().contains("sideorder=tree\n"));
+        assert_eq!(Session::parse(&back.to_ini()).fav_top, false);
+
+        assert!(adopt(r#"{"side_order":"fav"}"#).unwrap().fav_top);
+        assert!(adopt(r#"{"side_order":"nope"}"#).unwrap().fav_top);
+        let tree_again: Value = serde_json::from_str(&sync_text(&adopt(r#"{"side_order":"tree"}"#).unwrap())).unwrap();
+        assert_eq!(tree_again["side_order"], "tree");
+        let cleared = adopt(r#"{"side_order":"fav","side_split":0.25}"#).unwrap();
+        assert!(cleared.fav_top);
+        assert!(serde_json::from_str::<Value>(&sync_text(&cleared)).unwrap().get("side_order").is_none());
+    }
+
+    #[test]
+    fn side_order_import_leaves_grids_ini_byte_for_byte() {
+        let root = scratch("side-order-ini");
+        let exe = root.join("exe");
+        let cfg = root.join("cfg");
+        let old = root.join("old");
+        std::fs::create_dir_all(&exe).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let body = "tree=1\nsplit=0.25\nlang=en\n";
+        let ini = exe.join("grids.ini");
+        std::fs::write(&ini, body).unwrap();
+        let loaded = load_at(&exe, &cfg, &old);
+        assert!(loaded.fav_top);
+        assert!((loaded.side_split - 0.25).abs() < 1e-9);
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), body);
+        assert!(ini.is_file());
+        assert!(!exe.join("grids.ini.bak").exists());
+        let json = std::fs::read_to_string(cfg.join(SETTINGS_FILE)).unwrap();
+        assert!(!json.contains("side_order"));
+        assert!(!json.contains("grids.ini"));
+
+        let root2 = scratch("side-order-tree");
+        let exe2 = root2.join("exe");
+        let cfg2 = root2.join("cfg");
+        let old2 = root2.join("old");
+        std::fs::create_dir_all(&exe2).unwrap();
+        std::fs::create_dir_all(&old2).unwrap();
+        let body2 = "sideorder=tree\nsplit=0.4\n";
+        let ini2 = exe2.join("grids.ini");
+        std::fs::write(&ini2, body2).unwrap();
+        let tree = load_at(&exe2, &cfg2, &old2);
+        assert!(!tree.fav_top);
+        assert!((tree.side_split - 0.4).abs() < 1e-9);
+        assert_eq!(std::fs::read_to_string(&ini2).unwrap(), body2);
+        assert!(!exe2.join("grids.ini.bak").exists());
+        let json2 = std::fs::read_to_string(cfg2.join(SETTINGS_FILE)).unwrap();
+        assert!(json2.contains("\"side_order\": \"tree\""));
     }
 
     #[test]
@@ -1661,6 +1760,41 @@ mod tests {
         file.merge_forward(&file.clone());
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["remember_folder_view"], false);
+        assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn folder_sizes_default_on_network_off_and_round_trip() {
+        assert!(Session::default().folder_sizes);
+        assert!(!Session::default().folder_sizes_network);
+        assert!(adopt("{}").unwrap().folder_sizes);
+        assert!(!adopt("{}").unwrap().folder_sizes_network);
+        assert!(Session::parse("side=1\n").folder_sizes);
+        assert!(!Session::parse("side=1\n").folder_sizes_network);
+        assert!(!Session::parse("foldersize=0").folder_sizes);
+        assert!(Session::parse("foldersizenet=1").folder_sizes_network);
+        assert!(!Session::parse("foldersizenet=0").folder_sizes_network);
+        let mut s = Session::default();
+        s.folder_sizes = false;
+        s.folder_sizes_network = true;
+        let back = Session::parse(&s.to_ini());
+        assert!(!back.folder_sizes && back.folder_sizes_network);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"show_folder_sizes\": false"), "{text}");
+        assert!(text.contains("\"folder_sizes_network\": true"), "{text}");
+        let loaded = adopt(&text).unwrap();
+        assert!(!loaded.folder_sizes && loaded.folder_sizes_network);
+        let def = pretty(&SettingsFile::from_session(&Session::default()));
+        assert!(!def.contains("show_folder_sizes") && !def.contains("folder_sizes_network"), "{def}");
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("show_folder_sizes".into(), serde_json::json!(true));
+        file.extra.insert("folder_sizes_network".into(), serde_json::json!(false));
+        file.extra.insert("future_flag".into(), serde_json::json!(1));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["show_folder_sizes"], false);
+        assert_eq!(saved["folder_sizes_network"], true);
+        assert_eq!(saved["future_flag"], 1);
         assert!(saved.get("extra").is_none());
     }
 
