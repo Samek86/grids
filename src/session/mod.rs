@@ -6,6 +6,8 @@ mod pick;
 mod split;
 
 pub(crate) use favtree::*;
+// `split` also exports `retarget_path` (saved-session path maps). Call this name from outside.
+pub(crate) use favtree::retarget_path as retarget_fav_path;
 pub(crate) use files::*;
 pub(crate) use load::*;
 pub(crate) use model::*;
