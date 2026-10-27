@@ -28,7 +28,9 @@ pub(crate) struct Pane {
     pub(crate) cookie: u32,
     pub(crate) disp: String,
     pub(crate) pending: Option<String>, // columns to put on when the next folder shows (session restore, open in)
-    pub(crate) settle: Option<(String, u8)>, // columns just put on, and passes left to hold narrow widths (TIMER_SETTLE)
+    pub(crate) settle: Option<(String, u8)>, // one later width check; the count is unused. Never SetColumns from the timer.
+    /// SetColumns / SetViewMode already used for the folder now showing. Automatic re-apply stops at one.
+    pub(crate) view_writes: u8,
     /// Folder whose view we last applied here. None while per-folder memory is off.
     pub(crate) view_watch: Option<crate::folderview::ViewWatch>,
     pub(crate) recover: Option<(String, String)>, // missing folder, and the parent opened in its place
