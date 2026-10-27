@@ -65,7 +65,7 @@ pub(crate) const TIMER_KIDS: usize = 16; // pane: a share's subfolder list did n
 pub(crate) const FVIEW_SAVE_MS: u32 = 700;
 pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
 pub(crate) const WM_EV: u32 = WM_APP + 51; // Everything status changed in the settings window
-pub(crate) const WM_UPDATE: u32 = WM_APP + 60; // update worker: wParam 0 found, 1 installed, 2 failed
+pub(crate) const WM_UPDATE: u32 = WM_APP + 60; // update worker: wParam 0 exe found, 1 installed, 2 failed, 3 zip only
 // tree-view messages (the sidebar's SysTreeView32)
 pub(crate) const TVM_GETNEXTITEM: u32 = 0x110A;
 pub(crate) const TVM_ENSUREVISIBLE: u32 = 0x1114;
