@@ -463,6 +463,49 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
     note_save();
 }
 
+/// A second `panegrid.exe`. When that process was started by this one, and the user
+/// did not ask for a new tab, the folder opens in the pane that was activated.
+pub(crate) unsafe fn open_forwarded(parent: u32, args: Vec<String>) -> HWND {
+    let place = crate::folderapp::handoff_action(parent, std::process::id(), crate::folderapp::intent_elapsed_ms());
+    if place == crate::folderapp::Handoff::InPlace && session_arg(&args).is_none() && args.iter().any(|s| !s.trim().is_empty()) {
+        return navigate_self_launch(&args);
+    }
+    open_in_new_window(args)
+}
+
+/// The pane that received the double-click (or the active pane, before any note).
+unsafe fn navigate_self_launch(args: &[String]) -> HWND {
+    if let Some((main, _)) = crate::folderapp::noted_pane() {
+        let h = HWND(main as *mut core::ffi::c_void);
+        if !h.0.is_null() && IsWindow(Some(h)).as_bool() {
+            bind_hwnd(h);
+        }
+    }
+    let h = app(|a| a.main);
+    reveal_window(h);
+    let n = app(|a| a.s.panes());
+    let pane = crate::folderapp::noted_pane().map(|(_, p)| p).unwrap_or_else(active_pane);
+    let pane = if n == 0 { 0 } else { pane.min(n - 1) };
+    let mut opened = false;
+    for path in args {
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if navigate(pane, path) {
+            opened = true;
+        }
+    }
+    if opened {
+        if !net_failed(pane) {
+            focus_view(pane);
+        }
+    } else {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    app(|a| a.main)
+}
+
 /// A second launch, with or without paths. Empty args are a blank window,
 /// unless single-window mode is on: then the existing window comes forward.
 pub(crate) unsafe fn open_in_new_window(args: Vec<String>) -> HWND {

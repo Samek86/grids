@@ -97,7 +97,10 @@ fn main() -> Result<()> {
         if launch_plan(s.single, s.one_window) != LaunchPlan::NewProcess {
             if let Some(prev) = running_instance() {
                 // Empty arguments still open a window. The running process is the one that can take focus.
-                let data: Vec<u16> = args.join("\n").encode_utf16().collect();
+                // The parent id lets that window tell a folder our own view just launched (parent is us)
+                // from Explorer or any other program (parent is not us).
+                let body = folderapp::handoff_text(folderapp::parent_pid(), &args);
+                let data: Vec<u16> = body.encode_utf16().collect();
                 let cd = CopyData { dw: COPY_ID, cb: (data.len() * 2) as u32, lp: data.as_ptr() as _ };
                 let mut pid = 0u32;
                 GetWindowThreadProcessId(prev, Some(&mut pid));

@@ -311,13 +311,13 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     return LRESULT(0);
                 }
                 // copy first: the sender's buffer is only valid during this call
-                let args = if cd.cb == 0 || cd.lp.is_null() {
-                    Vec::new()
+                let (parent, args) = if cd.cb == 0 || cd.lp.is_null() {
+                    (0, Vec::new())
                 } else {
                     let text = String::from_utf16_lossy(std::slice::from_raw_parts(cd.lp as *const u16, cd.cb as usize / 2));
-                    text.split('\n').filter(|s| !s.is_empty()).map(String::from).collect()
+                    crate::folderapp::parse_handoff(&text)
                 };
-                open_in_new_window(args);
+                open_forwarded(parent, args);
                 return LRESULT(1);
             }
             WM_ACTIVATE => {
