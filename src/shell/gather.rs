@@ -45,41 +45,22 @@ pub(crate) fn gather_plan(found: &[String], open: &[(usize, String)], active: us
 
 /// Status line for one gather. `opened` is the 1-based pane numbers that accepted a folder.
 /// `none` means Explorer had no file-system folder.
-pub(crate) fn gather_note(lang: u8, opened: &[usize], failed: usize, short: usize, none: bool) -> String {
+pub(crate) fn gather_note(opened: &[usize], failed: usize, short: usize, none: bool) -> String {
     let mut parts = Vec::new();
     if !opened.is_empty() {
         let k = opened.len();
         let list = opened.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
-        let s = if k == 1 { "" } else { "s" };
-        parts.push(match lang {
-            1 => format!("탐색기 폴더 {k}개 열기 요청 → 패널 {list}"),
-            2 => format!("エクスプローラーのフォルダー {k} 個を開く要求 → ペイン {list}"),
-            _ => format!("Opening {k} Explorer folder{s} in pane{s} {list}"),
-        });
+        let key = if k == 1 { Key::OpeningOne } else { Key::OpeningMany };
+        parts.push(tf(key, &[("k", &k.to_string()), ("list", &list)]));
     }
     if failed > 0 {
-        parts.push(match lang {
-            1 => format!("{failed}개 실패"),
-            2 => format!("{failed} 個失敗"),
-            _ => format!("{failed} failed"),
-        });
+        parts.push(tf(Key::GatherFailed, &[("failed", &failed.to_string())]));
     }
     if short > 0 {
-        parts.push(match lang {
-            1 => format!("패널이 모자라 {short}개 안 엶"),
-            2 => format!("ペインが足りず {short} 個は開かず"),
-            _ => format!("{short} not opened (not enough panes)"),
-        });
+        parts.push(tf(Key::GatherShort, &[("short", &short.to_string())]));
     }
     if parts.is_empty() {
-        return match (lang, none) {
-            (1, true) => "가져올 탐색기 폴더가 없습니다".into(),
-            (1, false) => "이미 모두 패널에 열려 있습니다".into(),
-            (2, true) => "取り込むエクスプローラーのフォルダーがありません".into(),
-            (2, false) => "すでにすべてペインで開いています".into(),
-            (_, true) => "No Explorer folders to bring in".into(),
-            _ => "Already open in panes".into(),
-        };
+        return tr(if none { Key::GatherNone } else { Key::GatherAlready }).to_string();
     }
     parts.join(" · ")
 }
@@ -130,7 +111,7 @@ pub(crate) unsafe fn gather_explorer() {
         failed = plan.len() - opened.len();
         focus_view(active);
     }
-    let note = gather_note(ui(), &opened, failed, short, found.is_empty());
+    let note = gather_note(&opened, failed, short, found.is_empty());
     if plan.is_empty() || failed + short > 0 {
         _ = MessageBeep(MB_ICONWARNING);
     }
@@ -182,18 +163,29 @@ mod tests {
 
     #[test]
     fn gather_note_names_panes_and_a_shortfall_in_each_language() {
-        assert_eq!(gather_note(0, &[2, 3], 0, 0, false), "Opening 2 Explorer folders in panes 2, 3");
-        assert_eq!(gather_note(0, &[2], 1, 2, false), "Opening 1 Explorer folder in pane 2 · 1 failed · 2 not opened (not enough panes)");
-        assert_eq!(gather_note(0, &[], 0, 1, false), "1 not opened (not enough panes)");
-        assert_eq!(gather_note(1, &[], 0, 2, false), "패널이 모자라 2개 안 엶");
-        assert_eq!(gather_note(1, &[2], 0, 0, false), "탐색기 폴더 1개 열기 요청 → 패널 2");
-        assert_eq!(gather_note(2, &[], 0, 1, false), "ペインが足りず 1 個は開かず");
-        assert_eq!(gather_note(2, &[2, 3], 1, 0, false), "エクスプローラーのフォルダー 2 個を開く要求 → ペイン 2, 3 · 1 個失敗");
-        assert_eq!(gather_note(0, &[], 0, 0, true), "No Explorer folders to bring in");
-        assert_eq!(gather_note(1, &[], 0, 0, true), "가져올 탐색기 폴더가 없습니다");
-        assert_eq!(gather_note(2, &[], 0, 0, true), "取り込むエクスプローラーのフォルダーがありません");
-        assert_eq!(gather_note(0, &[], 0, 0, false), "Already open in panes");
-        assert_eq!(gather_note(1, &[], 0, 0, false), "이미 모두 패널에 열려 있습니다");
-        assert_eq!(gather_note(2, &[], 0, 0, false), "すでにすべてペインで開いています");
+        let prev = UI.load(Ordering::Relaxed);
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(gather_note(&[2, 3], 0, 0, false), "Opening 2 Explorer folders in panes 2, 3");
+        assert_eq!(gather_note(&[2], 1, 2, false), "Opening 1 Explorer folder in pane 2 · 1 failed · 2 not opened (not enough panes)");
+        assert_eq!(gather_note(&[], 0, 1, false), "1 not opened (not enough panes)");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 2, false), "패널이 모자라 2개 안 엶");
+        assert_eq!(gather_note(&[2], 0, 0, false), "탐색기 폴더 1개 열기 요청 → 패널 2");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 1, false), "ペインが足りず 1 個は開かず");
+        assert_eq!(gather_note(&[2, 3], 1, 0, false), "エクスプローラーのフォルダー 2 個を開く要求 → ペイン 2, 3 · 1 個失敗");
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, true), "No Explorer folders to bring in");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, true), "가져올 탐색기 폴더가 없습니다");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, true), "取り込むエクスプローラーのフォルダーがありません");
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, false), "Already open in panes");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, false), "이미 모두 패널에 열려 있습니다");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(gather_note(&[], 0, 0, false), "すでにすべてペインで開いています");
+        UI.store(prev, Ordering::Relaxed);
     }
 }

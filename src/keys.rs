@@ -23,8 +23,8 @@ pub(crate) struct Chord {
 
 struct Cmd {
     id: &'static str,
-    cat: [&'static str; 3],
-    act: [&'static str; 3],
+    cat: crate::Key,
+    act: crate::Key,
     vk: u16,
     ctrl: bool,
     shift: bool,
@@ -40,83 +40,79 @@ impl Cmd {
     }
 }
 
-const fn cmd(id: &'static str, cat: [&'static str; 3], act: [&'static str; 3], vk: u16, ctrl: bool, shift: bool, alt: bool, win: bool, range: bool) -> Cmd {
+const fn cmd(id: &'static str, cat: crate::Key, act: crate::Key, vk: u16, ctrl: bool, shift: bool, alt: bool, win: bool, range: bool) -> Cmd {
     Cmd { id, cat, act, vk, ctrl, shift, alt, win, range }
 }
 
-const fn s(en: &'static str, ko: &'static str, ja: &'static str) -> [&'static str; 3] {
-    [en, ko, ja]
-}
-
-const TAB: [&str; 3] = s("Tab", "탭", "タブ");
-const PANTAB: [&str; 3] = s("Pane tab", "패널 탭", "ペイン タブ");
-const PANE: [&str; 3] = s("Pane", "패널", "ペイン");
-const MOVE: [&str; 3] = s("Move", "이동", "移動");
-const VIEW: [&str; 3] = s("View", "보기", "表示");
-const FILE: [&str; 3] = s("File", "파일", "ファイル");
-const SESS: [&str; 3] = s("Session", "세션", "セッション");
-const FAV: [&str; 3] = s("Favourites", "즐겨찾기", "お気に入り");
-const HELP: [&str; 3] = s("Help", "도움말", "ヘルプ");
-const WIN: [&str; 3] = s("Window", "창", "ウィンドウ");
+const TAB: crate::Key = crate::Key::Tab;
+const PANTAB: crate::Key = crate::Key::PaneTab;
+const PANE: crate::Key = crate::Key::Pane;
+const MOVE: crate::Key = crate::Key::Move;
+const VIEW: crate::Key = crate::Key::View;
+const FILE: crate::Key = crate::Key::File;
+const SESS: crate::Key = crate::Key::Session;
+const FAV: crate::Key = crate::Key::Favourites;
+const HELP: crate::Key = crate::Key::Help;
+const WIN: crate::Key = crate::Key::Window;
 
 const CMDS: &[Cmd] = &[
-    cmd("tab.new", TAB, s("New tab", "새 탭", "新しいタブ"), 0x54, true, false, false, false, false),
-    cmd("tab.close", TAB, s("Close tab", "탭 닫기", "タブを閉じる"), 0x57, true, false, false, false, false),
-    cmd("tab.next", TAB, s("Next tab", "다음 탭", "次のタブ"), 0x09, true, false, false, false, false),
-    cmd("tab.prev", TAB, s("Previous tab", "이전 탭", "前のタブ"), 0x09, true, true, false, false, false),
-    cmd("tab.reopen", TAB, s("Reopen closed tab", "닫은 탭 다시 열기", "閉じたタブを開き直す"), 0x54, true, true, false, false, false),
+    cmd("tab.new", TAB, crate::Key::NewTab, 0x54, true, false, false, false, false),
+    cmd("tab.close", TAB, crate::Key::CloseTab, 0x57, true, false, false, false, false),
+    cmd("tab.next", TAB, crate::Key::NextTab, 0x09, true, false, false, false, false),
+    cmd("tab.prev", TAB, crate::Key::PreviousTab, 0x09, true, true, false, false, false),
+    cmd("tab.reopen", TAB, crate::Key::ReopenClosedTab, 0x54, true, true, false, false, false),
     // Ctrl+K stays free. Duplicate tab is Ctrl+Alt+K; the tab right-click menu does the same.
-    cmd("tab.dup", TAB, s("Duplicate tab", "탭 복제", "タブを複製"), 0x4B, true, false, true, false, false),
-    cmd("pane.next", PANE, s("Next pane", "다음 패널", "次のペイン"), 0x22, true, false, false, false, false),
-    cmd("pane.prev", PANE, s("Previous pane", "이전 패널", "前のペイン"), 0x21, true, false, false, false, false),
-    cmd("pane.goto", PANE, s("Go to pane 1–9", "1–9번 패널로 이동", "ペイン 1〜9 へ移動"), 0x31, true, false, false, false, true),
+    cmd("tab.dup", TAB, crate::Key::DuplicateTab, 0x4B, true, false, true, false, false),
+    cmd("pane.next", PANE, crate::Key::NextPane, 0x22, true, false, false, false, false),
+    cmd("pane.prev", PANE, crate::Key::PreviousPane, 0x21, true, false, false, false, false),
+    cmd("pane.goto", PANE, crate::Key::GoPane19, 0x31, true, false, false, false, true),
     // Distinct from window tabs (Ctrl+T / Ctrl+W) and from moving between panes (Ctrl+PageUp / PageDown).
     // They run only while the focus is in a pane.
-    cmd("pane.tab.new", PANTAB, s("New pane tab", "새 패널 탭", "新しいペイン タブ"), 0x54, true, false, true, false, false),
-    cmd("pane.tab.close", PANTAB, s("Close pane tab", "패널 탭 닫기", "ペイン タブを閉じる"), 0x57, true, false, true, false, false),
-    cmd("pane.tab.next", PANTAB, s("Next pane tab", "다음 패널 탭", "次のペイン タブ"), 0x22, true, false, true, false, false),
-    cmd("pane.tab.prev", PANTAB, s("Previous pane tab", "이전 패널 탭", "前のペイン タブ"), 0x21, true, false, true, false, false),
-    cmd("pane.left", MOVE, s("Pane to the left", "왼쪽 패널", "左のペイン"), 0x25, false, true, true, false, false),
-    cmd("pane.right", MOVE, s("Pane to the right", "오른쪽 패널", "右のペイン"), 0x27, false, true, true, false, false),
-    cmd("pane.up", MOVE, s("Pane above", "위 패널", "上のペイン"), 0x26, false, true, true, false, false),
-    cmd("pane.down", MOVE, s("Pane below", "아래 패널", "下のペイン"), 0x28, false, true, true, false, false),
-    cmd("pane.swap.left", MOVE, s("Swap with the pane to the left", "왼쪽 패널과 자리 바꾸기", "左のペインと入れ替え"), 0x25, true, true, true, false, false),
-    cmd("pane.swap.right", MOVE, s("Swap with the pane to the right", "오른쪽 패널과 자리 바꾸기", "右のペインと入れ替え"), 0x27, true, true, true, false, false),
-    cmd("pane.swap.up", MOVE, s("Swap with the pane above", "위 패널과 자리 바꾸기", "上のペインと入れ替え"), 0x26, true, true, true, false, false),
-    cmd("pane.swap.down", MOVE, s("Swap with the pane below", "아래 패널과 자리 바꾸기", "下のペインと入れ替え"), 0x28, true, true, true, false, false),
-    cmd("nav.back", MOVE, s("Back", "뒤로", "戻る"), 0x25, false, false, true, false, false),
-    cmd("nav.fwd", MOVE, s("Forward", "앞으로", "進む"), 0x27, false, false, true, false, false),
-    cmd("nav.up", MOVE, s("Parent folder", "상위 폴더", "上のフォルダー"), 0x26, false, false, true, false, false),
-    cmd("nav.recent", MOVE, s("Recent folders", "최근 폴더", "最近のフォルダー"), 0x28, false, false, true, false, false),
-    cmd("nav.addr", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x4C, true, false, false, false, false),
-    cmd("nav.addr2", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x44, false, false, true, false, false),
-    cmd("nav.addr3", MOVE, s("Address bar", "주소창", "アドレス バー"), 0x73, false, false, false, false, false),
-    cmd("view.filter", VIEW, s("Search this folder", "이 폴더 검색", "このフォルダーを検索"), 0x46, true, false, false, false, false),
-    cmd("view.peek", VIEW, s("Quick look", "빠른 미리보기", "クイックルック"), 0x72, false, false, false, false, false),
-    cmd("focus.next", VIEW, s("Next focus", "다음 포커스", "次のフォーカス"), 0x75, false, false, false, false, false),
-    cmd("focus.prev", VIEW, s("Previous focus", "이전 포커스", "前のフォーカス"), 0x75, false, true, false, false, false),
-    cmd("view.hidden", VIEW, s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), 0x48, true, false, false, false, false),
-    cmd("view.panel", VIEW, s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), 0x45, true, true, false, false, false),
-    cmd("view.gather", VIEW, s("Open Explorer folders", "탐색기 폴더 가져오기", "エクスプローラーのフォルダーを開く"), 0x4F, true, true, false, false, false),
-    cmd("view.zoom", VIEW, s("Maximise / restore the pane", "패널 크게 보기 / 복원", "ペインを最大化 / 元に戻す"), 0x4D, true, true, false, false, false),
-    cmd("file.path", FILE, s("Copy full path", "전체 경로 복사", "フルパスをコピー"), 0x43, true, true, false, false, false),
-    cmd("file.rename", FILE, s("Batch rename", "일괄 이름 바꾸기", "一括リネーム"), 0x52, true, true, false, false, false),
-    cmd("file.sel", FILE, s("Select by pattern", "패턴으로 선택", "パターンで選択"), 0x6B, false, false, false, false, false),
-    cmd("file.sel2", FILE, s("Select by pattern", "패턴으로 선택", "パターンで選択"), 0x41, true, true, false, false, false),
-    cmd("file.desel", FILE, s("Deselect by pattern", "패턴으로 선택 해제", "パターンで選択解除"), 0x6D, false, false, false, false, false),
-    cmd("file.invert", FILE, s("Invert selection", "선택 반전", "選択を反転"), 0x6A, false, false, false, false, false),
-    cmd("file.new", FILE, s("New text file", "새 텍스트 문서", "新しいテキスト ファイル"), 0x4E, true, false, true, false, false),
-    cmd("file.dir", FILE, s("New folder", "새 폴더", "新しいフォルダー"), 0x4E, true, true, false, false, false),
-    cmd("file.mkdir", FILE, s("New folder in this pane", "이 패널에 새 폴더", "このペインに新しいフォルダー"), 0x76, false, false, false, false, false),
+    cmd("pane.tab.new", PANTAB, crate::Key::NewPaneTab, 0x54, true, false, true, false, false),
+    cmd("pane.tab.close", PANTAB, crate::Key::ClosePaneTab, 0x57, true, false, true, false, false),
+    cmd("pane.tab.next", PANTAB, crate::Key::NextPaneTab, 0x22, true, false, true, false, false),
+    cmd("pane.tab.prev", PANTAB, crate::Key::PreviousPaneTab, 0x21, true, false, true, false, false),
+    cmd("pane.left", MOVE, crate::Key::PaneLeft, 0x25, false, true, true, false, false),
+    cmd("pane.right", MOVE, crate::Key::PaneRight, 0x27, false, true, true, false, false),
+    cmd("pane.up", MOVE, crate::Key::PaneAbove, 0x26, false, true, true, false, false),
+    cmd("pane.down", MOVE, crate::Key::PaneBelow, 0x28, false, true, true, false, false),
+    cmd("pane.swap.left", MOVE, crate::Key::SwapWithPaneLeft, 0x25, true, true, true, false, false),
+    cmd("pane.swap.right", MOVE, crate::Key::SwapWithPaneRight, 0x27, true, true, true, false, false),
+    cmd("pane.swap.up", MOVE, crate::Key::SwapWithPaneAbove, 0x26, true, true, true, false, false),
+    cmd("pane.swap.down", MOVE, crate::Key::SwapWithPaneBelow, 0x28, true, true, true, false, false),
+    cmd("nav.back", MOVE, crate::Key::Back, 0x25, false, false, true, false, false),
+    cmd("nav.fwd", MOVE, crate::Key::Forward, 0x27, false, false, true, false, false),
+    cmd("nav.up", MOVE, crate::Key::ParentFolder, 0x26, false, false, true, false, false),
+    cmd("nav.recent", MOVE, crate::Key::RecentFolders, 0x28, false, false, true, false, false),
+    cmd("nav.addr", MOVE, crate::Key::AddressBar, 0x4C, true, false, false, false, false),
+    cmd("nav.addr2", MOVE, crate::Key::AddressBar, 0x44, false, false, true, false, false),
+    cmd("nav.addr3", MOVE, crate::Key::AddressBar, 0x73, false, false, false, false, false),
+    cmd("view.filter", VIEW, crate::Key::SearchThisFolder, 0x46, true, false, false, false, false),
+    cmd("view.peek", VIEW, crate::Key::QuickLook, 0x72, false, false, false, false, false),
+    cmd("focus.next", VIEW, crate::Key::NextFocus, 0x75, false, false, false, false, false),
+    cmd("focus.prev", VIEW, crate::Key::PreviousFocus, 0x75, false, true, false, false, false),
+    cmd("view.hidden", VIEW, crate::Key::ShowHiddenFiles, 0x48, true, false, false, false, false),
+    cmd("view.panel", VIEW, crate::Key::ShowLeftPanel, 0x45, true, true, false, false, false),
+    cmd("view.gather", VIEW, crate::Key::OpenExplorerFolders, 0x4F, true, true, false, false, false),
+    cmd("view.zoom", VIEW, crate::Key::MaximiseRestorePane, 0x4D, true, true, false, false, false),
+    cmd("file.path", FILE, crate::Key::CopyFullPath, 0x43, true, true, false, false, false),
+    cmd("file.rename", FILE, crate::Key::BatchRename, 0x52, true, true, false, false, false),
+    cmd("file.sel", FILE, crate::Key::SelectByPattern, 0x6B, false, false, false, false, false),
+    cmd("file.sel2", FILE, crate::Key::SelectByPattern, 0x41, true, true, false, false, false),
+    cmd("file.desel", FILE, crate::Key::DeselectByPattern, 0x6D, false, false, false, false, false),
+    cmd("file.invert", FILE, crate::Key::InvertSelection, 0x6A, false, false, false, false, false),
+    cmd("file.new", FILE, crate::Key::NewTextFile, 0x4E, true, false, true, false, false),
+    cmd("file.dir", FILE, crate::Key::NewFolder, 0x4E, true, true, false, false, false),
+    cmd("file.mkdir", FILE, crate::Key::NewFolderInThisPane, 0x76, false, false, false, false, false),
     // Ctrl+Alt+C is free (copy path is Ctrl+Shift+C, batch rename is Ctrl+Shift+R).
-    cmd("file.winmerge", FILE, s("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較"), 0x43, true, false, true, false, false),
-    cmd("sess.save", SESS, s("Save this tab", "이 탭 저장", "このタブを保存"), 0x53, true, false, false, false, false),
-    cmd("fav.list", FAV, s("Favourites", "즐겨찾기", "お気に入り"), 0x42, true, false, false, false, false),
-    cmd("app.settings", HELP, s("Settings", "설정", "設定"), 0xBC, true, false, false, false, false),
-    cmd("app.help", HELP, s("Shortcut help", "단축키 도움말", "ショートカットのヘルプ"), 0x70, false, false, false, false, false),
-    cmd("app.keys", HELP, s("Shortcut list", "단축키 목록", "ショートカット一覧"), 0xBF, true, false, false, false, false),
-    cmd("app.front", WIN, s("Bring Panegrid to the front", "Panegrid를 앞으로", "Panegrid を前面に"), 0x45, false, true, false, true, false),
-    cmd("win.new", WIN, s("New window", "새 창", "新しいウィンドウ"), 0x4E, true, false, false, false, false),
+    cmd("file.winmerge", FILE, crate::Key::CompareFoldersInWinmerge, 0x43, true, false, true, false, false),
+    cmd("sess.save", SESS, crate::Key::SaveThisTab, 0x53, true, false, false, false, false),
+    cmd("fav.list", FAV, crate::Key::Favourites, 0x42, true, false, false, false, false),
+    cmd("app.settings", HELP, crate::Key::Settings2, 0xBC, true, false, false, false, false),
+    cmd("app.help", HELP, crate::Key::ShortcutHelp, 0x70, false, false, false, false, false),
+    cmd("app.keys", HELP, crate::Key::ShortcutList, 0xBF, true, false, false, false, false),
+    cmd("app.front", WIN, crate::Key::BringPanegridFront, 0x45, false, true, false, true, false),
+    cmd("win.new", WIN, crate::Key::NewWindow, 0x4E, true, false, false, false, false),
 ];
 
 struct KeyState {
@@ -157,8 +153,8 @@ pub(crate) fn is_command(id: &str) -> bool {
     index(id).is_some()
 }
 
-fn label(t: [&'static str; 3]) -> String {
-    tr(t[0], t[1], t[2]).to_string()
+fn label(t: crate::Key) -> String {
+    tr(t).to_string()
 }
 
 pub(crate) fn action(i: usize) -> String {
@@ -537,57 +533,6 @@ fn parse_key_more(low: &str, raw: &str) -> Option<u16> {
     None
 }
 
-const EXPLORER: [&str; 3] = [
-    "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer. F5 reloads the active pane from anywhere in the window; a failed network folder is tried again\n\
-Ctrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\n\
-Space\tQuick look, same as F3. A space within a second of typing, or during IME composition, stays part of the name. Settings → Panes & view can turn this off\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\t탐색기와 동일. F5는 창의 어디서나 활성 패널을 새로고침하고, 네트워크 폴더 오류면 그 경로를 다시 시도\n\
-Ctrl+V\t복사한 그림(스크린샷, 브라우저 이미지)이 있으면 이 폴더에 PNG 파일로 저장\n\
-Space\t빠른 미리보기. F3과 같아요. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어 조합 중에는 이름의 일부로 들어가요. 설정 → 패널·보기에서 끌 수 있어요\n\n",
-    "F2, Del, Ctrl+C/X/V, F5\tエクスプローラーと同じ。F5 はウィンドウのどこからでもアクティブなペインを再読み込みし、ネットワーク フォルダーのエラーではそのパスを再試行\n\
-Ctrl+V\tコピーした画像（スクリーンショット、ブラウザーの画像）があれば、このフォルダーに PNG として保存\n\
-Space\tクイックルック。F3 と同じです。入力から 1 秒以内、または日本語・韓国語の変換中のスペースは名前の一部になります。設定 → ペインと表示でオフにできます\n\n",
-];
-
-const NOTES_EN: &str = "\
-Address bar: click a folder in the path to go there; click a › to list the folders inside; click the current folder or empty space, or press Ctrl+L, to type a path\n\
-Layout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n\
-⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns (order, widths, sort) and view; or copy / move the selected files to another pane's folder (up to 10,000). With only one pane, split side by side (new pane on the right, even split) and open that folder there. Nothing selected duplicates the current folder. Only files selected also duplicates it, and does not copy or move them\n\
-Save (Ctrl+S): save this tab (pane layout, folders, view, colour labels). A green dot means this tab's layout is unsaved (not folder moves)\n\
-Open session: open the saved tab as a new tab beside the current one. Open several opens each selected session as its own tab\n\
-Double-click a splitter: split evenly\n\
-Right-click a pane header: colour label (saved with the session, separate from the tab colour)\n\
-Pane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\n\
-Arguments: panegrid.exe C:\\a D:\\b ... or panegrid.exe work.grids\n\
-Ctrl+Alt+C compares the active pane's folder with the next pane in WinMerge. The gear menu and the file list can also compare two selected files, or one file with the same name in another pane. Settings → General sets the WinMerge path.\n\
-If Panegrid is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.";
-
-const NOTES_KO: &str = "\
-주소 칸: 경로의 폴더를 누르면 그리로 이동, › 를 누르면 그 안의 폴더 목록, 현재 폴더·빈 곳을 누르거나 Ctrl+L이면 경로 입력\n\
-레이아웃 버튼: 클릭 = 균등 배치, 누른 채 끌기 = 열마다 칸 수 (방향키+Enter도 가능)\n\
-⇄ 버튼: 선택한 폴더(없으면 현재 폴더)를 다른 패널에서 열기, 열 순서·폭·정렬과 보기도 함께. 또는 선택한 파일을 다른 패널 폴더로 복사·이동 (최대 10,000개). 패널이 하나뿐이면 좌우로 균등하게 나누고(새 패널은 오른쪽) 그 폴더를 거기서 엽니다. 선택이 없으면 현재 폴더를 복제합니다. 파일만 선택된 경우에도 현재 폴더를 복제하며, 파일은 복사·이동하지 않습니다\n\
-저장 (Ctrl+S): 이 탭을 저장 (패널 배치, 폴더, 보기, 색 라벨). 초록 점 = 이 탭의 저장 안 된 배치 변경(폴더 이동은 제외)\n\
-세션 열기: 저장한 탭을 현재 탭 옆에 새 탭으로 엽니다. 여러 개 열기는 고른 세션마다 탭 하나씩\n\
-스플리터 더블클릭: 균등 분할\n\
-패널 머리줄 오른쪽 클릭: 패널 색 라벨 (세션에 저장, 탭 색과는 별개)\n\
-패널 탭: 한 패널 안의 폴더입니다. 창 위쪽 탭과는 다릅니다. 폴더가 하나면 탭 줄이 숨고, ⇄ 오른쪽 버튼으로 탭을 추가합니다(Ctrl+Alt+T). 둘 이상이면 탭 줄이 나옵니다. 기본은 Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp 이고, 포커스가 그 패널에 있을 때만 동작합니다. +, ×, 가운데 클릭, 빈 줄 더블클릭도 됩니다\n\
-실행 인자: panegrid.exe C:\\a D:\\b ... 또는 panegrid.exe 작업.grids\n\
-Ctrl+Alt+C는 활성 패널의 폴더를 다음 패널과 WinMerge로 비교합니다. 톱니바퀴 메뉴와 파일 목록에서는 선택한 파일 둘, 또는 다른 패널의 같은 이름과도 비교할 수 있어요. WinMerge 경로는 설정 → 일반에서 지정합니다.\n\
-이미 실행 중이면 그 프로세스에 새 창이 열립니다. 창 하나만 쓰기가 켜져 있으면 그 창을 앞으로 가져오고, 경로는 탭으로 엽니다.";
-
-const NOTES_JA: &str = "\
-アドレス バー: パスのフォルダーをクリックするとそこへ移動。› で中のフォルダー一覧。現在のフォルダーか空き、または Ctrl+L でパスを入力\n\
-レイアウト ボタン: クリックで均等配置、押したままドラッグで列ごとの行数（方向キー+Enter も可）\n\
-⇄ ボタン: 選択したフォルダー（なければ現在のフォルダー）を別ペインで開く。列の順序・幅・並べ替えと表示も引き継ぐ。または選択したファイルを別ペインのフォルダーへコピー / 移動（最大 10,000 個）。ペインが一つのときは左右に均等に分け（新しいペインは右）、そのフォルダーをそこで開く。選択がなければ現在のフォルダーを複製する。ファイルだけが選択されているときも現在のフォルダーを複製し、ファイルはコピー / 移動しない\n\
-保存 (Ctrl+S): このタブを保存（ペインの配置、フォルダー、表示、色ラベル）。緑の点 = このタブの未保存のレイアウト変更（フォルダー移動は含まない）\n\
-セッションを開く: 保存したタブを現在のタブの隣に新しいタブで開きます。まとめて開くは選んだセッションをそれぞれタブにします\n\
-スプリッターをダブルクリック: 均等に分割\n\
-ペインの見出しを右クリック: ペインの色 (セッションに保存、タブの色とは別)\n\
-ペイン タブ: 一つのペインの中のフォルダーです。ウィンドウ上部のタブとは別です。フォルダーが一つならタブ列は隠れ、⇄ の右のボタンでタブを追加します（Ctrl+Alt+T）。二つ以上でタブ列が出ます。既定は Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp で、フォーカスがそのペインにあるときだけ動きます。+、×、中クリック、空いた列のダブルクリックも使えます\n\
-引数: panegrid.exe C:\\a D:\\b ... または panegrid.exe work.grids\n\
-Ctrl+Alt+C はアクティブなペインのフォルダーを次のペインと WinMerge で比較します。歯車メニューとファイル一覧では、選んだ二つのファイル、または別のペインの同じ名前とも比較できます。WinMerge のパスは設定 → 一般で指定します。\n\
-すでに起動している場合は、そのプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときは、そのウィンドウを前面にし、パスはタブで開きます。";
-
 pub(crate) fn help_text() -> String {
     let mut s = String::new();
     for i in 0..CMDS.len() {
@@ -596,8 +541,8 @@ pub(crate) fn help_text() -> String {
         s.push_str(&action(i));
         s.push('\n');
     }
-    s.push_str(tr(EXPLORER[0], EXPLORER[1], EXPLORER[2]));
-    s.push_str(tr(NOTES_EN, NOTES_KO, NOTES_JA));
+    s.push_str(tr(crate::Key::HelpExplorer));
+    s.push_str(tr(crate::Key::HelpNotes));
     s
 }
 
@@ -684,7 +629,7 @@ mod tests {
         assert_eq!(lookup(0x74, false, false, false, false), None); // F5 stays a pane refresh, not a binding
         let dup = index("tab.dup").unwrap();
         assert_eq!(CMDS[dup].cat, TAB);
-        assert_eq!(CMDS[dup].act, ["Duplicate tab", "탭 복제", "タブを複製"]);
+        assert_eq!(CMDS[dup].act, crate::Key::DuplicateTab);
         assert_eq!(lookup(b'K' as u16, true, false, true, false), Some(dup));
         assert!(help_text().lines().any(|l| l == "Ctrl+Alt+K\tDuplicate tab"));
         assert_eq!(lookup(b'K' as u16, true, false, false, false), None); // Ctrl+K stays free

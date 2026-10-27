@@ -207,8 +207,8 @@ unsafe fn render_peek(gen: usize, req: &PeekReq) {
         Err(_) => Body::Card {
             icon: None,
             rows: vec![(
-                tr("Preview", "미리보기", "プレビュー").to_string(),
-                tr("This file could not be previewed", "이 파일을 미리볼 수 없습니다", "このファイルはプレビューできません").to_string(),
+                tr(crate::Key::Preview).to_string(),
+                tr(crate::Key::ThisFileCouldNotBePreviewed).to_string(),
             )],
         },
     };
@@ -1227,7 +1227,7 @@ fn peek_host_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let font = app(|a| a.font);
                 buffered(h, |dc, rc| {
                     fill(dc, rc, pal().card);
-                    text(dc, rc, tr("Opening…   Esc: cancel", "여는 중…   Esc: 취소", "開いています…   Esc: キャンセル"), font, pal().sub, DT_CENTER);
+                    text(dc, rc, tr(crate::Key::OpeningEscCancel), font, pal().sub, DT_CENTER);
                 });
             }
             _ => return DefWindowProcW(h, msg, wp, lp),
@@ -2159,7 +2159,7 @@ unsafe fn paint_text(dc: HDC, area: RECT, gen: usize, text: &str, kind: TextKind
         if cut {
             let y = area.top + total - s(24) - sy;
             let r = RECT { left: area.left, top: y, right: area.right, bottom: y + s(24) };
-            text_flags(dc, r, tr("… only the first 512 KB is shown", "… 앞부분 512 KB만 표시", "… 先頭 512 KB だけ表示"), font, pal().sub, DT_SINGLELINE);
+            text_flags(dc, r, tr(crate::Key::OnlyFirst512KbIsShown), font, pal().sub, DT_SINGLELINE);
         }
     });
 }
@@ -2170,7 +2170,7 @@ unsafe fn paint_table(dc: HDC, area: RECT, rows: &[Vec<String>], cut: bool, font
     let f = fonts(dpi, font);
     let cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if cols == 0 {
-        text(dc, area, tr("Empty", "비어 있음", "空です"), font, pal().sub, DT_CENTER);
+        text(dc, area, tr(crate::Key::Empty), font, pal().sub, DT_CENTER);
         return;
     }
     let mut widths = vec![s(36); cols];
@@ -2213,7 +2213,7 @@ unsafe fn paint_table(dc: HDC, area: RECT, rows: &[Vec<String>], cut: bool, font
         if cut {
             let top = area.top + rows.len() as i32 * rh - sy;
             let r = RECT { left: area.left + s(6), top, right: area.right, bottom: top + rh };
-            text(dc, r, tr("… more rows not shown", "… 이후 행은 생략", "… これ以降の行は省略"), font, pal().sub, DT_LEFT);
+            text(dc, r, tr(crate::Key::MoreRowsNotShown), font, pal().sub, DT_LEFT);
         }
     });
 }
@@ -2223,7 +2223,7 @@ unsafe fn paint_list(dc: HDC, area: RECT, rows: &[(String, String)], font: HFONT
     let rh = app(|a| a.fh) + s(8);
     let top0 = area.top;
     if rows.is_empty() {
-        text(dc, area, tr("Empty", "비어 있음", "空です"), font, pal().sub, DT_CENTER);
+        text(dc, area, tr(crate::Key::Empty), font, pal().sub, DT_CENTER);
         return;
     }
     let page = area.bottom - top0;
@@ -2300,7 +2300,7 @@ unsafe fn paint_pages(dc: HDC, area: RECT, pages: &[Pix], total: u32, font: HFON
         if more {
             let top = area.top + oy + ch - scaled(footer, zoom);
             let r = RECT { left: area.left, top, right: area.right, bottom: top + s(32) };
-            let t = format!("{} {} / {}", tr("Rendering pages…", "페이지 그리는 중…", "ページを描いています…"), pages.len(), total);
+            let t = format!("{} {} / {}", tr(crate::Key::RenderingPages), pages.len(), total);
             text(dc, r, &t, font, pal().sub, DT_CENTER);
         }
     });
@@ -2391,10 +2391,10 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
             Some(Body::Handler(_)) => {
                 plate();
                 if hosted != Some(gen) {
-                    text(dc, g.stage, tr("Opening…   Esc: cancel", "여는 중…   Esc: 취소", "開いています…   Esc: キャンセル"), font, pal().sub, DT_CENTER);
+                    text(dc, g.stage, tr(crate::Key::OpeningEscCancel), font, pal().sub, DT_CENTER);
                 }
             }
-            None => text(dc, g.stage, tr("Loading…", "불러오는 중…", "読み込み中…"), font, pal().sub, DT_CENTER),
+            None => text(dc, g.stage, tr(crate::Key::Loading), font, pal().sub, DT_CENTER),
         }
         drop(j);
         paint_bars(dc, h, accent);
@@ -2642,9 +2642,9 @@ unsafe fn peek_tip(h: HWND, hot: Hot) {
         return;
     }
     let text = match hot {
-        Hot::Max if view(|v| v.maximized) => Some(tr("Restore", "복원", "元に戻す")),
-        Hot::Max => Some(tr("Maximise", "최대화", "最大化")),
-        Hot::Close => Some(tr("Close", "닫기", "閉じる")),
+        Hot::Max if view(|v| v.maximized) => Some(tr(crate::Key::Restore)),
+        Hot::Max => Some(tr(crate::Key::Maximise)),
+        Hot::Close => Some(tr(crate::Key::Close)),
         _ => None,
     };
     let Some(text) = text else {

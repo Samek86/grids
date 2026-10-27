@@ -11,19 +11,19 @@ use super::*;
 
 /// 'Folder not found', in the UI language.
 pub(crate) fn folder_gone_text() -> &'static str {
-    tr("Folder not found", "폴더를 찾을 수 없습니다", "フォルダーが見つかりません")
+    tr(crate::Key::FolderNotFound)
 }
 
 /// Short note under a missing favourite's location. Files and folders both use it.
 pub(crate) fn fav_missing_note() -> &'static str {
-    tr("Not found", "찾을 수 없음", "見つかりません")
+    tr(crate::Key::NotFound)
 }
 
 /// Remove, then Change location. The ellipsis is the one character, matching the button.
 pub(crate) fn folder_gone_buttons() -> (&'static str, &'static str) {
     (
-        tr("Remove from favourites", "즐겨찾기에서 제거", "お気に入りから削除"),
-        tr("Change location…", "위치 변경…", "場所を変更…"),
+        tr(crate::Key::RemoveFromFavourites),
+        tr(crate::Key::ChangeLocation),
     )
 }
 

@@ -27,13 +27,13 @@ pub(crate) fn drive_of(path: &str) -> Option<u8> {
 
 pub(crate) fn drive_tip(c: u8, kind: u32) -> String {
     let name = match kind {
-        2 => tr("Removable drive", "이동식 드라이브", "リムーバブル ドライブ"),
-        3 => tr("Local disk", "로컬 디스크", "ローカル ディスク"),
-        4 => tr("Network drive", "네트워크 드라이브", "ネットワーク ドライブ"),
-        5 => tr("CD/DVD drive", "CD/DVD 드라이브", "CD/DVD ドライブ"),
-        _ => tr("Drive", "드라이브", "ドライブ"),
+        2 => tr(crate::Key::RemovableDrive),
+        3 => tr(crate::Key::LocalDisk),
+        4 => tr(crate::Key::NetworkDrive),
+        5 => tr(crate::Key::CdDvdDrive),
+        _ => tr(crate::Key::Drive),
     };
-    format!("{name} ({}:) — {}", c as char, tr("open in the active pane", "지금 패널에서 열기", "アクティブなペインで開く"))
+    format!("{name} ({}:) — {}", c as char, tr(crate::Key::OpenInActivePane))
 }
 
 /// Creates or removes the button for each letter that came or went. True when any did.

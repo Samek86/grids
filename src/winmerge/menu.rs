@@ -97,7 +97,7 @@ pub(crate) fn context_labels() -> Vec<String> {
 }
 
 fn folders_name() -> String {
-    tr("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較").to_string()
+    tr(crate::Key::CompareFoldersInWinmerge).to_string()
 }
 
 /// App items next to Favourites. Only the commands that fit this click are added.
@@ -291,11 +291,11 @@ fn folders_label(chord: &str) -> String {
 }
 
 fn files_label() -> String {
-    tr("Compare the two files in WinMerge", "WinMerge로 두 파일 비교", "WinMerge で二つのファイルを比較").to_string()
+    tr(crate::Key::CompareTwoFilesInWinmerge).to_string()
 }
 
 fn same_label() -> String {
-    tr("Compare with the same name in the other pane", "다른 패널의 같은 이름과 비교", "別のペインの同じ名前と比較").to_string()
+    tr(crate::Key::CompareWithSameNameInOtherPane).to_string()
 }
 
 fn pane_label(index: usize, path: &str) -> String {

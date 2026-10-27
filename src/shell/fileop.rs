@@ -121,13 +121,10 @@ pub(crate) unsafe fn copy_paths(a: usize) {
         return;
     }
     let n = paths.len();
-    let note = match (ui(), n) {
-        (1, 1) => "경로 복사함".into(),
-        (1, n) => format!("경로 {n}개 복사함"),
-        (2, 1) => "パスをコピーしました".into(),
-        (2, n) => format!("パスを {n} 個コピーしました"),
-        (_, 1) => "Copied path".into(),
-        (_, n) => format!("Copied {n} paths"),
+    let note = if n == 1 {
+        tr(Key::CopiedPath).to_string()
+    } else {
+        tf(Key::CopiedPaths, &[("n", &n.to_string())])
     };
     app(|x| x.note = Some((note, Instant::now() + std::time::Duration::from_secs(3))));
     update_status();
@@ -232,12 +229,7 @@ pub(crate) fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// `Clipboard image 2026-10-21 153012.png`, with ` (k)` from the second try on.
-pub(crate) fn image_name(lang: u8, t: &SYSTEMTIME, k: u32) -> String {
-    let head = match lang {
-        1 => "클립보드 이미지",
-        2 => "クリップボード画像",
-        _ => "Clipboard image",
-    };
+pub(crate) fn image_name(head: &str, t: &SYSTEMTIME, k: u32) -> String {
     let n = if k >= 2 { format!(" ({k})") } else { String::new() };
     format!("{head} {:04}-{:02}-{:02} {:02}{:02}{:02}{n}.png", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
 }
@@ -269,37 +261,25 @@ pub(crate) static SAVED: Mutex<Option<String>> = Mutex::new(None);
 
 /// Encodes and saves on a worker. The pane's selection, focus and folder stay as they are.
 pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
-    let lang = ui();
+    let head = tr(Key::ClipboardImage).to_string();
+    let unreadable = tr(Key::UnreadablePicture).to_string();
+    let saved = tr(Key::SavedName).to_string();
+    let fail = tr(Key::ClipboardSaveFail).to_string();
     let job = std::thread::Builder::new().name("panegrid-image".into()).spawn(move || {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe {
         let png = match pic {
             Pic::Png(b) => Ok(b),
-            Pic::Dib(d) => dib_to_bmp(&d)
-                .ok_or_else(|| match lang {
-                    1 => "읽을 수 없는 그림".to_string(),
-                    2 => "読めない画像".to_string(),
-                    _ => "unreadable picture".to_string(),
-                })
-                .and_then(|b| to_png(&b).map_err(|e| e.message())),
+            Pic::Dib(d) => dib_to_bmp(&d).ok_or_else(|| unreadable.clone()).and_then(|b| to_png(&b).map_err(|e| e.message())),
         };
         let now = GetLocalTime();
-        match png.and_then(|b| save_unique(Path::new(&dst), |k| image_name(lang, &now, k), &b).map_err(|e| e.to_string())) {
+        match png.and_then(|b| save_unique(Path::new(&dst), |k| image_name(&head, &now, k), &b).map_err(|e| e.to_string())) {
             Ok(name) => {
-                let note = match lang {
-                    1 => format!("{name} 저장함"),
-                    2 => format!("{name} を保存しました"),
-                    _ => format!("Saved {name}"),
-                };
+                let note = saved.replace("{name}", &name);
                 *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
             }
             Err(e) => {
-                let what = match lang {
-                    1 => "클립보드 그림을 저장하지 못했습니다: ",
-                    2 => "クリップボードの画像を保存できませんでした: ",
-                    _ => "Couldn't save the clipboard picture: ",
-                };
-                MessageBoxW(None, &HSTRING::from(format!("{what}{e}")), w!("Panegrid"), MB_ICONWARNING);
+                MessageBoxW(None, &HSTRING::from(format!("{fail}{e}")), w!("Panegrid"), MB_ICONWARNING);
             }
         }
         }));
@@ -388,7 +368,7 @@ pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv
         let _busy = busy;
         if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
-                let what = if mv { tr("Moving failed: ", "이동하지 못했습니다: ", "移動できませんでした: ") } else { tr("Copying failed: ", "복사하지 못했습니다: ", "コピーできませんでした: ") };
+                let what = if mv { tr(crate::Key::MovingFailed) } else { tr(crate::Key::CopyingFailed) };
                 let text = HSTRING::from(format!("{what}{}", e.message()));
                 MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
             }
@@ -434,9 +414,9 @@ pub(crate) unsafe fn delete_selection(i: usize, shift: bool) {
     if ask {
         let n = paths.len();
         let verb = if permanent {
-            tr("Permanently delete", "완전히 삭제", "完全に削除")
+            tr(crate::Key::PermanentlyDelete)
         } else {
-            tr("Move to the Recycle Bin", "휴지통으로 이동", "ごみ箱へ移動")
+            tr(crate::Key::MoveRecycleBin)
         };
         let text = HSTRING::from(format!("{verb} ({n})"));
         let owner = app(|a| a.main);
@@ -456,7 +436,7 @@ pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool, ask_owner:
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         if let Err(e) = run_delete(&srcs, permanent, ask_owner) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
-                let text = HSTRING::from(format!("{}{}", tr("Delete failed: ", "삭제하지 못했습니다: ", "削除できませんでした: "), e.message()));
+                let text = HSTRING::from(format!("{}{}", tr(crate::Key::DeleteFailed), e.message()));
                 _ = MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
             }
         }
@@ -489,7 +469,7 @@ pub(crate) unsafe fn run_delete(srcs: &[String], permanent: bool, ask_owner: isi
 }
 
 pub(crate) fn default_new_name() -> String {
-    tr("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt").into()
+    tr(crate::Key::NewTextDocumentTxt).into()
 }
 
 pub(crate) unsafe fn pick_folder(owner: HWND) -> Option<String> {
@@ -534,7 +514,7 @@ pub(crate) unsafe fn file_dialog(owner: HWND, save: bool) -> Option<String> {
 
 pub(crate) fn settings_filter() -> Vec<u16> {
     let mut s = String::new();
-    for (label, spec) in [(tr("JSON", "JSON", "JSON"), "*.json"), (tr("Settings", "설정", "設定"), "*.json;*.ini"), (tr("All", "모두", "すべて"), "*.*")] {
+    for (label, spec) in [(tr(crate::Key::Json), "*.json"), (tr(crate::Key::Settings2), "*.json;*.ini"), (tr(crate::Key::All), "*.*")] {
         s.push_str(label);
         s.push('\0');
         s.push_str(spec);
@@ -717,9 +697,9 @@ mod tests {
             assert!(!picture_only(k == 0, k == 1, k == 2, true));
         }
         let t = SYSTEMTIME { wYear: 2026, wMonth: 10, wDay: 21, wHour: 15, wMinute: 30, wSecond: 2, ..Default::default() };
-        assert_eq!(image_name(0, &t, 1), "Clipboard image 2026-10-21 153002.png");
-        assert_eq!(image_name(1, &t, 2), "클립보드 이미지 2026-10-21 153002 (2).png");
-        assert_eq!(image_name(2, &t, 1), "クリップボード画像 2026-10-21 153002.png");
+        assert_eq!(image_name("Clipboard image", &t, 1), "Clipboard image 2026-10-21 153002.png");
+        assert_eq!(image_name("클립보드 이미지", &t, 2), "클립보드 이미지 2026-10-21 153002 (2).png");
+        assert_eq!(image_name("クリップボード画像", &t, 1), "クリップボード画像 2026-10-21 153002.png");
         let dir = std::env::temp_dir().join(format!("grids-picture-{}", std::process::id()));
         _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -11,6 +11,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::*;
+use crate::tf;
 
 pub unsafe fn open(owner: HWND) {
     ensure_class();
@@ -68,8 +69,8 @@ pub unsafe fn refresh() {
     fill_strings(h);
     let _ = SetWindowTextW(h, &HSTRING::from(tx(TITLE)));
     cue(h, S_SEARCH, tx(FIND));
-    cue(h, S_KEYQ, tx(s("Search actions or keys", "동작 또는 키 검색", "操作またはキーを検索")));
-    cue(h, S_WM, tx(s("Auto-detect", "자동 감지", "自動検出")));
+    cue(h, S_KEYQ, tx(crate::Key::SearchActionsOrKeys));
+    cue(h, S_WM, tx(crate::Key::AutoDetect));
     layout(h);
     let _ = InvalidateRect(Some(h), None, true);
 }
@@ -134,11 +135,7 @@ fn rebuild_fonts() {
     let face = if custom.is_empty() { fallback } else { custom.as_str() };
     // A chosen face is the page title at weight 700. The language default keeps its own title face.
     let (title_face, title_w) = if custom.is_empty() {
-        match crate::ui() {
-            1 => ("Malgun Gothic", 700), // no semibold; bold is the Korean title face
-            2 => ("Yu Gothic UI", 700),
-            _ => ("Segoe UI Semibold", 600),
-        }
+        crate::title_style()
     } else {
         (face, 700)
     };
@@ -191,21 +188,21 @@ unsafe fn build_children(h: HWND) {
     }
     let btn = |id, label: &str, on| child_at(h, w!("BUTTON"), label, 0xB | tab | if on { 0 } else { dis }, id, font);
     btn(S_CLOSE, tx(CLOSE_L), true);
-    btn(S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す")), true);
-    btn(S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
-    btn(S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…")), true);
-    btn(S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く")), true);
-    btn(S_ADV_OPEN, tx(s("Open folder", "폴더 열기", "フォルダーを開く")), true);
-    btn(S_ADV_EX, tx(s("Export", "내보내기", "エクスポート")), true);
-    btn(S_ADV_IM, tx(s("Import", "가져오기", "インポート")), true);
-    btn(S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…")), true);
+    btn(S_RESET, tx(crate::Key::ResetAllDefaults), true);
+    btn(S_SESS, tx(crate::Key::OpenFolder), true);
+    btn(S_ACCENT, tx(crate::Key::Custom2), true);
+    btn(S_GITHUB, tx(crate::Key::OpenGithub), true);
+    btn(S_ADV_OPEN, tx(crate::Key::OpenFolder), true);
+    btn(S_ADV_EX, tx(crate::Key::Export), true);
+    btn(S_ADV_IM, tx(crate::Key::Import), true);
+    btn(S_ADV_RESET, tx(crate::Key::Reset), true);
     btn(S_EV, ev_button_label(), true);
-    btn(S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う")), true);
-    btn(S_FV_RESET, tx(s("Reset", "지우기", "消す")), true);
-    btn(S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す")), true);
+    btn(S_FV_DEF, tx(crate::Key::SetFromThisPane), true);
+    btn(S_FV_RESET, tx(crate::Key::Reset2), true);
+    btn(S_FV_CLEAR, tx(crate::Key::ClearAll), true);
     btn(S_CTX_RESET, tx(CTX_RESET_L), true);
     child_at(h, w!("EDIT"), "", 0x80 | tab, S_WM, font);
-    btn(S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…")), true);
+    btn(S_WM_BROWSE, tx(crate::Key::Browse), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
@@ -228,63 +225,52 @@ fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
 }
 
 unsafe fn fill_strings(h: HWND) {
-    let auto = {
-        let name = match Lang::Auto.resolve() {
-            1 => "한국어",
-            2 => "日本語",
-            _ => "English",
-        };
-        format!("{} ({name})", tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")))
-    };
+    let options = crate::settings_languages();
     let lang = app(|a| a.s.lang);
-    let lang_i = match lang {
-        Lang::Auto => 0,
-        Lang::En => 1,
-        Lang::Ko => 2,
-        Lang::Ja => 3,
-    };
-    fill_combo(h, S_LANG, &[auto, "English".into(), "한국어".into(), "日本語".into()], lang_i);
+    let lang_i = options.iter().position(|(l, _)| *l == lang).unwrap_or(0);
+    let labels: Vec<String> = options.iter().map(|(_, name)| name.clone()).collect();
+    fill_combo(h, S_LANG, &labels, lang_i);
     fill_face(h);
     let theme = app(|a| a.s.theme) as usize;
-    fill_combo(h, S_THEME, &[tx(s("Follow Windows", "Windows 설정 따르기", "Windows の設定に従う")).into(), tx(s("Light", "라이트", "ライト")).into(), tx(s("Dark", "다크", "ダーク")).into()], theme.min(2));
+    fill_combo(h, S_THEME, &[tx(crate::Key::FollowWindows).into(), tx(crate::Key::Light).into(), tx(crate::Key::Dark).into()], theme.min(2));
     let boot = app(|a| a.s.boot) as usize;
-    fill_combo(h, S_START, &[tx(s("Restore last state", "마지막 상태 복원", "前回の状態を復元")).into(), tx(s("Open a session…", "세션 열기…", "セッションを開く…")).into(), tx(s("Default layout", "기본 레이아웃", "既定のレイアウト")).into()], boot.min(2));
-    let view_labels: Vec<String> = crate::EXPLORER_VIEWS.iter().map(|&(_, _, en, ko, ja)| tx(s(en, ko, ja)).to_string()).collect();
+    fill_combo(h, S_START, &[tx(crate::Key::RestoreLastState).into(), tx(crate::Key::OpenSession3).into(), tx(crate::Key::DefaultLayout).into()], boot.min(2));
+    let view_labels: Vec<String> = crate::EXPLORER_VIEWS.iter().map(|&(_, _, key)| tr(key).to_string()).collect();
     let view_i = app(|a| {
         let (mode, icon) = a.s.default_view();
         crate::explorer_view_index(mode, icon).unwrap_or(5)
     });
     fill_combo(h, S_VIEW, &view_labels, view_i);
     let start = app(|a| a.s.start_new) as usize;
-    fill_combo(h, S_DIR, &[tx(s("This PC", "내 PC", "PC")).into(), tx(s("Desktop", "바탕 화면", "デスクトップ")).into(), tx(s("Choose a folder…", "지정 폴더…", "フォルダーを指定…")).into()], start.min(2));
+    fill_combo(h, S_DIR, &[tx(crate::Key::ThisPc).into(), tx(crate::Key::Desktop).into(), tx(crate::Key::ChooseFolder).into()], start.min(2));
     let del = app(|a| a.s.del) as usize;
-    fill_combo(h, S_DEL, &[tx(s("Recycle Bin", "휴지통으로", "ごみ箱へ")).into(), tx(s("Delete permanently", "완전 삭제", "完全に削除")).into()], del.min(1));
+    fill_combo(h, S_DEL, &[tx(crate::Key::RecycleBin).into(), tx(crate::Key::DeletePermanently).into()], del.min(1));
     let custom = app(|a| a.s.new_name.clone());
-    let new_label = if custom.is_empty() { tx(s("Custom…", "직접 지정…", "直接指定…")).to_string() } else { custom };
+    let new_label = if custom.is_empty() { tx(crate::Key::Custom2).to_string() } else { custom };
     let new_i = usize::from(!app(|a| a.s.new_name.is_empty()));
-    fill_combo(h, S_NEW, &[tx(s("New Text Document.txt", "새 텍스트 문서.txt", "新しいテキスト ドキュメント.txt")).into(), new_label], new_i);
+    fill_combo(h, S_NEW, &[tx(crate::Key::NewTextDocumentTxt).into(), new_label], new_i);
     let dropm = app(|a| a.s.dropm) as usize;
-    fill_combo(h, S_DROP, &[tx(s("Windows rules (same drive = move)", "Windows 규칙(같은 드라이브=이동)", "Windows の規則（同じドライブ=移動）")).into(), tx(s("Always copy", "항상 복사", "常にコピー")).into(), tx(s("Always ask", "항상 묻기", "常に確認")).into()], dropm.min(2));
+    fill_combo(h, S_DROP, &[tx(crate::Key::WindowsRulesSameDriveMove).into(), tx(crate::Key::AlwaysCopy).into(), tx(crate::Key::AlwaysAsk).into()], dropm.min(2));
     let layout_new = app(|a| a.s.layout_new) as usize;
-    fill_combo(h, S_LAYOUT, &[tx(s("Two panes, side by side", "좌우 2개", "左右に2つ")).into(), tx(s("Two panes, top and bottom", "위아래 2개", "上下に2つ")).into(), tx(s("2×2 (four panes)", "2×2 (4개)", "2×2（4つ）")).into(), tx(s("One pane", "1개", "1つ")).into()], layout_new.min(3));
+    fill_combo(h, S_LAYOUT, &[tx(crate::Key::TwoPanesSideBySide).into(), tx(crate::Key::TwoPanesTopAndBottom).into(), tx(crate::Key::K22FourPanes).into(), tx(crate::Key::OnePane).into()], layout_new.min(3));
     let side_i = usize::from(!app(|a| a.s.fav_top));
     fill_combo(h, S_SIDE, &[tx(SIDE_FAV).into(), tx(SIDE_TREE).into()], side_i.min(1));
     let labels = [
         (S_CLOSE, tx(CLOSE_L)),
-        (S_RESET, tx(s("Reset all to defaults", "기본값으로 모두 되돌리기", "すべて既定に戻す"))),
-        (S_SESS, tx(s("Open folder", "폴더 열기", "フォルダーを開く"))),
-        (S_ACCENT, tx(s("Custom…", "직접 지정…", "直接指定…"))),
-        (S_GITHUB, tx(s("Open GitHub", "GitHub 열기", "GitHub を開く"))),
-        (S_ADV_OPEN, tx(s("Open folder", "폴더 열기", "フォルダーを開く"))),
-        (S_ADV_EX, tx(s("Export", "내보내기", "エクスポート"))),
-        (S_ADV_IM, tx(s("Import", "가져오기", "インポート"))),
-        (S_ADV_RESET, tx(s("Reset…", "초기화…", "初期化…"))),
+        (S_RESET, tx(crate::Key::ResetAllDefaults)),
+        (S_SESS, tx(crate::Key::OpenFolder)),
+        (S_ACCENT, tx(crate::Key::Custom2)),
+        (S_GITHUB, tx(crate::Key::OpenGithub)),
+        (S_ADV_OPEN, tx(crate::Key::OpenFolder)),
+        (S_ADV_EX, tx(crate::Key::Export)),
+        (S_ADV_IM, tx(crate::Key::Import)),
+        (S_ADV_RESET, tx(crate::Key::Reset)),
         (S_EV, ev_button_label()),
-        (S_FV_DEF, tx(s("Set from this pane", "현재 패널로 설정", "現在のペインを使う"))),
-        (S_FV_RESET, tx(s("Reset", "지우기", "消す"))),
-        (S_FV_CLEAR, tx(s("Clear all", "모두 지우기", "すべて消す"))),
+        (S_FV_DEF, tx(crate::Key::SetFromThisPane)),
+        (S_FV_RESET, tx(crate::Key::Reset2)),
+        (S_FV_CLEAR, tx(crate::Key::ClearAll)),
         (S_CTX_RESET, tx(CTX_RESET_L)),
-        (S_WM_BROWSE, tx(s("Browse…", "찾아보기…", "参照…"))),
+        (S_WM_BROWSE, tx(crate::Key::Browse)),
     ];
     BUSY.with(|b| b.set(true));
     let _ = SetWindowTextW(ctl(h, S_WM), &HSTRING::from(app(|a| a.s.winmerge_path.clone())));
@@ -305,7 +291,7 @@ fn ensure_faces() {
 
 unsafe fn fill_face(h: HWND) {
     ensure_faces();
-    let def = format!("{} ({})", tx(s("Default", "기본", "既定")), crate::ui_face());
+    let def = format!("{} ({})", tx(crate::Key::Default), crate::ui_face());
     let stored = app(|a| a.s.font_face.clone());
     let mut items = vec![def];
     let mut sel = 0usize;
@@ -469,16 +455,16 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                 FAV_MADE.fetch_max(*i as i32 + 1, std::sync::atomic::Ordering::Relaxed);
                 let mut b = ctl(h, id);
                 if b.0.is_null() {
-                    b = child_at(h, w!("BUTTON"), tx(s("Delete", "삭제", "削除")), 0xB | 0x00010000, id, sn.font);
+                    b = child_at(h, w!("BUTTON"), tx(crate::Key::Delete), 0xB | 0x00010000, id, sn.font);
                 }
-                let _ = SetWindowTextW(b, &HSTRING::from(tx(s("Delete", "삭제", "削除"))));
+                let _ = SetWindowTextW(b, &HSTRING::from(tx(crate::Key::Delete)));
                 move_to(b, *btn, intersects(*btn, content));
                 let rid = S_REN0 + *i as i32;
                 let mut r = ctl(h, rid);
                 if r.0.is_null() {
-                    r = child_at(h, w!("BUTTON"), tx(s("Rename", "이름 변경", "名前の変更")), 0xB | 0x00010000, rid, sn.font);
+                    r = child_at(h, w!("BUTTON"), tx(crate::Key::Rename2), 0xB | 0x00010000, rid, sn.font);
                 }
-                let _ = SetWindowTextW(r, &HSTRING::from(tx(s("Rename", "이름 변경", "名前の変更"))));
+                let _ = SetWindowTextW(r, &HSTRING::from(tx(crate::Key::Rename2)));
                 move_to(r, *rename, intersects(*rename, content));
             }
             _ => {}
@@ -582,9 +568,9 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
             Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
-                crate::text(dc, a, tx(s("Category", "분류", "分類")), sn.small, crate::pal().sub, DT_LEFT);
-                crate::text(dc, RECT { left: a.right, right: b, ..*r }, tx(s("Action", "동작", "操作")), sn.small, crate::pal().sub, DT_LEFT);
-                crate::text(dc, RECT { left: b, ..*r }, tx(s("Shortcut", "단축키", "ショートカット")), sn.small, crate::pal().sub, DT_LEFT);
+                crate::text(dc, a, tx(crate::Key::Category), sn.small, crate::pal().sub, DT_LEFT);
+                crate::text(dc, RECT { left: a.right, right: b, ..*r }, tx(crate::Key::Action), sn.small, crate::pal().sub, DT_LEFT);
+                crate::text(dc, RECT { left: b, ..*r }, tx(crate::Key::Shortcut), sn.small, crate::pal().sub, DT_LEFT);
                 crate::fill(dc, RECT { top: r.bottom - 1, ..*r }, crate::pal().line);
             }
             Item::KeyRow { i, rect, change, reset } => draw_key_row(dc, *i, *rect, *change, *reset, sn),
@@ -727,7 +713,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         tx(c.spec.title).to_string()
     };
     let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 12), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 12) };
-    let title_line = if c.spec.desc[0].is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
+    let title_line = if tx(c.spec.desc).is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
     crate::text(dc, title_line, &title, sn.font, color, DT_LEFT);
     if c.spec.ctl == Ctl::EvStatus || c.spec.ctl == Ctl::WmStatus {
         let line = sc(dpi, 18);
@@ -748,7 +734,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         let text = if !act.is_empty() {
             act
         } else if matches!(crate::everything::shown(), crate::everything::Shown::Ready(crate::everything::Presence::Running { .. })) {
-            tx(s("Everything is already running.", "Everything이 이미 실행 중입니다.", "Everything はすでに実行中です。")).to_string()
+            tx(crate::Key::EverythingIsAlreadyRunning).to_string()
         } else {
             tx(c.spec.desc).to_string()
         };
@@ -760,7 +746,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         let path = crate::store::settings_path().to_string_lossy().into_owned();
         let path_r = RECT { left: c.rect.left + sc(dpi, 16), top: desc_r.bottom, right: c.rect.right - sc(dpi, 16), bottom: c.rect.bottom - sc(dpi, 6) };
         crate::text(dc, path_r, &path, sn.small, crate::pal().text, DT_LEFT);
-    } else if !c.spec.desc[0].is_empty() {
+    } else if !tx(c.spec.desc).is_empty() {
         crate::text(dc, RECT { top: title_line.bottom, ..text_r }, tx(c.spec.desc), sn.small, crate::pal().sub, DT_LEFT);
     }
     match c.spec.ctl {
@@ -878,7 +864,7 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn
     }
     let (cat_s, act_s, chord) = crate::keys::row(i);
     let shown = if crate::keys::capture_row() == Some(i) {
-        tx(s("Press a key…", "키를 누르세요…", "キーを押してください…")).to_string()
+        tx(crate::Key::PressKey).to_string()
     } else {
         chord
     };
@@ -915,8 +901,8 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn
         rfill(dc, rect, sc(dpi, 4), crate::pal().card, Some(if on { crate::pal().line } else { crate::pal().line }));
         crate::text(dc, rect, label, sn.small, ink, DT_CENTER);
     };
-    mini(change, tx(s("Change", "변경", "変更")), true);
-    mini(reset, tx(s("Reset", "되돌리기", "戻す")), crate::keys::is_custom(i));
+    mini(change, tx(crate::Key::Change), true);
+    mini(reset, tx(crate::Key::Reset3), crate::keys::is_custom(i));
     crate::fill(dc, RECT { top: r.bottom - 1, ..r }, crate::pal().line);
 }
 
@@ -1019,19 +1005,19 @@ fn dc_of(d: &DRAWITEMSTRUCT) -> HDC {
 
 fn ev_button_label() -> &'static str {
     match crate::everything::action() {
-        Some(crate::everything::EvAction::Start) => tx(s("Start Everything", "Everything 시작", "Everything を起動")),
-        _ => tx(s("Install Everything", "Everything 설치", "Everything をインストール")),
+        Some(crate::everything::EvAction::Start) => tx(crate::Key::StartEverything),
+        _ => tx(crate::Key::InstallEverything),
     }
 }
 
 fn ev_status_line() -> String {
     use crate::everything::{Presence, Shown};
     match crate::everything::shown() {
-        Shown::Unknown => tx(s("Checking…", "확인 중…", "確認しています…")).to_string(),
-        Shown::Ready(Presence::NotInstalled) => tx(s("Not installed", "설치되어 있지 않음", "インストールされていません")).to_string(),
-        Shown::Ready(Presence::InstalledStopped) => tx(s("Installed but not running", "설치되어 있지만 실행 중이 아님", "インストール済みですが実行されていません")).to_string(),
+        Shown::Unknown => tx(crate::Key::Checking).to_string(),
+        Shown::Ready(Presence::NotInstalled) => tx(crate::Key::NotInstalled).to_string(),
+        Shown::Ready(Presence::InstalledStopped) => tx(crate::Key::InstalledButNotRunning).to_string(),
         Shown::Ready(Presence::Running { version }) => {
-            let base = tx(s("Installed and running", "설치되어 실행 중", "インストール済みで実行中"));
+            let base = tx(crate::Key::InstalledAndRunning);
             match version {
                 Some(v) => format!("{base} · {}", v.label()),
                 None => base.to_string(),
@@ -1044,14 +1030,14 @@ fn ev_activity_line() -> String {
     use crate::everything::Activity;
     match crate::everything::activity() {
         Activity::Idle | Activity::Checking => String::new(),
-        Activity::Starting => tx(s("Starting Everything…", "Everything을 시작하는 중…", "Everything を起動しています…")).to_string(),
-        Activity::Installing => tx(s("Installing Everything…", "Everything을 설치하는 중…", "Everything をインストールしています…")).to_string(),
+        Activity::Starting => tx(crate::Key::StartingEverything).to_string(),
+        Activity::Installing => tx(crate::Key::InstallingEverything).to_string(),
         Activity::Winget(line) => line,
-        Activity::Started => tx(s("Everything is running.", "Everything이 실행 중입니다.", "Everything は実行中です。")).to_string(),
-        Activity::Installed => tx(s("Everything was installed.", "Everything을 설치했습니다.", "Everything をインストールしました。")).to_string(),
-        Activity::StartFailed => tx(s("Everything did not start.", "Everything을 시작하지 못했습니다.", "Everything を起動できませんでした。")).to_string(),
-        Activity::InstallFailed(code) => format!("{} ({code})", tx(s("Install failed", "설치 실패", "インストールに失敗しました"))),
-        Activity::OpenedPage => tx(s("Opened the download page.", "다운로드 페이지를 열었습니다.", "ダウンロードページを開きました。")).to_string(),
+        Activity::Started => tx(crate::Key::EverythingIsRunning).to_string(),
+        Activity::Installed => tx(crate::Key::EverythingWasInstalled).to_string(),
+        Activity::StartFailed => tx(crate::Key::EverythingDidNotStart).to_string(),
+        Activity::InstallFailed(code) => format!("{} ({code})", tx(crate::Key::InstallFailed)),
+        Activity::OpenedPage => tx(crate::Key::OpenedDownloadPage).to_string(),
     }
 }
 
@@ -1175,11 +1161,7 @@ fn flip(id: u8) {
             crate::folderapp::set_registered(want);
             unsafe {
                 if crate::folderapp::shown_on() != want {
-                    let q = tx(s(
-                        "Could not change the default folder app.",
-                        "기본 폴더 앱을 바꾸지 못했어요.",
-                        "既定のフォルダーアプリを変更できませんでした。",
-                    ));
+                    let q = tx(crate::Key::CouldNotChangeDefaultFolderApp);
                     let _ = MessageBoxW(Some(hwnd()), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
                 }
                 redraw();
@@ -1250,7 +1232,7 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
     }
     if code == CBN_SELCHANGE && id == S_LANG {
         let sel = SendMessageW(ctl(h, S_LANG), 0x0147, None, None).0 as usize;
-        let lang = [Lang::Auto, Lang::En, Lang::Ko, Lang::Ja].get(sel).copied().unwrap_or(Lang::Auto);
+        let lang = crate::settings_languages().get(sel).map(|(l, _)| *l).unwrap_or(Lang::Auto);
         if app(|a| a.s.lang) != lang {
             crate::set_language(lang);
         }
@@ -1303,11 +1285,7 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
             let _ = InvalidateRect(Some(h), None, false);
         }
         S_FV_CLEAR => {
-            let q = tx(s(
-                "Forget the saved view of every folder? The default view stays.",
-                "모든 폴더의 기억된 보기를 지울까요? 기본 보기는 남아요.",
-                "すべてのフォルダーの記憶した表示を消しますか? 既定の表示は残ります。",
-            ));
+            let q = tx(crate::Key::ForgetSavedViewOfEveryFolderDefault);
             if confirm_box(h, q) {
                 crate::clear_remembered_folder_views();
             }
@@ -1406,7 +1384,7 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
                 app(|a| a.s.new_name.clear());
             } else {
                 let cur = app(|a| if a.s.new_name.is_empty() { crate::default_new_name() } else { a.s.new_name.clone() });
-                match unsafe { ask(h, tx(s("New file name", "새 파일 이름", "新しいファイル名")), &cur) } {
+                match unsafe { ask(h, tx(crate::Key::NewFileName), &cur) } {
                     Some(name) if !name.trim().is_empty() => app(|a| a.s.new_name = name),
                     _ => {
                         unsafe { refresh() };
@@ -1451,7 +1429,7 @@ fn combo_pick(h: HWND, id: i32, sel: usize) -> bool {
         }
         S_START => {
             if sel == 1 {
-                match unsafe { crate::pick_session(h, crate::tr("Session to open on startup", "시작할 때 열 세션", "起動時に開くセッション")) } {
+                match unsafe { crate::pick_session(h, crate::tr(crate::Key::SessionOpenOnStartup)) } {
                     Some(p) => app(|a| {
                         a.s.boot = 1;
                         a.s.boot_file = p.to_string_lossy().into_owned();
@@ -1476,27 +1454,27 @@ unsafe fn export_settings(h: HWND) {
     crate::save_session();
     let text = crate::store::current_text();
     if crate::store::write_atomic(std::path::Path::new(&path), text.as_bytes()).is_err() {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not export the settings file.", "설정 파일을 내보내지 못했어요.", "設定ファイルを書き出せませんでした。"))), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotExportSettingsFile)), w!("Panegrid"), MB_ICONWARNING);
     }
 }
 
 unsafe fn import_settings(h: HWND) {
     let Some(path) = crate::pick_settings(h, false) else { return };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("Could not read that file.", "그 파일을 읽지 못했어요.", "そのファイルを読めませんでした。"))), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotReadThatFile)), w!("Panegrid"), MB_ICONWARNING);
         return;
     };
-    let q = tx(s("Replace the current settings with this file?", "이 파일로 지금 설정을 바꿀까요?", "このファイルで現在の設定を置き換えますか?"));
+    let q = tx(crate::Key::ReplaceCurrentSettingsWithThisFile);
     if MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
     if !crate::import_settings(&text) {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(s("That file is not valid settings JSON.", "올바른 설정 JSON이 아니에요.", "正しい設定 JSON ではありません。"))), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::ThatFileIsNotValidSettingsJson)), w!("Panegrid"), MB_ICONWARNING);
     }
 }
 
 unsafe fn reset_ini(h: HWND) {
-    let q = tx(s("Reset every preference to its default? The layout, folders and favourites stay.", "환경설정을 모두 기본값으로 되돌릴까요? 배치, 폴더, 즐겨찾기는 남아요.", "環境設定をすべて既定に戻しますか? レイアウト、フォルダー、お気に入りはそのままです。"));
+    let q = tx(crate::Key::ResetEveryPreferenceItsDefaultLayoutFold);
     if MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
@@ -1505,7 +1483,7 @@ unsafe fn reset_ini(h: HWND) {
 
 unsafe fn rename_fav(h: HWND, k: usize) {
     let Some(row) = fav_node(k) else { return };
-    let Some(name) = ask(h, tx(s("Rename", "이름 변경", "名前の変更")), &row.name) else { return };
+    let Some(name) = ask(h, tx(crate::Key::Rename2), &row.name) else { return };
     let name = name.trim().to_string();
     if name.is_empty() {
         return;
@@ -1524,11 +1502,7 @@ unsafe fn rename_fav(h: HWND, k: usize) {
 }
 
 unsafe fn reset_keys(h: HWND) {
-    let q = tx(s(
-        "Reset every shortcut to its default?",
-        "단축키를 모두 기본값으로 되돌릴까요?",
-        "ショートカットをすべて既定に戻しますか?",
-    ));
+    let q = tx(crate::Key::ResetEveryShortcutItsDefault);
     if !confirm_box(h, q) {
         return;
     }
@@ -1573,13 +1547,7 @@ fn key_click(g: &Geo, x: i32, y: i32) -> Option<(usize, u8)> {
 }
 
 pub(crate) unsafe fn confirm_swap(chord: &str, other: &str) -> bool {
-    let q = if tr("en", "ko", "ja") == "ko" {
-        format!("{other} 동작이 이미 {chord} 를 쓰고 있어요.\n두 단축키를 바꿀까요?\n\n예: 맞바꿈    아니오: 그대로 두기")
-    } else if tr("en", "ko", "ja") == "ja" {
-        format!("「{other}」がすでに {chord} を使っています。\n二つのショートカットを入れ替えますか?\n\nはい: 入れ替え    いいえ: そのまま")
-    } else {
-        format!("{other} already uses {chord}.\nSwap the two shortcuts?\n\nYes swaps them. No leaves both unchanged.")
-    };
+    let q = tf(crate::Key::ShortcutSwap, &[("other", other), ("chord", chord)]);
     confirm_box(hwnd(), &q)
 }
 
@@ -2119,7 +2087,7 @@ pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<Stri
     let edit = child_at(h, w!("EDIT"), initial, 0x80 | 0x00010000, 10, font);
     theme_ctl(edit);
     ASK_EDIT.with(|e| e.set(edit));
-    let _ = child_at(h, w!("BUTTON"), tx(s("OK", "확인", "OK")), 0xB | 0x00010000, 1, font);
+    let _ = child_at(h, w!("BUTTON"), tx(crate::Key::Ok), 0xB | 0x00010000, 1, font);
     let _ = child_at(h, w!("BUTTON"), tx(CLOSE_L), 0xB | 0x00010000, 2, font);
     layout_ask(h);
     let _ = ShowWindow(h, SW_SHOW);

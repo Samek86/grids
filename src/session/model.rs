@@ -318,17 +318,17 @@ pub(crate) struct Session {
     pub(crate) blocked_shell_extensions: Vec<String>,
 }
 
-/// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
+/// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, label)`.
 /// Large and medium icons share mode 1; the size tells them apart. 96 is large.
-pub(crate) const EXPLORER_VIEWS: [(i32, i32, &str, &str, &str); 8] = [
-    (5, 256, "Extra large icons", "아주 큰 아이콘", "特大アイコン"),
-    (1, 96, "Large icons", "큰 아이콘", "大きなアイコン"),
-    (1, 48, "Medium icons", "보통 아이콘", "中アイコン"),
-    (2, 16, "Small icons", "작은 아이콘", "小アイコン"),
-    (3, 16, "List", "목록", "一覧"),
-    (4, 16, "Details", "자세히", "詳細"),
-    (6, 48, "Tiles", "타일", "タイル"),
-    (8, 32, "Content", "내용", "コンテンツ"),
+pub(crate) const EXPLORER_VIEWS: [(i32, i32, crate::Key); 8] = [
+    (5, 256, crate::Key::ViewExtraLarge),
+    (1, 96, crate::Key::ViewLarge),
+    (1, 48, crate::Key::ViewMedium),
+    (2, 16, crate::Key::ViewSmall),
+    (3, 16, crate::Key::ViewList),
+    (4, 16, crate::Key::ViewDetails),
+    (6, 48, crate::Key::ViewTiles),
+    (8, 32, crate::Key::ViewContent),
 ];
 
 /// Details, list, the four icon sizes, tiles, content. Anything else is details.
@@ -2762,9 +2762,12 @@ mod view_menu_tests {
         assert_eq!(explorer_view_index(6, 48), Some(6));
         assert_eq!(explorer_view_index(8, 32), Some(7));
         assert_eq!(explorer_view_index(7, 16), None);
-        assert_eq!(EXPLORER_VIEWS[0].2, "Extra large icons");
-        assert_eq!(EXPLORER_VIEWS[2].3, "보통 아이콘");
-        assert_eq!(EXPLORER_VIEWS[7].4, "コンテンツ");
+        assert_eq!(tr(EXPLORER_VIEWS[0].2), "Extra large icons");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(tr(EXPLORER_VIEWS[2].2), "보통 아이콘");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(tr(EXPLORER_VIEWS[7].2), "コンテンツ");
+        UI.store(0, Ordering::Relaxed);
     }
 
     #[test]

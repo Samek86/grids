@@ -592,29 +592,27 @@ fn mime_part(head: &[(String, String)], body: &str, files: &mut Vec<String>, dep
 }
 
 /// An .eml as readable text: Subject, From, To, Cc, Date, attachments, then the body.
-/// `lang` is the UI language: 1 Korean, 2 Japanese, otherwise English.
-pub(crate) fn eml_text(raw: &[u8], lang: u8) -> String {
+pub(crate) fn eml_text(raw: &[u8]) -> String {
     // headers are ASCII (or should be); bodies decode by their own charset, so read as Latin-1 to keep bytes
     let m: String = raw.iter().map(|&b| b as char).collect();
     let (h, body) = split_head(&m);
     let head = headers(h);
     let mut out = String::new();
-    let label = |en: &'static str, ko: &'static str, ja: &'static str| match lang { 1 => ko, 2 => ja, _ => en };
-    for (key, en, ko, ja) in [
-        ("subject", "Subject", "제목", "件名"),
-        ("from", "From", "보낸 사람", "差出人"),
-        ("to", "To", "받는 사람", "宛先"),
-        ("cc", "Cc", "참조", "Cc"),
-        ("date", "Date", "날짜", "日付"),
+    for (key, label) in [
+        ("subject", crate::Key::EmlSubject),
+        ("from", crate::Key::EmlFrom),
+        ("to", crate::Key::EmlTo),
+        ("cc", crate::Key::EmlCc),
+        ("date", crate::Key::EmlDate),
     ] {
         if let Some((_, v)) = head.iter().find(|(n, _)| n == key) {
-            out += &format!("{}: {}\n", label(en, ko, ja), mime_words(&latin_bytes_as_text(v)));
+            out += &format!("{}: {}\n", crate::tr(label), mime_words(&latin_bytes_as_text(v)));
         }
     }
     let mut files = Vec::new();
     let text = mime_body(&head, body, &mut files).map(|(_, t)| t).unwrap_or_default();
     if !files.is_empty() {
-        out += &format!("{}: {}\n", label("Attachments", "첨부", "添付"), files.join(", "));
+        out += &format!("{}: {}\n", crate::tr(crate::Key::EmlAttachments), files.join(", "));
     }
     out.push('\n');
     out.push_str(&text);
@@ -733,10 +731,14 @@ mod tests {
         assert_eq!(mime_words("=?UTF-8?B?7JWI64WV?= =?utf-8?Q?_hi?= there"), "안녕 hi there");
         assert_eq!(mime_words("=?ks_c_5601-1987?B?x9Gx2w==?="), "한글");
         let eml = b"Subject: =?UTF-8?B?7JWI64WV?=\r\nFrom: a@b.c\r\nContent-Type: multipart/alternative; boundary=\"XX\"\r\n\r\n--XX\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>html</p>\r\n--XX\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n=EC=95=88 plain=\r\n text\r\n--XX\r\nContent-Type: application/pdf; name=\"r.pdf\"\r\nContent-Disposition: attachment; filename=\"r.pdf\"\r\n\r\nJVBE\r\n--XX--\r\n";
-        let t = eml_text(eml, 1);
+        let prev = crate::UI.load(std::sync::atomic::Ordering::Relaxed);
+        crate::UI.store(1, std::sync::atomic::Ordering::Relaxed);
+        let t = eml_text(eml);
         assert!(t.starts_with("제목: 안녕\n보낸 사람: a@b.c\n첨부: r.pdf\n\n"), "{t}");
         assert!(t.ends_with("안 plain text"), "{t}");
-        assert!(eml_text(b"Subject: hi\r\n\r\nbody", 2).starts_with("件名: hi\n"));
+        crate::UI.store(2, std::sync::atomic::Ordering::Relaxed);
+        assert!(eml_text(b"Subject: hi\r\n\r\nbody").starts_with("件名: hi\n"));
+        crate::UI.store(prev, std::sync::atomic::Ordering::Relaxed);
         let h = html_text("<html><head><title>x</title></head><body><script>var a;</script><h1>Title</h1><p>a &amp; b</p><ul><li>one</li></ul></body></html>");
         assert_eq!(h, "Title\n\na & b\n\n• one"); // blocks a blank line apart
     }

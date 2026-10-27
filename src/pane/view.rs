@@ -31,12 +31,12 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
-        (ID_BACK, tr("Back", "뒤로", "戻る"), tr("Back  (Alt+←) · right-click: recent folders", "뒤로  (Alt+←) · 오른쪽 클릭: 최근 폴더", "戻る  (Alt+←) · 右クリック: 最近のフォルダー")),
-        (ID_FWD, tr("Forward", "앞으로", "進む"), tr("Forward  (Alt+→) · right-click: recent folders", "앞으로  (Alt+→) · 오른쪽 클릭: 최근 폴더", "進む  (Alt+→) · 右クリック: 最近のフォルダー")),
-        (ID_UP, tr("Parent folder", "상위 폴더", "上のフォルダー"), tr("Parent folder  (Alt+↑)", "상위 폴더  (Alt+↑)", "上のフォルダー  (Alt+↑)")),
-        (ID_OPEN_IN, tr("Open in another pane", "다른 패널에서 열기", "別のペインで開く"), tr("Open in / copy or move to another pane. One pane: split side by side and open there", "다른 패널에서 열기 / 복사·이동. 패널이 하나면 좌우로 나누고 거기서 열기", "別のペインで開く / コピー・移動。ペインが一つなら左右に分けてそこで開く")),
-        (ID_PANE_ADD, tr("New pane tab", "새 패널 탭", "新しいペイン タブ"), tr("New pane tab  (Ctrl+Alt+T)", "새 패널 탭  (Ctrl+Alt+T)", "新しいペイン タブ  (Ctrl+Alt+T)")),
-        (ID_FAV, tr("Favourite", "즐겨찾기", "お気に入り"), tr("Add to favourites (filled star: remove)", "즐겨찾기에 추가 (채워진 별: 빼기)", "お気に入りに追加（塗りつぶしの星: 削除）")),
+        (ID_BACK, tr(crate::Key::Back), tr(crate::Key::BackAltRightClickRecentFolders)),
+        (ID_FWD, tr(crate::Key::Forward), tr(crate::Key::ForwardAltRightClickRecentFolders)),
+        (ID_UP, tr(crate::Key::ParentFolder), tr(crate::Key::ParentFolderAlt)),
+        (ID_OPEN_IN, tr(crate::Key::OpenInAnotherPane), tr(crate::Key::OpenInCopyOrMoveAnotherPane)),
+        (ID_PANE_ADD, tr(crate::Key::NewPaneTab), tr(crate::Key::NewPaneTabCtrlAltT)),
+        (ID_FAV, tr(crate::Key::Favourite), tr(crate::Key::AddFavouritesFilledStarRemove)),
     ];
     for (id, name, tip) in buttons {
         add_tip(child(h, w!("BUTTON"), PCWSTR(HSTRING::from(name).as_ptr()), btn, plain, id, font), tip);
@@ -51,11 +51,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     _ = SetWindowSubclass(edit, Some(addr_edit_proc), ADDR_SUB, 0);
     add_tip(
         filt,
-        tr(
-            "Search this folder (Ctrl+F) · icon or Alt+↓: file types",
-            "이 폴더 검색 (Ctrl+F) · 아이콘 또는 Alt+↓: 파일 종류",
-            "このフォルダーを検索 (Ctrl+F) · アイコンまたは Alt+↓: ファイルの種類",
-        ),
+        tr(crate::Key::SearchThisFolderCtrlFIconOr),
     );
 
     let slot = Arc::new(AtomicUsize::new(i));
@@ -82,9 +78,9 @@ const EM_GETMARGINS: u32 = 0xD4;
 
 /// Screen readers otherwise only say "edit". Redone when the language changes or a pane changes slot.
 pub(crate) unsafe fn name_fields(h: HWND, i: usize) {
-    let pane = format!("{} {}", tr("Pane", "패널", "ペイン"), i + 1);
-    a11y_name(GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), Some(&format!("{pane} {}", tr("address", "주소", "アドレス"))));
-    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr("search", "검색", "検索"))));
+    let pane = format!("{} {}", tr(crate::Key::Pane), i + 1);
+    a11y_name(GetDlgItem(Some(h), ID_EDIT).unwrap_or_default(), Some(&format!("{pane} {}", tr(crate::Key::Address))));
+    a11y_name(GetDlgItem(Some(h), ID_FILTER).unwrap_or_default(), Some(&format!("{pane} {}", tr(crate::Key::Search))));
 }
 
 pub(crate) unsafe fn rename_fields() {
@@ -128,7 +124,7 @@ unsafe fn filter_hint_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1:
         let font = SelectObject(dc, HGDIOBJ(SendMessageW(h, WM_GETFONT, None, None).0 as _));
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, cref(blend(pal().sub, pal().text, 0.2)));
-        let mut hint: Vec<u16> = tr("Search · Ctrl+F", "검색 · Ctrl+F", "検索 · Ctrl+F").encode_utf16().collect();
+        let mut hint: Vec<u16> = tr(crate::Key::SearchCtrlF).encode_utf16().collect();
         DrawTextW(dc, &mut hint, &mut rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         SelectObject(dc, font);
         _ = ReleaseDC(Some(h), dc);
@@ -1080,12 +1076,8 @@ fn ask_theme_restart(owner: HWND) -> bool {
     match unsafe { theme_restart_dialog(owner) } {
         Some(restart) => restart,
         None => {
-            let text = HSTRING::from(tr(
-                "The theme fully applies after a restart.\n\nYes: Restart now\nNo: Later",
-                "테마는 다시 시작하면 완전히 적용됩니다.\n\n예: 지금 다시 시작\n아니요: 나중에",
-                "テーマは再起動すると完全に適用されます。\n\nはい: 今すぐ再起動\nいいえ: 後で",
-            ));
-            let title = HSTRING::from(tr("Theme", "테마", "テーマ"));
+            let text = HSTRING::from(tr(crate::Key::ThemeFullyAppliesAfterRestartYesRestart));
+            let title = HSTRING::from(tr(crate::Key::Theme));
             unsafe { MessageBoxW(Some(owner), &text, &title, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES }
         }
     }
@@ -1093,19 +1085,11 @@ fn ask_theme_restart(owner: HWND) -> bool {
 
 unsafe fn theme_restart_dialog(owner: HWND) -> Option<bool> {
     use windows::Win32::UI::Controls::{TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION};
-    let title = HSTRING::from(tr("Theme", "테마", "テーマ"));
-    let head = HSTRING::from(tr(
-        "The theme fully applies after a restart.",
-        "테마는 다시 시작하면 완전히 적용됩니다.",
-        "テーマは再起動すると完全に適用されます。",
-    ));
-    let body = HSTRING::from(tr(
-        "The window has changed. Folder lists use the new colours the next time Panegrid starts.",
-        "창 모양은 바뀌었습니다. 폴더 목록의 색은 Panegrid를 다시 시작할 때 새 테마로 바뀝니다.",
-        "ウィンドウの色は変わりました。フォルダー一覧の色は、Panegrid を再起動したときに新しいテーマになります。",
-    ));
-    let now = HSTRING::from(tr("Restart now", "지금 다시 시작", "今すぐ再起動"));
-    let later = HSTRING::from(tr("Later", "나중에", "後で"));
+    let title = HSTRING::from(tr(crate::Key::Theme));
+    let head = HSTRING::from(tr(crate::Key::ThemeFullyAppliesAfterRestart));
+    let body = HSTRING::from(tr(crate::Key::WindowHasChangedFolderListsUseNew));
+    let now = HSTRING::from(tr(crate::Key::RestartNow));
+    let later = HSTRING::from(tr(crate::Key::Later));
     let buttons = [
         TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(now.as_ptr()) },
         TASKDIALOG_BUTTON { nButtonID: 101, pszButtonText: PCWSTR(later.as_ptr()) },

@@ -50,7 +50,7 @@ pub(crate) fn load_name(card: &RECT, thumb: &RECT, dpi: i32) -> RECT {
 
 pub(crate) fn short_name(path: &str) -> String {
     if path.contains("20D04FE0-3AEA-1069-A2D8-08002B30309D") {
-        return tr("This PC", "내 PC", "PC").into();
+        return tr(crate::Key::ThisPc).into();
     }
     folder_display_name(path)
 }
@@ -63,10 +63,10 @@ pub(crate) fn window_title(disp: &str) -> String {
 pub(crate) fn ago(t: std::time::SystemTime) -> String {
     let m = t.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
     match m {
-        0 => tr("just now", "방금", "たった今").into(),
-        1..=59 => format!("{m}{}", tr(" min ago", "분 전", " 分前")),
-        60..=1439 => format!("{}{}", m / 60, tr(" h ago", "시간 전", " 時間前")),
-        _ => format!("{}{}", m / 1440, tr(" d ago", "일 전", " 日前")),
+        0 => tr(crate::Key::JustNow).into(),
+        1..=59 => format!("{m}{}", tr(crate::Key::MinAgo)),
+        60..=1439 => format!("{}{}", m / 60, tr(crate::Key::HAgo)),
+        _ => format!("{}{}", m / 1440, tr(crate::Key::DAgo)),
     }
 }
 
@@ -215,11 +215,7 @@ pub(crate) unsafe fn delete_session(path: &Path) -> bool {
     let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let relinked = app(|a| {
         if deleted {
-            let note = match ui() {
-                1 => format!("세션 \"{name}\" 삭제됨"),
-                2 => format!("セッション \"{name}\" を削除しました"),
-                _ => format!("Session \"{name}\" deleted"),
-            };
+            let note = tf(Key::SessionDeleted, &[("name", &name)]);
             a.note = Some((note, Instant::now() + Duration::from_secs(3)));
             a.lost = 0;
         }
@@ -331,7 +327,7 @@ pub(crate) unsafe fn paint_load(h: HWND) {
         frame(dc, rc, 1, pal().line);
         if cards.is_empty() {
             let r = RECT { bottom: g.save_as.top, ..rc };
-            text(dc, r, tr("No saved sessions", "저장된 세션이 없습니다", "保存されたセッションはありません"), font, pal().sub, DT_CENTER);
+            text(dc, r, tr(crate::Key::NoSavedSessions), font, pal().sub, DT_CENTER);
         }
         for (k, ((path, sess, when), (card, thumb, del))) in cards.iter().zip(&g.cards).enumerate() {
             let on = hot == Some(k) || hot == Some(LOAD_DEL + k);
@@ -361,8 +357,8 @@ pub(crate) unsafe fn paint_load(h: HWND) {
         let link = |r: RECT, label: &str, k: usize, align| {
             text(dc, r, label, font, if hot == Some(k) { pal().text } else { accent }, align);
         };
-        link(g.save_as, tr("+ Save this tab…", "+ 이 탭 저장…", "+ このタブを保存…"), LOAD_SAVE_AS, DT_LEFT);
-        link(g.folder, tr("Open sessions folder", "세션 폴더 열기", "セッション フォルダーを開く"), LOAD_FOLDER, DT_RIGHT);
+        link(g.save_as, tr(crate::Key::SaveThisTab2), LOAD_SAVE_AS, DT_LEFT);
+        link(g.folder, tr(crate::Key::OpenSessionsFolder), LOAD_FOLDER, DT_RIGHT);
     });
 }
 
@@ -436,8 +432,8 @@ fn load_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     _ => return LRESULT(0),
                 };
                 let Ok(menu) = CreatePopupMenu() else { return LRESULT(0) };
-                _ = AppendMenuW(menu, MF_STRING, 1, &HSTRING::from(tr("Rename", "이름 바꾸기", "名前の変更")));
-                _ = AppendMenuW(menu, MF_STRING, 2, &HSTRING::from(tr("Delete", "삭제", "削除")));
+                _ = AppendMenuW(menu, MF_STRING, 1, &HSTRING::from(tr(crate::Key::Rename)));
+                _ = AppendMenuW(menu, MF_STRING, 2, &HSTRING::from(tr(crate::Key::Delete)));
                 let mut at = POINT::default();
                 _ = GetCursorPos(&mut at);
                 let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, None, h, None).0;

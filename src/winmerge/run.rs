@@ -44,22 +44,18 @@ pub(crate) fn find(custom: &str) -> Where {
 /// `(headline, detail)`. Detail is the exe that will run, the missing custom path, or the download page.
 pub(crate) fn status_text(found: &Where) -> (String, String) {
     match found {
-        Where::Custom(p) => (tr("Custom path", "지정한 경로", "指定したパス").to_string(), p.clone()),
+        Where::Custom(p) => (tr(crate::Key::CustomPath).to_string(), p.clone()),
         Where::CustomMissing { detected: Some(p), .. } => (
-            tr(
-                "Custom path was not found. Using the detected program.",
-                "지정한 경로가 없어 찾아낸 프로그램을 써요.",
-                "指定したパスが見つからないので、検出したプログラムを使います。",
-            )
+            tr(crate::Key::CustomPathWasNotFoundUsingDetected)
             .to_string(),
             p.clone(),
         ),
         Where::CustomMissing { custom, detected: None } => (
-            tr("Custom path was not found.", "지정한 경로를 찾지 못했어요.", "指定したパスが見つかりません。").to_string(),
+            tr(crate::Key::CustomPathWasNotFound).to_string(),
             custom.clone(),
         ),
-        Where::Detected(p) => (tr("Detected", "자동으로 찾음", "検出しました").to_string(), p.clone()),
-        Where::NotInstalled => (tr("Not installed", "설치되어 있지 않음", "インストールされていません").to_string(), DOWNLOAD.to_string()),
+        Where::Detected(p) => (tr(crate::Key::Detected).to_string(), p.clone()),
+        Where::NotInstalled => (tr(crate::Key::NotInstalled).to_string(), DOWNLOAD.to_string()),
     }
 }
 
@@ -77,60 +73,40 @@ pub(crate) unsafe fn open_download(owner: HWND) {
 }
 
 pub(crate) unsafe fn prompt_missing(owner: HWND) {
-    let text = tr(
-        "WinMerge is not installed, so folders and files cannot be compared.\n\nSet the path in Settings, or install WinMerge.\n\nOpen https://winmerge.org/ ?",
-        "WinMerge가 설치되어 있지 않아 폴더와 파일을 비교할 수 없어요.\n\n설정에서 경로를 지정하거나 WinMerge를 설치하세요.\n\nhttps://winmerge.org/ 를 열까요?",
-        "WinMerge がインストールされていないため、フォルダーとファイルを比較できません。\n\n設定でパスを指定するか、WinMerge をインストールしてください。\n\nhttps://winmerge.org/ を開きますか?",
-    );
+    let text = tr(crate::Key::WinmergeIsNotInstalledSoFoldersAnd);
     if ask(owner, text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
         open_download(owner);
     }
 }
 
 pub(crate) unsafe fn prompt_failed(owner: HWND) {
-    let text = tr("WinMerge did not start.", "WinMerge를 시작하지 못했어요.", "WinMerge を起動できませんでした。");
+    let text = tr(crate::Key::WinmergeDidNotStart);
     let _ = ask(owner, text, MB_OK | MB_ICONWARNING);
 }
 
 pub(crate) unsafe fn prompt_need_folder(owner: HWND) {
-    let text = tr(
-        "This pane is not a folder. Open a folder, then compare.",
-        "이 패널은 폴더가 아니에요. 폴더를 연 다음 비교하세요.",
-        "このペインはフォルダーではありません。フォルダーを開いてから比較してください。",
-    );
+    let text = tr(crate::Key::ThisPaneIsNotFolderOpenFolder);
     let _ = ask(owner, text, MB_OK | MB_ICONINFORMATION);
 }
 
 pub(crate) unsafe fn prompt_need_two(owner: HWND) {
-    let text = tr(
-        "Compare needs two folders. Open another pane on a folder, then try again.",
-        "비교하려면 폴더가 두 개 필요해요. 다른 패널에서 폴더를 연 다음 다시 시도하세요.",
-        "比較にはフォルダーが二つ必要です。別のペインでフォルダーを開いてから、もう一度試してください。",
-    );
+    let text = tr(crate::Key::CompareNeedsTwoFoldersOpenAnotherPane);
     let _ = ask(owner, text, MB_OK | MB_ICONINFORMATION);
 }
 
 pub(crate) unsafe fn prompt_need_file(owner: HWND) {
-    let text = tr(
-        "Select one file, then compare it with the same name in the other pane.",
-        "파일 하나를 선택한 다음, 다른 패널의 같은 이름과 비교하세요.",
-        "ファイルを一つ選んでから、別のペインの同じ名前と比較してください。",
-    );
+    let text = tr(crate::Key::SelectOneFileThenCompareItWith);
     let _ = ask(owner, text, MB_OK | MB_ICONINFORMATION);
 }
 
 pub(crate) unsafe fn prompt_need_two_files(owner: HWND) {
-    let text = tr(
-        "Select two files to compare them in WinMerge.",
-        "WinMerge로 비교할 파일 두 개를 선택하세요.",
-        "WinMerge で比較するファイルを二つ選んでください。",
-    );
+    let text = tr(crate::Key::SelectTwoFilesCompareThemInWinmerge);
     let _ = ask(owner, text, MB_OK | MB_ICONINFORMATION);
 }
 
 unsafe fn ask(owner: HWND, text: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
     let owner = (!owner.0.is_null()).then_some(owner);
-    MessageBoxW(owner, &HSTRING::from(text), &HSTRING::from(tr("WinMerge", "WinMerge", "WinMerge")), flags)
+    MessageBoxW(owner, &HSTRING::from(text), &HSTRING::from(tr(crate::Key::VendorWinmerge)), flags)
 }
 
 pub(crate) unsafe fn pick_exe(owner: HWND, current: &str) -> Option<String> {
@@ -141,7 +117,7 @@ pub(crate) unsafe fn pick_exe(owner: HWND, current: &str) -> Option<String> {
         *d = c;
     }
     let filter = exe_filter();
-    let title = HSTRING::from(tr("WinMerge", "WinMerge", "WinMerge"));
+    let title = HSTRING::from(tr(crate::Key::VendorWinmerge));
     let mut ofn = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: owner,
@@ -160,7 +136,7 @@ pub(crate) unsafe fn pick_exe(owner: HWND, current: &str) -> Option<String> {
 
 fn exe_filter() -> Vec<u16> {
     let mut s = String::new();
-    for (label, spec) in [(tr("WinMerge", "WinMerge", "WinMerge"), "WinMergeU.exe"), (tr("Programs", "프로그램", "プログラム"), "*.exe")] {
+    for (label, spec) in [(tr(crate::Key::VendorWinmerge), "WinMergeU.exe"), (tr(crate::Key::KindPrograms), "*.exe")] {
         s.push_str(label);
         s.push('\0');
         s.push_str(spec);
