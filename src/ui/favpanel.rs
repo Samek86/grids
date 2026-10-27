@@ -275,7 +275,8 @@ pub(crate) unsafe fn paint_side(h: HWND) {
                 if let Some(f) = list.get(row) {
                     let at = if zone == 0 { row } else { after_row(&list, row) };
                     let line_y = if zone == 0 { row as i32 * rh - scroll } else { at as i32 * rh - scroll + rh - s(2) };
-                    let indent = s(14) * f.depth.min(8) as i32;
+                    // A line under the Explorer groups is a new root favourite, not a child of that row.
+                    let indent = if f.in_tree() { s(14) * f.depth.min(8) as i32 } else { 0 };
                     if line_y + s(2) >= 0 && line_y < list_bottom {
                         fill(dc, RECT { left: s(8) + indent, top: line_y, right: rc.right - s(8), bottom: line_y + s(2) }, accent);
                     }
@@ -947,26 +948,58 @@ enum HomeDrop {
     Files(Vec<String>),
 }
 
-fn home_drop_of(d: &Ref<IDataObject>) -> Option<HomeDrop> {
-    unsafe {
-        let Some(arr) = drop_items(d) else { return None };
-        let n = arr.GetCount().unwrap_or(0).min(64);
-        if n == 0 {
-            return None;
-        }
-        let mut items = Vec::with_capacity(n as usize);
-        for i in 0..n {
-            let Ok(item) = arr.GetItemAt(i) else { return None };
-            let folder = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM).is_ok_and(shell_is_folder);
-            let path = item.GetDisplayName(SIGDN_FILESYSPATH).ok().map(|p| pwstr(p)).unwrap_or_default();
-            items.push((path, folder));
-        }
-        if let Some(paths) = pin_drop_paths(&items) {
-            Some(HomeDrop::Folders(paths))
-        } else {
-            file_drop_paths(&items).map(HomeDrop::Files)
-        }
+/// Paths from the drop, plus whether each one is a file when the drag data already says so.
+struct RawDrop {
+    path: String,
+    file: Option<bool>,
+}
+
+#[derive(Clone)]
+struct Pending {
+    items: Vec<Dropped>,
+    home: Option<HomeDrop>,
+}
+
+fn pending_of(raw: Vec<RawDrop>) -> Pending {
+    let home = home_of(&raw);
+    let items = raw.into_iter().map(|r| Dropped { path: r.path, file: r.file.unwrap_or(false) }).collect();
+    Pending { items, home }
+}
+
+/// Pinning needs a known file-or-folder bit for every item. An unknown bit is not guessed:
+/// the same drop can still be added to favourites.
+fn home_of(raw: &[RawDrop]) -> Option<HomeDrop> {
+    if raw.is_empty() || raw.iter().any(|r| r.file.is_none()) {
+        return None;
     }
+    let pairs: Vec<(String, bool)> = raw.iter().map(|r| (r.path.clone(), r.file == Some(false))).collect();
+    if let Some(paths) = pin_drop_paths(&pairs) {
+        Some(HomeDrop::Folders(paths))
+    } else {
+        file_drop_paths(&pairs).map(HomeDrop::Files)
+    }
+}
+
+fn hits_of(list: &[FavRow]) -> Vec<DropHit> {
+    list.iter().map(|r| DropHit { tree: r.in_tree(), group: r.group, id: r.id.clone() }).collect()
+}
+
+fn fav_target(y: i32) -> (DropSpot, Option<(usize, u8)>) {
+    let list = rows();
+    let hits = hits_of(&list);
+    let index = row_at(y);
+    let zone = match index.and_then(|i| list.get(i).map(|row| (i, row.group))) {
+        Some((i, group)) => {
+            let scroll = app(|a| a.side_scroll);
+            let rh = row_h();
+            let top = i as i32 * rh - scroll;
+            drop_zone(group, y - top, rh)
+        }
+        None => 2,
+    };
+    let spot = drop_spot(&hits, index, zone);
+    let line = drop_line(&hits, &spot);
+    (spot, line)
 }
 
 fn home_accepts(drop: &HomeDrop, kind: RowKind) -> bool {
@@ -976,49 +1009,68 @@ fn home_accepts(drop: &HomeDrop, kind: RowKind) -> bool {
 #[implement(IDropTarget)]
 struct SideDrop {
     hwnd: HWND,
-    pending: RefCell<Option<HomeDrop>>,
+    pending: RefCell<Option<Pending>>,
 }
 
 impl SideDrop {
-    unsafe fn home_at(&self, pt: &POINTL) -> Option<RowKind> {
-        bind_hwnd(self.hwnd);
+    unsafe fn client_y(&self, pt: &POINTL) -> Option<i32> {
         let mut p = POINT { x: pt.x, y: pt.y };
-        if !ScreenToClient(self.hwnd, &mut p).as_bool() {
-            return None;
-        }
+        ScreenToClient(self.hwnd, &mut p).as_bool().then_some(p.y)
+    }
+
+    unsafe fn home_at(&self, y: i32) -> Option<RowKind> {
         let list = rows();
-        let kind = row_at(p.y).and_then(|i| list.get(i)).map(|r| r.kind)?;
+        let kind = row_at(y).and_then(|i| list.get(i)).map(|r| r.kind)?;
         matches!(kind, RowKind::Pins | RowKind::Files).then_some(kind)
     }
 
+    unsafe fn paint_line(&self, line: Option<(usize, u8)>) {
+        if set_drop(line) {
+            _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    /// Pins and favourite-file headers keep the old Explorer pin drop. Everywhere else the
+    /// cursor is a link and the insertion line follows the pointer. Shift must not turn this
+    /// into a move of the real files.
     unsafe fn hover(&self, pt: &POINTL, effect: *mut DROPEFFECT) {
         if effect.is_null() {
             return;
         }
+        bind_hwnd(self.hwnd);
         let pending = self.pending.borrow().clone();
-        let at = self.home_at(pt);
-        let ok = pending.as_ref().zip(at).is_some_and(|(d, k)| home_accepts(d, k));
-        *effect = if ok { drop_pick(*effect) } else { DROPEFFECT_NONE };
-        let show = ok && *effect != DROPEFFECT_NONE;
-        let next = if show {
-            let want = match pending.as_ref() {
-                Some(HomeDrop::Folders(_)) => RowKind::Pins,
-                _ => RowKind::Files,
-            };
-            rows().iter().position(|r| r.group && r.kind == want).map(|row| (row, 1))
-        } else {
-            None
-        };
-        if set_drop(next) {
-            _ = InvalidateRect(Some(self.hwnd), None, false);
+        let y = self.client_y(pt);
+        let at = y.and_then(|y| self.home_at(y));
+        let home = pending.as_ref().and_then(|p| p.home.as_ref());
+        if home.zip(at).is_some_and(|(d, k)| home_accepts(d, k)) {
+            *effect = drop_pick(*effect);
+            let next = (*effect != DROPEFFECT_NONE).then(|| {
+                let want = match home {
+                    Some(HomeDrop::Folders(_)) => RowKind::Pins,
+                    _ => RowKind::Files,
+                };
+                rows().iter().position(|r| r.group && r.kind == want).map(|row| (row, 1u8))
+            }).flatten();
+            self.paint_line(next);
+            return;
         }
+        let has = pending.as_ref().is_some_and(|p| !p.items.is_empty());
+        if !has {
+            *effect = DROPEFFECT_NONE;
+            self.paint_line(None);
+            return;
+        }
+        *effect = DROPEFFECT(fav_link_effect((*effect).0));
+        if (*effect).0 == 0 {
+            self.paint_line(None);
+            return;
+        }
+        self.paint_line(y.map(|yy| fav_target(yy).1).unwrap_or(None));
     }
 
     unsafe fn clear(&self) {
         *self.pending.borrow_mut() = None;
-        if set_drop(None) {
-            _ = InvalidateRect(Some(self.hwnd), None, false);
-        }
+        self.paint_line(None);
     }
 }
 
@@ -1026,7 +1078,7 @@ impl IDropTarget_Impl for SideDrop_Impl {
     fn DragEnter(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
-            *self.pending.borrow_mut() = home_drop_of(&d);
+            *self.pending.borrow_mut() = Some(pending_of(read_drop(&d)));
             self.hover(pt, effect);
         }
         Ok(())
@@ -1043,38 +1095,193 @@ impl IDropTarget_Impl for SideDrop_Impl {
         unsafe {
             bind_hwnd(self.hwnd);
             let pending = self.pending.borrow().clone();
-            let at = self.home_at(pt);
+            let y = self.client_y(pt);
+            let at = y.and_then(|y| self.home_at(y));
             let allowed = if effect.is_null() { DROPEFFECT_NONE } else { *effect };
             self.clear();
             if !effect.is_null() {
                 *effect = DROPEFFECT_NONE;
             }
             let Some(pending) = pending else { return Ok(()) };
-            let Some(at) = at else { return Ok(()) };
-            if !home_accepts(&pending, at) {
-                return Ok(());
+            if let (Some(home), Some(at)) = (pending.home.as_ref(), at) {
+                if home_accepts(home, at) {
+                    let eff = drop_pick(allowed);
+                    if eff == DROPEFFECT_NONE {
+                        return Ok(());
+                    }
+                    if !effect.is_null() {
+                        *effect = eff;
+                    }
+                    match home {
+                        HomeDrop::Folders(paths) => {
+                            for path in paths {
+                                pin_home(path, "", false);
+                            }
+                        }
+                        HomeDrop::Files(paths) => {
+                            for path in paths {
+                                pin_home(path, "", true);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
             }
-            let eff = drop_pick(allowed);
-            if eff == DROPEFFECT_NONE {
+            let link = fav_link_effect(allowed.0);
+            if link == 0 || pending.items.is_empty() {
                 return Ok(());
             }
             if !effect.is_null() {
-                *effect = eff;
+                *effect = DROPEFFECT(link);
             }
-            match pending {
-                HomeDrop::Folders(paths) => {
-                    for path in &paths {
-                        pin_home(path, "", false);
-                    }
+            let spot = y.map(|yy| fav_target(yy).0).unwrap_or(DropSpot::End);
+            let id = app(|a| {
+                a.s.ensure_fav_tree();
+                let id = insert_dropped(&mut a.s.tree, &pending.items, &spot);
+                if id.is_some() {
+                    a.s.sync_favs();
                 }
-                HomeDrop::Files(paths) => {
-                    for path in &paths {
-                        pin_home(path, "", true);
-                    }
-                }
+                id
+            });
+            if let Some(id) = id {
+                let sel = tree_pos(&rows(), &id);
+                app(|a| a.side_sel = sel);
+                changed();
+            } else {
+                repaint_side();
             }
         }
         Ok(())
+    }
+}
+
+/// `CF_HDROP` first: the paths are already in the drop memory, so a UNC name is not resolved.
+/// Shell items are only asked for a display name when that format is missing.
+unsafe fn read_drop(d: &Ref<IDataObject>) -> Vec<RawDrop> {
+    let paths = hdrop_paths(d);
+    if !paths.is_empty() {
+        let flags = shell_flags(d, &paths);
+        return paths.into_iter().zip(flags).filter(|(p, _)| is_fs(p)).map(|(path, file)| RawDrop { path, file }).collect();
+    }
+    shell_paths(d)
+}
+
+unsafe fn hdrop_paths(d: &Ref<IDataObject>) -> Vec<String> {
+    use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+    use windows::Win32::System::Ole::ReleaseStgMedium;
+    let Some(obj) = d.as_ref() else { return Vec::new() };
+    let fmt = FORMATETC {
+        cfFormat: CF_HDROP.0,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+    let Ok(mut medium) = obj.GetData(&fmt) else { return Vec::new() };
+    let drop = HDROP(medium.u.hGlobal.0);
+    let mut paths = Vec::new();
+    for k in 0..DragQueryFileW(drop, u32::MAX, None) {
+        let need = DragQueryFileW(drop, k, None) as usize;
+        let mut buf = vec![0u16; need + 1];
+        let got = DragQueryFileW(drop, k, Some(&mut buf)) as usize;
+        let path = canon_drop_path(&String::from_utf16_lossy(buf.get(..got).unwrap_or(&[])));
+        if !path.is_empty() {
+            paths.push(path);
+        }
+    }
+    ReleaseStgMedium(&mut medium);
+    paths
+}
+
+/// File bits aligned with `paths`. A count mismatch does not fall back to display names:
+/// those can open a share. An unknown bit stays unknown.
+unsafe fn shell_flags(d: &Ref<IDataObject>, paths: &[String]) -> Vec<Option<bool>> {
+    let Some(arr) = drop_items(d) else {
+        return paths.iter().map(|p| path_is_file(p)).collect();
+    };
+    let n = arr.GetCount().unwrap_or(0) as usize;
+    if n != paths.len() {
+        return paths.iter().map(|p| path_is_file(p)).collect();
+    }
+    (0..n)
+        .map(|k| match arr.GetItemAt(k as u32) {
+            Ok(item) => file_bit(&item, &paths[k]).or_else(|| path_is_file(&paths[k])),
+            Err(_) => path_is_file(&paths[k]),
+        })
+        .collect()
+}
+
+unsafe fn shell_paths(d: &Ref<IDataObject>) -> Vec<RawDrop> {
+    let Some(arr) = drop_items(d) else { return Vec::new() };
+    let n = arr.GetCount().unwrap_or(0);
+    let mut out = Vec::new();
+    for k in 0..n {
+        let Ok(item) = arr.GetItemAt(k) else { continue };
+        let Ok(name) = item.GetDisplayName(SIGDN_FILESYSPATH) else { continue };
+        let path = canon_drop_path(&pwstr(name));
+        if path.is_empty() || !is_fs(&path) {
+            continue;
+        }
+        let file = file_bit(&item, &path).or_else(|| path_is_file(&path));
+        out.push(RawDrop { path, file });
+    }
+    out
+}
+
+/// `Some(true)` is a file. Fast cached attributes first. `GetAttributes` and
+/// `GetFileAttributesW` are skipped for UNC and mapped drives: either can bind the share.
+unsafe fn file_bit(item: &IShellItem, path: &str) -> Option<bool> {
+    if let Some(dir) = fast_is_dir(item) {
+        return Some(!dir);
+    }
+    if !unc_path(path) && !share_path(path) {
+        if let Ok(flags) = item.GetAttributes(SFGAO_FOLDER | SFGAO_STREAM) {
+            return Some(!shell_is_folder(flags));
+        }
+    }
+    None
+}
+
+unsafe fn path_is_file(path: &str) -> Option<bool> {
+    use windows::Win32::Storage::FileSystem::{GetFileAttributesW, FILE_ATTRIBUTE_DIRECTORY, INVALID_FILE_ATTRIBUTES};
+    if unc_path(path) || share_path(path) {
+        return None;
+    }
+    let attr = GetFileAttributesW(&HSTRING::from(path));
+    if attr == INVALID_FILE_ATTRIBUTES {
+        return None;
+    }
+    Some(attr & FILE_ATTRIBUTE_DIRECTORY.0 == 0)
+}
+
+const PKEY_FILE_ATTRIBUTES: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac),
+    pid: 13,
+};
+
+unsafe fn fast_is_dir(item: &IShellItem) -> Option<bool> {
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    use windows::Win32::UI::Shell::PropertiesSystem::{GPS_FASTPROPERTIESONLY, IPropertyStore};
+    let item2 = item.cast::<IShellItem2>().ok()?;
+    let store = item2.GetPropertyStore::<IPropertyStore>(GPS_FASTPROPERTIESONLY).ok()?;
+    let mut v: PROPVARIANT = store.GetValue(&PKEY_FILE_ATTRIBUTES).ok()?;
+    let dir = prop_directory(&v);
+    _ = PropVariantClear(&mut v);
+    dir
+}
+
+fn prop_directory(v: &windows::Win32::System::Com::StructuredStorage::PROPVARIANT) -> Option<bool> {
+    use windows::Win32::System::Variant::{VT_I4, VT_INT, VT_UI4, VT_UINT};
+    unsafe {
+        let head = &*v.Anonymous.Anonymous;
+        let n = if head.vt == VT_UI4 || head.vt == VT_UINT {
+            head.Anonymous.ulVal
+        } else if head.vt == VT_I4 || head.vt == VT_INT {
+            head.Anonymous.lVal as u32
+        } else {
+            return None;
+        };
+        Some(n & 0x10 != 0)
     }
 }
 

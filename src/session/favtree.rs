@@ -345,6 +345,153 @@ pub(crate) fn copy_leaf(tree: &mut Vec<FavNode>, path: &str, name: &str, onto: &
     Some(id)
 }
 
+/// One filesystem item from an external drop. `file` is how it opens, not a request to copy it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Dropped {
+    pub(crate) path: String,
+    pub(crate) file: bool,
+}
+
+/// Where those items land. `At` is a tree id and a drop zone (0 before, 1 into a group, 2 after).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DropSpot {
+    At(Vec<usize>, u8),
+    End,
+}
+
+/// A visible row, enough to choose a spot without the window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DropHit {
+    pub(crate) tree: bool,
+    pub(crate) group: bool,
+    pub(crate) id: Vec<usize>,
+}
+
+/// `DROPEFFECT_LINK`. A favourites drop never reports move: the source would delete the files.
+pub(crate) const FAV_LINK: u32 = 4;
+
+/// Link whenever the source allows any effect. Move is never returned.
+pub(crate) fn fav_link_effect(allowed: u32) -> u32 {
+    if allowed == 0 { 0 } else { FAV_LINK }
+}
+
+/// Backslashes, no trailing slash except a drive root. Compared as text; nothing is opened.
+pub(crate) fn canon_drop_path(path: &str) -> String {
+    tidy_path(&path.replace('/', "\\"))
+}
+
+fn same_drop_path(a: &str, b: &str) -> bool {
+    let a = canon_drop_path(a);
+    let b = canon_drop_path(b);
+    !a.is_empty() && a.eq_ignore_ascii_case(&b)
+}
+
+fn tree_has_path(tree: &[FavNode], path: &str) -> bool {
+    fn walk(nodes: &[FavNode], path: &str) -> bool {
+        nodes.iter().any(|n| (!n.path.is_empty() && same_drop_path(&n.path, path)) || (n.is_group() && walk(&n.children, path)))
+    }
+    walk(tree, path)
+}
+
+fn fresh_drops(tree: &[FavNode], items: &[Dropped]) -> Vec<FavNode> {
+    let mut out = Vec::new();
+    for it in items {
+        let path = canon_drop_path(&it.path);
+        if path.is_empty() || tree_has_path(tree, &path) || out.iter().any(|n: &FavNode| same_drop_path(&n.path, &path)) {
+            continue;
+        }
+        out.push(FavNode::leaf(&path, "", it.file));
+    }
+    out
+}
+
+/// Parent id, index among that parent's children, and whether the drop goes inside a group.
+fn spot_place(tree: &[FavNode], spot: &DropSpot) -> Option<(Vec<usize>, usize, bool)> {
+    let DropSpot::At(onto, zone) = spot else {
+        return Some((Vec::new(), tree.len(), false));
+    };
+    if onto.is_empty() {
+        return Some((Vec::new(), tree.len(), false));
+    }
+    let mut zone = *zone;
+    if zone == 1 && !is_group_id(tree, onto) {
+        zone = 2;
+    }
+    let into = zone == 1;
+    let parent: Vec<usize> = if into { onto.clone() } else { onto[..onto.len() - 1].to_vec() };
+    if !parent.is_empty() && !is_group_id(tree, &parent) {
+        return None;
+    }
+    let n = child_len(tree, &parent);
+    if !into && onto[onto.len() - 1] >= n {
+        return None;
+    }
+    let index = if into {
+        child_len(tree, onto)
+    } else if zone == 0 {
+        onto[onto.len() - 1]
+    } else {
+        onto[onto.len() - 1] + 1
+    };
+    Some((parent, index, into))
+}
+
+/// Insert `items` at `spot`, in order. A path already in the tree, or repeated in `items`, is skipped.
+/// Comparison is ASCII case-insensitive on the whole path. Nothing is sliced out of the string.
+/// Returns the id of the last node actually inserted.
+pub(crate) fn insert_dropped(tree: &mut Vec<FavNode>, items: &[Dropped], spot: &DropSpot) -> Option<Vec<usize>> {
+    let nodes = fresh_drops(tree, items);
+    if nodes.is_empty() {
+        return None;
+    }
+    let (parent, mut index, into) = spot_place(tree, spot)?;
+    let group = match spot {
+        DropSpot::At(id, _) if into => id.clone(),
+        _ => Vec::new(),
+    };
+    let mut last = None;
+    for node in nodes {
+        if insert_child(tree, &parent, index, node).is_none() {
+            break;
+        }
+        let mut id = parent.clone();
+        id.push(index);
+        last = Some(id);
+        index += 1;
+    }
+    if into && last.is_some() {
+        set_open(tree, &group, true);
+    }
+    last
+}
+
+/// Spot under the pointer. `index` is the visible row, or none for the empty area under the list.
+/// A row that is not in the favourites tree inserts at the start of that tree.
+pub(crate) fn drop_spot(hits: &[DropHit], index: Option<usize>, zone: u8) -> DropSpot {
+    if let Some(row) = index.and_then(|i| hits.get(i)) {
+        if row.tree && !row.id.is_empty() {
+            let zone = if zone == 1 && !row.group { 2 } else { zone };
+            return DropSpot::At(row.id.clone(), zone);
+        }
+        if let Some(first) = hits.iter().find(|r| r.tree && !r.id.is_empty()) {
+            return DropSpot::At(first.id.clone(), 0);
+        }
+        return DropSpot::End;
+    }
+    if let Some(last) = hits.iter().rev().find(|r| r.tree && !r.id.is_empty()) {
+        return DropSpot::At(last.id.clone(), 2);
+    }
+    DropSpot::End
+}
+
+/// Visible row and zone for the insertion line. None when there is no row to draw under.
+pub(crate) fn drop_line(hits: &[DropHit], spot: &DropSpot) -> Option<(usize, u8)> {
+    match spot {
+        DropSpot::End => hits.len().checked_sub(1).map(|i| (i, 2)),
+        DropSpot::At(id, zone) => hits.iter().position(|r| r.tree && r.id == *id).map(|i| (i, *zone)),
+    }
+}
+
 pub(crate) fn node_label(n: &FavNode) -> String {
     if !n.name.is_empty() {
         return n.name.clone();
@@ -1278,5 +1425,123 @@ mod tests {
         assert_eq!(locate(&t, &[1], &key), Some(vec![0]));
         t.clear();
         assert_eq!(locate(&t, &[1], &key), None);
+    }
+
+    fn item(path: &str, file: bool) -> Dropped {
+        Dropped { path: path.to_string(), file }
+    }
+
+    fn hit(tree: bool, group: bool, id: Vec<usize>) -> DropHit {
+        DropHit { tree, group, id }
+    }
+
+    #[test]
+    fn canon_paths_keep_whole_characters() {
+        assert_eq!(canon_drop_path("C:/Work/"), r"C:\Work");
+        assert_eq!(canon_drop_path(r"\\server\share\"), r"\\server\share");
+        assert_eq!(canon_drop_path("//server/share/a/"), r"\\server\share\a");
+        assert_eq!(canon_drop_path("C:"), r"C:\");
+        assert_eq!(canon_drop_path("  "), "");
+        assert_eq!(canon_drop_path(r"F:\CAC\サンプル\"), r"F:\CAC\サンプル");
+        assert!(canon_drop_path(r"f:\cac\サンプル").eq_ignore_ascii_case(r"F:\CAC\サンプル"));
+    }
+
+    #[test]
+    fn dropped_items_keep_order_and_skip_duplicates() {
+        let mut tree = tree_from_flat(&[r"C:\Work".into(), r"D:\Photos".into(), r"E:\Keep".into()]);
+        let before = tree[0].clone();
+        let id = insert_dropped(
+            &mut tree,
+            &[
+                item(r"c:\work\", false),
+                item(r"C:\New", false),
+                item(r"C:/new", true),
+                item(r"\\server\share\a", true),
+                item("  ", false),
+                item(r"C:\仕事\メモ.txt", true),
+                item(r"c:\仕事\メモ.txt", false),
+                item(r"F:\CAC\サンプル", false),
+            ],
+            &DropSpot::At(vec![1], 0),
+        )
+        .unwrap();
+        assert_eq!(id, vec![4]);
+        assert_eq!(
+            flat_favs(&tree),
+            vec![
+                r"C:\Work".to_string(),
+                r"C:\New".into(),
+                r"\\server\share\a".into(),
+                r"C:\仕事\メモ.txt".into(),
+                r"F:\CAC\サンプル".into(),
+                r"D:\Photos".into(),
+                r"E:\Keep".into(),
+            ]
+        );
+        assert!(!tree[1].file, "the first copy of a path wins");
+        assert!(tree[2].file);
+        assert!(tree[3].file);
+        assert_eq!(tree[0], before, "an existing favourite is not replaced");
+        assert_eq!(insert_dropped(&mut tree, &[item(r"C:\NEW", false)], &DropSpot::End), None);
+        assert_eq!(tree.len(), 7);
+    }
+
+    #[test]
+    fn a_drop_into_a_group_appends_in_order_and_opens_it() {
+        let mut tree = vec![FavNode::group("Jobs"), FavNode::leaf(r"D:\Z", "Z", false)];
+        tree[0].open = false;
+        tree[0].children.push(FavNode::leaf(r"C:\a", "a", false));
+        let id = insert_dropped(&mut tree, &[item(r"C:\b.txt", true), item(r"C:\c", false)], &DropSpot::At(vec![0], 1)).unwrap();
+        assert_eq!(id, vec![0, 2]);
+        assert!(tree[0].open);
+        assert_eq!(tree[0].children.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), [r"C:\a", r"C:\b.txt", r"C:\c"]);
+        assert!(tree[0].children[1].file);
+        assert!(!tree[0].children[2].file);
+        let id = insert_dropped(&mut tree, &[item(r"E:\after", false)], &DropSpot::At(vec![0], 2)).unwrap();
+        assert_eq!(id, vec![1]);
+        assert_eq!(tree[1].path, r"E:\after");
+        assert_eq!(tree[2].path, r"D:\Z");
+    }
+
+    #[test]
+    fn an_existing_favourite_row_still_reorders() {
+        let mut tree = tree_from_flat(&[r"C:\A".into(), r"C:\B".into(), r"C:\C".into()]);
+        let id = insert_dropped(&mut tree, &[item(r"c:\a", false), item(r"C:\D", true)], &DropSpot::At(vec![2], 2)).unwrap();
+        assert_eq!(id, vec![3]);
+        assert_eq!(flat_favs(&tree), vec![r"C:\A".to_string(), r"C:\B".into(), r"C:\C".into(), r"C:\D".into()]);
+        assert!(!tree[0].file, "skipping a duplicate does not rewrite the row");
+        assert_eq!(apply_drop(&mut tree, &[0], &[3], 2), Some(vec![3]), "dragging that row still moves it");
+        assert_eq!(flat_favs(&tree), vec![r"C:\B".to_string(), r"C:\C".into(), r"C:\D".into(), r"C:\A".into()]);
+        assert!(insert_dropped(&mut tree, &[item(r"C:\nope", false)], &DropSpot::At(vec![9], 0)).is_none());
+        assert_eq!(tree.len(), 4);
+    }
+
+    #[test]
+    fn link_effect_is_never_move_and_the_line_follows_the_spot() {
+        assert_eq!(fav_link_effect(0), 0);
+        assert_eq!(fav_link_effect(1), FAV_LINK, "copy-only still reports link");
+        assert_eq!(fav_link_effect(2), FAV_LINK, "move-only must not be reported as move");
+        assert_eq!(fav_link_effect(1 | 2), FAV_LINK);
+        assert_eq!(fav_link_effect(1 | 2 | 4), FAV_LINK);
+        assert_ne!(fav_link_effect(2), 2);
+
+        let hits = vec![
+            hit(false, true, vec![]),
+            hit(false, false, vec![0]),
+            hit(true, true, vec![0]),
+            hit(true, false, vec![0, 0]),
+            hit(true, false, vec![1]),
+        ];
+        assert_eq!(drop_spot(&hits, Some(4), 0), DropSpot::At(vec![1], 0));
+        assert_eq!(drop_spot(&hits, Some(2), 1), DropSpot::At(vec![0], 1));
+        assert_eq!(drop_spot(&hits, Some(3), 1), DropSpot::At(vec![0, 0], 2), "a leaf has no inside");
+        assert_eq!(drop_spot(&hits, Some(0), 1), DropSpot::At(vec![0], 0), "a pin row inserts before the tree");
+        assert_eq!(drop_spot(&hits, None, 2), DropSpot::At(vec![1], 2), "empty space is after the last favourite");
+        assert_eq!(drop_line(&hits, &DropSpot::At(vec![0], 1)), Some((2, 1)));
+        assert_eq!(drop_line(&hits, &DropSpot::End), Some((4, 2)));
+        let pins = vec![hit(false, true, vec![])];
+        assert_eq!(drop_spot(&pins, None, 2), DropSpot::End);
+        assert_eq!(drop_line(&pins, &DropSpot::End), Some((0, 2)));
+        assert_eq!(drop_line(&[], &DropSpot::End), None);
     }
 }
