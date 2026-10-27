@@ -1,5 +1,7 @@
 // Separate window for the selected items. Painted like Settings (theme, accent, DPI);
 // edits and buttons are real child controls on that paint.
+// Rules sit on the left and the preview on the right. A single-line edit is only
+// as tall as its font cell and is centred in a frame that matches the combo beside it.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -28,6 +30,21 @@ const ID_DELPRE: i32 = 9;
 const ID_BASE: i32 = 100;
 const STRIDE: i32 = 16;
 const MAX_RULES: usize = 24;
+
+/// Outer size. Wider than the old stacked layout so the rules and the preview
+/// can share the window side by side, about half the client each.
+const DLG_W_DIP: i32 = 1360;
+const DLG_H_DIP: i32 = 700;
+const DLG_MIN_W_DIP: i32 = 1040;
+const DLG_MIN_H_DIP: i32 = 520;
+/// Neither column shrinks below this. Width past the two minimums is split evenly.
+const COL_MIN_DIP: i32 = 420;
+const COL_GAP_DIP: i32 = 12;
+/// Combo, button and edit-frame height on a rule card.
+const FIELD_H_DIP: i32 = 26;
+/// Replace and regex checks share the text row at this host width and above.
+/// A narrower card puts the checks on their own row so the two edits stay readable.
+const CHECK_WRAP_DIP: i32 = 640;
 
 const F_KIND: i32 = 0;
 const F_A: i32 = 1;
@@ -174,7 +191,7 @@ unsafe fn open_items(items: Vec<BatchItem>) {
     }
     let owner = crate::app(|a| a.main);
     let dpi = if owner.0.is_null() { 96 } else { GetDpiForWindow(owner) as i32 };
-    let (ww, hh) = (sc(dpi.max(96), 980), sc(dpi.max(96), 700));
+    let (ww, hh) = (sc(dpi.max(96), DLG_W_DIP), sc(dpi.max(96), DLG_H_DIP));
     let mut orc = RECT::default();
     if !owner.0.is_null() {
         let _ = GetWindowRect(owner, &mut orc);
@@ -368,12 +385,13 @@ unsafe extern "system" fn rename_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_GETMINMAXINFO => {
             let dpi = ST.with(|s| s.borrow().dpi.max(96));
             let m = &mut *(lp.0 as *mut MINMAXINFO);
-            m.ptMinTrackSize.x = sc(dpi, 760);
-            m.ptMinTrackSize.y = sc(dpi, 520);
+            m.ptMinTrackSize.x = sc(dpi, DLG_MIN_W_DIP);
+            m.ptMinTrackSize.y = sc(dpi, DLG_MIN_H_DIP);
             return LRESULT(0);
         }
         WM_PAINT => paint(h),
         WM_ERASEBKGND => return LRESULT(1),
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => return ctl_color(wp),
         WM_DRAWITEM => {
             draw_btn(&*(lp.0 as *const DRAWITEMSTRUCT));
             return LRESULT(1);
@@ -929,7 +947,7 @@ unsafe fn add_rule() {
     rebuild_rule_controls();
     let dpi = ST.with(|s| s.borrow().dpi);
     let rules = ST.with(|s| s.borrow().rules.clone());
-    let content = rules_span(&rules, dpi);
+    let content = rules_span(&rules, dpi, rules_host_w());
     let view = host_height();
     let max = (content - view).max(0);
     ST.with(|s| s.borrow_mut().rule_scroll = max);
@@ -1015,9 +1033,10 @@ fn card_at_y(y: i32) -> Option<usize> {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let scroll = ST.with(|s| s.borrow().rule_scroll);
     let rules = ST.with(|s| s.borrow().rules.clone());
+    let host_w = rules_host_w();
     let mut top = -scroll;
     for (i, rule) in rules.iter().enumerate() {
-        let stride = rule_stride(rule, dpi);
+        let stride = rule_stride(rule, dpi, host_w);
         if y >= top && y < top + stride {
             return Some(i);
         }
@@ -1030,9 +1049,10 @@ fn insert_at_y(y: i32) -> usize {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let scroll = ST.with(|s| s.borrow().rule_scroll);
     let rules = ST.with(|s| s.borrow().rules.clone());
+    let host_w = rules_host_w();
     let mut top = -scroll;
     for (i, rule) in rules.iter().enumerate() {
-        let stride = rule_stride(rule, dpi);
+        let stride = rule_stride(rule, dpi, host_w);
         if y < top + stride / 2 {
             return i;
         }
@@ -1454,26 +1474,48 @@ fn geo_now() -> Geo {
     geo(rc, ST.with(|s| s.borrow().dpi))
 }
 
+/// Split `avail` between the two columns. At or above two minimums the extra
+/// pixels are shared; below that the columns still sit side by side.
+fn column_widths(avail: i32, min_col: i32) -> (i32, i32) {
+    let avail = avail.max(0);
+    let min_col = min_col.max(0);
+    if avail >= min_col.saturating_mul(2) {
+        let left = (avail / 2).clamp(min_col, avail - min_col);
+        (left, avail - left)
+    } else {
+        let left = avail / 2;
+        (left, avail - left)
+    }
+}
+
+/// Toolbar across the top, rules on the left, preview on the right, buttons along the bottom.
+/// The filter row is full width: it does not fit in the rules column once the window is split.
 fn geo(rc: RECT, dpi: i32) -> Geo {
     let dpi = dpi.max(96);
     let pad = sc(dpi, 16);
+    let gap = sc(dpi, COL_GAP_DIP);
     let top = pad;
     let lbl_h = sc(dpi, 28);
     let add_w = sc(dpi, 120);
-    let rules_lbl = RECT { left: rc.left + pad, top, right: rc.right - pad - add_w - sc(dpi, 8), bottom: top + lbl_h };
-    let add = RECT { left: rc.right - pad - add_w, top: top + sc(dpi, 0), right: rc.right - pad, bottom: top + lbl_h };
+    let add = RECT { left: rc.right - pad - add_w, top, right: rc.right - pad, bottom: top + lbl_h };
+    let tools = RECT { left: rc.left + pad, top, right: (add.left - sc(dpi, 8)).max(rc.left + pad), bottom: top + lbl_h };
     let foot_h = sc(dpi, 56);
     let foot_top = rc.bottom - foot_h;
-    let tools_top = rules_lbl.bottom + sc(dpi, 8);
-    let tools = RECT { left: rc.left + pad, top: tools_top, right: rc.right - pad, bottom: tools_top + lbl_h };
-    let host_top = tools.bottom + sc(dpi, 8);
-    let body = (foot_top - host_top - sc(dpi, 36)).max(sc(dpi, 220));
-    let host_h = (body * 42 / 100).max(sc(dpi, 110));
-    let host = RECT { left: rc.left + pad, top: host_top, right: rc.right - pad, bottom: host_top + host_h };
-    let prev_top = host.bottom + sc(dpi, 12);
-    let prev_lbl = RECT { left: rc.left + pad, top: prev_top, right: rc.left + pad + sc(dpi, 200), bottom: prev_top + lbl_h };
-    let summary = RECT { left: prev_lbl.right, top: prev_top, right: rc.right - pad, bottom: prev_top + lbl_h };
-    let list = RECT { left: rc.left + pad, top: prev_lbl.bottom + sc(dpi, 4), right: rc.right - pad, bottom: foot_top - sc(dpi, 8) };
+    let head_top = tools.bottom + sc(dpi, 10);
+    let body_top = head_top + lbl_h + sc(dpi, 4);
+    let body_bot = (foot_top - sc(dpi, 8)).max(body_top);
+    let content_left = rc.left + pad;
+    let content_right = rc.right - pad;
+    let (left_w, _) = column_widths((content_right - content_left - gap).max(0), sc(dpi, COL_MIN_DIP));
+    let split = content_left + left_w;
+    let col_right = (split + gap).min(content_right);
+    let rules_lbl = RECT { left: content_left, top: head_top, right: split.max(content_left), bottom: head_top + lbl_h };
+    let host = RECT { left: content_left, top: body_top, right: split.max(content_left), bottom: body_bot };
+    let prev_w = sc(dpi, 140).min((content_right - col_right).max(0));
+    let prev_lbl = RECT { left: col_right, top: head_top, right: col_right + prev_w, bottom: head_top + lbl_h };
+    let summary_left = (prev_lbl.right + sc(dpi, 8)).min(content_right);
+    let summary = RECT { left: summary_left, top: head_top, right: content_right, bottom: head_top + lbl_h };
+    let list = RECT { left: col_right, top: body_top, right: content_right, bottom: body_bot };
     let btn_h = sc(dpi, 32);
     let btn_y = foot_top + (foot_h - btn_h) / 2;
     let apply = RECT { left: rc.right - pad - sc(dpi, 128), top: btn_y, right: rc.right - pad, bottom: btn_y + btn_h };
@@ -1500,35 +1542,95 @@ unsafe fn layout(h: HWND) {
     place_rules();
 }
 
-unsafe fn place_tools(h: HWND, r: RECT, dpi: i32) {
+struct ToolRects {
+    filter: RECT,
+    ext: RECT,
+    preset: RECT,
+    save: RECT,
+    del: RECT,
+}
+
+/// Filter, extension, preset, Save and Delete preset. The preset box shrinks
+/// when the row is tight; the others keep their width. Heights follow `r`.
+fn tool_rects(r: RECT, dpi: i32) -> ToolRects {
     let gap = sc(dpi, 8);
+    let filter_w = sc(dpi, 128);
+    let ext_w = sc(dpi, 148);
+    let save_w = sc(dpi, 72);
+    let del_w = sc(dpi, 128);
+    let preset_pref = sc(dpi, 180);
+    let preset_min = sc(dpi, 96);
+    let fixed = filter_w + ext_w + save_w + del_w + gap * 4;
+    let avail = (r.right - r.left).max(0);
+    let room = avail - fixed;
+    let preset_w = if room >= preset_pref { preset_pref } else { room.max(0).max(preset_min.min(avail)) };
     let mut x = r.left;
     let slot = |w: i32, x: &mut i32| {
         let rect = RECT { left: *x, top: r.top, right: *x + w, bottom: r.bottom };
         *x += w + gap;
         rect
     };
-    move_to(ctl(h, ID_FILTER), slot(sc(dpi, 128), &mut x));
-    move_to(ctl(h, ID_EXT), slot(sc(dpi, 148), &mut x));
-    move_to(ctl(h, ID_PRESET), slot(sc(dpi, 180), &mut x));
-    move_to(ctl(h, ID_SAVE), slot(sc(dpi, 72), &mut x));
-    let del_r = RECT { left: x, top: r.top, right: r.right.min(x + sc(dpi, 128)), bottom: r.bottom };
-    move_to(ctl(h, ID_DELPRE), del_r);
+    ToolRects { filter: slot(filter_w, &mut x), ext: slot(ext_w, &mut x), preset: slot(preset_w, &mut x), save: slot(save_w, &mut x), del: slot(del_w, &mut x) }
 }
 
-fn card_dip(rule: &Rule) -> i32 {
-    match rule {
-        Rule::Number { .. } | Rule::Date { .. } => 128,
-        _ => 92,
+unsafe fn place_tools(h: HWND, r: RECT, dpi: i32) {
+    let t = tool_rects(r, dpi);
+    move_to(ctl(h, ID_FILTER), t.filter);
+    place_field(h, ID_EXT, t.ext, dpi);
+    move_to(ctl(h, ID_PRESET), t.preset);
+    move_to(ctl(h, ID_SAVE), t.save);
+    move_to(ctl(h, ID_DELPRE), t.del);
+}
+
+fn checks_wrap(rule: &Rule, host_w: i32, dpi: i32) -> bool {
+    matches!(rule, Rule::Replace { .. } | Rule::Regex { .. }) && host_w < sc(dpi.max(96), CHECK_WRAP_DIP)
+}
+
+fn card_dip(rule: &Rule, host_w: i32, dpi: i32) -> i32 {
+    let tall = matches!(rule, Rule::Number { .. } | Rule::Date { .. }) || checks_wrap(rule, host_w, dpi);
+    if tall { 128 } else { 92 }
+}
+
+fn rule_stride(rule: &Rule, dpi: i32, host_w: i32) -> i32 {
+    sc(dpi.max(96), card_dip(rule, host_w, dpi))
+}
+
+fn rules_span(rules: &[Rule], dpi: i32, host_w: i32) -> i32 {
+    rules.iter().map(|r| rule_stride(r, dpi, host_w)).sum()
+}
+
+fn rules_host_w() -> i32 {
+    let host = ST.with(|s| s.borrow().host);
+    if !host.0.is_null() {
+        let mut rc = RECT::default();
+        unsafe { let _ = GetClientRect(host, &mut rc); }
+        let w = rc.right - rc.left;
+        if w > 0 {
+            return w;
+        }
     }
+    let g = geo_now();
+    (g.host.right - g.host.left).max(0)
 }
 
-fn rule_stride(rule: &Rule, dpi: i32) -> i32 {
-    sc(dpi.max(96), card_dip(rule))
+/// Inset of a single-line edit inside its painted frame. Equal on every side,
+/// so the font cell `place_edit` centres in here is also centred in the frame.
+fn field_inner(outer: RECT, dpi: i32) -> RECT {
+    let h = outer.bottom - outer.top;
+    let w = outer.right - outer.left;
+    if h <= 0 || w <= 0 {
+        return outer;
+    }
+    let d = sc(dpi.max(96), 2).min(h / 2).min(w / 2);
+    RECT { left: outer.left + d, top: outer.top + d, right: (outer.right - d).max(outer.left + d), bottom: (outer.bottom - d).max(outer.top + d) }
 }
 
-fn rules_span(rules: &[Rule], dpi: i32) -> i32 {
-    rules.iter().map(|r| rule_stride(r, dpi)).sum()
+fn is_text_field(field: i32) -> bool {
+    matches!(field, F_A | F_B | F_C | F_AT)
+}
+
+fn kind_x(card: RECT, dpi: i32) -> i32 {
+    card.left + sc(dpi, 14) + sc(dpi, 22) + sc(dpi, 6)
 }
 
 unsafe fn place_rules() {
@@ -1541,7 +1643,7 @@ unsafe fn place_rules() {
     let _ = GetClientRect(host, &mut rc);
     let width = (rc.right - rc.left).max(1);
     let rules = ST.with(|s| s.borrow().rules.clone());
-    let content = rules_span(&rules, dpi);
+    let content = rules_span(&rules, dpi, width);
     let view = (rc.bottom - rc.top).max(0);
     let max = (content - view).max(0);
     ST.with(|s| {
@@ -1556,9 +1658,9 @@ unsafe fn place_rules() {
     let scroll = ST.with(|s| s.borrow().rule_scroll);
     let mut y = -scroll;
     for (i, rule) in rules.iter().enumerate() {
-        let stride = rule_stride(rule, dpi);
+        let stride = rule_stride(rule, dpi, width);
         let card = RECT { left: sc(dpi, 2), top: y + sc(dpi, 4), right: width - sc(dpi, 2), bottom: y + stride - sc(dpi, 4) };
-        place_card(host, i, card, dpi, rule);
+        place_card(host, i, card, dpi, rule, width);
         y += stride;
     }
     for i in rules.len()..MAX_RULES {
@@ -1571,11 +1673,102 @@ unsafe fn place_rules() {
     }
 }
 
-unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
-    let row1 = card.top + sc(dpi, 10);
+/// Painted frame for each control under the kind row. Text-field rects are the
+/// frame, the same height as the combos; the edit window is centred inside later.
+fn card_slots(card: RECT, dpi: i32, rule: &Rule, host_w: i32) -> Vec<(i32, RECT)> {
     let row2 = card.top + sc(dpi, 46);
     let row3 = card.top + sc(dpi, 82);
-    let h = sc(dpi, 26);
+    let h = sc(dpi, FIELD_H_DIP);
+    let gap = sc(dpi, 6);
+    let x = kind_x(card, dpi);
+    let end = card.right - sc(dpi, 10);
+    let mut slots = Vec::new();
+    let mut add = |field: i32, left: i32, top: i32, right: i32| {
+        if right > left {
+            slots.push((field, RECT { left, top, right, bottom: top + h }));
+        }
+    };
+    match rule {
+        Rule::Replace { .. } | Rule::Regex { .. } => {
+            let case_w = sc(dpi, 168);
+            let ext_w = sc(dpi, 176);
+            if checks_wrap(rule, host_w, dpi) {
+                let span = (end - x - gap).max(sc(dpi, 40));
+                let w = span / 2;
+                add(F_A, x, row2, x + w);
+                add(F_B, x + w + gap, row2, (x + w + gap + w).min(end));
+                add(F_CASE, x, row3, (x + case_w).min(end));
+                let ext_l = x + case_w + gap;
+                if ext_l < end {
+                    add(F_EXT, ext_l, row3, (ext_l + ext_w).min(end));
+                }
+            } else {
+                let mut edge = end;
+                add(F_EXT, edge - ext_w, row2, edge);
+                edge -= ext_w + gap;
+                add(F_CASE, edge - case_w, row2, edge);
+                edge -= case_w + gap;
+                let span = (edge - x - gap).max(sc(dpi, 40));
+                let w = span / 2;
+                add(F_A, x, row2, x + w);
+                add(F_B, x + w + gap, row2, (x + w + gap + w).min(edge));
+            }
+        }
+        Rule::Prefix { .. } | Rule::Suffix { .. } | Rule::Extension { .. } => {
+            add(F_A, x, row2, (x + sc(dpi, 280)).min(end));
+        }
+        Rule::Case { .. } => {
+            let ext_w = sc(dpi, 176);
+            add(F_EXT, end - ext_w, row2, end);
+            let mode_r = (end - ext_w - gap).max(x + sc(dpi, 40));
+            add(F_MODE, x, row2, mode_r.min(x + sc(dpi, 220)));
+        }
+        Rule::Number { pos, .. } => {
+            let span = (end - x - gap * 2).max(sc(dpi, 90));
+            let w = span / 3;
+            add(F_A, x, row2, x + w);
+            add(F_B, x + w + gap, row2, x + w + gap + w);
+            add(F_C, x + (w + gap) * 2, row2, (x + (w + gap) * 2 + w).min(end));
+            let pos_w = sc(dpi, 180);
+            add(F_POS, x, row3, (x + pos_w).min(end));
+            if matches!(pos, NumPos::At(_)) {
+                let at_l = x + pos_w + gap;
+                if at_l < end {
+                    add(F_AT, at_l, row3, (at_l + sc(dpi, 220)).min(end));
+                }
+            }
+        }
+        Rule::Date { .. } => {
+            let src_w = sc(dpi, 180);
+            add(F_SRC, x, row2, (x + src_w).min(end));
+            let pat_l = x + src_w + gap;
+            if pat_l < end {
+                add(F_A, pat_l, row2, end);
+            }
+            add(F_POS, x, row3, (x + sc(dpi, 200)).min(end));
+        }
+        Rule::Insert { .. } => {
+            let at_w = sc(dpi, 200);
+            add(F_A, x, row2, (end - at_w - gap).max(x + sc(dpi, 40)));
+            add(F_AT, end - at_w, row2, end);
+        }
+        Rule::Delete { .. } => {
+            let w = sc(dpi, 180);
+            add(F_AT, x, row2, (x + w).min(end));
+            add(F_C, x + w + gap, row2, (x + w + gap + w).min(end));
+        }
+        Rule::Trim { .. } => {
+            let edge_w = sc(dpi, 160);
+            add(F_A, x, row2, (end - edge_w - gap).max(x + sc(dpi, 40)));
+            add(F_POS, end - edge_w, row2, end);
+        }
+    }
+    slots
+}
+
+unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule, host_w: i32) {
+    let row1 = card.top + sc(dpi, 10);
+    let h = sc(dpi, FIELD_H_DIP);
     let btn = sc(dpi, 28);
     let gap = sc(dpi, 6);
     let right = card.right - sc(dpi, 10);
@@ -1585,8 +1778,8 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
     let grip = sc(dpi, 14);
     let box_w = sc(dpi, 22);
     put(host, id(i, F_ON), RECT { left: card.left + grip, top: row1, right: card.left + grip + box_w, bottom: row1 + h }, true);
-    let kind_left = card.left + grip + box_w + gap;
-    let kind = RECT { left: kind_left, top: row1, right: (kind_left + sc(dpi, 168)).min(up.left - gap), bottom: row1 + h };
+    let kx = kind_x(card, dpi);
+    let kind = RECT { left: kx, top: row1, right: (kx + sc(dpi, 168)).min(up.left - gap), bottom: row1 + h };
     put(host, id(i, F_KIND), kind, true);
     put(host, id(i, F_UP), up, true);
     put(host, id(i, F_DOWN), down, true);
@@ -1597,75 +1790,29 @@ unsafe fn place_card(host: HWND, i: usize, card: RECT, dpi: i32, rule: &Rule) {
     for f in [F_A, F_B, F_C, F_AT, F_CASE, F_EXT, F_MODE, F_POS, F_SRC] {
         put(host, id(i, f), RECT::default(), false);
     }
-
-    let x = kind_left;
-    let end = card.right - sc(dpi, 10);
-    let edit_at = |field, left, top, right| {
-        unsafe { put(host, id(i, field), RECT { left, top, right, bottom: top + h }, true); }
-    };
-    match rule {
-        Rule::Replace { .. } | Rule::Regex { .. } => {
-            let case_w = sc(dpi, 168);
-            let ext_w = sc(dpi, 176);
-            let mut edge = end;
-            edit_at(F_EXT, edge - ext_w, row2, edge);
-            edge -= ext_w + gap;
-            edit_at(F_CASE, edge - case_w, row2, edge);
-            edge -= case_w + gap;
-            let span = (edge - x - gap).max(sc(dpi, 40));
-            let w = span / 2;
-            edit_at(F_A, x, row2, x + w);
-            edit_at(F_B, x + w + gap, row2, x + w + gap + w);
-        }
-        Rule::Prefix { .. } | Rule::Suffix { .. } | Rule::Extension { .. } => {
-            edit_at(F_A, x, row2, (x + sc(dpi, 280)).min(end));
-        }
-        Rule::Case { .. } => {
-            let ext_w = sc(dpi, 176);
-            edit_at(F_EXT, end - ext_w, row2, end);
-            let mode_r = (end - ext_w - gap).max(x + sc(dpi, 40));
-            edit_at(F_MODE, x, row2, mode_r.min(x + sc(dpi, 220)));
-        }
-        Rule::Number { pos, .. } => {
-            let span = (end - x - gap * 2).max(sc(dpi, 90));
-            let w = span / 3;
-            edit_at(F_A, x, row2, x + w);
-            edit_at(F_B, x + w + gap, row2, x + w + gap + w);
-            edit_at(F_C, x + (w + gap) * 2, row2, (x + (w + gap) * 2 + w).min(end));
-            let pos_w = sc(dpi, 180);
-            edit_at(F_POS, x, row3, (x + pos_w).min(end));
-            if matches!(pos, NumPos::At(_)) {
-                let at_l = x + pos_w + gap;
-                if at_l < end {
-                    edit_at(F_AT, at_l, row3, (at_l + sc(dpi, 220)).min(end));
-                }
-            }
-        }
-        Rule::Date { .. } => {
-            let src_w = sc(dpi, 180);
-            edit_at(F_SRC, x, row2, (x + src_w).min(end));
-            let pat_l = x + src_w + gap;
-            if pat_l < end {
-                edit_at(F_A, pat_l, row2, end);
-            }
-            edit_at(F_POS, x, row3, (x + sc(dpi, 200)).min(end));
-        }
-        Rule::Insert { .. } => {
-            let at_w = sc(dpi, 200);
-            edit_at(F_A, x, row2, (end - at_w - gap).max(x + sc(dpi, 40)));
-            edit_at(F_AT, end - at_w, row2, end);
-        }
-        Rule::Delete { .. } => {
-            let w = sc(dpi, 180);
-            edit_at(F_AT, x, row2, x + w);
-            edit_at(F_C, x + w + gap, row2, (x + w + gap + w).min(end));
-        }
-        Rule::Trim { .. } => {
-            let edge_w = sc(dpi, 160);
-            edit_at(F_A, x, row2, (end - edge_w - gap).max(x + sc(dpi, 40)));
-            edit_at(F_POS, end - edge_w, row2, end);
+    for (field, outer) in card_slots(card, dpi, rule, host_w) {
+        if is_text_field(field) {
+            place_field(host, id(i, field), outer, dpi);
+        } else {
+            put(host, id(i, field), outer, true);
         }
     }
+}
+
+/// A single-line EDIT draws its font cell from the top of the client. Shrink the
+/// control to that cell and centre it in `outer`, which stays the painted frame
+/// and matches the combo and button beside it. `place_edit` measures `tmHeight`,
+/// so 100% and 150% DPI use the real line rather than a fixed offset.
+unsafe fn place_field(parent: HWND, cid: i32, outer: RECT, dpi: i32) {
+    let c = ctl(parent, cid);
+    if c.0.is_null() {
+        return;
+    }
+    if outer.right <= outer.left || outer.bottom <= outer.top {
+        let _ = ShowWindow(c, SW_HIDE);
+        return;
+    }
+    crate::place_edit(c, field_inner(outer, dpi), true);
 }
 
 unsafe fn put(parent: HWND, id: i32, r: RECT, show: bool) {
@@ -1728,7 +1875,11 @@ unsafe fn paint(h: HWND) {
         crate::text(dc, g.rules_lbl, tx(s("Rules", "규칙", "ルール")), font, crate::pal().text, DT_LEFT);
         let hint = tx(s("Top to bottom", "위에서 아래 순서로", "上から順に"));
         crate::text(dc, RECT { left: g.rules_lbl.left + sc(dpi, 70), ..g.rules_lbl }, hint, small, crate::pal().sub, DT_LEFT);
-        paint_edit_frame(dc, h, ID_EXT, dpi);
+        paint_field_frame(dc, tool_rects(g.tools, dpi).ext, dpi, crate::pal().card);
+        if g.list.left > g.host.right {
+            let x = g.host.right + (g.list.left - g.host.right) / 2;
+            crate::fill(dc, RECT { left: x, top: g.rules_lbl.top, right: x + 1, bottom: g.host.bottom }, crate::pal().line);
+        }
         crate::text(dc, g.prev_lbl, tx(s("Preview", "미리보기", "プレビュー")), font, crate::pal().text, DT_LEFT);
         let note = ST.with(|s| s.borrow().note.clone());
         let rows = ST.with(|s| s.borrow().rows.clone());
@@ -1830,8 +1981,8 @@ unsafe fn paint_host(h: HWND) {
         let scroll = ST.with(|s| s.borrow().rule_scroll);
         let width = rc.right - rc.left;
         let mut y = -scroll;
-        for (i, rule) in rules.iter().enumerate() {
-            let stride = rule_stride(rule, dpi);
+        for (_, rule) in rules.iter().enumerate() {
+            let stride = rule_stride(rule, dpi, width);
             let card = RECT { left: sc(dpi, 2), top: y + sc(dpi, 4), right: width - sc(dpi, 2), bottom: y + stride - sc(dpi, 4) };
             y += stride;
             if card.bottom < 0 || card.top > rc.bottom {
@@ -1845,19 +1996,11 @@ unsafe fn paint_host(h: HWND) {
                 crate::fill(dc, RECT { left: gx, top: gy + dy, right: gx + sc(dpi, 3), bottom: gy + dy + 2 }, ink);
                 crate::fill(dc, RECT { left: gx + sc(dpi, 5), top: gy + dy, right: gx + sc(dpi, 8), bottom: gy + dy + 2 }, ink);
             }
-            // Frames behind the borderless edits, slightly outside the control.
-            for f in [F_A, F_B, F_C, F_AT] {
-                let c = ctl(h, id(i, f));
-                if c.0.is_null() || !IsWindowVisible(c).as_bool() {
-                    continue;
+            // Frame is the combo-height slot. The edit itself is only the font cell, centred in it.
+            for (field, outer) in card_slots(card, dpi, rule, width) {
+                if is_text_field(field) {
+                    paint_field_frame(dc, outer, dpi, crate::pal().card);
                 }
-                let mut wr = RECT::default();
-                let _ = GetWindowRect(c, &mut wr);
-                let mut pts = [POINT { x: wr.left, y: wr.top }, POINT { x: wr.right, y: wr.bottom }];
-                let _ = MapWindowPoints(None, Some(h), &mut pts);
-                wr = RECT { left: pts[0].x, top: pts[0].y, right: pts[1].x, bottom: pts[1].y };
-                let inf = sc(dpi, 3);
-                rfill(dc, RECT { left: wr.left - inf, top: wr.top - inf, right: wr.right + inf, bottom: wr.bottom + inf }, sc(dpi, 4), crate::pal().card, Some(crate::pal().line));
             }
         }
         if let Some(from) = ST.with(|s| s.borrow().drag_from) {
@@ -1867,12 +2010,12 @@ unsafe fn paint_host(h: HWND) {
                 if i == to {
                     break;
                 }
-                y += rule_stride(rule, dpi);
+                y += rule_stride(rule, dpi, width);
             }
             let _ = from;
             crate::fill(dc, RECT { left: sc(dpi, 8), top: y, right: width - sc(dpi, 8), bottom: y + sc(dpi, 2) }, chrome());
         }
-        let content = rules_span(&rules, dpi);
+        let content = rules_span(&rules, dpi, width);
         let view = rc.bottom - rc.top;
         let max = (content - view).max(0);
         if max > 0 {
@@ -1997,23 +2140,13 @@ fn err_color() -> u32 {
     if crate::DARK_ON.load(std::sync::atomic::Ordering::Relaxed) { 0xFF7B72 } else { 0xC4314B }
 }
 
-unsafe fn paint_edit_frame(dc: HDC, parent: HWND, id: i32, dpi: i32) {
-    let c = ctl(parent, id);
-    if c.0.is_null() || !IsWindowVisible(c).as_bool() {
+/// Rounded field at `outer`. The borderless edit sits inside this rect, so the
+/// box stays the same height as the combo or button it lines up with.
+unsafe fn paint_field_frame(dc: HDC, outer: RECT, dpi: i32, fill: u32) {
+    if outer.right <= outer.left || outer.bottom <= outer.top {
         return;
     }
-    let mut wr = RECT::default();
-    let _ = GetWindowRect(c, &mut wr);
-    let mut pts = [POINT { x: wr.left, y: wr.top }, POINT { x: wr.right, y: wr.bottom }];
-    let _ = MapWindowPoints(None, Some(parent), &mut pts);
-    let inf = sc(dpi, 3);
-    rfill(
-        dc,
-        RECT { left: pts[0].x - inf, top: pts[0].y - inf, right: pts[1].x + inf, bottom: pts[1].y + inf },
-        sc(dpi, 4),
-        crate::pal().bg,
-        Some(crate::pal().line),
-    );
+    rfill(dc, outer, sc(dpi, 4), fill, Some(crate::pal().line));
 }
 
 fn current_filter() -> engine::Filter {
@@ -2449,5 +2582,126 @@ unsafe fn set_btn(parent: HWND, id: i32, text: &str) {
     let c = ctl(parent, id);
     if !c.0.is_null() {
         let _ = SetWindowTextW(c, &HSTRING::from(text));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(w: i32, h: i32) -> RECT {
+        RECT { left: 0, top: 0, right: w, bottom: h }
+    }
+
+    fn replace_rule() -> Rule {
+        Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }
+    }
+
+    #[test]
+    fn panels_sit_side_by_side_at_100_and_150_percent() {
+        for dpi in [96, 144] {
+            let g = geo(client(sc(dpi, DLG_W_DIP), sc(dpi, DLG_H_DIP)), dpi);
+            let left_w = g.host.right - g.host.left;
+            let right_w = g.list.right - g.list.left;
+            assert!(g.host.right <= g.list.left, "dpi {dpi}");
+            assert_eq!(g.host.top, g.list.top, "dpi {dpi}");
+            assert_eq!(g.host.bottom, g.list.bottom, "dpi {dpi}");
+            assert!((left_w - right_w).abs() <= 1, "dpi {dpi} left {left_w} right {right_w}");
+            assert!(left_w >= sc(dpi, COL_MIN_DIP), "dpi {dpi} left {left_w}");
+            assert!(right_w >= sc(dpi, COL_MIN_DIP), "dpi {dpi} right {right_w}");
+            // Toolbar spans the window. Column titles sit under it, panels under those.
+            assert!(g.tools.bottom <= g.rules_lbl.top, "dpi {dpi}");
+            assert!(g.tools.right > g.host.right, "dpi {dpi}");
+            assert_eq!(g.add.top, g.tools.top, "dpi {dpi}");
+            assert!(g.add.left >= g.tools.right, "dpi {dpi}");
+            assert_eq!(g.prev_lbl.top, g.rules_lbl.top, "dpi {dpi}");
+            assert!(g.rules_lbl.bottom <= g.host.top, "dpi {dpi}");
+            assert!(g.prev_lbl.left >= g.list.left, "dpi {dpi}");
+            assert!(g.summary.right <= g.list.right, "dpi {dpi}");
+            assert!(g.undo.top >= g.host.bottom, "dpi {dpi}");
+            assert_eq!(g.close.top, g.undo.top, "dpi {dpi}");
+            assert_eq!(g.apply.top, g.undo.top, "dpi {dpi}");
+            assert!(g.apply.left > g.list.left, "dpi {dpi}");
+            let tools = tool_rects(g.tools, dpi);
+            assert_eq!(tools.ext.top, tools.filter.top, "dpi {dpi}");
+            assert_eq!(tools.ext.bottom, tools.filter.bottom, "dpi {dpi}");
+            assert_eq!(tools.ext.bottom - tools.ext.top, g.tools.bottom - g.tools.top, "dpi {dpi}");
+            assert!(tools.del.right <= g.tools.right, "dpi {dpi} del {} tools {}", tools.del.right, g.tools.right);
+        }
+    }
+
+    #[test]
+    fn minimum_window_keeps_both_columns_and_the_footer() {
+        for dpi in [96, 144] {
+            let g = geo(client(sc(dpi, DLG_MIN_W_DIP), sc(dpi, DLG_MIN_H_DIP)), dpi);
+            assert!(g.host.right > g.host.left, "dpi {dpi}");
+            assert!(g.list.right > g.list.left, "dpi {dpi}");
+            assert!(g.host.bottom > g.host.top, "dpi {dpi}");
+            assert!(g.host.right <= g.list.left, "dpi {dpi}");
+            assert!(g.tools.bottom <= g.host.top, "dpi {dpi}");
+            assert!(g.undo.top >= g.host.bottom, "dpi {dpi}");
+            assert!(g.apply.right <= sc(dpi, DLG_MIN_W_DIP), "dpi {dpi}");
+            let left_w = g.host.right - g.host.left;
+            let right_w = g.list.right - g.list.left;
+            assert!((left_w - right_w).abs() <= 1, "dpi {dpi}");
+        }
+    }
+
+    #[test]
+    fn edit_frames_match_the_row_and_centre_the_line_at_100_and_150_percent() {
+        for dpi in [96, 144] {
+            let frame_h = sc(dpi, FIELD_H_DIP);
+            let outer = RECT { left: 40, top: 80, right: 220, bottom: 80 + frame_h };
+            let inner = field_inner(outer, dpi);
+            let inset = sc(dpi, 2);
+            assert_eq!(inner.top - outer.top, inset, "dpi {dpi}");
+            assert_eq!(outer.bottom - inner.bottom, inset, "dpi {dpi}");
+            assert_eq!(inner.left - outer.left, inset, "dpi {dpi}");
+            assert_eq!(outer.right - inner.right, inset, "dpi {dpi}");
+            // Stand-ins for Segoe UI / Malgun Gothic / Yu Gothic UI tmHeight at 14px.
+            for px in [18, 19, 21] {
+                let line = (px * dpi / 96).max(1);
+                let text = crate::centered_edit_rect(inner, line);
+                let above = text.top - outer.top;
+                let below = outer.bottom - text.bottom;
+                assert!((above - below).abs() <= 1, "dpi {dpi} line {line} above {above} below {below}");
+                assert!(text.top >= outer.top && text.bottom <= outer.bottom, "dpi {dpi}");
+                assert_eq!(text.bottom - text.top, line.min(inner.bottom - inner.top), "dpi {dpi}");
+            }
+            let wide = sc(dpi, 800);
+            let card = RECT { left: sc(dpi, 2), top: 0, right: wide - sc(dpi, 2), bottom: sc(dpi, 120) };
+            let slots = card_slots(card, dpi, &replace_rule(), wide);
+            let texts: Vec<_> = slots.iter().filter(|(f, _)| is_text_field(*f)).collect();
+            assert!(texts.len() >= 2, "dpi {dpi}");
+            for (_, r) in texts {
+                assert_eq!(r.bottom - r.top, frame_h, "dpi {dpi}");
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_replace_card_wraps_checks_and_a_wide_one_does_not() {
+        let rule = replace_rule();
+        let number = Rule::Number { start: 1, step: 1, pad: 0, pos: NumPos::Suffix };
+        for dpi in [96, 144] {
+            let wide = sc(dpi, CHECK_WRAP_DIP);
+            let narrow = wide - 1;
+            assert!(!checks_wrap(&rule, wide, dpi));
+            assert!(checks_wrap(&rule, narrow, dpi));
+            assert_eq!(card_dip(&rule, wide, dpi), 92);
+            assert_eq!(card_dip(&rule, narrow, dpi), 128);
+            assert_eq!(card_dip(&number, narrow, dpi), 128);
+            let card = RECT { left: 0, top: 10, right: sc(dpi, 700), bottom: 200 };
+            let on_wide = card_slots(card, dpi, &rule, wide);
+            let on_narrow = card_slots(card, dpi, &rule, narrow);
+            let row_of = |slots: &[(i32, RECT)], field: i32| slots.iter().find(|(f, _)| *f == field).map(|(_, r)| r.top);
+            let text_top = row_of(&on_wide, F_A).unwrap();
+            assert_eq!(row_of(&on_wide, F_CASE), Some(text_top));
+            assert_eq!(row_of(&on_wide, F_EXT), Some(text_top));
+            assert_eq!(row_of(&on_narrow, F_A), Some(text_top));
+            let check_top = row_of(&on_narrow, F_CASE).unwrap();
+            assert!(check_top > text_top);
+            assert_eq!(row_of(&on_narrow, F_EXT), Some(check_top));
+        }
     }
 }
