@@ -171,7 +171,8 @@ fn normalize_fs(path: &str) -> Option<String> {
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    (s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)).then(|| &s[prefix.len()..])
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
 }
 
 /// Column text the shell reported, replaced by `applied` when only the widths drifted a few pixels.
@@ -901,5 +902,15 @@ mod tests {
         assert_eq!(w.applied.columns, other);
         assert!(w.baseline.is_none());
         assert!(!observe(&mut w, &ViewSnap { mode: 4, icon: 16, columns: other, group: None }));
+    }
+}
+
+#[cfg(test)]
+mod strip_prefix_utf8_tests {
+    #[test]
+    fn japanese_path_does_not_panic() {
+        assert_eq!(super::strip_prefix_ci("F:\\CAC\\サンプル", "f:\\cac\\x"), None);
+        assert_eq!(super::strip_prefix_ci("サンプル", "abcd"), None);
+        assert_eq!(super::strip_prefix_ci("F:\\CAC\\サ", "f:\\cac\\"), Some("サ"));
     }
 }
