@@ -2001,7 +2001,8 @@ fn file_stem(path: &str) -> String {
     let file = expanded.trim().trim_matches('"').rsplit(['\\', '/']).next().unwrap_or("").trim().to_string();
     let low = file.to_ascii_lowercase();
     if let Some(stem) = low.strip_suffix(".dll").or_else(|| low.strip_suffix(".exe")) {
-        file[..stem.len()].to_string()
+        // `stem` is measured on the lowercased copy. Slice `file` only on a char boundary.
+        file.get(..stem.len()).unwrap_or(&file).to_string()
     } else {
         file
     }
@@ -2361,7 +2362,9 @@ fn split_cmd(line: &str) -> (String, String) {
     let c = line.trim();
     if let Some(rest) = c.strip_prefix('"') {
         if let Some(end) = rest.find('"') {
-            return (rest[..end].to_string(), rest[end + 1..].trim().to_string());
+            let exe = rest.get(..end).unwrap_or("");
+            let args = rest.get(end.saturating_add(1)..).unwrap_or("").trim();
+            return (exe.to_string(), args.to_string());
         }
     }
     match c.split_once(char::is_whitespace) {
@@ -3031,9 +3034,16 @@ fn foreign_path(low: &str) -> bool {
     let mut i = 0;
     while i + 2 < b.len() {
         if b[i].is_ascii_alphabetic() && b[i + 1] == b':' && (b[i + 2] == b'\\' || b[i + 2] == b'/') {
-            let rest = &low[i..];
+            let Some(rest) = low.get(i..) else {
+                i += 1;
+                continue;
+            };
             let end = rest.find(['"', ' ', '\t']).unwrap_or(rest.len());
-            if !under_windows(&rest[..end]) {
+            let Some(span) = rest.get(..end) else {
+                i += 1;
+                continue;
+            };
+            if !under_windows(span) {
                 return true;
             }
         }
@@ -3498,11 +3508,11 @@ fn parse_guid(s: &str) -> Option<GUID> {
     let n = u128::from_str_radix(&hex, 16).ok()?;
     let text = format!(
         "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
+        hex.get(0..8)?,
+        hex.get(8..12)?,
+        hex.get(12..16)?,
+        hex.get(16..20)?,
+        hex.get(20..32)?
     );
     // from_u128 matches the textual GUID, so the dashed form must round-trip.
     let g = GUID::from_u128(n);
@@ -4252,5 +4262,28 @@ mod tests {
         let keep = separator_keep(&marks.iter().map(|m| *m == Separator).collect::<Vec<_>>());
         let tidy: Vec<Slot> = left.into_iter().zip(keep).filter(|(_, k)| *k).map(|(s, _)| s).collect();
         assert_eq!(tidy, vec![Slot::New]);
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_names_do_not_panic() {
+        assert_eq!(super::file_stem(r"샘플\한글폴더.dll"), "한글폴더");
+        assert_eq!(super::file_stem(r"F:\CAC\サンプル.exe"), "サンプル");
+        assert_eq!(super::file_stem("😀.dll"), "😀");
+        assert_eq!(super::file_stem("abcdサ.txt"), "abcdサ.txt");
+        let (exe, args) = super::split_cmd(r#""D:\한글폴더\app.exe" /x"#);
+        assert_eq!((exe.as_str(), args.as_str()), (r"D:\한글폴더\app.exe", "/x"));
+        let (exe, args) = super::split_cmd(r#""E:\📁\샘플.exe""#);
+        assert_eq!(exe, r"E:\📁\샘플.exe");
+        assert!(args.is_empty());
+        assert!(super::foreign_path(r"c:\한글폴더\app.exe"));
+        assert!(super::foreign_path(r"d:\サンプル\😀.exe"));
+        assert!(!super::foreign_path(r"c:\windows\system32\サンプル.exe"));
+        assert!(super::parse_guid("{7BA4C740-9E81-11CF-99D3-00AA004AE837}").is_some());
+        assert!(super::parse_guid("サンプル").is_none());
+        assert!(super::parse_guid("한글폴더").is_none());
+        assert!(super::parse_guid("😀あ").is_none());
+        assert!(super::parse_guid("abcdサ").is_none());
     }
 }
