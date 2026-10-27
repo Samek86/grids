@@ -2911,11 +2911,16 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
                 }
             }
         }
+        unsafe { install_pane_drop(i) };
         Ok(())
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
-        unsafe { on_nav(self.0.load(Ordering::SeqCst), pidl) };
+        let i = self.0.load(Ordering::SeqCst);
+        unsafe {
+            on_nav(i, pidl);
+            install_pane_drop(i);
+        }
         Ok(())
     }
     fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
@@ -3297,7 +3302,7 @@ fn child_name_ok(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['\\', '/', ':'])
 }
 
-fn join_child(folder: &str, name: &str) -> Option<String> {
+pub(crate) fn join_child(folder: &str, name: &str) -> Option<String> {
     let name = name.trim();
     if !child_name_ok(name) {
         return None;
@@ -3324,7 +3329,7 @@ unsafe fn list_item_text(lv: HWND, idx: i32) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-unsafe fn acc_name_at_cursor() -> Option<String> {
+pub(crate) unsafe fn acc_name_at_cursor() -> Option<String> {
     let mut pt = POINT::default();
     if GetCursorPos(&mut pt).is_err() {
         return None;

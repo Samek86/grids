@@ -158,6 +158,7 @@ pub(crate) unsafe fn create_tree(main: HWND) -> Result<(INameSpaceTreeControl, H
     let ev: INameSpaceTreeControlEvents = TreeEvents.into();
     t.TreeAdvise(&ev)?;
     let h = t.cast::<IOleWindow>()?.GetWindow()?;
+    install_tree_drop(&t, h);
     Ok((t, h))
 }
 
