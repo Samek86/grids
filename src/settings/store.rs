@@ -273,8 +273,8 @@ struct SettingsFile {
     #[serde(default = "yes", skip_serializing_if = "is_on")]
     space_preview: bool,
     /// Wheel in quick look steps to the next or previous file past the content end.
-    /// Missing means on. Omitted while on, so an older file stays unchanged.
-    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    /// Missing means off; it is on only when the user ticks it. Omitted while off.
+    #[serde(default, skip_serializing_if = "is_wheel_off")]
     peek_wheel_nav: bool,
     /// Remember sort, columns, view mode, icon size and grouping for each folder.
     /// Missing means on. The views themselves live in folder-views.json, never in grids.ini.
@@ -385,7 +385,7 @@ impl SettingsFile {
             one_window: true,
             use_everything: true,
             space_preview: true,
-            peek_wheel_nav: true,
+            peek_wheel_nav: false,
             remember_folder_view: true,
             show_folder_sizes: true,
             folder_sizes_network: false,
@@ -1838,27 +1838,17 @@ mod tests {
     }
 
     #[test]
-    fn peek_wheel_nav_defaults_on_when_the_key_is_missing() {
-        assert!(Session::default().peek_wheel_nav);
-        assert!(adopt("{}").unwrap().peek_wheel_nav);
-        assert!(adopt(r#"{"version":1}"#).unwrap().peek_wheel_nav);
-        assert!(Session::parse("side=1\n").peek_wheel_nav);
-        let mut s = Session::default();
-        s.peek_wheel_nav = false;
-        assert!(!Session::parse(&s.to_ini()).peek_wheel_nav);
+    fn peek_wheel_nav_defaults_off_when_the_key_is_missing() {
+        assert!(!Session::default().peek_wheel_nav);
+        assert!(!adopt("{}").unwrap().peek_wheel_nav);
+        assert!(!adopt(r#"{"version":1}"#).unwrap().peek_wheel_nav);
         assert!(Session::parse("peekwheelnav=1").peek_wheel_nav);
         assert!(!Session::parse("peekwheelnav=0").peek_wheel_nav);
-        let text = pretty(&SettingsFile::from_session(&s));
-        assert!(text.contains("\"peek_wheel_nav\": false"), "{text}");
-        assert!(!adopt(&text).unwrap().peek_wheel_nav);
-        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("peek_wheel_nav"));
-        let mut file = SettingsFile::from_session(&s);
-        file.extra.insert("peek_wheel_nav".into(), serde_json::json!(true));
-        file.merge_forward(&file.clone());
-        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
-        assert_eq!(saved["peek_wheel_nav"], false);
-        assert!(saved.get("extra").is_none());
+        let mut s = Session::default();
+        s.peek_wheel_nav = true;
+        assert!(Session::parse(&s.to_ini()).peek_wheel_nav);
     }
+
 
     #[test]
     fn peek_sizes_round_trip_in_dip_and_stay_out_until_set() {
@@ -2071,4 +2061,8 @@ mod tests {
         assert_eq!(adopt(r#"{"view_new":9,"view_icon":48}"#).unwrap().default_view(), (4, 16));
         assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("view_icon"));
     }
+}
+
+fn is_wheel_off(v: &bool) -> bool {
+    !*v
 }

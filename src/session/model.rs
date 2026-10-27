@@ -389,7 +389,7 @@ impl Default for Session {
             dark: false,
             dblup: true,
             space_preview: true,
-            peek_wheel_nav: true,
+            peek_wheel_nav: false,
             remember_views: true,
             folder_sizes: true,
             folder_sizes_network: false,
@@ -770,7 +770,7 @@ impl Session {
                 "dblup" => s.dblup = v.trim() != "0",
                 "panetabs" => {} // older files; pane tabs are always on
                 "spacepreview" => s.space_preview = v.trim() != "0",
-                "peekwheelnav" => s.peek_wheel_nav = v.trim() != "0",
+                "peekwheelnav" => s.peek_wheel_nav = v.trim() == "1",
                 "folderview" => s.remember_views = v.trim() != "0",
                 "foldersize" => s.folder_sizes = v.trim() != "0",
                 "foldersizenet" => s.folder_sizes_network = v.trim() == "1",
