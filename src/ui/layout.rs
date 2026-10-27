@@ -394,7 +394,8 @@ pub(crate) fn pane_chrome(accent: u32, label: Option<u32>, active: bool, edge: b
 
 /// A pane's colour label in the current theme: one of the selection-colour presets. 0 is none.
 pub(crate) fn tint_color(k: u8) -> Option<u32> {
-    (1..=6).contains(&k).then(|| pal().accents[k as usize - 1].1)
+    let i = usize::from(k).checked_sub(1)?;
+    pal().accents.get(i).map(|a| a.1)
 }
 
 pub(crate) fn tint_name(k: u8) -> &'static str {

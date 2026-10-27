@@ -142,7 +142,14 @@ pub(crate) fn size_worker() {
         let finished = target.iter().all(|root| {
             let (base, was) = (total, partial);
             let mut progress = |b, p| _ = size_job().publish(gen, base + b, false, was || p);
-            dir_bytes(Path::new(root), &stop, &paused, &mut progress).map(|(b, p)| (total, partial) = (total + b, partial || p)).is_some()
+            let walked = crate::crash::guard(std::panic::AssertUnwindSafe(|| dir_bytes(Path::new(root), &stop, &paused, &mut progress)));
+            match walked {
+                Ok(Some((b, p))) => {
+                    (total, partial) = (total + b, partial || p);
+                    true
+                }
+                _ => false,
+            }
         });
         if finished {
             size_job().publish(gen, total, true, partial);
@@ -370,7 +377,7 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
     } else if !share && (drive || path.starts_with(r"\\")) {
         let (mut free, mut total) = (0, 0);
         if GetDiskFreeSpaceExW(&HSTRING::from(path),Some(&mut free), Some(&mut total), None).is_ok() {
-            let label = if drive { &path[..2] } else { tr("Network", "네트워크", "ネットワーク") };
+            let label = if drive { path.get(..2).unwrap_or("") } else { tr("Network", "네트워크", "ネットワーク") };
             parts.push(format!("{label} {} {} / {}", tr("free", "여유", "空き"), human(free), human(total)));
         }
     }
