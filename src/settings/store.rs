@@ -324,6 +324,10 @@ struct SettingsFile {
     /// They leave the settings list only. A .grids file does not store this.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     ctx_quiet: BTreeSet<String>,
+    /// DLL file names blocked inside Panegrid only. Omitted when empty.
+    /// Not written to the registry and not written into grids.ini.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocked_shell_extensions: Vec<String>,
     #[serde(default, flatten)]
     extra: Map<String, Value>,
 }
@@ -399,6 +403,7 @@ impl SettingsFile {
             ctx_labels: BTreeMap::new(),
             ctx_on: BTreeMap::new(),
             ctx_quiet: BTreeSet::new(),
+            blocked_shell_extensions: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -495,6 +500,7 @@ impl SettingsFile {
             ctx_labels: clean_labels(&s.ctx_labels),
             ctx_on: clean_ctx(&s.ctx_on),
             ctx_quiet: clean_quiet(&s.ctx_quiet),
+            blocked_shell_extensions: clean_blocked(&s.blocked_shell_extensions),
             extra: Map::new(),
         }
     }
@@ -538,6 +544,7 @@ impl SettingsFile {
         self.extra.remove("ctx_labels");
         self.extra.remove("ctx_on");
         self.extra.remove("ctx_quiet");
+        self.extra.remove("blocked_shell_extensions");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
     }
@@ -638,6 +645,7 @@ impl SettingsFile {
         s.ctx_labels = clean_labels(&self.ctx_labels);
         s.ctx_on = clean_ctx(&self.ctx_on);
         s.ctx_quiet = clean_quiet(&self.ctx_quiet);
+        s.blocked_shell_extensions = clean_blocked(&self.blocked_shell_extensions);
         crate::shell::ctxmenu::reconcile_winmerge(&mut s.ctx_off, &mut s.ctx_on);
         s.file = self.session.clone();
         let parsed_tree = crate::tree_from_values(&self.favorites_tree);
@@ -706,6 +714,22 @@ fn clean_ctx(map: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String
         if !names.is_empty() {
             out.insert(id.to_string(), names);
         }
+    }
+    out
+}
+
+fn clean_blocked(names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in names.iter().take(64) {
+        let t = raw.trim();
+        let base = t.rsplit(['\\', '/']).next().unwrap_or(t).trim();
+        if base.is_empty() || base == "." || base == ".." || base.len() > 128 || base.contains(['*', '?', '"', '<', '>', '|']) {
+            continue;
+        }
+        if out.iter().any(|e: &String| e.eq_ignore_ascii_case(base)) {
+            continue;
+        }
+        out.push(base.to_string());
     }
     out
 }
@@ -1116,6 +1140,21 @@ mod tests {
         let kept = adopt(r#"{"ctx_on":{"app:winmerge":["file"]},"ctx_menu":{"clsid:4e716236-aa30-4c65-b225-d68bba81e9c2":["drive"]}}"#).unwrap();
         assert!(kept.ctx_off.is_empty());
         assert_eq!(kept.ctx_on.get("app:winmerge").map(Vec::as_slice), Some(["file".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn blocked_shell_extensions_stay_in_json_only() {
+        let mut s = Session::default();
+        s.blocked_shell_extensions = vec![r"C:\Vendor\Codec.dll".into(), "codec.dll".into(), "  ".into(), "jpegxr.dll".into()];
+        let text = sync_text(&s);
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["blocked_shell_extensions"], serde_json::json!(["Codec.dll", "jpegxr.dll"]));
+        assert!(!s.to_ini().contains("blocked_shell"));
+        assert!(!s.to_ini().contains("Codec.dll"));
+        let back = adopt(&text).unwrap();
+        assert_eq!(back.blocked_shell_extensions, vec!["Codec.dll".to_string(), "jpegxr.dll".to_string()]);
+        let fresh = serde_json::from_str::<Value>(&sync_text(&Session::default())).unwrap();
+        assert!(fresh.get("blocked_shell_extensions").is_none());
     }
 
     #[test]

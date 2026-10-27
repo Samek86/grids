@@ -2163,14 +2163,33 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
         }
     });
     if left > 0 {
-        SetTimer(Some(h), TIMER_SETTLE, [1000, 400, 150][left as usize - 1], None);
+        let delays = [1000u32, 400, 150];
+        let idx = (left as usize).saturating_sub(1);
+        if let Some(&ms) = delays.get(idx) {
+            SetTimer(Some(h), TIMER_SETTLE, ms, None);
+        }
     } else {
         note_save();
     }
 }
 
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
+    let ran = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe { on_nav_impl(i, pidl) }));
+    if ran.is_err() {
+        crate::crash::log("navigation panicked");
+        app(|a| {
+            a.note = Some((
+                tr("This folder could not be shown", "이 폴더를 표시할 수 없습니다", "このフォルダーを表示できません").to_string(),
+                Instant::now() + std::time::Duration::from_secs(8),
+            ));
+        });
+        update_status();
+    }
+}
+
+unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+    crate::crash::note_path(&parse);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
     if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
         let opened = short_name(&parse);
