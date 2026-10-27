@@ -145,6 +145,27 @@ pub(crate) fn drive_slots(show: bool, n: usize) -> usize {
     if show { n } else { 0 }
 }
 
+fn icon_widths(dpi: i32) -> [i32; 5] {
+    let s = |v: i32| v * dpi / 96;
+    [s(70), s(32), s(32), s(32), s(32)]
+}
+
+/// The gear stays when the toolbar is hidden. It is the mouse path to settings.
+fn icon_on(bar: bool) -> [bool; 5] {
+    if bar { [true; 5] } else { [false, false, false, false, true] }
+}
+
+/// Narrowest tab row that still keeps one minimum tab clear of the icon group.
+/// Drive letters are not part of this: they hide before the group does.
+pub(crate) fn icon_group_min(dpi: i32, bar: bool) -> i32 {
+    let s = |v: i32| v * dpi / 96;
+    let (pad, gap) = (s(8), s(4));
+    let on = icon_on(bar);
+    let n_on = on.iter().filter(|v| **v).count() as i32;
+    let icons_w = icon_widths(dpi).iter().zip(&on).filter(|(_, v)| **v).map(|(w, _)| *w).sum::<i32>() + gap * (n_on - 1).max(0);
+    tab_reserve(dpi) + gap + icons_w + pad
+}
+
 /// Layout, save, load, the favourites star, the gear, and `drives` letter buttons, right-aligned on the tab row.
 /// Letters sit to the left of Layout. The last ones drop when the row cannot also keep `tab_reserve`.
 /// `drives == 0` (see `drive_slots`) hides every letter and gives that width to the tabs.
@@ -154,9 +175,9 @@ pub(crate) fn icon_slots(row_w: i32, top: i32, dpi: i32, drives: usize, bar: boo
     let s = |v: i32| v * dpi / 96;
     let (pad, gap, bh) = (s(8), s(4), s(24));
     let specs = [ID_TB_LAYOUT, ID_TB_SAVE, ID_TB_LOAD, ID_TB_FAV, ID_TB_SET];
-    let widths = [s(70), s(32), s(32), s(32), s(32)];
+    let widths = icon_widths(dpi);
     // The gear is the mouse path to settings, so a hidden toolbar still reserves its slot.
-    let on = if bar { [true, true, true, true, true] } else { [false, false, false, false, true] };
+    let on = icon_on(bar);
     let n_on = on.iter().filter(|v| **v).count() as i32;
     let icons_w = widths.iter().zip(&on).filter(|(_, v)| **v).map(|(w, _)| *w).sum::<i32>() + gap * (n_on - 1).max(0);
     let icons_left = (row_w - pad - icons_w).max(0);
@@ -1420,6 +1441,18 @@ mod tests {
         assert_eq!(tab_area_width(1000, 96, true, 0), lay.tab_w);
         // Hidden toolbar keeps the gear (right 992, 32px) and the gap in front of it.
         assert_eq!(tab_area_width(1000, 96, false, 8), 956);
+    }
+
+    #[test]
+    fn icon_group_min_keeps_one_tab_clear_of_the_icons() {
+        for (dpi, bar) in [(96, true), (96, false), (144, true), (192, false)] {
+            let w = icon_group_min(dpi, bar);
+            let lay = icon_slots(w, 0, dpi, 26, bar);
+            assert!(lay.tab_w >= tab_reserve(dpi), "{dpi} bar={bar} tab {} reserve {}", lay.tab_w, tab_reserve(dpi));
+            assert_eq!(lay.drive_n, 0, "{dpi} bar={bar}");
+            let tight = icon_slots((w - 1).max(1), 0, dpi, 0, bar);
+            assert!(tight.tab_w < tab_reserve(dpi), "{dpi} bar={bar} tab {} reserve {}", tight.tab_w, tab_reserve(dpi));
+        }
     }
 
     #[test]

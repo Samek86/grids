@@ -36,6 +36,79 @@ pub(crate) fn cells(start: i32, len: i32, ratios: &[f64], gap: i32) -> Vec<(i32,
     out
 }
 
+/// Smallest pane plate, at 100% DPI. `pane_min_w` / `pane_min_h` scale it.
+pub(crate) const PANE_MIN_W: i32 = 140;
+pub(crate) const PANE_MIN_H: i32 = 120;
+
+pub(crate) fn pane_min_w(dpi: i32) -> i32 {
+    PANE_MIN_W * dpi.max(1) / 96
+}
+
+pub(crate) fn pane_min_h(dpi: i32) -> i32 {
+    PANE_MIN_H * dpi.max(1) / 96
+}
+
+/// `cells`, but no cell is thinner than `min` when `len` can hold that.
+/// A row that is too short keeps the proportional split: the window minimum is what
+/// stops that, and a monitor that cannot grow stays inside its work area instead of
+/// painting panes past the edge.
+pub(crate) fn cells_min(start: i32, len: i32, ratios: &[f64], gap: i32, min: i32) -> Vec<(i32, i32)> {
+    let n = ratios.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let raw = cells(start, len, ratios, gap);
+    if min <= 0 {
+        return raw;
+    }
+    let gaps = gap * (n as i32 - 1);
+    let avail = len - gaps;
+    if avail < n as i32 * min || raw.iter().all(|(a, b)| b - a >= min) {
+        return raw;
+    }
+    let mut w: Vec<i32> = raw.iter().map(|(a, b)| (b - a).max(0)).collect();
+    let mut need = 0i32;
+    for x in &mut w {
+        if *x < min {
+            need += min - *x;
+            *x = min;
+        }
+    }
+    while need > 0 {
+        let Some((i, _)) = w.iter().enumerate().filter(|(_, x)| **x > min).max_by_key(|(_, x)| *x) else {
+            break;
+        };
+        let take = (w[i] - min).min(need);
+        w[i] -= take;
+        need -= take;
+    }
+    let mut x = start;
+    w.into_iter()
+        .map(|wd| {
+            let cell = (x, x + wd);
+            x += wd + gap;
+            cell
+        })
+        .collect()
+}
+
+/// Ratios that match `cells_min`, when the proportional split would paint a pane below `min`
+/// and the row is long enough to honour it. None leaves the saved ratios alone (a short
+/// window must not flatten them).
+pub(crate) fn ratios_matching_min(ratios: &[f64], len: i32, gap: i32, min: i32) -> Option<Vec<f64>> {
+    if ratios.len() < 2 || min <= 0 {
+        return None;
+    }
+    let raw = cells(0, len, ratios, gap);
+    let clamped = cells_min(0, len, ratios, gap, min);
+    if raw == clamped {
+        return None;
+    }
+    let w: Vec<f64> = clamped.iter().map(|(a, b)| (b - a).max(1) as f64).collect();
+    let sum = w.iter().sum::<f64>();
+    (sum > 0.0).then(|| w.into_iter().map(|x| x / sum).collect())
+}
+
 /// Moves the boundary after cell `k` to `pos`, keeping both neighbours at least `min` px.
 pub(crate) fn drag_ratio(r: &mut [f64], k: usize, pos: i32, start: i32, len: i32, gap: i32, min: i32) {
     let avail = (len - gap * (r.len() as i32 - 1)).max(1) as f64;
@@ -49,6 +122,134 @@ pub(crate) fn drag_ratio(r: &mut [f64], k: usize, pos: i32, start: i32, len: i32
 /// Minimum height of the folder tree and of the favourites list, in px at this DPI.
 pub(crate) fn side_min(dpi: i32) -> i32 {
     80 * dpi.max(1) / 96
+}
+
+/// Client size that fits the current tab: every pane at `PANE_MIN_W` × `PANE_MIN_H`,
+/// the left panel when it is open, the tab strip, the status line, and the icon group.
+pub(crate) fn client_min(heights: &[usize], dpi: i32, tree_on: bool, bar: bool, stat: bool) -> (i32, i32) {
+    let s = |v: i32| v * dpi.max(1) / 96;
+    let (pad, gap) = (s(8), s(8));
+    let cols = heights.len().max(1) as i32;
+    let rows = heights.iter().copied().max().unwrap_or(1).max(1) as i32;
+    let grid_w = cols * pane_min_w(dpi) + gap * (cols - 1).max(0);
+    let grid_h = rows * pane_min_h(dpi) + gap * (rows - 1).max(0);
+    let left = if tree_on { s(120) + gap } else { pad };
+    let width = (left + grid_w + pad).max(super::tabs::icon_group_min(dpi, bar));
+    let side_h = if tree_on { side_min(dpi) * 2 + gap } else { 0 };
+    let height = s(32) + grid_h.max(side_h) + if stat { s(24) } else { 0 };
+    (width, height)
+}
+
+/// Grow `cur` until it is at least `min_w` by `min_h`. The top-left stays, then the rect
+/// slides back into `work`. A window that is already large enough is returned unchanged,
+/// so a smaller tab does not shrink it. A minimum the monitor cannot hold becomes the work area.
+pub(crate) fn grow_into_work(cur: RECT, min_w: i32, min_h: i32, work: RECT) -> RECT {
+    let w = (cur.right - cur.left).max(0);
+    let h = (cur.bottom - cur.top).max(0);
+    if w >= min_w && h >= min_h {
+        return cur;
+    }
+    let work_w = (work.right - work.left).max(0);
+    let work_h = (work.bottom - work.top).max(0);
+    let nw = w.max(min_w).min(work_w);
+    let nh = h.max(min_h).min(work_h);
+    let mut left = cur.left;
+    let mut top = cur.top;
+    if left + nw > work.right {
+        left = work.right - nw;
+    }
+    if top + nh > work.bottom {
+        top = work.bottom - nh;
+    }
+    if left < work.left {
+        left = work.left;
+    }
+    if top < work.top {
+        top = work.top;
+    }
+    RECT { left, top, right: left + nw, bottom: top + nh }
+}
+
+/// Outer size whose client area is `client_w` by `client_h` for the main window's style.
+pub(crate) fn frame_around(client_w: i32, client_h: i32, dpi: i32) -> (i32, i32) {
+    use windows::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
+    let mut r = RECT { left: 0, top: 0, right: client_w.max(0), bottom: client_h.max(0) };
+    let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+    if unsafe { AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dpi.max(1) as u32) }.is_err() {
+        return (client_w.max(1), client_h.max(1));
+    }
+    ((r.right - r.left).max(1), (r.bottom - r.top).max(1))
+}
+
+fn monitor_work(h: HWND) -> Option<RECT> {
+    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe { GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() }.then_some(mi.rcWork)
+}
+
+/// `WM_GETMINMAXINFO` for the main window. The current tab only. Capped to the work area,
+/// so a layout the monitor cannot hold still leaves the window on screen.
+pub(crate) unsafe fn min_track_size(h: HWND) -> (i32, i32) {
+    let (cw, ch, dpi) = app(|a| {
+        let (w, ht) = client_min(&a.s.heights, a.dpi, a.s.tree_on, a.s.bar, a.s.stat);
+        (w, ht, a.dpi)
+    });
+    let (mut tw, mut th) = frame_around(cw, ch, dpi);
+    if let Some(work) = monitor_work(h) {
+        tw = tw.min((work.right - work.left).max(1));
+        th = th.min((work.bottom - work.top).max(1));
+    }
+    (tw.max(1), th.max(1))
+}
+
+thread_local! {
+    static FITTING: Cell<bool> = const { Cell::new(false) };
+}
+
+struct FittingGuard;
+impl Drop for FittingGuard {
+    fn drop(&mut self) {
+        FITTING.with(|f| f.set(false));
+    }
+}
+
+/// If the current tab's panes no longer fit, grow the window just enough. Maximized,
+/// minimized, and an interactive resize are left alone. A smaller tab only lowers the
+/// minimum track; this does not shrink. `SetWindowPos` re-enters `relayout`; the guard
+/// stops that from growing again.
+pub(crate) unsafe fn ensure_window_fits() {
+    if FITTING.with(|f| f.replace(true)) {
+        return;
+    }
+    let _guard = FittingGuard;
+    let Some(main) = app(|a| (!a.sizing && !a.main.0.is_null()).then_some(a.main)) else {
+        return;
+    };
+    if IsZoomed(main).as_bool() || IsIconic(main).as_bool() {
+        return;
+    }
+    let mut cur = RECT::default();
+    if GetWindowRect(main, &mut cur).is_err() {
+        return;
+    }
+    let Some(work) = monitor_work(main) else { return };
+    let (cw, ch, dpi) = app(|a| {
+        let (w, ht) = client_min(&a.s.heights, a.dpi, a.s.tree_on, a.s.bar, a.s.stat);
+        (w, ht, a.dpi)
+    });
+    let (min_w, min_h) = frame_around(cw, ch, dpi);
+    let next = grow_into_work(cur, min_w, min_h, work);
+    if next == cur {
+        return;
+    }
+    _ = SetWindowPos(
+        main,
+        None,
+        next.left,
+        next.top,
+        next.right - next.left,
+        next.bottom - next.top,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 /// Pixel heights of the folder tree and the favourites list inside a plate of `height` px.
@@ -131,8 +332,8 @@ pub(crate) fn geo(a: &App) -> Geo {
     let plate = (bot - top).max(0);
     let tree_h = if side > 0 { split_heights(plate, a.s.side_split, gap, side_min(a.dpi)).0 } else { 0 };
     Geo {
-        xs: cells(gx, rc.right - pad - gx, &a.s.colr, gap),
-        ys: a.s.rowr.iter().map(|r| cells(top, bot - top, r, gap)).collect(),
+        xs: cells_min(gx, rc.right - pad - gx, &a.s.colr, gap, pane_min_w(a.dpi)),
+        ys: a.s.rowr.iter().map(|r| cells_min(top, bot - top, r, gap, pane_min_h(a.dpi))).collect(),
         w: rc.right,
         h: rc.bottom,
         top,
@@ -797,6 +998,54 @@ mod tests {
     }
 
     #[test]
+    fn cells_keep_the_pane_minimum_when_the_row_can_hold_it() {
+        let raw = cells(10, 208, &[0.1, 0.9], 8);
+        assert!(raw[0].1 - raw[0].0 < 40);
+        let c = cells_min(10, 208, &[0.1, 0.9], 8, 40);
+        assert_eq!(c, vec![(10, 50), (58, 218)]);
+        assert!(c.iter().all(|(a, b)| b - a >= 40));
+        assert_eq!(c[0].1 + 8, c[1].0);
+        // already clear of the floor: the proportional split is kept
+        assert_eq!(cells_min(0, 208, &[0.5, 0.5], 8, 40), cells(0, 208, &[0.5, 0.5], 8));
+        // too short to honour the floor: share the space, do not run past the end
+        let short = cells_min(0, 50, &[0.2, 0.8], 8, 40);
+        assert_eq!(short, cells(0, 50, &[0.2, 0.8], 8));
+        assert!(short.last().unwrap().1 <= 50);
+        let snapped = ratios_matching_min(&[0.1, 0.9], 208, 8, 40).unwrap();
+        let again = cells(0, 208, &snapped, 8);
+        assert!(again.iter().all(|(a, b)| b - a >= 40));
+        assert!(ratios_matching_min(&[0.5, 0.5], 208, 8, 40).is_none());
+        assert!(ratios_matching_min(&[0.1, 0.9], 50, 8, 40).is_none());
+    }
+
+    #[test]
+    fn client_min_is_the_current_layout_plus_chrome() {
+        // 2×2, tree, toolbar, status, 96 dpi.
+        // side 120 + gap 8 + two panes 280 + gap 8 + pad 8 = 424, taller than the icon row.
+        assert_eq!(client_min(&[2, 2], 96, true, true, true), (424, 304));
+        // one pane, no tree, toolbar hidden, no status: the gear row is wider than the pane.
+        assert_eq!(client_min(&[1], 96, false, false, false), (160, 152));
+        let (w, h) = client_min(&[1, 1, 1], 192, false, true, true);
+        assert_eq!((w, h), (904, 352));
+        assert_eq!((pane_min_w(96), pane_min_h(96), pane_min_w(192), pane_min_h(144)), (140, 120, 280, 180));
+    }
+
+    #[test]
+    fn growing_keeps_the_corner_and_a_smaller_tab_does_not_shrink() {
+        let r = |left, top, right, bottom| RECT { left, top, right, bottom };
+        let work = r(0, 0, 1920, 1080);
+        let big = r(100, 80, 1400, 900);
+        assert_eq!(grow_into_work(big, 400, 300, work), big);
+        assert_eq!(grow_into_work(r(100, 80, 500, 400), 800, 300, work), r(100, 80, 900, 400));
+        // growth would leave the work area: slide, still keeping as much of the corner as fits
+        assert_eq!(grow_into_work(r(1500, 800, 1900, 1000), 900, 700, work), r(1020, 380, 1920, 1080));
+        // minimum larger than the monitor: the window becomes the work area
+        assert_eq!(grow_into_work(r(100, 50, 400, 300), 4000, 3000, work), work);
+        let left_mon = r(-1920, 0, 0, 1080);
+        assert_eq!(grow_into_work(r(-100, 50, 300, 350), 500, 300, left_mon), r(-500, 50, 0, 350));
+    }
+
+    #[test]
     fn hidden_panel_keeps_its_width() {
         // Hidden, then a column drag: the clamped 0 must not replace 600.
         assert_eq!(kept_side(false, 600, 0), 600);
@@ -1044,6 +1293,22 @@ mod tests {
         for c in [col.btn[0], col.btn[1], col.btn[2], col.btn[3], col.addr, col.filt, col.fav] {
             if c.right > c.left {
                 assert!(c.left >= col.num.right);
+            }
+        }
+    }
+
+    #[test]
+    fn pane_number_stays_visible_at_the_minimum_width() {
+        for &(dpi, strip) in &[(96, false), (96, true), (192, false), (192, true)] {
+            let s = |v: i32| v * dpi / 96;
+            let w = s(140);
+            let p = pane_geo(w, s(120), dpi, strip);
+            assert_eq!(p.num.right - p.num.left, s(18), "{dpi} strip={strip}");
+            assert!(p.num.left >= 0 && p.num.right <= w, "{dpi} strip={strip}");
+            for c in [p.btn[0], p.btn[1], p.btn[2], p.btn[3], p.addr, p.add, p.filt, p.fav] {
+                if c.right > c.left {
+                    assert!(c.left >= p.num.right, "overlaps the number {dpi} strip={strip} {:?}", c);
+                }
             }
         }
     }
