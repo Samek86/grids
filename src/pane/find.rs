@@ -13,7 +13,7 @@ use crate::imports::*;
 use crate::session::*;
 use crate::ui::*;
 
-use super::{apply_filter, focus_view, hidden, navigate, new_pane_tab, set_active, sync_net_fail};
+use super::{apply_filter, focus_view, hidden, local_directory, navigate, new_pane_tab, set_active, share_path, sync_net_fail};
 
 pub(crate) const FIND_CAP: usize = 300;
 
@@ -200,8 +200,28 @@ pub(crate) fn walk_search(root: &Path, query: &str, recursive: bool, show_hidden
     Walked { more, stopped }
 }
 
+/// A directory, including a directory symlink. `is_dir` and `is_symlink` come from `file_type`
+/// (they do not follow). `followed` is `metadata` and is only consulted when the entry is a
+/// symlink or the type could not be read. A plain file ignores `followed`.
+pub(crate) fn entry_is_dir(is_dir: Option<bool>, is_symlink: Option<bool>, followed: Option<bool>) -> bool {
+    if is_dir == Some(true) {
+        return true;
+    }
+    if is_symlink == Some(true) || is_dir.is_none() {
+        followed == Some(true)
+    } else {
+        false
+    }
+}
+
 fn is_dir_follow(e: &std::fs::DirEntry) -> bool {
-    e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink())
+    let ft = e.file_type().ok();
+    let is_dir = ft.as_ref().map(|t| t.is_dir());
+    let is_symlink = ft.as_ref().map(|t| t.is_symlink());
+    // `metadata` follows the link. Skip it for a real directory or a plain file.
+    let need = is_dir != Some(true) && (is_symlink == Some(true) || is_dir.is_none());
+    let followed = need.then(|| e.metadata().ok().map(|m| m.is_dir())).flatten();
+    entry_is_dir(is_dir, is_symlink, followed)
 }
 
 fn is_reparse(path: &Path) -> bool {
@@ -743,7 +763,8 @@ unsafe fn ensure_list(pane: HWND) -> HWND {
 /// Enter. A folder is browsed to in this pane. A file is launched and the pane moves to its folder.
 /// Double-click does not come here: a file stays in the result list, a folder opens in a new pane tab.
 unsafe fn activate_hit(i: usize, hit: &FindHit) {
-    let open = hit_open(&hit.path, hit.dir);
+    let dir = hit.dir || local_directory(&hit.path);
+    let open = hit_open(&hit.path, dir);
     clear_find_query(i);
     match open {
         FindHitOpen::Folder(p) => {
@@ -751,8 +772,11 @@ unsafe fn activate_hit(i: usize, hit: &FindHit) {
         }
         FindHitOpen::File { path, folder } => {
             let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
-            launch_file(&path);
-            if !folder.is_empty() && !same_dir(&folder, &cur) {
+            let share = share_path(&path);
+            launch_file(i, &path);
+            // A share that was labelled a file can still be a folder. The handoff browses it
+            // in this pane; moving to the parent afterwards would undo that.
+            if !(share && crate::folderapp::shown_on()) && !folder.is_empty() && !same_dir(&folder, &cur) {
                 navigate(i, &folder);
             }
         }
@@ -771,8 +795,19 @@ pub(crate) fn dblclick_hit(path: &str, dir: bool) -> FindDbl {
     if dir { FindDbl::NewTab(path.to_string()) } else { FindDbl::Launch(path.to_string()) }
 }
 
-fn launch_file(path: &str) {
-    unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL); }
+fn launch_file(pane: usize, path: &str) {
+    unsafe {
+        if local_directory(path) {
+            navigate(pane, path);
+            return;
+        }
+        // A UNC folder the walker could not classify still starts our exe. The handoff
+        // sees that parent and browses this pane.
+        if crate::folderapp::shown_on() {
+            crate::folderapp::note_activate(app(|a| a.main.0 as isize), pane, false);
+        }
+        ShellExecuteW(None, w!("open"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
 }
 
 unsafe fn clear_find_query(i: usize) {
@@ -789,14 +824,15 @@ unsafe fn clear_find_query(i: usize) {
 }
 
 unsafe fn open_find_dbl(i: usize, hit: &FindHit) {
-    match dblclick_hit(&hit.path, hit.dir) {
+    let dir = hit.dir || local_directory(&hit.path);
+    match dblclick_hit(&hit.path, dir) {
         FindDbl::Launch(path) => {
             // The filter's hide timer is still pending on a fast double-click. Launching the file
             // moves focus away, and that timer would then take the result list down.
             if let Some(h) = pane_hwnd(i) {
                 _ = KillTimer(Some(h), TIMER_FIND);
             }
-            launch_file(&path);
+            launch_file(i, &path);
         }
         FindDbl::NewTab(folder) => {
             clear_find_query(i);
@@ -1341,6 +1377,18 @@ mod tests {
     fn double_click_launches_a_file_and_opens_a_folder_in_a_new_tab() {
         assert_eq!(dblclick_hit(r"C:\a\b.txt", false), FindDbl::Launch(r"C:\a\b.txt".into()));
         assert_eq!(dblclick_hit(r"C:\a\Sub", true), FindDbl::NewTab(r"C:\a\Sub".into()));
+    }
+
+    #[test]
+    fn a_directory_symlink_or_an_unread_type_is_a_folder() {
+        assert!(entry_is_dir(Some(true), Some(false), None));
+        assert!(entry_is_dir(Some(true), Some(true), None));
+        assert!(!entry_is_dir(Some(false), Some(false), Some(true)));
+        assert!(entry_is_dir(Some(false), Some(true), Some(true)));
+        assert!(!entry_is_dir(Some(false), Some(true), Some(false)));
+        assert!(entry_is_dir(None, None, Some(true)));
+        assert!(!entry_is_dir(None, None, Some(false)));
+        assert!(!entry_is_dir(None, None, None));
     }
 
     #[test]
