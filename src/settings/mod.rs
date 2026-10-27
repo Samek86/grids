@@ -63,6 +63,8 @@ const TG_UPDATE: u8 = 19;
 const TG_REMEMBER: u8 = 20;
 /// Default folder app. The knob follows HKCU, not a saved preference.
 const TG_FOLDER: u8 = 21;
+const TG_FSIZE: u8 = 22;
+const TG_FSIZE_NET: u8 = 23;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -191,7 +193,7 @@ struct Spec {
 const GEN: &[Spec] = &[
     Spec { title: s("Display language", "표시 언어", "表示言語"), desc: s("The default follows the Windows display language (Korean, Japanese, or English); otherwise English. A change applies right away.", "기본값은 Windows 표시 언어(한국어, 일본어, 영어)를 따라요. 그 외에는 영어예요. 바꾸면 바로 적용돼요.", "既定は Windows の表示言語（韓国語、日本語、英語）に従います。それ以外は英語です。変えるとすぐに適用されます。"), live: true, ctl: Ctl::Lang },
     Spec { title: s("Font", "글꼴", "フォント"), desc: s("Default follows the display language. A chosen face applies to the whole window right away.", "기본값은 표시 언어의 글꼴이에요. 고르면 창 전체에 바로 적용돼요.", "既定は表示言語のフォントです。選ぶとウィンドウ全体にすぐに適用されます。"), live: true, ctl: Ctl::Face },
-    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every tab, its folders and the window, or open a chosen session.", "모든 탭과 폴더, 창을 복원하거나 정해진 세션을 열어요.", "すべてのタブとフォルダー、ウィンドウを復元するか、指定したセッションを開きます。"), live: true, ctl: Ctl::Start },
+    Spec { title: s("On startup", "시작할 때", "起動時"), desc: s("Restore every open tab and the window, or open one saved tab.", "열려 있던 모든 탭과 창을 복원하거나, 저장한 탭 하나를 열어요.", "開いていたすべてのタブとウィンドウを復元するか、保存したタブを一つ開きます。"), live: true, ctl: Ctl::Start },
     Spec { title: s("Use as default folder app", "기본 폴더 앱으로 사용", "既定のフォルダーアプリとして使用"), desc: s("Win+E and special folders stay with Explorer.", "Win+E와 특수 폴더는 탐색기 그대로예요.", "Win+E と特殊フォルダーはエクスプローラーのままです。"), live: true, ctl: Ctl::Toggle(TG_FOLDER) },
     Spec { title: s("Default layout", "기본 레이아웃", "既定のレイアウト"), desc: s("Panes in a new window, and on a first start. A new tab copies the current tab.", "새 창과 첫 실행의 패널 배치예요. 새 탭은 지금 탭의 배치를 그대로 가져와요.", "新しいウィンドウと初回起動のペイン配置です。新しいタブは今のタブの配置を引き継ぎます。"), live: true, ctl: Ctl::Layout },
     Spec { title: s("Single instance", "중복 실행 막기", "二重起動を防ぐ"), desc: s("A second launch opens a new window in this process, unless single-window mode is on.", "다시 실행하면 이 프로세스에 새 창이 열려요. 창 하나만 쓰기가 켜져 있으면 탭으로 열어요.", "もう一度起動すると、このプロセスに新しいウィンドウを開きます。単一ウィンドウがオンのときはタブで開きます。"), live: true, ctl: Ctl::Toggle(TG_SINGLE) },
@@ -223,6 +225,8 @@ const VIEW: &[Spec] = &[
     Spec { title: s("Starting folder for a new pane", "새 패널의 시작 폴더", "新しいペインの開始フォルダー"), desc: s("Used when a new pane has no folder yet.", "새 패널에 폴더가 없을 때 열어요.", "新しいペインにフォルダーがないときに開きます。"), live: true, ctl: Ctl::StartDir },
     Spec { title: s("Show hidden files", "숨김 파일 표시", "隠しファイルを表示"), desc: s("Same as Ctrl+H.", "Ctrl+H와 같아요.", "Ctrl+H と同じです。"), live: true, ctl: Ctl::Toggle(TG_HIDDEN) },
     Spec { title: s("Show file extensions", "파일 확장자 표시", "ファイル拡張子を表示"), desc: s("This is Windows' own setting, so Explorer follows it too.", "Windows 설정을 바꿔요. 탐색기도 같이 바뀌어요.", "Windows の設定を変えるので、エクスプローラーも従います。"), live: true, ctl: Ctl::Toggle(TG_EXT) },
+    Spec { title: s("Show folder sizes", "폴더 크기 표시", "フォルダーのサイズを表示"), desc: s("The status bar and a folder's tooltip show its total. Computed in the background. On by default.", "상태 표시줄과 폴더 툴팁에 전체 크기를 보여요. 뒤에서 계산해요. 기본값은 켜짐.", "ステータス バーとフォルダーのツールチップに合計を出します。バックグラウンドで計算します。既定はオンです。"), live: true, ctl: Ctl::Toggle(TG_FSIZE) },
+    Spec { title: s("Folder sizes for network folders", "네트워크 폴더 크기", "ネットワーク フォルダーのサイズ"), desc: s("UNC and mapped drives. Off by default. A disconnected share is not queried. WSL folders are sized either way and refresh on F5.", "UNC와 매핑된 드라이브예요. 기본값은 꺼짐. 끊긴 공유는 묻지 않아요. WSL 폴더는 어느 쪽이든 계산하고 F5로 다시 구해요.", "UNC と割り当てドライブです。既定はオフです。切断された共有には問い合わせません。WSL フォルダーはどちらでも計算し、F5 で更新します。"), live: true, ctl: Ctl::Toggle(TG_FSIZE_NET) },
     Spec { title: s("Show the left panel", "왼쪽 패널 표시", "左のパネルを表示"), desc: s("Favourites and the folder tree share it. Drag the divider between them. This hides both.", "즐겨찾기와 폴더 트리가 같이 있어요. 사이 구분선을 끌어 나눠요. 이 항목은 둘 다 숨겨요.", "お気に入りとフォルダー ツリーが入ります。間の区切りをドラッグして分けます。この項目で両方を隠します。"), live: true, ctl: Ctl::Toggle(TG_TREE) },
     Spec { title: s("Left panel order", "왼쪽 패널 순서", "左のパネルの順番"), desc: s("Favourites on top, or folder tree on top. The tree keeps its share of the height.", "즐겨찾기 위, 또는 폴더 트리 위. 폴더 트리가 차지하는 높이는 그대로예요.", "お気に入りを上、またはフォルダー ツリーを上。フォルダー ツリーの高さの割合はそのままです。"), live: true, ctl: Ctl::SideOrder },
     Spec { title: s("Emphasise the active pane border", "활성 패널 테두리 강조", "アクティブなペインの枠を強調"), desc: s("", "", ""), live: true, ctl: Ctl::Toggle(TG_EDGE) },
@@ -238,7 +242,7 @@ const FILE: &[Spec] = &[
 ];
 const SESS: &[Spec] = &[
     Spec { title: s("Session folder", "세션 폴더", "セッション フォルダー"), desc: s("%APPDATA%\\Panegrid\\panegrid-sessions.", "%APPDATA%\\Panegrid\\panegrid-sessions 폴더예요.", "%APPDATA%\\Panegrid\\panegrid-sessions フォルダーです。"), live: true, ctl: Ctl::Sess },
-    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes the named session file when one is open.", "열어 둔 세션 파일이 있을 때 그 파일에 저장해요.", "開いているセッション ファイルがあるとき、そのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
+    Spec { title: s("Save on exit", "종료할 때 자동 저장", "終了時に自動保存"), desc: s("Writes each tab that already has its own session file.", "세션 파일이 연결된 탭마다 그 파일에 저장해요.", "セッション ファイルがあるタブを、それぞれのファイルに保存します。"), live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
     Spec { title: s("Unsaved-changes mark (green dot)", "저장 안 된 변경 표시 (초록 점)", "未保存の変更を表示（緑の点）"), desc: s("On the save button.", "저장 버튼에 표시해요.", "保存ボタンに表示します。"), live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
@@ -924,6 +928,8 @@ fn toggle_on(id: u8) -> bool {
         TG_SPACE => app(|a| a.s.space_preview),
         TG_WHEEL => app(|a| a.s.peek_wheel_nav),
         TG_REMEMBER => app(|a| a.s.remember_views),
+        TG_FSIZE => app(|a| a.s.folder_sizes),
+        TG_FSIZE_NET => app(|a| a.s.folder_sizes_network),
         TG_FOLDER => crate::folderapp::shown_on(),
         _ => false,
     }
@@ -1115,6 +1121,36 @@ mod tests {
         assert!(hit(&geo(client(), &shot(page, "フォルダーごとに表示")), Ctl::Toggle(TG_REMEMBER)));
         assert!(hit(&geo(client(), &shot(2, "このフォルダーの表示")), Ctl::FolderReset));
         assert!(hit(&geo(client(), &shot(2, "記憶した表示をすべて")), Ctl::FolderClear));
+    }
+
+    #[test]
+    fn folder_size_toggles_are_on_the_panes_page_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let hit = |g: &Geo, id: u8| g.items.iter().any(|it| matches!(it, Item::Card(c) if c.spec.ctl == Ctl::Toggle(id)));
+        let (anchor, page) = commit_search(0, 0, "Show folder sizes");
+        assert_eq!((anchor, page), (0, 2));
+        assert!(hit(&geo(client(), &shot(page, "Show folder sizes")), TG_FSIZE));
+        assert!(hit(&geo(client(), &shot(2, "Computed in the background")), TG_FSIZE));
+        let (_, page) = commit_search(0, 0, "Folder sizes for network");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "Folder sizes for network")), TG_FSIZE_NET));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "폴더 크기 표시");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "폴더 크기 표시")), TG_FSIZE));
+        let (_, page) = commit_search(0, 0, "네트워크 폴더 크기");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "네트워크 폴더 크기")), TG_FSIZE_NET));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "フォルダーのサイズを表示");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "フォルダーのサイズを表示")), TG_FSIZE));
+        let (_, page) = commit_search(0, 0, "ネットワーク フォルダーのサイズ");
+        assert_eq!(page, 2);
+        assert!(hit(&geo(client(), &shot(page, "ネットワーク フォルダーのサイズ")), TG_FSIZE_NET));
     }
 
     #[test]

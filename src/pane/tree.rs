@@ -17,6 +17,20 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
                 unsafe { browse_item(app(|a| a.s.active), si) };
             }
         }
+        // Double-click is also the tree's open. While we are the folder handler that
+        // open is our own exe, which the running window turns into a new tab.
+        // S_OK: only the namespace tree handles the click (it still expands). The
+        // TreeView does not, and that is what runs the verb. Ctrl and middle stay S_FALSE.
+        // BUTTON is a mask: a right click is 3, so it must be compared, not tested as a bit.
+        let left = click & NSTCECT_BUTTON.0 as u32 == NSTCECT_LBUTTON.0 as u32;
+        let dbl = click & NSTCECT_DBLCLICK.0 as u32 != 0;
+        let on_label = hit & NSTCEHT_ONITEM.0 as u32 != 0;
+        if dbl && left && on_label && tree_keeps_click() {
+            if let Some(si) = psi.as_ref() {
+                unsafe { browse_item(app(|a| a.s.active), si) };
+            }
+            return Ok(());
+        }
         Err(S_FALSE.into()) // let the tree do its default handling
     }
     fn OnSelectionChanged(&self, sel: Ref<IShellItemArray>) -> Result<()> {
@@ -37,7 +51,14 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
     fn OnItemStateChanged(&self, _: Ref<IShellItem>, _: u32, _: u32) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn OnKeyboardInput(&self, _: u32, _: WPARAM, _: LPARAM) -> Result<()> {
+    fn OnKeyboardInput(&self, msg: u32, wp: WPARAM, _: LPARAM) -> Result<()> {
+        // Enter on the selected folder. S_OK would let the tree run that verb (a new tab).
+        // Any other code means the key was handled. Ctrl+Enter stays S_FALSE.
+        let enter = msg == WM_KEYDOWN && wp.0 as u16 == VK_RETURN.0;
+        if enter && tree_keeps_click() {
+            unsafe { browse_selected_tree() };
+            return Err(E_FAIL.into());
+        }
         Err(S_FALSE.into())
     }
     fn OnBeforeExpand(&self, _: Ref<IShellItem>) -> Result<()> {
@@ -94,6 +115,20 @@ impl INameSpaceTreeControlEvents_Impl for TreeEvents_Impl {
     }
     fn OnGetDefaultIconIndex(&self, _: Ref<IShellItem>, _: *mut i32, _: *mut i32) -> Result<()> {
         Err(E_NOTIMPL.into())
+    }
+}
+
+fn tree_keeps_click() -> bool {
+    let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
+    let middle = unsafe { GetKeyState(VK_MBUTTON.0 as i32) < 0 };
+    crate::folderapp::tree_activate(crate::folderapp::shown_on(), ctrl, middle, true) == crate::folderapp::OpenWhere::Pane
+}
+
+unsafe fn browse_selected_tree() {
+    let Some(t) = app(|a| a.tree.clone()) else { return };
+    let Ok(items) = t.GetSelectedItems() else { return };
+    if let Ok(item) = items.GetItemAt(0) {
+        browse_item(app(|a| a.s.active), &item);
     }
 }
 

@@ -114,6 +114,22 @@ pub(crate) unsafe fn open_fav_row(row: &FavRow) {
 }
 
 unsafe fn open_present(path: &str, file: bool) {
+    // A shortcut to a folder would ShellExecute, and that verb is us while the setting is on.
+    // The link is loaded only after the local existence check above, so a missing favourite
+    // still stays on the current pane. A UNC link is a share and is resolved off this thread.
+    if crate::folderapp::shown_on() && crate::folderapp::link_file(path) {
+        if let Some(dir) = folder_link_target(path) {
+            let i = active_pane();
+            if !navigate(i, &dir) {
+                _ = MessageBeep(MB_ICONWARNING);
+                return;
+            }
+            if !net_failed(i) {
+                focus_view(i);
+            }
+            return;
+        }
+    }
     if file {
         if shell_open(path) {
             return;
@@ -140,6 +156,27 @@ unsafe fn open_present(path: &str, file: bool) {
     if !net_failed(i) {
         focus_view(i);
     }
+}
+
+/// Open / Explore / our verb on one folder browses this pane while Panegrid is the
+/// folder handler. A file shortcut is not taken, so the verb still opens it.
+/// Returns true when the command must not reach the shell (that launch is a new tab).
+unsafe fn claim_folder_open(pane: usize, verb: &str, items: &[(String, bool)]) -> bool {
+    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+    let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
+    let file = items.len() == 1 && items[0].1;
+    let link = items.len() == 1 && crate::folderapp::link_file(&items[0].0);
+    if crate::folderapp::menu_open(crate::folderapp::shown_on(), ctrl, middle, verb, items.len(), file, link) != crate::folderapp::OpenWhere::Pane {
+        return false;
+    }
+    let path = &items[0].0;
+    let dest = if link { folder_link_target(path) } else { Some(path.clone()) };
+    let Some(dest) = dest else { return false };
+    if !navigate(pane, &dest) {
+        _ = MessageBeep(MB_ICONWARNING);
+    }
+    focus_view(pane);
+    true
 }
 
 fn shell_open(path: &str) -> bool {
@@ -665,20 +702,23 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         }
     } else if crate::winmerge::ctx_command(owner, cmd, pane, items) {
     } else if cmd > 0 {
-        let mut ici = CMINVOKECOMMANDINFO {
-            cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
-            hwnd: owner,
-            lpVerb: PCSTR((cmd as u32 - 1) as usize as *const u8),
-            nShow: SW_SHOWNORMAL.0 as i32,
-            ..Default::default()
-        };
-        if GetKeyState(VK_SHIFT.0 as i32) < 0 {
-            ici.fMask |= CMIC_MASK_SHIFT_DOWN;
+        let verb = cmd_verb(&cm, (cmd as u32 - 1) as usize);
+        if !claim_folder_open(pane, &verb, items) {
+            let mut ici = CMINVOKECOMMANDINFO {
+                cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32,
+                hwnd: owner,
+                lpVerb: PCSTR((cmd as u32 - 1) as usize as *const u8),
+                nShow: SW_SHOWNORMAL.0 as i32,
+                ..Default::default()
+            };
+            if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+                ici.fMask |= CMIC_MASK_SHIFT_DOWN;
+            }
+            if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+                ici.fMask |= CMIC_MASK_CONTROL_DOWN;
+            }
+            _ = cm.InvokeCommand(&ici);
         }
-        if GetKeyState(VK_CONTROL.0 as i32) < 0 {
-            ici.fMask |= CMIC_MASK_CONTROL_DOWN;
-        }
-        _ = cm.InvokeCommand(&ici);
     }
     _ = DestroyMenu(menu);
     true
@@ -766,6 +806,15 @@ impl IContextMenu_Impl for FavCtx_Impl {
                 let remove = app(|a| a.s.is_fav(&self.path));
                 set_favs(std::slice::from_ref(&self.path), !remove);
                 return Ok(());
+            }
+            if !pici.is_null() {
+                if let Some(offset) = verb_offset(pici) {
+                    let verb = cmd_verb(&self.inner, offset as usize);
+                    let item = [(self.path.clone(), false)];
+                    if claim_folder_open(active_pane(), &verb, &item) {
+                        return Ok(());
+                    }
+                }
             }
             self.inner.InvokeCommand(pici)
         }

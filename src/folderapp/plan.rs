@@ -317,6 +317,73 @@ fn looks_like_clsid(s: &str) -> bool {
     parts.iter().all(|r| b[r.clone()].iter().copied().all(|c| c.is_ascii_hexdigit()))
 }
 
+/// Where an activation inside Panegrid goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenWhere {
+    /// Browse the current pane. The shell verb must not run.
+    Pane,
+    /// The hosted view, or the verb, runs. A file does this. So does Ctrl or a
+    /// middle click on a folder: that launch is a new tab while we are registered.
+    Shell,
+}
+
+/// What the file list knows about the focused item. Shortcut targets are reported
+/// as the target (`folder` / `stream` / `browsable`), not as the `.lnk` file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OpenIn {
+    /// Settings > General, "use Panegrid as the default folder app".
+    pub registered: bool,
+    pub ctrl: bool,
+    pub middle: bool,
+    pub folder: bool,
+    pub stream: bool,
+    pub browsable: bool,
+}
+
+/// Double-click and Enter in the file list. With the setting off, the view
+/// already navigates, so this stays `Shell` and the view is left alone.
+pub(crate) fn list_open(a: OpenIn) -> OpenWhere {
+    if a.registered && !a.ctrl && !a.middle && navigable(a.folder, a.stream, a.browsable) {
+        OpenWhere::Pane
+    } else {
+        OpenWhere::Shell
+    }
+}
+
+/// A directory, drive, library, or zip-like browsable folder.
+/// A file that is also a stream is not a container.
+pub(crate) fn navigable(folder: bool, stream: bool, browsable: bool) -> bool {
+    folder && (!stream || browsable)
+}
+
+/// Right-click Open, Explore, or our own verb, on one item.
+/// `link` is a `.lnk`: the caller navigates only when the target is a folder,
+/// and otherwise lets the verb open the file. New-window verbs stay `Shell`.
+pub(crate) fn menu_open(registered: bool, ctrl: bool, middle: bool, verb: &str, count: usize, file: bool, link: bool) -> OpenWhere {
+    if registered && !ctrl && !middle && count == 1 && open_verb(verb) && (!file || link) {
+        OpenWhere::Pane
+    } else {
+        OpenWhere::Shell
+    }
+}
+
+/// Verbs that open a folder in this browser. `opennew` still launches, so
+/// "Open in new window" becomes a tab through the single-instance handoff.
+pub(crate) fn open_verb(verb: &str) -> bool {
+    matches!(verb.trim().to_ascii_lowercase().as_str(), "open" | "explore" | "panegrid")
+}
+
+/// Folder tree: double-click and Enter browse this pane while we are registered.
+/// Ctrl and the middle button stay with the tree, which runs the verb.
+pub(crate) fn tree_activate(registered: bool, ctrl: bool, middle: bool, activating: bool) -> OpenWhere {
+    if registered && activating && !ctrl && !middle { OpenWhere::Pane } else { OpenWhere::Shell }
+}
+
+/// `C:\a\folder.lnk`. The decision of whether its target is a folder is separate.
+pub(crate) fn link_file(path: &str) -> bool {
+    path.trim().rsplit(['\\', '/']).next().unwrap_or("").trim_matches('"').to_ascii_lowercase().ends_with(".lnk")
+}
+
 /// Quote only when Explorer's parameter would split. `shell:` and `::{...}` stay bare.
 pub(crate) fn explorer_arg(path: &str) -> String {
     let s = path.trim();
@@ -595,5 +662,73 @@ mod tests {
         assert_eq!(explorer_arg("shell:RecycleBinFolder"), "shell:RecycleBinFolder");
         assert_eq!(explorer_arg(r"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}");
         assert_eq!(explorer_arg(r"C:\My Folder"), r#""C:\My Folder""#);
+    }
+
+    fn folder() -> OpenIn {
+        OpenIn { registered: true, ctrl: false, middle: false, folder: true, stream: false, browsable: false }
+    }
+
+    #[test]
+    fn a_folder_in_the_list_stays_in_the_pane_unless_ctrl_or_middle_asks_for_a_tab() {
+        let plain = folder();
+        assert_eq!(list_open(plain), OpenWhere::Pane);
+        assert_eq!(list_open(OpenIn { ctrl: true, ..plain }), OpenWhere::Shell);
+        assert_eq!(list_open(OpenIn { middle: true, ..plain }), OpenWhere::Shell);
+        // Setting off: the hosted view already navigates. Do not take the click.
+        assert_eq!(list_open(OpenIn { registered: false, ..plain }), OpenWhere::Shell);
+        // A file keeps its own program.
+        assert_eq!(list_open(OpenIn { folder: false, ..plain }), OpenWhere::Shell);
+        // Library (browsable folder) and a zip-like container navigate.
+        assert_eq!(list_open(OpenIn { browsable: true, ..plain }), OpenWhere::Pane);
+        assert_eq!(list_open(OpenIn { stream: true, browsable: true, ..plain }), OpenWhere::Pane);
+        // A stream that is not a browsable folder is a file.
+        assert!(!navigable(true, true, false));
+        assert_eq!(list_open(OpenIn { stream: true, browsable: false, ..plain }), OpenWhere::Shell);
+        assert!(navigable(true, false, false));
+        assert!(!navigable(false, false, true));
+    }
+
+    #[test]
+    fn open_on_the_menu_navigates_one_folder_and_leaves_new_window_verbs() {
+        assert_eq!(menu_open(true, false, false, "open", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "Open", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "explore", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "Panegrid", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "  panegrid  ", 1, false, false), OpenWhere::Pane);
+        // "Open in new window" still launches, which the running window turns into a tab.
+        assert_eq!(menu_open(true, false, false, "opennew", 1, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, false, false, "opennewwindow", 1, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, false, false, "properties", 1, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, false, false, "open", 2, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, true, false, "open", 1, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, false, true, "open", 1, false, false), OpenWhere::Shell);
+        assert_eq!(menu_open(false, false, false, "open", 1, false, false), OpenWhere::Shell);
+        // A file is not taken. A .lnk is a candidate; the caller keeps it only if the target is a folder.
+        assert_eq!(menu_open(true, false, false, "open", 1, true, false), OpenWhere::Shell);
+        assert_eq!(menu_open(true, false, false, "open", 1, true, true), OpenWhere::Pane);
+        assert!(open_verb("explore") && !open_verb("opennew") && !open_verb(""));
+    }
+
+    #[test]
+    fn the_folder_tree_browses_on_enter_and_double_click_but_not_on_ctrl_or_middle() {
+        assert_eq!(tree_activate(true, false, false, true), OpenWhere::Pane);
+        assert_eq!(tree_activate(true, true, false, true), OpenWhere::Shell);
+        assert_eq!(tree_activate(true, false, true, true), OpenWhere::Shell);
+        assert_eq!(tree_activate(false, false, false, true), OpenWhere::Shell);
+        assert_eq!(tree_activate(true, false, false, false), OpenWhere::Shell);
+    }
+
+    #[test]
+    fn a_shortcut_path_is_recognised_without_opening_it_and_an_outside_launch_is_still_a_tab() {
+        assert!(link_file(r"C:\Work\Projects.lnk"));
+        assert!(link_file(r"\\server\share\folder.LNK"));
+        assert!(link_file("  notes.lnk  "));
+        assert!(!link_file(r"C:\Work\Projects"));
+        assert!(!link_file(r"C:\Work\file.lnk.txt"));
+        assert!(!link_file(""));
+        // Another program opening a folder is still an argument for this process.
+        // The running window opens that as a tab. It is not an in-place navigation.
+        assert_eq!(route_arg(r"D:\Photos"), ArgRoute::Pane);
+        assert_eq!(route_arg("shell:Downloads"), ArgRoute::Explorer);
     }
 }

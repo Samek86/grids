@@ -17,7 +17,7 @@ pub(crate) use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 pub(crate) use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 pub(crate) use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 pub(crate) use windows::Win32::System::Ole::*;
-pub(crate) use windows::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT, MODIFIERKEYS_FLAGS, SFGAO_FLAGS, SFGAO_FOLDER, SFGAO_STREAM};
+pub(crate) use windows::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT, MODIFIERKEYS_FLAGS, SFGAO_BROWSABLE, SFGAO_FLAGS, SFGAO_FOLDER, SFGAO_STREAM};
 pub(crate) use windows::Win32::System::Threading::{OpenProcess, INFINITE, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 pub(crate) use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_I4};
 pub(crate) use windows::Win32::UI::Accessibility::{AccessibleObjectFromPoint, IAccessible, ROLE_SYSTEM_LIST, ROLE_SYSTEM_LISTITEM};
