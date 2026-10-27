@@ -239,7 +239,7 @@ pub(crate) struct Session {
     pub(crate) peek_wheel_nav: bool,
     /// Remember sort, columns, view mode, icon size and grouping per folder. Missing means on.
     pub(crate) remember_views: bool,
-    /// Status line and folder tooltip show a folder's total size. Missing means on.
+    /// Status line shows a selected folder's total size. Missing means on.
     pub(crate) folder_sizes: bool,
     /// Also size UNC and mapped drives. Missing means off. WSL is sized either way.
     pub(crate) folder_sizes_network: bool,

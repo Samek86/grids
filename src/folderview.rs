@@ -248,6 +248,97 @@ pub(crate) fn same_column_keys(a: &str, b: &str) -> bool {
     !ka.is_empty() && ka.len() == kb.len() && ka.iter().zip(&kb).all(|(x, y)| same_key(x, y))
 }
 
+/// What one look at the live view is allowed to write.
+/// `SetColumns` and `SetViewModeAndIconSize` rebuild the hosted list and jump its scroll,
+/// so each navigation gets at most one of those writes, and only when the value differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColumnWrite {
+    None,
+    /// Widths differ by more than the shell's own noise. `LVM_SETCOLUMNWIDTH` only.
+    Widths,
+    /// Same columns, different sort. `SetSortColumns` only.
+    Sort,
+    /// Different properties, or the list has not published columns yet. `SetColumns`.
+    Columns,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShellWrite {
+    pub mode: bool,
+    pub columns: bool,
+    pub sort: bool,
+    pub widths: bool,
+}
+
+/// `want_mode == 0` leaves the mode alone. A live mode of 0 means the shell has not published one yet.
+pub(crate) fn mode_needs_set(want_mode: i32, want_icon: i32, live_mode: i32, live_icon: i32) -> bool {
+    if want_mode == 0 {
+        return false;
+    }
+    if live_mode == 0 {
+        return true;
+    }
+    if live_mode != want_mode {
+        return true;
+    }
+    want_icon != 0 && live_icon != 0 && live_icon != want_icon
+}
+
+pub(crate) fn column_write(want: &str, live: &str) -> ColumnWrite {
+    if want.is_empty() {
+        return ColumnWrite::None;
+    }
+    let (wc, ws) = parse_cols(want);
+    if wc.is_empty() {
+        return ColumnWrite::None;
+    }
+    let (lc, ls) = parse_cols(live);
+    if lc.is_empty() {
+        return ColumnWrite::Columns;
+    }
+    if !same_column_keys(want, live) {
+        return ColumnWrite::Columns;
+    }
+    let sort_diff = ws.len() != ls.len() || ws.iter().zip(&ls).any(|(a, b)| !same_key(&a.0, &b.0) || a.1 != b.1);
+    if sort_diff {
+        return ColumnWrite::Sort;
+    }
+    if !columns_close(want, live) {
+        ColumnWrite::Widths
+    } else {
+        ColumnWrite::None
+    }
+}
+
+/// `writes` is how many times this navigation has already called `SetColumns` or `SetViewModeAndIconSize`.
+/// One is the cap. A later look, even at different columns, writes nothing.
+pub(crate) fn shell_write(writes: u8, want_mode: i32, want_icon: i32, live_mode: i32, live_icon: i32, want_cols: &str, live_cols: &str) -> ShellWrite {
+    if writes >= 1 {
+        return ShellWrite { mode: false, columns: false, sort: false, widths: false };
+    }
+    let mode = mode_needs_set(want_mode, want_icon, live_mode, live_icon);
+    let (columns, sort, widths) = match column_write(want_cols, live_cols) {
+        ColumnWrite::Columns => (true, false, false),
+        ColumnWrite::Sort => (false, true, false),
+        ColumnWrite::Widths => (false, false, true),
+        ColumnWrite::None => (false, false, false),
+    };
+    ShellWrite { mode, columns, sort, widths }
+}
+
+pub(crate) fn widths_need_put(want: &str, live: &str) -> bool {
+    matches!(column_write(want, live), ColumnWrite::Widths)
+}
+
+/// `None` means grouping was not part of this view, so the shell is left alone.
+pub(crate) fn group_needs_set(want: &Option<String>, live: &Option<String>) -> bool {
+    match (want, live) {
+        (None, _) => false,
+        (Some(w), Some(l)) => w != l,
+        (Some(_), None) => true,
+    }
+}
+
 /// Columns to put on a folder as it opens.
 ///
 /// `saved` is the column list from a per-folder view or the user's saved default view.
@@ -272,8 +363,9 @@ pub(crate) fn pick_folder_columns(saved: Option<&str>, fallback: &str, details: 
 }
 
 /// The built-in columns were just applied. The shell's own widths and sort are not a user edit.
-/// Returns true when the caller should put the column set on again: the live list is a different
-/// set (Type is still there). An empty read is the list still building, so it does not count.
+/// Returns true while the live list is still a different set (Type is still there) and the quiet
+/// polls have not run out. The caller must not write that set back: `SetColumns` rebuilds the
+/// list and jumps the scroll. An empty read is the list still building, so it does not count.
 pub(crate) fn settle_builtin_columns(watch: &mut ViewWatch, live_columns: &str) -> bool {
     if watch.baseline.is_some() || !is_builtin_default(&watch.applied.columns) {
         return false;
@@ -891,6 +983,50 @@ mod tests {
         assert!(!settle_builtin_columns(&mut kept, &def));
         assert_eq!(kept.applied.columns, "user");
         assert_eq!(kept.quiet, 2);
+    }
+
+    #[test]
+    fn a_view_write_happens_only_when_the_value_differs_and_only_once() {
+        let want = default_details_columns();
+        let with_type = cols_text(
+            &[(PKEY_ItemNameDisplay, 200), (PKEY_DateModified, 120), (PKEY_ItemTypeText, 100), (PKEY_Size, 90)],
+            &[],
+        );
+        let wider = cols_text(&[(PKEY_ItemNameDisplay, 400), (PKEY_DateModified, 180), (PKEY_Size, 140)], &[]);
+        let close = cols_text(&[(PKEY_ItemNameDisplay, 282), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[]);
+        let sorted = cols_text(&[(PKEY_ItemNameDisplay, 280), (PKEY_DateModified, 160), (PKEY_Size, 90)], &[(PKEY_ItemNameDisplay, 1)]);
+        // Shell still has Type. One SetColumns is allowed. The mode already matches, so it is left alone.
+        let first = shell_write(0, 4, 16, 4, 16, &want, &with_type);
+        assert_eq!(first, ShellWrite { mode: false, columns: true, sort: false, widths: false });
+        // Already written once. Type coming back must not be written again.
+        let again = shell_write(1, 4, 16, 4, 16, &want, &with_type);
+        assert_eq!(again, ShellWrite { mode: false, columns: false, sort: false, widths: false });
+        // Same columns, a pixel or two of width noise: nothing to write.
+        let same = shell_write(0, 4, 16, 4, 16, &want, &close);
+        assert_eq!(same, ShellWrite { mode: false, columns: false, sort: false, widths: false });
+        // A real width change is a list-width write, not SetColumns.
+        let widths = shell_write(0, 4, 16, 4, 16, &want, &wider);
+        assert_eq!(widths, ShellWrite { mode: false, columns: false, sort: false, widths: true });
+        assert!(widths_need_put(&want, &wider));
+        assert!(!widths_need_put(&want, &with_type));
+        // Sort only. SetSortColumns, not SetColumns.
+        let sort = shell_write(0, 4, 16, 4, 16, &sorted, &want);
+        assert_eq!(sort, ShellWrite { mode: false, columns: false, sort: true, widths: false });
+        // The list has not published columns yet. One SetColumns is allowed, and a second look is not.
+        let early = shell_write(0, 4, 16, 4, 16, &want, "");
+        assert!(early.columns);
+        assert!(!shell_write(1, 4, 16, 0, 0, &want, "").columns);
+        assert!(!shell_write(1, 1, 48, 4, 16, "", "").mode);
+        // A mode change is one write. Icon size that the shell has not published yet is not a change.
+        let mode = shell_write(0, 1, 48, 4, 16, "", "");
+        assert_eq!(mode, ShellWrite { mode: true, columns: false, sort: false, widths: false });
+        assert!(!mode_needs_set(4, 16, 4, 0));
+        assert!(mode_needs_set(4, 16, 4, 32));
+        assert!(!mode_needs_set(0, 16, 1, 48));
+        assert!(!group_needs_set(&None, &Some("g".into())));
+        assert!(group_needs_set(&Some(String::new()), &None));
+        assert!(!group_needs_set(&Some(String::new()), &Some(String::new())));
+        assert!(group_needs_set(&Some("g".into()), &Some(String::new())));
     }
 
     #[test]
