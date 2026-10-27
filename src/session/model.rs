@@ -1433,6 +1433,46 @@ pub(crate) fn tab_session_text(s: &Session, i: usize) -> Option<String> {
     Some(one.snapshot())
 }
 
+/// Tabs a saved session contributes when it is opened. One file is one tab, linked to `path`.
+/// A file that still holds several tabs opens each of them, so none of those grids are dropped.
+/// Only the tab that was active in the file keeps `path`. Save then writes that one tab, not the others.
+pub(crate) fn tabs_from_session_text(text: &str, path: &str) -> Vec<Tab> {
+    let text = text.trim_start_matches('\u{feff}').trim();
+    if !looks_like_session(text) {
+        return Vec::new();
+    }
+    let other = Session::parse(text);
+    let view = other.view_tabs();
+    if view.is_empty() {
+        return Vec::new();
+    }
+    let active = other.tab.min(view.len() - 1);
+    view.into_iter().enumerate().map(|(k, mut t)| {
+        t.session.clear();
+        if k == active && !path.is_empty() {
+            t.session = path.to_string();
+        }
+        t
+    }).collect()
+}
+
+/// Opened sessions sit immediately after the current tab. Tabs already open stay, in the same order.
+pub(crate) fn tabs_after_open(existing: &[Tab], current: usize, incoming: &[Tab]) -> (Vec<Tab>, usize) {
+    let mut tabs = existing.to_vec();
+    if incoming.is_empty() {
+        let at = if tabs.is_empty() { 0 } else { current.min(tabs.len() - 1) };
+        return (tabs, at);
+    }
+    if tabs.is_empty() {
+        return (incoming.to_vec(), 0);
+    }
+    let at = (current + 1).min(tabs.len());
+    for (k, t) in incoming.iter().enumerate() {
+        tabs.insert(at + k, t.clone());
+    }
+    (tabs, at)
+}
+
 pub(crate) fn parse_tab_color(v: &str) -> Option<u32> {
     let t = v.trim().trim_start_matches('#');
     if t.len() != 6 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -1819,6 +1859,29 @@ pub(crate) fn resolve(p: String) -> String {
 pub(crate) fn is_session_file(p: &Path) -> bool {
     // .qdr: sessions saved before the rename
     p.extension().is_some_and(|x| x.eq_ignore_ascii_case("grids") || x.eq_ignore_ascii_case("qdr"))
+}
+
+fn pane_slot_key(k: &str) -> bool {
+    let mut cs = k.chars();
+    let Some(p) = cs.next() else { return false };
+    if !matches!(p, 'p' | 'v' | 'c' | 'b' | 't') {
+        return false;
+    }
+    let rest: String = cs.collect();
+    rest.parse::<usize>().ok().is_some_and(|i| i < MAXP)
+}
+
+/// A line this build knows how to load. Plain text and a foreign `.qdr` are not sessions.
+pub(crate) fn looks_like_session(text: &str) -> bool {
+    let text = text.trim_start_matches('\u{feff}');
+    text.lines().any(|line| {
+        let Some((k, _)) = line.split_once('=') else { return false };
+        let k = k.trim();
+        matches!(
+            k,
+            "win" | "side" | "sidedpi" | "split" | "cols" | "grid" | "colr" | "rowr" | "active" | "order" | "tabs" | "session" | "layout" | "theme" | "dark" | "accent"
+        ) || pane_slot_key(k)
+    })
 }
 
 // A lone session-file argument means "load this session".
