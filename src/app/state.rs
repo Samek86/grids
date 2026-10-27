@@ -22,6 +22,63 @@ pub(crate) struct NetUi {
     pub(crate) timed_out: bool,
 }
 
+/// Child PIDLs and view state held while a pane's shell view is rebuilt for a theme change.
+/// The PIDLs are owned; dropping the keep frees them.
+pub(crate) struct ThemeKeep {
+    pub(crate) path: String,
+    pub(crate) snap: Option<crate::folderview::ViewSnap>,
+    pub(crate) watch: Option<crate::folderview::ViewWatch>,
+    /// Selected child PIDLs. Empty when every row was selected (`select_all`).
+    pub(crate) sel: Vec<isize>,
+    pub(crate) focus: isize,
+    pub(crate) select_all: bool,
+    pub(crate) top: i32,
+    pub(crate) sx: i32,
+    pub(crate) sy: i32,
+    pub(crate) mode: i32,
+    pub(crate) had_focus: bool,
+}
+
+impl Drop for ThemeKeep {
+    fn drop(&mut self) {
+        unsafe { free_theme_pidls(&mut self.sel, &mut self.focus) };
+    }
+}
+
+/// Scroll position, selection, and focus put back once the rebuilt list has rows.
+pub(crate) struct ThemeScroll {
+    pub(crate) top: i32,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) mode: i32,
+    pub(crate) tries: u8,
+    pub(crate) x_done: bool,
+    pub(crate) y_done: bool,
+    pub(crate) select_all: bool,
+    /// Selected child PIDLs. Empty when every row was selected (`select_all`).
+    pub(crate) sel: Vec<isize>,
+    pub(crate) focus: isize,
+}
+
+impl Drop for ThemeScroll {
+    fn drop(&mut self) {
+        unsafe { free_theme_pidls(&mut self.sel, &mut self.focus) };
+    }
+}
+
+unsafe fn free_theme_pidls(sel: &mut Vec<isize>, focus: &mut isize) {
+    let focus_pidl = std::mem::replace(focus, 0);
+    let focus_shared = focus_pidl != 0 && sel.contains(&focus_pidl);
+    for p in sel.drain(..) {
+        if p != 0 {
+            CoTaskMemFree(Some(p as *const std::ffi::c_void));
+        }
+    }
+    if focus_pidl != 0 && !focus_shared {
+        CoTaskMemFree(Some(focus_pidl as *const std::ffi::c_void));
+    }
+}
+
 pub(crate) struct Pane {
     pub(crate) hwnd: HWND,
     pub(crate) eb: IExplorerBrowser,
@@ -42,6 +99,11 @@ pub(crate) struct Pane {
     pub(crate) net: Option<NetUi>,
     /// Where this browser sits now. Swap updates it; the Explorer callbacks read it.
     pub(crate) slot: std::sync::Arc<AtomicUsize>,
+    /// Theme generation this shell view was built under. A mismatch is rebuilt.
+    pub(crate) themed: u64,
+    /// Set only while this pane is re-browsing the same folder to pick up a new theme.
+    pub(crate) theme_keep: Option<ThemeKeep>,
+    pub(crate) theme_scroll: Option<ThemeScroll>,
 }
 
 pub(crate) struct Desk {
@@ -166,6 +228,8 @@ pub(crate) struct Desk {
     pub(crate) tab_rename_skip: bool,
     /// Filter text last seen while this window was current. `FILTERS` holds the current window.
     pub(crate) live_filters: [String; MAXP],
+    /// `THEME_EPOCH` last applied to this window. An open preview handler reloads when it moves.
+    pub(crate) theme_seen: u64,
 }
 
 /// The small pattern box over a file list (Num+ / Num−).
@@ -325,6 +389,7 @@ pub(crate) fn blank_desk() -> Desk {
         tab_renaming: None,
         tab_rename_skip: false,
         live_filters: [const { String::new() }; MAXP],
+        theme_seen: 0,
     }
 }
 
