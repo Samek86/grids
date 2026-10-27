@@ -1,6 +1,7 @@
 //! Startup update check against the latest GitHub release, and the self-replace that installs it.
 //! No token and no Actions: one unauthenticated GET to the public releases API, then the raw
-//! `panegrid.exe` asset. A release that only has a zip is reported and is not extracted.
+//! `panegrid.exe` asset and its `panegrid.exe.sha256`. The exe is replaced only when the
+//! SHA-256 matches. A missing checksum, a mismatch, or a zip-only release is reported and not installed.
 
 use crate::*;
 use std::path::{Path, PathBuf};
@@ -19,16 +20,22 @@ pub(crate) const APP_VERSION: &str = match option_env!("PANEGRID_FAKE_VERSION") 
 };
 /// Largest panegrid.exe the updater will download.
 const EXE_MAX: usize = 64 << 20;
+/// Largest panegrid.exe.sha256 the updater will read. A sha256sum line is under 100 bytes.
+const SHA_MAX: usize = 4096;
 /// GitHub release asset the updater downloads. Releases upload this raw exe, not a zip.
 const EXE_ASSET: &str = "panegrid.exe";
+/// sha256sum checksum published next to the exe. `<64 hex>  panegrid.exe`.
+const SHA_ASSET: &str = "panegrid.exe.sha256";
 /// Downloaded build, next to the running exe, until the swap moves it into place.
 const NEW_EXE: &str = "panegrid.new.exe";
 const OLD_EXE: &str = "panegrid.old.exe";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Release {
-    /// Raw `panegrid.exe` asset.
-    Exe { tag: String, url: String, size: u64 },
+    /// Raw `panegrid.exe` plus a usable `panegrid.exe.sha256`.
+    Exe { tag: String, url: String, size: u64, sha_url: String, sha_size: u64 },
+    /// `panegrid.exe` was published without a usable checksum file. Shown, never installed.
+    MissingSha { tag: String },
     /// Newer release that published a zip and no `panegrid.exe`. Shown, never extracted.
     ZipOnly { tag: String },
 }
@@ -36,9 +43,18 @@ pub(crate) enum Release {
 impl Release {
     fn tag(&self) -> &str {
         match self {
-            Release::Exe { tag, .. } | Release::ZipOnly { tag } => tag,
+            Release::Exe { tag, .. } | Release::MissingSha { tag } | Release::ZipOnly { tag } => tag,
         }
     }
+}
+
+/// Why `install` left the running exe in place.
+enum InstallFail {
+    /// Checksum asset missing, or the checksum body could not be downloaded.
+    MissingSha,
+    /// Checksum text was not a sha256sum line for panegrid.exe, or the digest differed.
+    Mismatch,
+    Other,
 }
 
 static FOUND: Mutex<Option<Release>> = Mutex::new(None);
@@ -66,21 +82,95 @@ fn asset_file_name(asset: &serde_json::Value) -> Option<&str> {
     Some(name.rsplit(['/', '\\']).next().unwrap_or(name))
 }
 
-/// The tag plus the `panegrid.exe` asset, or a zip-only release when that exe is absent.
-/// The exe wins when both are published. A zip is never returned as something to download.
+/// The tag plus the `panegrid.exe` and `panegrid.exe.sha256` assets.
+/// The exe wins over a zip. An exe with no usable checksum is `MissingSha`, never a download.
+/// A zip is never returned as something to download.
 pub(crate) fn parse_release(json: &str) -> Option<Release> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let tag = v.get("tag_name")?.as_str()?.to_string();
     let assets = v.get("assets")?.as_array()?;
     if let Some(asset) = assets.iter().find(|a| asset_file_name(a).is_some_and(|n| n.eq_ignore_ascii_case(EXE_ASSET))) {
-        return Some(Release::Exe {
-            tag,
-            url: asset.get("browser_download_url")?.as_str()?.to_string(),
-            size: asset.get("size")?.as_u64()?,
-        });
+        let url = asset.get("browser_download_url")?.as_str()?.to_string();
+        let size = asset.get("size")?.as_u64()?;
+        if let Some((sha_url, sha_size)) = sha_asset(assets) {
+            return Some(Release::Exe { tag, url, size, sha_url, sha_size });
+        }
+        return Some(Release::MissingSha { tag });
     }
     let zip_only = assets.iter().any(|a| asset_file_name(a).is_some_and(|n| n.to_ascii_lowercase().ends_with(".zip")));
     zip_only.then_some(Release::ZipOnly { tag })
+}
+
+/// `panegrid.exe.sha256` download URL and size, when the asset is small enough to be a sha256sum file.
+fn sha_asset(assets: &[serde_json::Value]) -> Option<(String, u64)> {
+    let sha = assets.iter().find(|a| asset_file_name(a).is_some_and(|n| n.eq_ignore_ascii_case(SHA_ASSET)))?;
+    let sha_url = sha.get("browser_download_url")?.as_str()?.to_string();
+    let sha_size = sha.get("size")?.as_u64()?;
+    (1..=SHA_MAX as u64).contains(&sha_size).then_some((sha_url, sha_size))
+}
+
+/// First sha256sum line naming `panegrid.exe`: `<64 hex>  panegrid.exe`.
+/// Binary mode (`hash *panegrid.exe`) and a directory prefix on the name are accepted.
+/// The hex is returned as published so the compare can be case-insensitive.
+pub(crate) fn parse_sha256sum(text: &str) -> Option<String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
+        if parts.next().is_some() {
+            continue;
+        }
+        let name = name.trim_start_matches('*');
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) && name.eq_ignore_ascii_case(EXE_ASSET) {
+            return Some(hash.to_string());
+        }
+    }
+    None
+}
+
+/// Case-insensitive match of two SHA-256 hex digests. A value that is not 64 hex digits does not match.
+pub(crate) fn hashes_match(expected: &str, actual: &str) -> bool {
+    fn hex64(s: &str) -> bool {
+        s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+    hex64(expected) && hex64(actual) && expected.eq_ignore_ascii_case(actual)
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+fn sha256_bytes(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex_lower(&Sha256::digest(data))
+}
+
+/// SHA-256 of `path`, lowercase hex. Streams the file so a 64 MB exe is not hashed from a second copy.
+fn sha256_file(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 << 10];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Some(hex_lower(&hasher.finalize()))
 }
 
 /// Closes a WinHTTP handle when dropped.
@@ -198,6 +288,7 @@ pub(crate) fn startup(main: HWND, check: bool) {
         if is_newer(rel.tag(), APP_VERSION) {
             let stage = match &rel {
                 Release::Exe { .. } => 0,
+                Release::MissingSha { .. } => 4,
                 Release::ZipOnly { .. } => 3,
             };
             *FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(rel);
@@ -206,32 +297,43 @@ pub(crate) fn startup(main: HWND, check: bool) {
     });
 }
 
-/// Download the raw exe next to the running one, then swap. On any failure the running exe stays.
-fn install(rel: &Release) -> std::result::Result<(), &'static str> {
-    let Release::Exe { url, size, .. } = rel else { return Err("zip"); };
-    let exe = exe_path().ok_or("exe path")?;
-    let dir = exe.parent().ok_or("exe folder")?.to_path_buf();
+/// Download the raw exe and its checksum, then swap only when the SHA-256 matches.
+/// On a missing checksum or a mismatch, `panegrid.new.exe` is deleted and the running exe stays.
+fn install(rel: &Release) -> std::result::Result<(), InstallFail> {
+    let Release::Exe { url, size, sha_url, sha_size, .. } = rel else { return Err(InstallFail::MissingSha) };
+    let exe = exe_path().ok_or(InstallFail::Other)?;
+    let dir = exe.parent().ok_or(InstallFail::Other)?.to_path_buf();
     let new = dir.join(NEW_EXE);
     let res = (|| {
         if *size == 0 || *size > EXE_MAX as u64 {
-            return Err("size");
+            return Err(InstallFail::Other);
         }
         if !download(url, &new) {
-            return Err("download");
+            return Err(InstallFail::Other);
         }
         if std::fs::metadata(&new).map(|m| m.len()).ok() != Some(*size) {
-            return Err("size");
+            return Err(InstallFail::Other);
         }
         let mut magic = [0u8; 2];
         {
-            let mut f = std::fs::File::open(&new).map_err(|_| "open")?;
+            let mut f = std::fs::File::open(&new).map_err(|_| InstallFail::Other)?;
             if std::io::Read::read(&mut f, &mut magic).ok() != Some(2) || &magic != b"MZ" {
-                return Err("bad exe");
+                return Err(InstallFail::Other);
             }
         }
-        swap(&exe, &new, &dir.join(OLD_EXE))
+        let sha_body = http_get(sha_url, SHA_MAX).ok_or(InstallFail::MissingSha)?;
+        if sha_body.len() as u64 != *sha_size {
+            return Err(InstallFail::MissingSha);
+        }
+        let expected = parse_sha256sum(&String::from_utf8_lossy(&sha_body)).ok_or(InstallFail::Mismatch)?;
+        let actual = sha256_file(&new).ok_or(InstallFail::Other)?;
+        if !hashes_match(&expected, &actual) {
+            return Err(InstallFail::Mismatch);
+        }
+        swap(&exe, &new, &dir.join(OLD_EXE)).map_err(|_| InstallFail::Other)
     })();
-    // Success renamed `new` onto the exe. A failure leaves it behind; drop it either way.
+    // Success renamed `new` onto the exe. A mismatch, a missing checksum, or any other failure
+    // leaves the temp file behind; drop it and do not install.
     _ = std::fs::remove_file(&new);
     res
 }
@@ -279,8 +381,12 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
             }
             let hv = h.0 as isize;
             let spawned = std::thread::Builder::new().name("panegrid-update-install".into()).spawn(move || {
-                let r = install(&rel);
-                let stage = if r.is_ok() { 1 } else { 2 };
+                let stage = match install(&rel) {
+                    Ok(()) => 1,
+                    Err(InstallFail::MissingSha) => 4,
+                    Err(InstallFail::Mismatch) => 5,
+                    Err(InstallFail::Other) => 2,
+                };
                 _ = PostMessageW(Some(HWND(hv as _)), WM_UPDATE, WPARAM(stage), LPARAM(0));
             });
             if spawned.is_err() {
@@ -290,6 +396,15 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
         3 => {
             let Some(Release::ZipOnly { tag }) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
             zip_only(h, &tag);
+        }
+        4 => {
+            INSTALLING.store(false, Ordering::SeqCst);
+            let Some(tag) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.tag().to_string()) else { return };
+            sha_missing(h, &tag);
+        }
+        5 => {
+            INSTALLING.store(false, Ordering::SeqCst);
+            sha_mismatch(h);
         }
         1 => {
             let Some(exe) = exe_path() else { return };
@@ -328,6 +443,30 @@ unsafe fn zip_only(h: HWND, tag: &str) {
     .replace("{url}", &url);
     let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONINFORMATION);
+}
+
+/// The release has no `panegrid.exe.sha256`, or that file could not be downloaded. Nothing was installed.
+unsafe fn sha_missing(h: HWND, tag: &str) {
+    let text = tr(
+        "Panegrid {new} is available. You have {cur}.\n\nThe SHA-256 file (panegrid.exe.sha256) is missing from the release, or it could not be downloaded. Panegrid did not install the update and did not keep a temporary file.",
+        "Panegrid {new} 버전이 나왔어요. 지금은 {cur} 버전이에요.\n\nSHA-256 확인 파일(panegrid.exe.sha256)이 릴리스에 없거나 받지 못했어요. 업데이트를 설치하지 않았고, 임시 파일은 남기지 않았어요.",
+        "Panegrid {new} が公開されています。現在は {cur} です。\n\nSHA-256 の確認ファイル (panegrid.exe.sha256) がリリースにないか、ダウンロードできませんでした。更新はインストールせず、一時ファイルは残していません。",
+    )
+    .replace("{new}", tag)
+    .replace("{cur}", &format!("v{APP_VERSION}"));
+    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
+}
+
+/// The downloaded exe does not match `panegrid.exe.sha256`. The temp file is already deleted.
+unsafe fn sha_mismatch(h: HWND) {
+    let text = tr(
+        "The downloaded panegrid.exe does not match panegrid.exe.sha256. Panegrid did not install it, and the temporary file was deleted.",
+        "다운로드한 panegrid.exe의 SHA-256이 릴리스의 panegrid.exe.sha256과 달라요. 설치하지 않았고, 임시 파일은 지웠어요.",
+        "ダウンロードした panegrid.exe の SHA-256 がリリースの panegrid.exe.sha256 と一致しません。インストールせず、一時ファイルは削除しました。",
+    );
+    let title = tr("Panegrid update", "Panegrid 업데이트", "Panegrid の更新");
+    MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
 unsafe fn failed(h: HWND) {
@@ -388,16 +527,85 @@ mod tests {
     }
 
     #[test]
-    fn release_json_picks_exe_asset() {
+    fn release_json_picks_exe_and_sha_assets() {
         let j = r#"{"tag_name":"v0.2.0","assets":[{"name":"notes.txt","size":3,"browser_download_url":"x"},
             {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"},
+            {"name":"panegrid.exe.SHA256","size":80,"browser_download_url":"https://e/panegrid.exe.sha256"},
             {"name":"Panegrid.EXE","size":1234,"browser_download_url":"https://e/panegrid.exe"}]}"#;
         assert_eq!(
             parse_release(j),
-            Some(Release::Exe { tag: "v0.2.0".into(), url: "https://e/panegrid.exe".into(), size: 1234 })
+            Some(Release::Exe {
+                tag: "v0.2.0".into(),
+                url: "https://e/panegrid.exe".into(),
+                size: 1234,
+                sha_url: "https://e/panegrid.exe.sha256".into(),
+                sha_size: 80,
+            })
         );
         assert_eq!(parse_release(r#"{"tag_name":"v1","assets":[]}"#), None);
         assert_eq!(parse_release("not json"), None);
+        // A checksum with no exe is not an update.
+        assert_eq!(
+            parse_release(r#"{"tag_name":"v9","assets":[{"name":"panegrid.exe.sha256","size":80,"browser_download_url":"https://e/s"}]}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn release_json_exe_without_sha_is_not_installed() {
+        let j = r#"{"tag_name":"v0.2.0","assets":[
+            {"name":"panegrid.exe","size":1234,"browser_download_url":"https://e/panegrid.exe"},
+            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
+        assert_eq!(parse_release(j), Some(Release::MissingSha { tag: "v0.2.0".into() }));
+        // An empty or oversized checksum file cannot be used.
+        let empty = r#"{"tag_name":"v0.2.0","assets":[
+            {"name":"panegrid.exe","size":10,"browser_download_url":"https://e/panegrid.exe"},
+            {"name":"panegrid.exe.sha256","size":0,"browser_download_url":"https://e/s"}]}"#;
+        assert_eq!(parse_release(empty), Some(Release::MissingSha { tag: "v0.2.0".into() }));
+        let big = r#"{"tag_name":"v0.2.0","assets":[
+            {"name":"panegrid.exe","size":10,"browser_download_url":"https://e/panegrid.exe"},
+            {"name":"panegrid.exe.sha256","size":4097,"browser_download_url":"https://e/s"}]}"#;
+        assert_eq!(parse_release(big), Some(Release::MissingSha { tag: "v0.2.0".into() }));
+    }
+
+    #[test]
+    fn sha256sum_parses_and_compares_case_insensitively() {
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        // sha256sum text mode: 64 hex, two spaces, panegrid.exe.
+        assert_eq!(parse_sha256sum(&format!("{hash}  panegrid.exe\n")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  panegrid.exe\r\n")).as_deref(), Some(hash));
+        let upper = hash.to_ascii_uppercase();
+        let parsed = parse_sha256sum(&format!("\u{feff}{upper}  panegrid.exe")).unwrap();
+        assert!(hashes_match(&parsed, hash));
+        assert!(hashes_match(hash, &upper));
+        assert!(!hashes_match(&parsed, &hash.replace('b', "c")));
+        // Binary mode, a directory prefix, and a case-different file name.
+        assert_eq!(parse_sha256sum(&format!("{hash} *panegrid.exe")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  build/panegrid.exe")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  PANEGRID.EXE")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("# comment\n\n{hash}  panegrid.exe")).as_deref(), Some(hash));
+        assert!(parse_sha256sum("deadbeef  panegrid.exe").is_none());
+        assert!(parse_sha256sum(&format!("{hash}  other.exe")).is_none());
+        assert!(parse_sha256sum(&format!("{hash}  panegrid.exe extra")).is_none());
+        assert!(parse_sha256sum(&format!("{hash}")).is_none());
+        assert!(parse_sha256sum("").is_none());
+        assert!(parse_sha256sum("SHA256 (panegrid.exe) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").is_none());
+        assert!(!hashes_match("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", hash));
+        assert!(!hashes_match(hash, &hash[..63]));
+        assert!(!hashes_match("", ""));
+    }
+
+    #[test]
+    fn sha256_of_abc_matches_the_published_digest() {
+        // echo -n abc | sha256sum
+        let digest = sha256_bytes(b"abc");
+        assert_eq!(digest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let line = format!("{}  panegrid.exe", digest.to_ascii_uppercase());
+        assert!(hashes_match(parse_sha256sum(&line).as_deref().unwrap(), &digest));
+        let path = std::env::temp_dir().join(format!("pg-sha-{}", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(sha256_file(&path).as_deref(), Some(digest.as_str()));
+        _ = std::fs::remove_file(&path);
     }
 
     #[test]
