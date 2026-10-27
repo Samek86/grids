@@ -497,6 +497,32 @@ unsafe fn close_all_windows() {
     _ = EnumWindows(Some(each), LPARAM(0));
 }
 
+/// Theme restart. The new process waits out this one, then opens the saved tabs instead of the startup layout.
+pub(crate) const KEEP_TABS: &str = "--keep-tabs";
+
+/// Drop `--keep-tabs` from the launch arguments. True when it was present.
+pub(crate) fn take_keep_tabs(args: &mut Vec<String>) -> bool {
+    let keep = args.iter().any(|a| a == KEEP_TABS);
+    args.retain(|a| a != KEEP_TABS);
+    keep
+}
+
+/// Start this exe again and close every window of this process. The child waits until we exit, then reads the session just saved.
+pub(crate) unsafe fn relaunch_same_session() -> bool {
+    let Some(exe) = exe_path() else { return false };
+    let started = std::process::Command::new(&exe)
+        .arg("--updated")
+        .arg(std::process::id().to_string())
+        .arg(KEEP_TABS)
+        .current_dir(exe.parent().unwrap_or(Path::new(".")))
+        .spawn()
+        .is_ok();
+    if started {
+        close_all_windows();
+    }
+    started
+}
+
 /// `--updated <pid>` from the old process: wait for it to save and exit before reading settings.
 pub(crate) fn wait_for_previous(args: &mut Vec<String>) {
     if args.first().map(String::as_str) != Some("--updated") {
@@ -517,6 +543,15 @@ pub(crate) fn wait_for_previous(args: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keep_tabs_flag_is_removed_from_the_launch_args() {
+        let mut args = vec!["--keep-tabs".into(), r"C:\Work".into()];
+        assert!(take_keep_tabs(&mut args));
+        assert_eq!(args, vec![r"C:\Work".to_string()]);
+        assert!(!take_keep_tabs(&mut args));
+        assert_eq!(args, vec![r"C:\Work".to_string()]);
+    }
 
     #[test]
     fn versions_compare_numerically() {

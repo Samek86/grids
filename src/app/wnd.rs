@@ -400,6 +400,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 return DefWindowProcW(h, msg, wp, lp);
             }
             WM_THEME_SYNC => theme_sync(),
+            WM_THEME_PANE => theme_pane_step(),
             WM_UPDATE => on_update(h, wp.0),
             WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {
@@ -464,6 +465,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         };
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
+            WM_THEME_SCROLL => apply_theme_scroll(h),
             WM_TIMER if wp.0 == TIMER_NEWFILE => {
                 let job = PENDING_FILE.lock().ok().and_then(|mut p| {
                     let cur = p.as_mut()?;
