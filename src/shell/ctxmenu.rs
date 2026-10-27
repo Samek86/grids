@@ -1589,7 +1589,7 @@ fn strip_name_suffix(s: &str) -> String {
         }
         let spaced = format!(" {suf}");
         if let Some(stem) = low.strip_suffix(&spaced) {
-            return t[..stem.len()].trim().to_string();
+            return t.get(..stem.len()).unwrap_or(t).trim().to_string();
         }
     }
     t.to_string()
