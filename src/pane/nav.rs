@@ -2280,6 +2280,9 @@ pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
         }
     }
     hook_ctx(i);
+    let here = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    pane_here(i, &here, classify_ui(&here));
+    hook_tips(i);
     find_retarget(i);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(hw) = sv.GetWindow() {
@@ -2300,6 +2303,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
         let i = self.0.load(Ordering::SeqCst);
+        pane_left(i);
         unsafe {
             // The shell is browsing. A share resolve still out for this pane is stale.
             if let Some(h) = pane_hwnd(i) {
@@ -2323,6 +2327,8 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         let i = self.0.load(Ordering::SeqCst);
         unsafe {
             rec_event(i, Nav::Failed, pidl);
+            let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+            pane_here(i, &cur, classify_ui(&cur));
             let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
             // The shell did not open it, so this path is not a history entry. The address
             // keeps it and the list shows the error over the folder that is still current.
