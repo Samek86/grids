@@ -312,10 +312,10 @@ pub(crate) unsafe fn refresh_save_button() {
     let Ok(b) = GetDlgItem(Some(main), ID_TB_SAVE) else { return };
     _ = InvalidateRect(Some(b), None, false);
     let mut hint = match (ui(), Path::new(&file).file_stem()) {
-        (_, None) => tr("Save session (Ctrl+S)", "세션 저장 (Ctrl+S)", "セッションを保存 (Ctrl+S)").into(),
-        (1, Some(n)) => format!("'{}'에 저장 (Ctrl+S)", n.to_string_lossy()),
-        (2, Some(n)) => format!("'{}' に保存 (Ctrl+S)", n.to_string_lossy()),
-        (_, Some(n)) => format!("Save to '{}' (Ctrl+S)", n.to_string_lossy()),
+        (_, None) => tr("Save this tab (Ctrl+S)", "이 탭 저장 (Ctrl+S)", "このタブを保存 (Ctrl+S)").into(),
+        (1, Some(n)) => format!("'{}'에 이 탭 저장 (Ctrl+S)", n.to_string_lossy()),
+        (2, Some(n)) => format!("'{}' にこのタブを保存 (Ctrl+S)", n.to_string_lossy()),
+        (_, Some(n)) => format!("Save this tab to '{}' (Ctrl+S)", n.to_string_lossy()),
     };
     if dirty {
         hint += tr(" · unsaved layout changes", " · 저장 안 된 배치 변경", " · 未保存のレイアウト変更");
@@ -413,13 +413,13 @@ pub(crate) unsafe fn paint_main(h: HWND) {
         if g.side > 0 {
             let side = side_rect(&g);
             fill(dc, side, side_ground());
-            if g.tree_h > 0 && g.gap > 0 {
-                let gap = RECT { left: side.left, top: side.top + g.tree_h, right: side.right, bottom: side.top + g.tree_h + g.gap };
-                fill(dc, gap, pal().bg);
+            if let Some(gap) = side_gap_rect(&g) {
+                let (gap_c, line_c) = side_divider_now(accent);
+                fill(dc, gap, gap_c);
                 // The tree/favourites divider always shows its accent line, not only under the pointer.
                 let t = (2 * dpi / 96).max(1);
-                let y = gap.top + g.gap / 2;
-                fill(dc, RECT { left: side.left, top: y - t / 2, right: side.right, bottom: y - t / 2 + t }, accent);
+                let y = gap.top + (gap.bottom - gap.top) / 2;
+                fill(dc, RECT { left: gap.left, top: y - t / 2, right: gap.right, bottom: y - t / 2 + t }, line_c);
             }
             frame(dc, side, 1, pal().line);
         }
@@ -543,14 +543,26 @@ pub(crate) unsafe fn crumb_at(h: HWND, i: usize, x: i32, y: i32) -> Option<Optio
 }
 
 /// The address edit shows only while it is focused or its text is not the folder on display.
+/// After a share failure it stays up with the path that failed, so the bar does not go empty.
 pub(crate) unsafe fn sync_addr(h: HWND) {
     let Ok(e) = GetDlgItem(Some(h), ID_EDIT) else { return };
-    let disp = app(|a| {
+    let failed = app(|a| {
         if a.crumb_hot.is_some_and(|(w, _)| w == h) {
             a.crumb_hot = None;
         }
-        a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone())
+        a.panes.iter().flatten().find(|p| p.hwnd == h).and_then(|p| p.net.as_ref()).filter(|n| n.bad).map(|n| n.path.clone())
     });
+    if let Some(path) = failed {
+        if let Some(keep) = addr_keep(&path, &text_of(e), GetFocus() == e) {
+            _ = SetWindowTextW(e, &HSTRING::from(keep));
+        }
+        if !IsWindowVisible(e).as_bool() {
+            _ = ShowWindow(e, SW_SHOWNA);
+        }
+        _ = InvalidateRect(Some(h), None, false);
+        return;
+    }
+    let disp = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| p.disp.clone()));
     let show = GetFocus() == e || text_of(e) != disp.unwrap_or_default();
     _ = ShowWindow(e, if show { SW_SHOWNA } else { SW_HIDE });
     _ = InvalidateRect(Some(h), None, false);
@@ -935,9 +947,9 @@ pub(crate) unsafe fn paint_pane(h: HWND) {
                 }
             }
         }
-        if let Some(n) = link.filter(|_| crumbs_on) {
-            let ink = if n.bad { pal().sub } else { pal().text };
-            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(n.bad), font, ink, DT_LEFT);
+        // Connecting replaces the crumbs. A failure keeps the path in the edit, so it is not painted here.
+        if link.as_ref().is_some_and(|n| !n.bad) && crumbs_on {
+            text(dc, net_note_rect(pg.addr, dpi), net_bar_text(false), font, pal().text, DT_LEFT);
         } else if let Some(i) = i.filter(|_| crumbs_on) {
             for (k, (r, label, c)) in crumb_layout(dc, font, i, crumb_field(pg.addr, dpi)).into_iter().enumerate() {
                 let wait = matches!(&c, Crumb::Kids(d, _) if waiting.as_ref() == Some(d));

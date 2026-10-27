@@ -129,6 +129,7 @@ unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LP
 }
 
 pub(crate) unsafe fn destroy_pane(i: usize) {
+    pane_left(i);
     NAV_GEN.fetch_add(1, Ordering::SeqCst);
     if let Some(sv) = view_of::<IShellView>(i) {
         if let Ok(h) = sv.GetWindow() {
@@ -243,6 +244,8 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     _ = ShowWindow(add, if pg.add.right > pg.add.left { SW_SHOWNA } else { SW_HIDE });
     show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);
+    // After the browser is placed, so a share error stays above the file list.
+    sync_net_fail(h);
 }
 
 pub(crate) unsafe fn relayout() {
@@ -257,9 +260,7 @@ pub(crate) unsafe fn relayout() {
         }
         let g = geo(a);
         let s = |v: i32| v * a.dpi / 96;
-        let sr = side_rect(&g);
-        let tree = RECT { left: sr.left + s(2), top: sr.top + s(2), right: sr.right - s(2), bottom: sr.top + g.tree_h };
-        let fav = RECT { left: sr.left + s(2), top: sr.top + g.tree_h + g.gap, right: sr.right - s(2), bottom: sr.bottom - s(2) };
+        let (tree, fav) = side_panes(&g, s(2));
         let mut moves = vec![(a.tree_hwnd, tree), (a.side_hwnd, fav)];
         let tb = |id: i32| unsafe { GetDlgItem(Some(a.main), id) }.unwrap_or_default();
         let show_bar = a.s.bar;

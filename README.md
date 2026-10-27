@@ -30,13 +30,13 @@
   </picture>
 </p>
 
-Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Lay out up to 16 of them in one window, then save the whole thing as a session.
+Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Lay out up to 16 of them in one window, then save the current tab as a session.
 
 ## Features
 
 ### 🧩 Multi-pane layouts & sessions
 
-Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and save layout + folders + columns as a named session you can reload in one click.
+Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and save the current tab — layout, folders, columns, and colour labels — as a named session. Opening one adds a new tab beside the current one.
 
 <table><tr><td><img alt="layout" src="docs/images/layout.png"></td><td><img alt="sessions" src="docs/images/sessions.png"></td></tr></table>
 
@@ -100,6 +100,7 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+W | Close tab |
 |  | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 |  | Ctrl+Shift+T | Reopen closed tab |
+|  | Ctrl+Alt+K | Duplicate tab |
 |  | Double-click a tab | Rename tab |
 | **Panes** | Ctrl+PgDn / Ctrl+PgUp | Next / previous pane |
 |  | Ctrl+1 … 9 | Go to pane 1–9 |
@@ -126,9 +127,9 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+Alt+N | New text file |
 |  | Ctrl+Shift+N, F7 | New folder |
 |  | Ctrl+Alt+C | Compare the two panes in WinMerge |
-|  | F2, Del, Ctrl+C / V, F5 | Same as Explorer (Ctrl+V of a copied picture saves it here as a PNG) |
+|  | F2, Del, Ctrl+C / V, F5 | Same as Explorer. F5 reloads the active pane from the list, address bar, filter, folder tree, or favourites; a failed network folder is tried again (Ctrl+V of a copied picture saves it here as a PNG) |
 | **Other** | Ctrl+B | Quick favourites list |
-|  | Ctrl+S | Save session |
+|  | Ctrl+S | Save this tab |
 |  | Ctrl+, | Settings |
 |  | F1 / Ctrl+/ | Shortcut help / list |
 |  | Ctrl+N | New window |

@@ -13,7 +13,7 @@ use crate::imports::*;
 use crate::session::*;
 use crate::ui::*;
 
-use super::{apply_filter, focus_view, hidden, navigate, new_pane_tab, set_active};
+use super::{apply_filter, focus_view, hidden, navigate, new_pane_tab, set_active, sync_net_fail};
 
 pub(crate) const FIND_CAP: usize = 300;
 
@@ -644,6 +644,7 @@ pub(crate) unsafe fn place_find(pane: HWND) {
     };
     if !show {
         _ = ShowWindow(list, SW_HIDE);
+        sync_net_fail(pane);
         return;
     }
     let mut rc = RECT::default();
@@ -651,6 +652,7 @@ pub(crate) unsafe fn place_find(pane: HWND) {
     let view = pane_geo_of(pane, rc.right, rc.bottom, app(|a| a.dpi)).view;
     let (w, h) = ((view.right - view.left).max(0), (view.bottom - view.top).max(0));
     _ = SetWindowPos(list, Some(HWND_TOP), view.left, view.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    sync_net_fail(pane);
 }
 
 pub(crate) unsafe fn on_find_msg(pane: HWND) {
