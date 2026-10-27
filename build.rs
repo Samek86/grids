@@ -132,7 +132,7 @@ fn version_info() -> Vec<u8> {
     let ver_text = env!("CARGO_PKG_VERSION");
     let strings = [
         version_string("CompanyName", "Samek86"),
-        version_string("FileDescription", "Panegrid - multi-pane file manager for Windows"),
+        version_string("FileDescription", "Panegrid"),
         version_string("ProductName", "Panegrid"),
         version_string("InternalName", "panegrid"),
         version_string("OriginalFilename", "panegrid.exe"),
