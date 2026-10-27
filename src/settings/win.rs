@@ -571,9 +571,9 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
                 let _ = crate::wrap_text(dc, *r, tx(CTX_NOTE), sn.small, crate::pal().sub, false);
             }
             Item::CtxBar { .. } => {}
-            Item::CtxRow { id, rect, mark, chev, name, detail, raw, pending, tick, chips, .. } => {
+            Item::CtxRow { id, rect, mark, chev, name, detail, raw, tick, chips, .. } => {
                 let open = sn.ctx_open.iter().any(|x| x == id);
-                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *pending, *tick, chips, open, sn, accent);
+                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *tick, chips, open, sn, accent);
             }
             Item::CtxSub { rect, mark, bit, tick, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *tick, sn, accent),
             Item::CtxEmpty(r) => crate::text(dc, *r, tx(CTX_EMPTY), sn.small, crate::pal().sub, DT_LEFT),
@@ -795,7 +795,7 @@ unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent:
     }
 }
 
-unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, pending: bool, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
+unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
     draw_tick(dc, mark, tick, accent, dpi, sn.icon);
@@ -803,7 +803,7 @@ unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, 
     crate::text(dc, chev_box, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
     let name_right = chips.first().map(|(_, r)| r.left - sc(dpi, 8)).unwrap_or(rect.right - sc(dpi, 12));
     let text_r = RECT { left: chev.right, right: name_right, ..rect };
-    let line = if pending { tx(CTX_PENDING) } else { detail };
+    let line = detail;
     if line.is_empty() && raw.is_empty() {
         crate::text(dc, text_r, name, sn.bold, crate::pal().text, DT_LEFT);
     } else {
@@ -1276,7 +1276,10 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
         S_FV_DEF => crate::set_default_folder_view(),
         S_FV_RESET => crate::reset_active_folder_view(),
         S_CTX_RESET => {
-            app(|a| crate::shell::ctxmenu::clear_off(&mut a.s.ctx_off));
+            app(|a| {
+                let s = &mut a.s;
+                crate::shell::ctxmenu::reset_menu(&mut s.ctx_off, &mut s.ctx_on);
+            });
             crate::save_session();
             layout(h);
             let _ = InvalidateRect(Some(h), None, false);
@@ -1594,7 +1597,10 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                 if inside(*mark, x, y) {
                     let ids = ids.clone();
                     let scopes = scopes.clone();
-                    app(|a| crate::shell::ctxmenu::toggle_ids_master(&mut a.s.ctx_off, &ids, &scopes));
+                    app(|a| {
+                        let s = &mut a.s;
+                        crate::shell::ctxmenu::toggle_ids_master(&mut s.ctx_off, &mut s.ctx_on, &ids, &scopes);
+                    });
                     crate::save_session();
                 } else {
                     let id = id.clone();
@@ -1617,7 +1623,10 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                 let ids = ids.clone();
                 let scopes = scopes.clone();
                 let bit = *bit;
-                app(|a| crate::shell::ctxmenu::toggle_ids_target(&mut a.s.ctx_off, &ids, &scopes, bit));
+                app(|a| {
+                    let s = &mut a.s;
+                    crate::shell::ctxmenu::toggle_ids_target(&mut s.ctx_off, &mut s.ctx_on, &ids, &scopes, bit);
+                });
                 crate::save_session();
                 layout(h);
                 let _ = InvalidateRect(Some(h), None, false);

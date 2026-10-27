@@ -89,8 +89,29 @@ unsafe fn add_gear(pos: &mut u32, menu: HMENU, live: &Live) {
     }
 }
 
+/// The WinMerge commands a right-click can add, without a shortcut tail.
+/// Folder compare and two-file compare are the two named WinMerge items. Same-name compare
+/// is the third command in this block and follows the same on/off switch.
+pub(crate) fn context_labels() -> Vec<String> {
+    vec![folders_name(), files_label(), same_label()]
+}
+
+fn folders_name() -> String {
+    tr("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較").to_string()
+}
+
 /// App items next to Favourites. Only the commands that fit this click are added.
+/// Hidden unless Settings has explicitly turned WinMerge on for this click.
 pub(crate) unsafe fn insert_ctx(menu: HMENU, at: u32, pane: usize, items: &[(String, bool)]) {
+    // Empty items are a background click. A selection is a file, a folder, or both.
+    let targets = if items.is_empty() {
+        crate::shell::ctxmenu::BACKGROUND
+    } else {
+        crate::shell::ctxmenu::click_targets(false, items)
+    };
+    if !crate::shell::ctxmenu::winmerge_menu_on(targets) {
+        return;
+    }
     let live = live(pane, items);
     if matches!(live.plan.folders, Shape::Hidden) && !live.plan.two_files && matches!(live.plan.same_name, Shape::Hidden) {
         return;
@@ -261,7 +282,7 @@ fn folder_chord() -> String {
 }
 
 fn folders_label(chord: &str) -> String {
-    let name = tr("Compare folders in WinMerge", "WinMerge로 폴더 비교", "WinMerge でフォルダーを比較");
+    let name = folders_name();
     if chord.is_empty() {
         name.to_string()
     } else {

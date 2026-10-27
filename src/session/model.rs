@@ -302,6 +302,12 @@ pub(crate) struct Session {
     pub(crate) ctx_off: std::collections::BTreeMap<String, Vec<String>>,
     /// Menu item labels seen for a handler id. panegrid.json only; the registry is never written.
     pub(crate) ctx_labels: std::collections::BTreeMap<String, Vec<String>>,
+    /// Targets explicitly turned on for handlers that start off. WinMerge is the only one:
+    /// a missing id stays hidden. panegrid.json only.
+    pub(crate) ctx_on: std::collections::BTreeMap<String, Vec<String>>,
+    /// Handler ids that were asked and added no visible menu item. They leave the settings list.
+    /// The shell menu is unchanged. panegrid.json only.
+    pub(crate) ctx_quiet: std::collections::BTreeSet<String>,
 }
 
 /// Explorer's View menu, in its order. `(FOLDERVIEWMODE, icon size, en, ko, ja)`.
@@ -424,6 +430,8 @@ impl Default for Session {
             tab: 0,
             ctx_off: std::collections::BTreeMap::new(),
             ctx_labels: std::collections::BTreeMap::new(),
+            ctx_on: std::collections::BTreeMap::new(),
+            ctx_quiet: std::collections::BTreeSet::new(),
         };
         // A first-ever start: layout_new 0 is two panes, left and right.
         s.set_heights(s.layout_heights());
@@ -493,6 +501,8 @@ impl PartialEq for Session {
             && self.view_tabs() == o.view_tabs()
             && self.ctx_off == o.ctx_off
             && self.ctx_labels == o.ctx_labels
+            && self.ctx_on == o.ctx_on
+            && self.ctx_quiet == o.ctx_quiet
     }
 }
 
