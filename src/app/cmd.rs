@@ -574,8 +574,259 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
     true
 }
 
+// ---------- mouse side buttons ----------
+//
+// A local mouse driver posts WM_APPCOMMAND, or a VK_BROWSER_BACK / VK_BROWSER_FORWARD key.
+// The pane window handles the command and walks history. Over Remote Desktop the virtual
+// channel posts WM_XBUTTON* at the window under the cursor instead. That window is the shell
+// view hosted by IExplorerBrowser (the list, DirectUI, or its tree). The view consumes the
+// message, DefWindowProc never synthesises WM_APPCOMMAND, and the pane handler never runs.
+// Explorer itself handles WM_XBUTTON*, which is why a remote Explorer window still goes back.
+//
+// The main loop takes the button before TranslateMessage / DispatchMessage, for any window
+// of this process that sits in a pane, and calls the same nav_pane path as WM_APPCOMMAND.
+// Down, double-click, and the non-client copies are swallowed so the view cannot handle
+// them too. One physical click still moves once when the driver also posts WM_APPCOMMAND:
+// the two deliveries share a short claim and the second one does not navigate. Quick look,
+// settings, and the other popups are not panes, so a side button there is left alone.
+
+/// Two deliveries of one click can sit a few messages apart. A later click is a new one.
+pub(crate) const SIDE_PAIR: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SideDir {
+    Back,
+    Forward,
+}
+
+/// Which queue entry carried the click. Client and non-client button-up are one click,
+/// and so are a button and a mouse command. A browser key and a key command are one press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidePath {
+    Button,
+    ButtonNc,
+    AppMouse,
+    AppKey,
+    Key,
+}
+
+#[derive(Clone, Copy)]
+struct SideMark {
+    dir: SideDir,
+    path: SidePath,
+    at: Instant,
+}
+
+thread_local! {
+    static SIDE_MARK: Cell<Option<SideMark>> = const { Cell::new(None) };
+}
+
+pub(crate) fn side_flags(dir: SideDir) -> u32 {
+    match dir {
+        SideDir::Back => SBSP_NAVIGATEBACK,
+        SideDir::Forward => SBSP_NAVIGATEFORWARD,
+    }
+}
+
+/// Back, forward, and parent: make that pane current, walk, and leave the file list focused.
+pub(crate) unsafe fn nav_pane(i: usize, flags: u32) {
+    set_active(i);
+    browse(i, flags);
+    focus_view(i);
+}
+
+pub(crate) fn xbutton_dir(wparam: usize) -> Option<SideDir> {
+    match ((wparam >> 16) & 0xffff) as u16 {
+        XBUTTON1 => Some(SideDir::Back),
+        XBUTTON2 => Some(SideDir::Forward),
+        _ => None,
+    }
+}
+
+/// Back / forward from `WM_APPCOMMAND`. Mouse and OEM share the button claim. A key
+/// command shares the browser-key claim. Every other command stays with DefWindowProc.
+pub(crate) fn appcommand_event(lp: isize) -> Option<(SideDir, SidePath)> {
+    let hi = (lp >> 16) as u32;
+    let dir = match hi & 0x0fff {
+        1 => SideDir::Back,
+        2 => SideDir::Forward,
+        _ => return None,
+    };
+    let path = if hi & FAPPCOMMAND_MASK == FAPPCOMMAND_KEY { SidePath::AppKey } else { SidePath::AppMouse };
+    Some((dir, path))
+}
+
+fn side_pair(a: SidePath, b: SidePath) -> bool {
+    use SidePath::*;
+    matches!(
+        (a, b),
+        (Button, ButtonNc) | (ButtonNc, Button)
+            | (Button, AppMouse) | (AppMouse, Button)
+            | (ButtonNc, AppMouse) | (AppMouse, ButtonNc)
+            | (Key, AppKey) | (AppKey, Key)
+    )
+}
+
+/// The first delivery navigates. The paired delivery of the same direction, inside
+/// [`SIDE_PAIR`], does not. The mark stays so a third copy of that click is dropped too.
+fn side_admit(prev: Option<SideMark>, dir: SideDir, path: SidePath, now: Instant) -> (bool, Option<SideMark>) {
+    if let Some(mark) = prev {
+        if mark.dir == dir && side_pair(mark.path, path) && now.saturating_duration_since(mark.at) <= SIDE_PAIR {
+            return (false, Some(mark));
+        }
+    }
+    (true, Some(SideMark { dir, path, at: now }))
+}
+
+pub(crate) fn side_claim(dir: SideDir, path: SidePath) -> bool {
+    let now = Instant::now();
+    SIDE_MARK.with(|cell| {
+        let (ok, next) = side_admit(cell.get(), dir, path, now);
+        cell.set(next);
+        ok
+    })
+}
+
+fn xbutton_up(msg: u32) -> Option<bool> {
+    match msg {
+        WM_XBUTTONUP | WM_NCXBUTTONUP => Some(true),
+        WM_XBUTTONDOWN | WM_NCXBUTTONDOWN | WM_XBUTTONDBLCLK | WM_NCXBUTTONDBLCLK => Some(false),
+        _ => None,
+    }
+}
+
+unsafe fn same_process(h: HWND) -> bool {
+    if h.0.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(h, Some(&mut pid));
+    pid == std::process::id()
+}
+
+/// Popups that are not a folder pane. A side button there keeps whatever it did before.
+unsafe fn side_popup(h: HWND) -> bool {
+    if h.0.is_null() {
+        return false;
+    }
+    if settings::captures(h) || crate::rename::captures(h) || fav_manager_captures(h) {
+        return true;
+    }
+    let (peek, load, grid, keys, fav, match_hwnd) = app(|a| {
+        (a.peek, a.load, a.grid, a.keys_popup, a.fav_popup, a.matcher.as_ref().map(|m| m.hwnd).unwrap_or_default())
+    });
+    let hit = |root: HWND| !root.0.is_null() && (h == root || IsChild(root, h).as_bool());
+    hit(peek) || hit(load) || hit(grid) || hit(keys) || hit(fav) || hit(match_hwnd)
+}
+
+unsafe fn pane_from_hwnd(h: HWND) -> Option<usize> {
+    let mut cur = h;
+    for _ in 0..16 {
+        if cur.0.is_null() {
+            return None;
+        }
+        if let Some(i) = pane_of(cur) {
+            return Some(i);
+        }
+        let parent = GetParent(cur).unwrap_or_default();
+        if parent.0.is_null() || parent == cur {
+            return None;
+        }
+        cur = parent;
+    }
+    None
+}
+
+unsafe fn pane_under_cursor() -> Option<usize> {
+    let mut pt = POINT::default();
+    if GetCursorPos(&mut pt).is_err() {
+        return None;
+    }
+    let under = WindowFromPoint(pt);
+    if !same_process(under) {
+        return None;
+    }
+    let cur = app(|a| a.cur);
+    let switched = bind_hwnd(under);
+    let found = pane_from_hwnd(under);
+    if found.is_none() && switched {
+        bind_index(cur);
+    }
+    found
+}
+
+unsafe fn history_allowed() -> bool {
+    let main = app(|a| a.main);
+    !main.0.is_null() && IsWindowEnabled(main).as_bool()
+}
+
+unsafe fn pane_for_button(hwnd: HWND) -> Option<usize> {
+    let cur = app(|a| a.cur);
+    let found = pane_from_hwnd(hwnd).or_else(|| pane_under_cursor());
+    if found.is_some() && history_allowed() {
+        found
+    } else {
+        bind_index(cur);
+        None
+    }
+}
+
+/// `true` when this message was a side button on one of our panes and must not be dispatched.
+unsafe fn take_side_button(m: &MSG) -> bool {
+    let Some(up) = xbutton_up(m.message) else { return false };
+    if !same_process(m.hwnd) || side_popup(m.hwnd) {
+        return false;
+    }
+    let Some(i) = pane_for_button(m.hwnd) else { return false };
+    kids_cancel();
+    if up {
+        if let Some(dir) = xbutton_dir(m.wParam.0) {
+            let path = if m.message == WM_NCXBUTTONUP { SidePath::ButtonNc } else { SidePath::Button };
+            if side_claim(dir, path) {
+                nav_pane(i, side_flags(dir));
+            }
+        }
+    }
+    true
+}
+
+fn browser_key_dir(vk: u16) -> Option<SideDir> {
+    match VIRTUAL_KEY(vk) {
+        VK_BROWSER_BACK => Some(SideDir::Back),
+        VK_BROWSER_FORWARD => Some(SideDir::Forward),
+        _ => None,
+    }
+}
+
+/// Browser back / forward keys, when focus is already inside a pane. Swallowing the key
+/// keeps DefWindowProc from also posting WM_APPCOMMAND for the same press.
+unsafe fn take_browser_key(m: &MSG) -> bool {
+    if m.message != WM_KEYDOWN {
+        return false;
+    }
+    let Some(dir) = browser_key_dir(m.wParam.0 as u16) else { return false };
+    if !same_process(m.hwnd) || side_popup(m.hwnd) {
+        return false;
+    }
+    let down = |k: VIRTUAL_KEY| GetKeyState(k.0 as i32) < 0;
+    if down(VK_CONTROL) || down(VK_MENU) || down(VK_SHIFT) {
+        return false;
+    }
+    let Some(i) = pane_from_hwnd(m.hwnd) else { return false };
+    if !history_allowed() {
+        return false;
+    }
+    if side_claim(dir, SidePath::Key) {
+        nav_pane(i, side_flags(dir));
+    }
+    true
+}
+
 pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
     bind_hwnd(m.hwnd);
+    if take_side_button(m) {
+        return true;
+    }
     let in_tree = || app(|a| !a.tree_hwnd.0.is_null() && (a.tree_hwnd == m.hwnd || IsChild(a.tree_hwnd, m.hwnd).as_bool()));
     match m.message {
         WM_MOUSEMOVE => {
@@ -616,6 +867,9 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             let (eat, next) = held_key(app(|a| a.held), m.wParam.0 as u16, m.lParam.0 & (1 << 30) != 0);
             app(|a| a.held = next);
             if eat {
+                return true;
+            }
+            if take_browser_key(m) {
                 return true;
             }
             // Cleared before key() so a selection the tree reports while we handle Ctrl+Tab or F6
@@ -792,6 +1046,77 @@ mod tests {
         assert_eq!(f5_act(false, false, false, false), F5Act::Pass);
         assert_eq!(f5_act(true, false, false, true), F5Act::Pass);
         assert_eq!(f5_act(true, true, false, true), F5Act::Pass);
+    }
+}
+
+#[cfg(test)]
+mod side_tests {
+    use super::{appcommand_event, side_admit, xbutton_dir, SideDir, SidePath, SIDE_PAIR};
+    use std::time::{Duration, Instant};
+    use windows::Win32::UI::WindowsAndMessaging::{FAPPCOMMAND_KEY, FAPPCOMMAND_MASK, FAPPCOMMAND_MOUSE, FAPPCOMMAND_OEM, XBUTTON1, XBUTTON2};
+
+    fn pack(cmd: u32, dev: u32) -> isize {
+        let hi = (cmd & 0x0fff) | (dev & FAPPCOMMAND_MASK);
+        ((hi << 16) as u32 as i32) as isize
+    }
+
+    fn run(events: &[(SideDir, SidePath, u64)]) -> Vec<bool> {
+        let t0 = Instant::now();
+        let mut prev = None;
+        let mut out = Vec::new();
+        for &(dir, path, ms) in events {
+            let (ok, next) = side_admit(prev, dir, path, t0 + Duration::from_millis(ms));
+            out.push(ok);
+            prev = next;
+        }
+        out
+    }
+
+    #[test]
+    fn xbutton_word_is_back_or_forward() {
+        assert_eq!(xbutton_dir((XBUTTON1 as usize) << 16 | 0x0008), Some(SideDir::Back));
+        assert_eq!(xbutton_dir((XBUTTON2 as usize) << 16), Some(SideDir::Forward));
+        assert_eq!(xbutton_dir(XBUTTON1 as usize), None);
+        assert_eq!(xbutton_dir(3usize << 16), None);
+    }
+
+    #[test]
+    fn appcommand_keeps_only_back_and_forward() {
+        // The mouse device flag sets the top bit of lParam. It arrives sign-extended.
+        assert_eq!(appcommand_event(pack(1, FAPPCOMMAND_MOUSE)), Some((SideDir::Back, SidePath::AppMouse)));
+        assert_eq!(appcommand_event(pack(2, FAPPCOMMAND_KEY)), Some((SideDir::Forward, SidePath::AppKey)));
+        assert_eq!(appcommand_event(pack(1, FAPPCOMMAND_OEM)), Some((SideDir::Back, SidePath::AppMouse)));
+        assert_eq!(appcommand_event(pack(8, FAPPCOMMAND_KEY)), None);
+        assert!(pack(1, FAPPCOMMAND_MOUSE) < 0);
+    }
+
+    #[test]
+    fn one_click_navigates_once_from_either_order() {
+        let back = SideDir::Back;
+        let fwd = SideDir::Forward;
+        // Local: button then the driver's mouse command, or the command first.
+        assert_eq!(
+            run(&[(back, SidePath::Button, 0), (back, SidePath::AppMouse, 5), (back, SidePath::AppMouse, 10)]),
+            [true, false, false]
+        );
+        assert_eq!(run(&[(back, SidePath::AppMouse, 0), (back, SidePath::Button, 5)]), [true, false]);
+        // Remote Desktop posts only the button. A second click is a second step.
+        assert_eq!(run(&[(back, SidePath::Button, 0), (back, SidePath::Button, 20)]), [true, true]);
+        // Driver that only posts the command still moves.
+        assert_eq!(run(&[(fwd, SidePath::AppMouse, 0)]), [true]);
+        // Non-client up is the same click as the client up, and as the mouse command.
+        assert_eq!(run(&[(back, SidePath::ButtonNc, 0), (back, SidePath::Button, 5)]), [true, false]);
+        assert_eq!(run(&[(fwd, SidePath::AppMouse, 0), (fwd, SidePath::ButtonNc, 5)]), [true, false]);
+        // After the pairing window, the other path is a new click.
+        let later = SIDE_PAIR.as_millis() as u64 + 1;
+        assert_eq!(run(&[(back, SidePath::Button, 0), (back, SidePath::AppMouse, later)]), [true, true]);
+        // Back does not eat forward. A browser key pairs with a key command, not with the mouse.
+        assert_eq!(run(&[(back, SidePath::Button, 0), (fwd, SidePath::AppMouse, 5)]), [true, true]);
+        assert_eq!(
+            run(&[(back, SidePath::Key, 0), (back, SidePath::AppKey, 5), (back, SidePath::Key, 40)]),
+            [true, false, true]
+        );
+        assert_eq!(run(&[(back, SidePath::Key, 0), (back, SidePath::AppMouse, 5)]), [true, true]);
     }
 }
 
