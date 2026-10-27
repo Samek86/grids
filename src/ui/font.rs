@@ -84,6 +84,9 @@ struct Probe<'a> {
 }
 
 unsafe extern "system" fn probe_face(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, lp: LPARAM) -> i32 {
+    crate::crash::catch_i32(std::panic::AssertUnwindSafe(|| unsafe { probe_face_inner(lf, _tm, _ty, lp) }))
+}
+unsafe fn probe_face_inner(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, lp: LPARAM) -> i32 {
     if lf.is_null() || lp.0 == 0 {
         return 1;
     }
@@ -115,6 +118,9 @@ pub(crate) unsafe fn face_installed(name: &str) -> bool {
 }
 
 unsafe extern "system" fn collect_face(lf: *const LOGFONTW, tm: *const TEXTMETRICW, ty: u32, lp: LPARAM) -> i32 {
+    crate::crash::catch_i32(std::panic::AssertUnwindSafe(|| unsafe { collect_face_inner(lf, tm, ty, lp) }))
+}
+unsafe fn collect_face_inner(lf: *const LOGFONTW, tm: *const TEXTMETRICW, ty: u32, lp: LPARAM) -> i32 {
     if lf.is_null() || lp.0 == 0 {
         return 1;
     }

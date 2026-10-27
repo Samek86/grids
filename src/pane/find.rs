@@ -871,6 +871,9 @@ fn find_worker() {
 }
 
 pub(crate) unsafe extern "system" fn find_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { find_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn find_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let pane = GetParent(h).unwrap_or_default();
     bind_hwnd(h);
     match msg {
@@ -1419,5 +1422,27 @@ unsafe fn ask_install_everything_once(owner: HWND) {
     );
     if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
         everything::install_async();
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_hit_labels_do_not_panic() {
+        let hit = super::FindHit {
+            name: "샘플.txt".into(),
+            path: r"F:\한글폴더\샘플.txt".into(),
+            dir: false,
+        };
+        assert_eq!(super::hit_label(r"F:\한글폴더", &hit), "샘플.txt");
+        let nested = super::FindHit {
+            name: "📄.txt".into(),
+            path: r"D:\サンプル\📁\📄.txt".into(),
+            dir: false,
+        };
+        let label = super::hit_label(r"D:\サンプル", &nested);
+        assert!(label.contains("📄.txt"), "{label}");
+        let odd = super::FindHit { name: "😀あ".into(), path: r"E:\abcdサ\😀あ".into(), dir: false };
+        let label = super::hit_label("abcdefgh", &odd);
+        assert!(label.contains("😀あ"), "{label}");
     }
 }

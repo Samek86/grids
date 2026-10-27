@@ -706,6 +706,9 @@ fn prewarm_fav_icons() {
 }
 
 pub(crate) extern "system" fn side_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| side_proc_inner(h, msg, wp, lp)))
+}
+fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         note_side(h);

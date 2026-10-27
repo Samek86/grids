@@ -32,7 +32,8 @@ pub(crate) fn unc_path(path: &str) -> bool {
         if b[2] != b'?' {
             return false;
         }
-        let r = p[4..].as_bytes();
+        let Some(tail) = p.get(4..) else { return false };
+        let r = tail.as_bytes();
         return r.len() >= 4 && r[..3].eq_ignore_ascii_case(b"UNC") && slash(r[3]);
     }
     true
@@ -43,7 +44,7 @@ pub(crate) fn drive_root(path: &str) -> Option<String> {
     let p = path.trim();
     let b = p.as_bytes();
     let rest = if b.len() >= 4 && slash(b[0]) && b[0] == b[1] && b[2] == b'?' && slash(b[3]) {
-        let r = &p[4..];
+        let Some(r) = p.get(4..) else { return None };
         let rb = r.as_bytes();
         if rb.len() >= 4 && rb[..3].eq_ignore_ascii_case(b"UNC") && slash(rb[3]) {
             return None;
@@ -765,6 +766,9 @@ unsafe fn paint_net_fail(h: HWND) {
 }
 
 pub(crate) unsafe extern "system" fn net_fail_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { net_fail_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn net_fail_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let pane = GetParent(h).unwrap_or_default();
     bind_hwnd(h);
     match msg {
@@ -1325,7 +1329,7 @@ pub(crate) fn addr_parts(raw: &str) -> Option<(Option<&str>, Option<(&str, &str)
     }
     let path = match quotes {
         0 => Some(raw),
-        2 if raw.len() > 1 && raw.starts_with('"') && raw.ends_with('"') => Some(&raw[1..raw.len() - 1]),
+        2 if raw.len() > 1 && raw.starts_with('"') && raw.ends_with('"') => raw.get(1..raw.len() - 1),
         _ => None,
     };
     let cmd = if let Some(q) = raw.strip_prefix('"') {
@@ -2172,7 +2176,10 @@ pub(crate) unsafe fn lower_floors(lv: HWND) {
     }
 }
 
-pub(crate) unsafe extern "system" fn list_floor_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+pub(crate) unsafe extern "system" fn list_floor_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { list_floor_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn list_floor_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
     let resize = match msg {
         LVM_SETCOLUMNWIDTH => true,
         WM_NOTIFY => matches!((*(lp.0 as *const NMHDR)).code, HDN_BEGINTRACKW | HDN_TRACKW | HDN_ITEMCHANGINGW),
@@ -2952,3 +2959,32 @@ mod missing_tests {
     }
 }
 
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_paths_do_not_panic() {
+        let samples = [
+            r"F:\CAC\サンプル",
+            r"D:\한글폴더",
+            r"E:\📁\샘플",
+            "😀あ",
+            "abcdサ",
+            r"\\?\UNC\サーバー\共有\샘플",
+            r"\\サーバー\共有\한글폴더",
+        ];
+        for p in samples {
+            let _ = super::unc_path(p);
+            let _ = super::drive_root(p);
+            let _ = super::addr_parts(p);
+        }
+        assert!(!super::unc_path(r"F:\CAC\サンプル"));
+        assert!(!super::unc_path("abcdサ"));
+        assert!(!super::unc_path("😀あ"));
+        assert!(super::unc_path(r"\\?\UNC\サーバー\共有\샘플"));
+        assert_eq!(super::drive_root(r"D:\한글폴더").as_deref(), Some(r"D:\"));
+        assert_eq!(super::drive_root(r"\\?\E:\📁\샘플").as_deref(), Some(r"E:\"));
+        assert_eq!(super::drive_root("😀あ"), None);
+        assert_eq!(super::addr_parts(r#""D:\한글폴더""#).unwrap().0, Some(r"D:\한글폴더"));
+        assert_eq!(super::addr_parts(r"F:\샘플\한글폴더").unwrap().0, Some(r"F:\샘플\한글폴더"));
+    }
+}

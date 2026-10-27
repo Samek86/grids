@@ -191,7 +191,7 @@ fn shell_open(path: &str) -> bool {
 pub(crate) fn parent_of(path: &str) -> Option<String> {
     let t = path.trim_end_matches(['\\', '/']);
     let i = t.rfind(['\\', '/'])?;
-    let parent = &t[..i];
+    let parent = t.get(..i)?;
     if parent.is_empty() {
         return None;
     }
@@ -724,7 +724,10 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     true
 }
 
-pub(crate) unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, data: usize) -> LRESULT {
+pub(crate) unsafe extern "system" fn ctx_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, data: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { ctx_proc_inner(h, msg, wp, lp, _a1, data) }))
+}
+unsafe fn ctx_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, data: usize) -> LRESULT {
     if msg == WM_INITMENUPOPUP {
         // The shell may insert its own separator, or a second New folder, while the menu opens.
         let lr = forward_menu(msg, wp, lp);
@@ -1007,6 +1010,9 @@ pub(crate) fn fav_hit(g: &FavGeo, x: i32, y: i32) -> Option<(usize, bool)> {
 }
 
 pub(crate) extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| fav_proc_inner(h, msg, wp, lp)))
+}
+fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         let g = fav_geo(fav_rows().len(), app(|a| a.dpi));
@@ -1229,3 +1235,14 @@ pub(crate) unsafe fn popup_menu(menu: HMENU, id: i32) {
     _ = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom + 4, None, main, None);
 }
 
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_parents_do_not_panic() {
+        assert_eq!(super::parent_of(r"F:\한글폴더\샘플.txt").as_deref(), Some(r"F:\한글폴더"));
+        assert_eq!(super::parent_of(r"D:\サンプル\📄.txt").as_deref(), Some(r"D:\サンプル"));
+        assert_eq!(super::parent_of(r"E:\😀\あ.txt").as_deref(), Some(r"E:\😀"));
+        assert_eq!(super::parent_of(r"C:\abcdサ.txt").as_deref(), Some(r"C:\"));
+        assert_eq!(super::parent_of("샘플.txt"), None);
+    }
+}
