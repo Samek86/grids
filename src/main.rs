@@ -530,14 +530,14 @@ mod tests {
 
         let lay = tab_lay(800, 3, &[false, true, false], 96, 0);
         assert_eq!(lay.body.len(), 3);
-        assert_eq!(lay.body[0].right - lay.body[0].left, 90);
+        assert_eq!(lay.body[0].right - lay.body[0].left, 135);
         assert!(lay.overflow.is_none() && lay.first == 0 && lay.count == 3);
         let hidpi = tab_lay(1600, 3, &[false, true, false], 192, 0);
-        assert_eq!(hidpi.body[0].right - hidpi.body[0].left, 180);
+        assert_eq!(hidpi.body[0].right - hidpi.body[0].left, 270);
         // 8 tabs at the 44px minimum need 406px; 406 shrinks exactly to that minimum and still fits.
         let crowd = tab_lay(406, 8, &[false; 8], 96, 0);
         let cw = crowd.body[0].right - crowd.body[0].left;
-        assert!(crowd.overflow.is_none() && cw < 90 && cw >= 44);
+        assert!(crowd.overflow.is_none() && cw < 135 && cw >= 44);
         assert!(lay.body.windows(2).all(|w| w[0].right <= w[1].left));
         assert!(lay.plus.left >= lay.body[2].right && lay.plus.right <= 800);
         // Past the minimum, a chevron appears and the scroll offset clamps so the last tab stays on screen.
