@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use crate::imports::*;
@@ -72,7 +73,9 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let dt: IDropTarget = PaneDrop { slot: slot.clone(), hwnd: h, ok: Cell::new(false), helper }.into();
     _ = RegisterDragDrop(h, &dt);
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_writes: 0, user_width: false, view_watch: None, recover: None, icon: -1, ticket: 0, net: None, slot })
+    // Born under the theme that is current now, so a later switch is the only reason to rebuild.
+    let themed = THEME_EPOCH.load(Ordering::Relaxed);
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_writes: 0, user_width: false, view_watch: None, recover: None, icon: -1, ticket: 0, net: None, slot, themed, theme_keep: None, theme_scroll: None })
 }
 
 const EM_GETMARGINS: u32 = 0xD4;
@@ -567,7 +570,62 @@ pub(crate) unsafe fn set_accent(c: u32) {
 }
 
 // The hosted Explorer list ignores the app-wide dark mode, so its (new, per folder) list view is dyed here.
+// An already-open DefView also keeps the scrollbars and header it was created with, so a theme switch
+// restyles these windows and then rebuilds the view (see `refresh_one_pane`).
 pub(crate) unsafe fn dark_list(pane: HWND) {
+    let found = shell_children(pane);
+    // the view paints the name column itself (custom draw, light colours); recolour it on the way back
+    for (_, v) in found.iter().filter(|(c, _)| c == "SHELLDLL_DefView") {
+        _ = SetWindowSubclass(*v, Some(dark_view_proc), 1, 0);
+        restyle(*v, true, w!("DarkMode_Explorer"));
+    }
+    for (_, v) in found.iter().filter(|(c, _)| c == "DirectUIHWND") {
+        restyle(*v, true, w!("DarkMode_Explorer"));
+    }
+    let (card, text) = (cref(pal().card).0 as isize, cref(pal().text).0 as isize);
+    for (_, lv) in found.iter().filter(|(c, _)| c == "SysListView32") {
+        restyle(*lv, true, w!("DarkMode_Explorer")); // also darkens its scrollbars once the view is recreated
+        // the sorted-column tint stays white in dark mode
+        _ = SetWindowSubclass(*lv, Some(dark_list_proc), 2, 0);
+        SendMessageW(*lv, LVM_SETSELECTEDCOLUMN, Some(WPARAM(usize::MAX)), None);
+        SendMessageW(*lv, LVM_SETBKCOLOR, None, Some(LPARAM(card)));
+        SendMessageW(*lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(card)));
+        SendMessageW(*lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
+        let header = HWND(SendMessageW(*lv, LVM_GETHEADER, None, None).0 as _);
+        if !header.0.is_null() {
+            restyle(header, true, w!("DarkMode_ItemsView"));
+        }
+        // the info tip over a file, and the full name over a truncated one
+        let tip = HWND(SendMessageW(*lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        theme_tip(tip, true);
+        _ = InvalidateRect(Some(*lv), None, true);
+    }
+}
+
+/// Puts a list back to the light-theme colours. Subclasses stay, and they do nothing while dark mode is off.
+pub(crate) unsafe fn light_list(pane: HWND) {
+    let found = shell_children(pane);
+    for (_, v) in found.iter().filter(|(c, _)| c == "SHELLDLL_DefView" || c == "DirectUIHWND") {
+        restyle(*v, false, w!("Explorer"));
+    }
+    let (bg, text) = (GetSysColor(COLOR_WINDOW) as isize, GetSysColor(COLOR_WINDOWTEXT) as isize);
+    for (_, lv) in found.iter().filter(|(c, _)| c == "SysListView32") {
+        restyle(*lv, false, w!("Explorer"));
+        SendMessageW(*lv, LVM_SETBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(*lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(bg)));
+        SendMessageW(*lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
+        let header = HWND(SendMessageW(*lv, LVM_GETHEADER, None, None).0 as _);
+        if !header.0.is_null() {
+            restyle(header, false, w!("ItemsView"));
+        }
+        let tip = HWND(SendMessageW(*lv, LVM_GETTOOLTIPS, None, None).0 as _);
+        theme_tip(tip, false);
+        _ = InvalidateRect(Some(*lv), None, true);
+    }
+}
+
+/// DefView, its list, the items-view surface, and the column header under one pane.
+unsafe fn shell_children(pane: HWND) -> Vec<(String, HWND)> {
     extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
         crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| collect_inner(h, out)))
     }
@@ -575,70 +633,62 @@ pub(crate) unsafe fn dark_list(pane: HWND) {
         let mut c = [0u16; 32];
         let n = unsafe { GetClassNameW(h, &mut c) } as usize;
         let class = String::from_utf16_lossy(&c[..n]);
-        if class == "SysListView32" || class == "SHELLDLL_DefView" {
+        if matches!(class.as_str(), "SysListView32" | "SHELLDLL_DefView" | "DirectUIHWND") {
             unsafe { (*(out.0 as *mut Vec<(String, HWND)>)).push((class, h)) };
         }
         true.into()
     }
-    let mut found: Vec<(String, HWND)> = Vec::new();
-    _ = EnumChildWindows(Some(pane), Some(collect), LPARAM(&mut found as *mut _ as isize));
-    // the view paints the name column itself (custom draw, light colours); recolour it on the way back
-    for (_, v) in found.iter().filter(|(c, _)| c == "SHELLDLL_DefView") {
-        _ = SetWindowSubclass(*v, Some(dark_view_proc), 1, 0);
+    let mut found = Vec::new();
+    if !pane.0.is_null() {
+        _ = EnumChildWindows(Some(pane), Some(collect), LPARAM(&mut found as *mut _ as isize));
     }
-    let lists: Vec<HWND> = found.into_iter().filter(|(c, _)| c == "SysListView32").map(|(_, h)| h).collect();
-    let (card, text) = (cref(pal().card).0 as isize, cref(pal().text).0 as isize);
-    for lv in lists {
-        _ = SetWindowTheme(lv, w!("DarkMode_Explorer"), PCWSTR::null()); // also darkens its scrollbars
-        // the sorted-column tint stays white in dark mode
-        _ = SetWindowSubclass(lv, Some(dark_list_proc), 2, 0);
-        SendMessageW(lv, LVM_SETSELECTEDCOLUMN, Some(WPARAM(usize::MAX)), None);
-        SendMessageW(lv, LVM_SETBKCOLOR, None, Some(LPARAM(card)));
-        SendMessageW(lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(card)));
-        SendMessageW(lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
-        let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
-        if !header.0.is_null() {
-            _ = SetWindowTheme(header, w!("DarkMode_ItemsView"), PCWSTR::null());
-        }
-        // the info tip over a file, and the full name over a truncated one
-        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
-        if !tip.0.is_null() {
-            _ = SetWindowTheme(tip, w!("DarkMode_Explorer"), PCWSTR::null());
-        }
-        _ = InvalidateRect(Some(lv), None, true);
-    }
+    found
 }
 
-/// Puts a list back to the light-theme colours. Subclasses stay, and they do nothing while dark mode is off.
-pub(crate) unsafe fn light_list(pane: HWND) {
-    extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
-        crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| collect_inner(h, out)))
+/// `AllowDarkModeForWindow` (uxtheme ordinal 133) plus a theme refresh.
+/// Scrollbars read this at creation; a view that already exists is rebuilt afterwards.
+unsafe fn allow_dark_window(h: HWND, allow: bool) {
+    if h.0.is_null() {
+        return;
     }
-    fn collect_inner(h: HWND, out: LPARAM) -> BOOL {
-        let mut c = [0u16; 32];
-        let n = unsafe { GetClassNameW(h, &mut c) } as usize;
-        if String::from_utf16_lossy(&c[..n]) == "SysListView32" {
-            unsafe { (*(out.0 as *mut Vec<HWND>)).push(h) };
-        }
-        true.into()
+    let Some(f) = uxtheme(133) else { return };
+    let allow_dark: unsafe extern "system" fn(HWND, i32) -> i32 = std::mem::transmute(f);
+    let _ = allow_dark(h, i32::from(allow));
+}
+
+unsafe fn restyle(h: HWND, dark: bool, theme: PCWSTR) {
+    if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
+        return;
     }
-    let mut lists: Vec<HWND> = Vec::new();
-    _ = EnumChildWindows(Some(pane), Some(collect), LPARAM(&mut lists as *mut _ as isize));
-    let (bg, text) = (GetSysColor(COLOR_WINDOW) as isize, GetSysColor(COLOR_WINDOWTEXT) as isize);
-    for lv in lists {
-        _ = SetWindowTheme(lv, w!("Explorer"), PCWSTR::null());
-        SendMessageW(lv, LVM_SETBKCOLOR, None, Some(LPARAM(bg)));
-        SendMessageW(lv, LVM_SETTEXTBKCOLOR, None, Some(LPARAM(bg)));
-        SendMessageW(lv, LVM_SETTEXTCOLOR, None, Some(LPARAM(text)));
-        let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
-        if !header.0.is_null() {
-            _ = SetWindowTheme(header, w!("ItemsView"), PCWSTR::null());
-        }
-        let tip = HWND(SendMessageW(lv, LVM_GETTOOLTIPS, None, None).0 as _);
-        if !tip.0.is_null() {
-            _ = SetWindowTheme(tip, PCWSTR::null(), PCWSTR::null());
-        }
-        _ = InvalidateRect(Some(lv), None, true);
+    allow_dark_window(h, dark);
+    _ = SetWindowTheme(h, theme, PCWSTR::null());
+    _ = SendMessageW(h, WM_THEMECHANGED, None, None);
+    _ = SetWindowPos(h, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+/// Explorer or DarkMode_Explorer on a window that is not one of our owner-drawn controls.
+pub(crate) unsafe fn theme_hwnd(h: HWND, dark: bool) {
+    restyle(h, dark, if dark { w!("DarkMode_Explorer") } else { w!("Explorer") });
+}
+
+unsafe fn theme_tip(t: HWND, dark: bool) {
+    if t.0.is_null() {
+        return;
+    }
+    allow_dark_window(t, dark);
+    _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
+    _ = SendMessageW(t, WM_THEMECHANGED, None, None);
+}
+
+/// Colours and window theme for the shell view in this pane. Does not rebuild it.
+pub(crate) unsafe fn paint_list_theme(pane: HWND) {
+    if pane.0.is_null() {
+        return;
+    }
+    if DARK_ON.load(Ordering::Relaxed) {
+        dark_list(pane);
+    } else {
+        light_list(pane);
     }
 }
 
@@ -913,44 +963,33 @@ pub(crate) unsafe fn prime_theme(dark: bool) {
 
 /// One window: title bar, tree, and that window's Explorer panes.
 pub(crate) unsafe fn apply_theme_desk() {
-    let (main, dark, tree, accent, tip) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip));
+    let (main, dark, tree, accent, tip, side) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip, a.side_hwnd));
     if main.0.is_null() {
         return;
     }
     // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch).
     // The address-bar path tip and the favourites location tip are tracking tools on this same window.
-    let tip_theme = |t: HWND| {
-        if !t.0.is_null() {
-            _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());
-        }
-    };
-    tip_theme(tip);
-    tip_theme(app(|a| a.side_hwnd)); // favourites list scrollbar
+    theme_tip(tip, dark);
+    theme_hwnd(side, dark); // favourites list scrollbar
     let on = BOOL::from(dark);
     _ = DwmSetWindowAttribute(main, DWMWINDOWATTRIBUTE(20), &on as *const _ as _, 4); // immersive dark title bar
     let caption = cref(pal().bg);
     _ = DwmSetWindowAttribute(main, DWMWA_CAPTION_COLOR, &caption as *const _ as _, 4);
-    if let Ok(tv) = FindWindowExW(Some(tree), None, w!("SysTreeView32"), PCWSTR::null()) {
-        _ = SetWindowTheme(tv, if dark { w!("DarkMode_Explorer") } else { w!("Explorer") }, PCWSTR::null());
-        let colour = |c: u32| LPARAM(if dark { cref(c).0 as isize } else { -1 }); // -1: system default
-        SendMessageW(tv, TVM_SETBKCOLOR, None, Some(LPARAM(cref(crate::ui::side_ground()).0 as isize)));
-        SendMessageW(tv, TVM_SETTEXTCOLOR, None, Some(colour(pal().text)));
-        tip_theme(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _));
-    }
+    theme_tree(tree, dark);
     set_accent(accent);
-    let panes = app(|a| {
-        let mut hs: Vec<HWND> = a.panes.iter().flatten().map(|p| p.hwnd).collect();
-        for tab in &a.park {
-            hs.extend(tab.iter().flatten().map(|p| p.hwnd));
-        }
-        hs
-    });
+    // Visible panes only. A hidden tab keeps its old view until it is shown (`attach_live`).
+    let panes = app(|a| a.panes.iter().flatten().map(|p| p.hwnd).collect::<Vec<_>>());
     for p in panes {
-        if DARK_ON.load(Ordering::Relaxed) {
-            dark_list(p);
-        } else {
-            light_list(p);
-        }
+        paint_list_theme(p);
+    }
+    let fresh = app(|a| {
+        let epoch = THEME_EPOCH.load(Ordering::Relaxed);
+        let fresh = a.theme_seen != epoch;
+        a.theme_seen = epoch;
+        fresh
+    });
+    if fresh {
+        retint_peek();
     }
     redraw_all();
     let popups = app(|a| {
@@ -962,6 +1001,22 @@ pub(crate) unsafe fn apply_theme_desk() {
             _ = RedrawWindow(Some(h), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
         }
     }
+    schedule_theme_panes();
+}
+
+/// Folder tree: the namespace host and the SysTreeView32 inside it, including its scrollbar.
+unsafe fn theme_tree(tree: HWND, dark: bool) {
+    if tree.0.is_null() {
+        return;
+    }
+    theme_hwnd(tree, dark);
+    let Ok(tv) = FindWindowExW(Some(tree), None, w!("SysTreeView32"), PCWSTR::null()) else { return };
+    theme_hwnd(tv, dark);
+    let colour = |c: u32| LPARAM(if dark { cref(c).0 as isize } else { -1 }); // -1: system default
+    SendMessageW(tv, TVM_SETBKCOLOR, None, Some(LPARAM(cref(crate::ui::side_ground()).0 as isize)));
+    SendMessageW(tv, TVM_SETTEXTCOLOR, None, Some(colour(pal().text)));
+    theme_tip(HWND(SendMessageW(tv, TVM_GETTOOLTIPS, None, None).0 as _), dark);
+    _ = InvalidateRect(Some(tv), None, true);
 }
 
 /// Follow Windows when that mode is on and the setting differs from the panes.
@@ -971,17 +1026,27 @@ pub(crate) unsafe fn theme_sync() {
         app(|a| a.s.dark = d);
         publish_shared();
         prime_theme(d);
+        note_theme_epoch();
         across_windows(|| apply_theme_desk());
         note_save();
     }
 }
 
-// Applies the current theme in place. Explorer views stay, so history, filter, selection, scroll and a typed address stay.
+/// Applies the current theme. Chrome updates at once. Each visible shell view is restyled and, when
+/// the dark bit actually changed, rebuilt in the background so DefView's list, header and scrollbars
+/// follow. A hidden tab is rebuilt when it is shown. History, filter, selection, focus and scroll stay.
 pub(crate) unsafe fn apply_theme() {
     let dark = resolve_dark(app(|a| a.s.theme));
-    app(|a| a.s.dark = dark);
+    let changed = app(|a| {
+        let changed = a.s.dark != dark;
+        a.s.dark = dark;
+        changed
+    });
     publish_shared();
     prime_theme(dark);
+    if changed {
+        note_theme_epoch();
+    }
     across_windows(|| apply_theme_desk());
     settings::refresh();
     crate::rename::refresh();
@@ -1374,7 +1439,314 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
     }
 }
 
+// Bumped only when the effective dark bit changes. Panes record the value they were built under.
+pub(crate) static THEME_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn note_theme_epoch() {
+    THEME_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Same folder again, without a history entry and without selecting the first row.
+/// `SBSP_ABSOLUTE` is 0. The other bits are `SBSP_ACTIVATE_NOFOCUS`, `SBSP_CREATENOHISTORY`,
+/// `SBSP_NOAUTOSELECT`, and `SBSP_WRITENOHISTORY`.
+pub(crate) const THEME_BROWSE_FLAGS: u32 = 0x0008_0000 | 0x0010_0000 | 0x0400_0000 | 0x0800_0000;
+
+/// A live pane whose shell view was built under a different theme, and is not already rebuilding.
+pub(crate) fn pane_theme_due(built: u64, epoch: u64, busy: bool) -> bool {
+    epoch != built && !busy
+}
+
+/// How many rows to scroll so `want_top` becomes the top row. None when it already is, or the list is empty.
+pub(crate) fn scroll_rows(cur_top: i32, want_top: i32, count: i32) -> Option<i32> {
+    if count <= 0 {
+        return None;
+    }
+    let want = want_top.clamp(0, count - 1);
+    let cur = cur_top.clamp(0, count - 1);
+    (want != cur).then_some(want - cur)
+}
+
+/// Details and list scroll by row. Icon, tile and thumbnail scroll by pixel.
+pub(crate) fn theme_scroll_rows(mode: i32) -> bool {
+    matches!(mode, 0 | 3 | 4)
+}
+
+pub(crate) fn theme_keep_path(i: usize) -> Option<String> {
+    app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.theme_keep.as_ref()).map(|k| k.path.clone()))
+}
+
+pub(crate) fn clear_theme_keep(i: usize) {
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.theme_keep.take();
+            p.theme_scroll.take();
+        }
+    });
+}
+
+/// One posted step. Each step rebuilds a single visible pane, so a slow folder cannot stall the rest of the UI.
+pub(crate) unsafe fn schedule_theme_panes() {
+    let main = app(|a| a.main);
+    if !main.0.is_null() {
+        _ = PostMessageW(Some(main), WM_THEME_PANE, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Recolour shell views that are about to be rebuilt. Called when a hidden tab becomes visible.
+pub(crate) unsafe fn recolor_due_panes() {
+    let epoch = THEME_EPOCH.load(Ordering::Relaxed);
+    let hwnds = app(|a| {
+        a.panes
+            .iter()
+            .flatten()
+            .filter(|p| pane_theme_due(p.themed, epoch, p.theme_keep.is_some()))
+            .map(|p| p.hwnd)
+            .collect::<Vec<_>>()
+    });
+    for h in hwnds {
+        paint_list_theme(h);
+    }
+}
+
+pub(crate) unsafe fn theme_pane_step() {
+    let epoch = THEME_EPOCH.load(Ordering::Relaxed);
+    let i = app(|a| {
+        a.panes.iter().enumerate().find_map(|(i, p)| {
+            let p = p.as_ref()?;
+            pane_theme_due(p.themed, epoch, p.theme_keep.is_some()).then_some(i)
+        })
+    });
+    let Some(i) = i else { return };
+    refresh_one_pane(i, epoch);
+    let more = app(|a| a.panes.iter().flatten().any(|p| pane_theme_due(p.themed, epoch, p.theme_keep.is_some())));
+    if more {
+        schedule_theme_panes();
+    }
+}
+
+unsafe fn refresh_one_pane(i: usize, epoch: u64) {
+    let hwnd = app(|a| {
+        let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
+        p.themed = epoch;
+        Some(p.hwnd)
+    });
+    let Some(hwnd) = hwnd else { return };
+    paint_list_theme(hwnd);
+    // A share that has not resolved yet is still the worker's. Recolouring is enough until it lands.
+    let pending_net = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.net.as_ref().is_some_and(|n| !n.bad)));
+    if pending_net {
+        return;
+    }
+    let Some(keep) = capture_theme(i) else { return };
+    let Some(pidl) = folder_pidl(i) else { return };
+    app(|a| match a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+        Some(p) => p.theme_keep = Some(keep),
+        None => drop(keep),
+    });
+    let ok = eb_of(i).is_some_and(|eb| pidl_browse_ok(false, THEME_BROWSE_FLAGS) && eb.BrowseToIDList(pidl, THEME_BROWSE_FLAGS).is_ok());
+    CoTaskMemFree(Some(pidl as _));
+    if !ok {
+        clear_theme_keep(i);
+    }
+}
+
+unsafe fn folder_pidl(i: usize) -> Option<*mut ITEMIDLIST> {
+    let fv = view_of::<IFolderView2>(i)?;
+    let item = fv.GetFolder::<IShellItem>().ok()?;
+    let pidl = SHGetIDListFromObject(&item).ok()?;
+    (!pidl.is_null()).then_some(pidl)
+}
+
+unsafe fn capture_theme(i: usize) -> Option<ThemeKeep> {
+    let path = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
+    if path.is_empty() {
+        return None;
+    }
+    let fv = view_of::<IFolderView2>(i)?;
+    let snap = read_snap(i);
+    let watch = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.view_watch.clone()));
+    let mode = snap.as_ref().map(|s| s.mode).unwrap_or(0);
+    let lv = view_list(&fv);
+    let top = if lv.0.is_null() { 0 } else { SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32 };
+    let (sx, sy) = list_scroll(lv);
+    let total = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
+    let nsel = fv.ItemCount(SVGIO_SELECTION).unwrap_or(0);
+    let select_all = total > 0 && nsel >= total;
+    let sel = if select_all {
+        Vec::new()
+    } else {
+        crate::selection_pidls(i).into_iter().map(|p| p as isize).filter(|&p| p != 0).collect()
+    };
+    let focus = fv.GetFocusedItem().ok().filter(|&idx| idx >= 0).and_then(|idx| fv.Item(idx).ok()).map(|p| p as isize).filter(|&p| p != 0).unwrap_or(0);
+    let had_focus = shell_focused(i);
+    Some(ThemeKeep { path, snap, watch, sel, focus, select_all, top, sx, sy, mode, had_focus })
+}
+
+unsafe fn shell_focused(i: usize) -> bool {
+    let focus = GetFocus();
+    view_of::<IShellView>(i).and_then(|sv| sv.GetWindow().ok()).is_some_and(|w| w == focus || IsChild(w, focus).as_bool())
+}
+
+unsafe fn list_scroll(lv: HWND) -> (i32, i32) {
+    if lv.0.is_null() {
+        return (0, 0);
+    }
+    let mut si = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_POS, ..Default::default() };
+    let x = if GetScrollInfo(lv, SB_HORZ, &mut si).is_ok() { si.nPos } else { 0 };
+    let y = if GetScrollInfo(lv, SB_VERT, &mut si).is_ok() { si.nPos } else { 0 };
+    (x, y)
+}
+
+const LVM_GETITEMCOUNT: u32 = 0x1004;
+const LVM_GETTOPINDEX: u32 = 0x1027;
+const LVM_SCROLL: u32 = 0x1014;
+const LVM_GETITEMRECT: u32 = 0x100E;
+const LVM_SETITEMSTATE: u32 = 0x102B;
+
+pub(crate) unsafe fn apply_theme_scroll(h: HWND) {
+    let Some(i) = pane_of(h) else { return };
+    let Some(mut job) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| p.theme_scroll.take())) else { return };
+    // The shell may publish the new list a moment after navigation completes.
+    if job.tries == 8 {
+        paint_list_theme(h);
+    }
+    let Some(fv) = view_of::<IFolderView2>(i) else {
+        repost_scroll(h, i, job);
+        return;
+    };
+    let lv = view_list(&fv);
+    let count = if lv.0.is_null() { 0 } else { SendMessageW(lv, LVM_GETITEMCOUNT, None, None).0 as i32 };
+    let wants = if theme_scroll_rows(job.mode) { job.top > 0 } else { job.x != 0 || job.y != 0 };
+    let waiting_sel = job.select_all || !job.sel.is_empty() || job.focus != 0;
+    // The list is filled after navigation completes. Keep the PIDLs until it has rows, or the tries run out.
+    if count == 0 && (wants || waiting_sel) && job.tries > 1 {
+        repost_scroll(h, i, job);
+        return;
+    }
+    if job.select_all && count > 0 && !lv.0.is_null() {
+        select_all_list(lv);
+        job.select_all = false;
+    }
+    restore_theme_selection(i, &mut job);
+    if !lv.0.is_null() && count > 0 {
+        if theme_scroll_rows(job.mode) {
+            let cur = SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32;
+            if let Some(rows) = scroll_rows(cur, job.top, count) {
+                let px = list_row_px(lv).max(1);
+                SendMessageW(lv, LVM_SCROLL, Some(WPARAM(0)), Some(LPARAM(rows.saturating_mul(px) as isize)));
+            }
+        } else if !job.y_done && job.y != 0 {
+            SendMessageW(lv, LVM_SCROLL, Some(WPARAM(0)), Some(LPARAM(job.y as isize)));
+            job.y_done = true;
+        }
+        if !job.x_done && job.x != 0 {
+            SendMessageW(lv, LVM_SCROLL, Some(WPARAM(job.x as usize)), Some(LPARAM(0)));
+            job.x_done = true;
+        }
+    }
+    if theme_scroll_rows(job.mode) && job.top > 0 && !lv.0.is_null() && count > 0 {
+        let cur = SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32;
+        let count = SendMessageW(lv, LVM_GETITEMCOUNT, None, None).0 as i32;
+        if scroll_rows(cur, job.top, count).is_some() {
+            repost_scroll(h, i, job);
+        }
+    }
+}
+
+fn repost_scroll(h: HWND, i: usize, mut job: ThemeScroll) {
+    if job.tries <= 1 {
+        return;
+    }
+    job.tries -= 1;
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.theme_scroll = Some(job);
+        }
+    });
+    unsafe { _ = PostMessageW(Some(h), WM_THEME_SCROLL, WPARAM(0), LPARAM(0)) };
+}
+
+unsafe fn list_row_px(lv: HWND) -> i32 {
+    let mut rc = RECT::default();
+    if SendMessageW(lv, LVM_GETITEMRECT, Some(WPARAM(0)), Some(LPARAM(&mut rc as *mut _ as isize))).0 == 0 {
+        return 1;
+    }
+    (rc.bottom - rc.top).max(1)
+}
+
+/// Put the saved child PIDLs back. They are freed here, so a later scroll retry does not select twice.
+unsafe fn restore_theme_selection(i: usize, job: &mut ThemeScroll) {
+    if job.sel.is_empty() && job.focus == 0 {
+        return;
+    }
+    let Some(sv) = view_of::<IShellView>(i) else { return };
+    let focus = std::mem::replace(&mut job.focus, 0);
+    if !job.select_all {
+        for p in job.sel.drain(..) {
+            if p != 0 && p != focus {
+                _ = sv.SelectItem(p as *const ITEMIDLIST, SVSI_SELECT.0 as u32);
+                CoTaskMemFree(Some(p as *const std::ffi::c_void));
+            }
+        }
+    }
+    if focus != 0 {
+        let flags = (SVSI_FOCUSED.0 | SVSI_SELECT.0) as u32;
+        _ = sv.SelectItem(focus as *const ITEMIDLIST, flags);
+        CoTaskMemFree(Some(focus as *const std::ffi::c_void));
+    }
+}
+
+unsafe fn select_all_list(lv: HWND) {
+    use windows::Win32::UI::Controls::{LVITEMW, LIST_VIEW_ITEM_STATE_FLAGS};
+    let mut item = LVITEMW {
+        state: LIST_VIEW_ITEM_STATE_FLAGS(2), // LVIS_SELECTED
+        stateMask: LIST_VIEW_ITEM_STATE_FLAGS(2),
+        ..Default::default()
+    };
+    SendMessageW(lv, LVM_SETITEMSTATE, Some(WPARAM(usize::MAX)), Some(LPARAM(&mut item as *mut _ as isize)));
+}
+
 // Same switch as Explorer's "Hidden items" (global shell setting).
+#[cfg(test)]
+mod tests {
+    use super::{pane_theme_due, scroll_rows, theme_scroll_rows, THEME_BROWSE_FLAGS};
+
+    #[test]
+    fn theme_rebuild_does_not_write_history_or_travel() {
+        let f = THEME_BROWSE_FLAGS;
+        assert_eq!(f & 0x0000_2000, 0); // parent
+        assert_eq!(f & 0x0000_4000, 0); // back
+        assert_eq!(f & 0x0000_8000, 0); // forward
+        assert_ne!(f & 0x0008_0000, 0); // activate without taking focus
+        assert_ne!(f & 0x0010_0000, 0); // create no history
+        assert_ne!(f & 0x0400_0000, 0); // do not select the first row
+        assert_ne!(f & 0x0800_0000, 0); // write no history
+    }
+
+    #[test]
+    fn only_a_stale_idle_pane_is_rebuilt() {
+        assert!(!pane_theme_due(0, 0, false));
+        assert!(pane_theme_due(0, 1, false));
+        assert!(!pane_theme_due(1, 1, false));
+        assert!(!pane_theme_due(0, 1, true)); // already rebuilding
+        // Hidden tabs are not in the live list the scheduler walks.
+        let live = [(0u64, false), (1, false), (0, true)];
+        let due = live.iter().filter(|&&(built, busy)| pane_theme_due(built, 1, busy)).count();
+        assert_eq!(due, 1);
+    }
+
+    #[test]
+    fn scroll_restore_moves_by_the_row_gap() {
+        assert_eq!(scroll_rows(0, 0, 10), None);
+        assert_eq!(scroll_rows(0, 12, 40), Some(12));
+        assert_eq!(scroll_rows(12, 4, 40), Some(-8));
+        assert_eq!(scroll_rows(0, 100, 10), Some(9)); // clamped to the last row
+        assert_eq!(scroll_rows(3, 3, 0), None);
+        assert!(theme_scroll_rows(4) && theme_scroll_rows(3) && theme_scroll_rows(0));
+        assert!(!theme_scroll_rows(1) && !theme_scroll_rows(5) && !theme_scroll_rows(6));
+    }
+}
+
 pub(crate) unsafe fn hidden() -> bool {
     let mut ss = SHELLSTATEA::default();
     SHGetSetSettings(Some(&mut ss), SSF_SHOWALLOBJECTS, false);

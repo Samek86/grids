@@ -2288,7 +2288,7 @@ pub(crate) unsafe fn clear_remembered_folder_views() {
     crate::folderview::flush();
 }
 
-unsafe fn read_snap(i: usize) -> Option<crate::folderview::ViewSnap> {
+pub(crate) unsafe fn read_snap(i: usize) -> Option<crate::folderview::ViewSnap> {
     let fv = view_of::<IFolderView2>(i)?;
     let (mut m, mut z) = (FOLDERVIEWMODE(0), 0);
     fv.GetViewModeAndIconSize(&mut m, &mut z).ok()?;
@@ -2616,10 +2616,62 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
     note_save();
 }
 
+/// Put the snapshotted view back onto the shell view just created for the new theme.
+unsafe fn finish_theme_refresh(i: usize, h: HWND, shown: &str) {
+    let keep = app(|a| {
+        let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
+        let same = p.theme_keep.as_ref().is_some_and(|k| k.path.eq_ignore_ascii_case(shown));
+        if same { p.theme_keep.take() } else { None }
+    });
+    let Some(mut keep) = keep else { return };
+    if let Some(snap) = keep.snap.as_ref() {
+        if let Some(fv) = view_of::<IFolderView2>(i) {
+            free_min_widths(view_list(&fv));
+            apply_planned(&fv, 0, snap.mode, snap.icon, &snap.columns);
+            if let Some(g) = snap.group.as_ref() {
+                if crate::folderview::group_needs_set(&snap.group, &read_group(&fv)) {
+                    apply_group(&fv, g);
+                }
+            }
+        }
+    }
+    if let Some(fv) = view_of::<IFolderView2>(i) {
+        if fv.GetCurrentFolderFlags().is_ok_and(|f| f & FWF_FULLROWSELECT.0 as u32 != 0) {
+            _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
+        }
+    }
+    paint_list_theme(h);
+    if keep.had_focus {
+        focus_view(i);
+    }
+    let watch = keep.watch.clone();
+    // Selection waits until the new list has rows. SelectItem on an empty DefView drops it.
+    let scroll = ThemeScroll {
+        top: keep.top,
+        x: keep.sx,
+        y: keep.sy,
+        mode: keep.mode,
+        tries: 8,
+        x_done: false,
+        y_done: false,
+        select_all: keep.select_all,
+        sel: std::mem::take(&mut keep.sel),
+        focus: std::mem::replace(&mut keep.focus, 0),
+    };
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.view_watch = watch;
+            p.theme_scroll = Some(scroll);
+        }
+    });
+    _ = PostMessageW(Some(h), WM_THEME_SCROLL, WPARAM(0), LPARAM(0));
+}
+
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
     let ran = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe { on_nav_impl(i, pidl) }));
     if ran.is_err() {
         crate::crash::log("navigation panicked");
+        clear_theme_keep(i);
         app(|a| {
             a.note = Some((
                 tr("This folder could not be shown", "이 폴더를 표시할 수 없습니다", "このフォルダーを表示できません").to_string(),
@@ -2639,10 +2691,14 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     crate::crash::note_path(&parse);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
-    if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
-        let opened = short_name(&parse);
-        app(|a| gone_note(a, &missing, &opened));
-        update_status();
+    // Same folder, rebuilt for the theme. Not a visit, and not a new folder-view baseline.
+    let theme_same = theme_keep_path(i).is_some_and(|k| k.eq_ignore_ascii_case(&parse));
+    if !theme_same {
+        if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
+            let opened = short_name(&parse);
+            app(|a| gone_note(a, &missing, &opened));
+            update_status();
+        }
     }
     let Some((h, eb, view, cols, group, ticket)) = app(|a| {
         let fs = is_fs(&parse);
@@ -2658,9 +2714,15 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
         };
         a.panes[i].as_mut().map(|p| {
             p.disp = disp.clone();
+            let refreshing = p.theme_keep.as_ref().is_some_and(|k| k.path.eq_ignore_ascii_case(&path));
             // The previous folder's icon goes as soon as the browse starts. A new lookup replaces it.
-            (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
-            let pending = p.pending.take().filter(|c| !c.is_empty());
+            // A theme rebuild is still the same folder: keep the icon, the pending columns, and the watch.
+            let pending = if refreshing {
+                None
+            } else {
+                (p.icon, p.ticket) = (-1, next_ticket(&ICON_TICKET));
+                p.pending.take().filter(|c| !c.is_empty())
+            };
             // A saved folder view, else the user default, else this pane's own columns.
             // A filesystem folder with no remembered columns gets Name, Date modified, Size
             // (IColumnManager::SetColumns of PKEY_ItemNameDisplay, PKEY_DateModified, PKEY_Size).
@@ -2672,7 +2734,9 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
             let cols = crate::folderview::pick_folder_columns(saved, &fallback, details, fs);
             let view = folder.as_ref().map(|v| (v.mode, v.icon)).unwrap_or(pane_view);
             let group = folder.as_ref().and_then(|v| v.group.clone());
-            if remember {
+            // A theme rebuild keeps the watch taken before the browse. A new baseline here would
+            // store the shell's rebuilt columns as a user edit.
+            if !refreshing && remember {
                 p.view_watch = crate::folderview::normalize_folder_key(&path).map(|key| {
                     let mut applied = folder.clone().unwrap_or(crate::folderview::ViewSnap {
                         mode: view.0,
@@ -2688,7 +2752,7 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
                     let quiet = crate::folderview::watch_quiet(&applied.columns);
                     crate::folderview::ViewWatch { key, applied, baseline: None, quiet }
                 });
-            } else {
+            } else if !refreshing {
                 p.view_watch = None;
             }
             (p.hwnd, p.eb.clone(), view, cols, group, p.ticket)
@@ -2702,35 +2766,44 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
         show_path_end(e, &disp);
     }
     sync_addr(h);
-    request_icon(h, ticket, pidl);
+    if !theme_same {
+        request_icon(h, ticket, pidl);
+    }
     if app(|a| a.s.pane_tab_list(i).len() > 1) {
         repaint_pane_tabs(i); // the current pane tab's name is this folder's
     }
     if let Ok(b) = GetDlgItem(Some(h), ID_FAV) {
         _ = InvalidateRect(Some(b), None, false);
     }
-    if let Ok(fv) = eb.GetCurrentView::<IFolderView2>() {
-        let writes = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.view_writes).unwrap_or(0));
-        let first = writes == 0;
-        let cols_text = cols.clone().unwrap_or_default();
-        if first {
-            free_min_widths(view_list(&fv));
-            apply_planned(&fv, writes, view.0, view.1, &cols_text);
-            if let Some(g) = &group {
-                if crate::folderview::group_needs_set(&Some(g.clone()), &read_group(&fv)) {
-                    apply_group(&fv, g);
+    let refreshing = theme_keep_path(i).is_some_and(|k| k.eq_ignore_ascii_case(&parse));
+    // A theme rebuild restores the snapshot itself. The first-folder column pass would
+    // write the remembered view over the rows the user is looking at.
+    if !refreshing {
+        if let Ok(fv) = eb.GetCurrentView::<IFolderView2>() {
+            let writes = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.view_writes).unwrap_or(0));
+            let first = writes == 0;
+            let cols_text = cols.clone().unwrap_or_default();
+            if first {
+                free_min_widths(view_list(&fv));
+                apply_planned(&fv, writes, view.0, view.1, &cols_text);
+                if let Some(g) = &group {
+                    if crate::folderview::group_needs_set(&Some(g.clone()), &read_group(&fv)) {
+                        apply_group(&fv, g);
+                    }
                 }
+                // No full-row select: a drag that starts in the size/date cells draws a selection box
+                // (and selects the names it covers) instead of grabbing that row's file.
+                // Only when the flag is still on. Setting it again rebuilds the view.
+                if fv.GetCurrentFolderFlags().is_ok_and(|f| f & FWF_FULLROWSELECT.0 as u32 != 0) {
+                    _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
+                }
+                mark_view_written(i, cols.filter(|c| !c.is_empty()));
             }
-            // No full-row select: a drag that starts in the size/date cells draws a selection box
-            // (and selects the names it covers) instead of grabbing that row's file.
-            // Only when the flag is still on. Setting it again rebuilds the view.
-            if fv.GetCurrentFolderFlags().is_ok_and(|f| f & FWF_FULLROWSELECT.0 as u32 != 0) {
-                _ = fv.SetCurrentFolderFlags(FWF_FULLROWSELECT.0 as u32, 0);
-            }
-            mark_view_written(i, cols.filter(|c| !c.is_empty()));
         }
     }
-    if DARK_ON.load(Ordering::Relaxed) {
+    if refreshing {
+        finish_theme_refresh(i, h, &parse);
+    } else if DARK_ON.load(Ordering::Relaxed) {
         dark_list(h);
     }
     if app(|a| a.s.active == i) {
@@ -2773,6 +2846,37 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
             return Err(E_INVALIDARG.into());
         }
         let i = self.0.load(Ordering::SeqCst);
+        // Rebuilding the shell view for a theme change browses the folder it already shows.
+        // That is not a visit: keep history, the filter, and the saved view, and do not
+        // drop the folder-size walk as if the pane had left.
+        let refreshing = unsafe {
+            let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+            match theme_keep_path(i) {
+                Some(kept) if kept.eq_ignore_ascii_case(&path) => {
+                    if local_path_gone(&path) {
+                        clear_theme_keep(i);
+                        return Err(Error::from(HRESULT::from_win32(ERROR_CANCELLED.0)));
+                    }
+                    if let Some(h) = pane_hwnd(i) {
+                        _ = KillTimer(Some(h), TIMER_SETTLE);
+                    }
+                    app(|a| {
+                        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+                            p.settle = None;
+                        }
+                    });
+                    true
+                }
+                Some(_) => {
+                    clear_theme_keep(i);
+                    false
+                }
+                None => false,
+            }
+        };
+        if refreshing {
+            return Ok(());
+        }
         pane_left(i);
         unsafe {
             // The shell is browsing. A share resolve still out for this pane is stale.
@@ -2802,7 +2906,17 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         }
         Ok(())
     }
-    fn OnViewCreated(&self, _: Ref<IShellView>) -> Result<()> {
+    fn OnViewCreated(&self, sv: Ref<IShellView>) -> Result<()> {
+        // The rebuilt view enumerates immediately. The filter has to be on this hwnd first,
+        // or IncludeObject sees an empty spec and shows every file.
+        let i = self.0.load(Ordering::SeqCst);
+        if theme_keep_path(i).is_some() {
+            if let Some(sv) = sv.as_ref() {
+                if let Ok(h) = unsafe { sv.GetWindow() } {
+                    note_filter_view(h, &filter_of(i));
+                }
+            }
+        }
         Ok(())
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
@@ -2816,6 +2930,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
             return Ok(());
         }
         let i = self.0.load(Ordering::SeqCst);
+        clear_theme_keep(i);
         unsafe {
             rec_event(i, Nav::Failed, pidl);
             let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());

@@ -446,6 +446,9 @@ pub(crate) unsafe fn attach_live() {
             });
         }
     }
+    // A tab that was hidden through the theme switch still has the old shell view.
+    recolor_due_panes();
+    schedule_theme_panes();
 }
 
 pub(crate) unsafe fn sync_filter_edits() {
