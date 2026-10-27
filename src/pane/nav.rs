@@ -1482,7 +1482,10 @@ pub(crate) unsafe fn go_edit(i: usize) {
 }
 
 /// What is selected when ⇄ is clicked. Files are not a folder, so they do not pick a destination.
+/// The button asks about `Files` (that case must not copy). `None` and `Folder` are the other
+/// rows of the same decision, constructed by the unit test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum SwapPick {
     None,
     Folder,
