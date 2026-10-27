@@ -4,7 +4,13 @@
 //! arrives is handed back to explorer.exe.
 
 mod apply;
+mod handoff;
 mod plan;
 
 pub(crate) use apply::{reload_shown, repair_moved_exe, set_registered, shown_on, take_launch_args};
-pub(crate) use plan::{link_file, list_open, menu_open, navigable, tree_activate, OpenIn, OpenWhere};
+pub(crate) use handoff::{intent_elapsed_ms, note_activate, noted_pane, parent_pid};
+#[allow(unused_imports)]
+pub(crate) use plan::{
+    handoff_action, handoff_text, link_file, list_activation, list_open, menu_open, menu_open_item, navigable, open_verb, parse_handoff, tree_activate, ActKind, Handoff, ListAct, OpenIn,
+    OpenWhere,
+};

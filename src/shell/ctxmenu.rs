@@ -23,6 +23,10 @@
 // cost of an identical item set. Disabled handlers are never given their own visible menu.
 //
 // Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
+// `query` is the shell's own `QueryContextMenu`. The first call loads each handler DLL
+// and runs its class factory; COM later unloads unused ones (`CoFreeUnusedLibraries`,
+// about ten minutes idle) and the cost comes back. `warmup` does that load off the UI
+// thread. `learn` asks unnamed handlers for their labels after the popup has closed.
 //
 // Settings shows a product name (VERSIONINFO, then a known-vendor name) and, under it,
 // the menu strings that handler adds. Static verbs contribute their registry text.
@@ -1036,8 +1040,9 @@ unsafe fn probe_contract(row: &Row, guid: &GUID, folder_pidl: *const ITEMIDLIST,
     Some(items)
 }
 
-/// Read menu strings off the shell menu Panegrid just built, and ask handlers we have not seen yet.
-/// The menu itself is left as the shell built it.
+/// Read menu strings off the shell menu Panegrid just built.
+/// The menu itself is left as the shell built it. Handlers we have not named yet are
+/// asked by `learn_pending` after the popup closes, so that probe is not part of the wait.
 pub(crate) unsafe fn observe_menu(menu: HMENU, cm: &IContextMenu, targets: u8) {
     if targets == 0 {
         return;
@@ -1066,8 +1071,23 @@ pub(crate) unsafe fn observe_menu(menu: HMENU, cm: &IContextMenu, targets: u8) {
             note_labels(&row.id, std::slice::from_ref(&text));
         }
     }
-    learn_unknown_com(&cat, targets);
     log_phase("labels", t0);
+}
+
+/// Enabled COM handlers whose menu text is not cached yet. Called after the popup closes.
+/// A panic in a handler is contained; the menu the user already saw is not involved.
+pub(crate) unsafe fn learn_pending(targets: u8) {
+    if targets == 0 {
+        return;
+    }
+    let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe { learn_pending_inner(targets) }));
+}
+
+unsafe fn learn_pending_inner(targets: u8) {
+    let t0 = Instant::now();
+    let cat = catalogue();
+    learn_unknown_com(&cat, targets);
+    log_phase("learn", t0);
 }
 
 /// Enabled COM handlers whose menu text is not cached yet. Disabled ones are asked by `probe_marks`.
