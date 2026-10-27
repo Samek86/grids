@@ -312,10 +312,10 @@ pub(crate) unsafe fn refresh_save_button() {
     let Ok(b) = GetDlgItem(Some(main), ID_TB_SAVE) else { return };
     _ = InvalidateRect(Some(b), None, false);
     let mut hint = match (ui(), Path::new(&file).file_stem()) {
-        (_, None) => tr("Save session (Ctrl+S)", "세션 저장 (Ctrl+S)", "セッションを保存 (Ctrl+S)").into(),
-        (1, Some(n)) => format!("'{}'에 저장 (Ctrl+S)", n.to_string_lossy()),
-        (2, Some(n)) => format!("'{}' に保存 (Ctrl+S)", n.to_string_lossy()),
-        (_, Some(n)) => format!("Save to '{}' (Ctrl+S)", n.to_string_lossy()),
+        (_, None) => tr("Save this tab (Ctrl+S)", "이 탭 저장 (Ctrl+S)", "このタブを保存 (Ctrl+S)").into(),
+        (1, Some(n)) => format!("'{}'에 이 탭 저장 (Ctrl+S)", n.to_string_lossy()),
+        (2, Some(n)) => format!("'{}' にこのタブを保存 (Ctrl+S)", n.to_string_lossy()),
+        (_, Some(n)) => format!("Save this tab to '{}' (Ctrl+S)", n.to_string_lossy()),
     };
     if dirty {
         hint += tr(" · unsaved layout changes", " · 저장 안 된 배치 변경", " · 未保存のレイアウト変更");

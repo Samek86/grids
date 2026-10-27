@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicU64;
+
 use crate::imports::*;
 use crate::app::*;
 use crate::ui::*;
@@ -148,10 +150,29 @@ pub(crate) fn size_worker() {
     }
 }
 
+// Pending directories kept on the walk stack. A deep chain stays small (one path at a time);
+// a very wide folder stops enqueueing past this and is marked partial instead of growing without bound.
+pub(crate) const DIR_STACK_CAP: usize = 8_192;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirTotals {
+    pub bytes: u64,
+    pub files: u64,
+    pub folders: u64,
+    pub partial: bool,
+}
+
 // Bytes under `root`, not following links or junctions. Unreadable parts set the flag and are skipped.
 // None = `stop` turned true. Checked before each directory read and each entry, also while `paused`;
 // a single read_dir/metadata call that hangs (a dead share) still has to return first.
 pub(crate) fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() -> bool, progress: &mut dyn FnMut(u64, bool)) -> Option<(u64, bool)> {
+    dir_totals(root, stop, paused, progress, DIR_STACK_CAP).map(|t| (t.bytes, t.partial))
+}
+
+/// Bytes, file count and folder count under `root`. `stack_cap` bounds pending directories.
+/// The root counts as a folder. Reparse points (junctions, symlinks) are not entered and not counted.
+/// A directory that cannot be listed is counted and marked partial.
+pub(crate) fn dir_totals(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() -> bool, progress: &mut dyn FnMut(u64, bool), stack_cap: usize) -> Option<DirTotals> {
     let go = || {
         while paused() && !stop() {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -160,10 +181,13 @@ pub(crate) fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() 
     };
     match std::fs::symlink_metadata(root) {
         Ok(m) if m.is_dir() => {}
-        Ok(m) => return Some((if m.is_file() { m.len() } else { 0 }, false)),
-        Err(_) => return Some((0, true)),
+        Ok(m) => {
+            let files = u64::from(m.is_file());
+            return Some(DirTotals { bytes: if m.is_file() { m.len() } else { 0 }, files, folders: 0, partial: false });
+        }
+        Err(_) => return Some(DirTotals { bytes: 0, files: 0, folders: 0, partial: true }),
     }
-    let (mut sum, mut partial, mut n, mut last) = (0, false, 0usize, Instant::now());
+    let (mut sum, mut files, mut folders, mut partial, mut n, mut last) = (0u64, 0u64, 1u64, false, 0usize, Instant::now());
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if !go() {
@@ -182,12 +206,25 @@ pub(crate) fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() 
                 continue;
             };
             match e.file_type() {
-                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_dir() => {
+                    folders += 1;
+                    if stack.len() >= stack_cap {
+                        partial = true;
+                    } else {
+                        stack.push(e.path());
+                    }
+                }
                 Ok(t) if t.is_file() => match e.metadata() {
-                    Ok(m) => sum += m.len(),
-                    Err(_) => partial = true,
+                    Ok(m) => {
+                        files += 1;
+                        sum += m.len();
+                    }
+                    Err(_) => {
+                        files += 1;
+                        partial = true;
+                    }
                 },
-                Ok(_) => {} // a link or junction
+                Ok(_) => {} // a link or junction: not followed, not counted
                 Err(_) => partial = true,
             }
             n += 1;
@@ -197,14 +234,19 @@ pub(crate) fn dir_bytes(root: &Path, stop: &dyn Fn() -> bool, paused: &dyn Fn() 
             }
         }
     }
-    Some((sum, partial))
+    Some(DirTotals { bytes: sum, files, folders, partial })
 }
 
 // F5: the shell reloads the active pane, and selected folders are summed again.
+// Unwatched folders (WSL, network, a watch that failed) drop their cache here.
 pub(crate) fn resum_sizes() {
     want_size(&[], true);
+    let paths = app(|a| a.s.paths.clone());
+    super::refresh_paths(&paths);
     app(|a| a.status_key.clear());
 }
+
+static VIS_TICK: AtomicU64 = AtomicU64::new(0);
 
 // Polled by a 300ms timer; the expensive parts only run when the active pane's state changed.
 // Other ticks only merge the folder size worker's progress into the stored text.
@@ -219,18 +261,37 @@ pub(crate) unsafe fn update_status() {
     let busy = COPYING.load(Ordering::Relaxed) > 0;
     let zoom = app(|a| a.zoom);
     let rev = SEL_REV[i].load(Ordering::Relaxed);
-    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}|{rev}", fv.GetFocusedItem().unwrap_or(-1));
+    let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
+    super::set_opts(show, net);
+    let key = format!("{i}|{path}|{n}|{sel}|{}|{spec}|{busy}|{zoom:?}|{rev}|{show}|{net}", fv.GetFocusedItem().unwrap_or(-1));
     if app(|a| a.status_key != key) {
         status_base(i, &path, main, &fv, n, sel, &spec, busy, zoom);
         app(|a| a.status_key = key);
     }
+    if show && !busy {
+        schedule_visible(i);
+    }
+    let folder = if show {
+        app(|a| (!a.status_folders.is_empty()).then(|| (a.status_folders.clone(), a.status_files)))
+    } else {
+        None
+    };
+    if let Some((paths, _)) = &folder {
+        let tagged: Vec<(String, super::Place)> = paths.iter().map(|p| (p.clone(), super::classify_ui(p))).collect();
+        super::request_paths(i, &tagged, super::RANK_SELECTED);
+    }
+    let line = folder.as_ref().and_then(|(paths, (bytes, count, partial))| super::selection_text(paths, *bytes, *count, *partial));
     let job = {
         let j = size_job();
         (!j.target.is_empty()).then_some((j.bytes, j.done, j.partial))
     };
     let Some(rc) = app(|a| {
         let (head, size, tail) = a.status_base.clone();
-        let size = size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default();
+        let size = if line.is_some() {
+            line.as_ref().map(|s| format!("     ·     {s}")).unwrap_or_default()
+        } else {
+            size.map(|(f, d, p)| size_text(f, d, job, p)).unwrap_or_default()
+        };
         if let Some(saved) = SAVED.lock().unwrap_or_else(|e| e.into_inner()).take() {
             a.note = Some((saved, Instant::now() + std::time::Duration::from_secs(5)));
             a.lost = 0;
@@ -262,11 +323,25 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
     }];
     let mut size = None;
     let mut dirs = Vec::new();
+    let mut folders = Vec::new();
+    let mut files = (0u64, 0u64, false);
+    let (show, net) = app(|a| (a.s.folder_sizes, a.s.folder_sizes_network));
     if sel > 0 {
         if !busy {
-            let s = selected_size(fv);
-            size = Some((s.file_bytes, !s.dirs.is_empty(), s.partial));
-            dirs = s.dirs;
+            if show {
+                let pick = super::pick_selection(fv, net);
+                if pick.folders.is_empty() {
+                    size = Some((pick.file_bytes, false, pick.extra_partial));
+                } else {
+                    folders = pick.folders;
+                    files = (pick.file_bytes, pick.file_count, pick.extra_partial);
+                    super::request_paths(i, &pick.request, super::RANK_SELECTED);
+                }
+            } else {
+                let s = selected_size(fv);
+                size = Some((s.file_bytes, !s.dirs.is_empty(), s.partial));
+                dirs = s.dirs;
+            }
         }
         parts.push(match ui() {
             1 => format!("{sel}개 선택"),
@@ -274,7 +349,13 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
             _ => format!("{sel} selected"),
         });
     }
-    want_size(&dirs, busy);
+    if show {
+        if !size_job().target.is_empty() {
+            want_size(&[], false);
+        }
+    } else {
+        want_size(&dirs, busy);
+    }
     let head = parts.join("     ·     ");
     let mut parts = vec![String::new()];
     if !spec.is_empty() {
@@ -301,6 +382,29 @@ pub(crate) unsafe fn status_base(i: usize, path: &str, main: HWND, fv: &IFolderV
             _ => format!("Pane {z} maximized · Ctrl+Shift+M or double-click its header to restore"),
         });
     }
-    app(|a| a.status_base = (head, size, parts.join("     ·     ")));
+    app(|a| {
+        a.status_folders = folders;
+        a.status_files = files;
+        a.status_base = (head, size, parts.join("     ·     "));
+    });
+}
+
+/// Selected folder first is requested by the caller. Visible folders in the active pane
+/// every tick, other panes every fourth, so a background walk stays behind the selection.
+fn schedule_visible(active: usize) {
+    let tick = VIS_TICK.fetch_add(1, Ordering::Relaxed);
+    let n = app(|a| a.s.panes()).min(MAXP);
+    let mut left = 32usize;
+    for i in 0..n {
+        if left == 0 {
+            break;
+        }
+        if i != active && tick % 4 != 0 {
+            continue;
+        }
+        let vis = unsafe { super::visible_folders(i, left.min(12)) };
+        left = left.saturating_sub(vis.len());
+        super::request_paths(i, &vis, super::RANK_VISIBLE);
+    }
 }
 

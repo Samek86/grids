@@ -2,7 +2,6 @@ use crate::imports::*;
 use super::*;
 use crate::app::*;
 use crate::ui::*;
-use crate::pane::*;
 use crate::i18n::*;
 use crate::store;
 
@@ -256,7 +255,7 @@ pub(crate) unsafe fn ask_session_path(title: &str) -> Option<PathBuf> {
 }
 
 pub(crate) unsafe fn save_session_as() -> Result<()> {
-    if let Some(path) = ask_session_path(tr("Save session", "세션 저장", "セッションを保存")) {
+    if let Some(path) = ask_session_path(tr("Save this tab", "이 탭 저장", "このタブを保存")) {
         write_session(&path);
     }
     Ok(())
@@ -268,42 +267,35 @@ pub(crate) unsafe fn save_tab_as_session(i: usize) {
     if app(|a| i >= a.s.tabs.len()) {
         return;
     }
-    let Some(path) = ask_session_path(tr("Save this tab as session", "이 탭을 세션으로 저장", "このタブをセッションとして保存")) else { return };
+    let Some(path) = ask_session_path(tr("Save this tab", "이 탭 저장", "このタブを保存")) else { return };
     write_tab_session(i, &path);
 }
 
 pub(crate) unsafe fn load_session_file(path: &Path) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
-    };
-    let other = Session::parse(&text);
-    let tabs = other.view_tabs();
-    let Some(incoming) = tabs.get(other.tab.min(tabs.len().saturating_sub(1))).cloned() else {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
-    };
-    remember_tabs();
-    let path_s = path.to_string_lossy().into_owned();
-    let i = app(|a| a.s.tab);
-    app(|a| {
-        load_into_tab(&mut a.s, i, &incoming, &path_s);
-        a.s.order.clear();
-        mark_tab_clean(a, i);
-        a.base = Some(a.s.clone());
-        let _ = pull_dirty(a);
-    });
-    // Panes on screen follow the loaded grid. Parked panes of other tabs stay.
-    for k in 0..crate::MAXP {
-        destroy_pane(k);
+    let one = [path.to_path_buf()];
+    load_session_files(&one);
+}
+
+/// Each path opens as its own tab, immediately after the tab on screen. Tabs already open stay.
+pub(crate) unsafe fn load_session_files(paths: &[PathBuf]) {
+    let mut incoming = Vec::new();
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            _ = MessageBeep(MB_ICONWARNING);
+            continue;
+        };
+        let path_s = path.to_string_lossy().into_owned();
+        let got = tabs_from_session_text(&text, &path_s);
+        if got.is_empty() {
+            _ = MessageBeep(MB_ICONWARNING);
+            continue;
+        }
+        incoming.extend(got);
     }
-    let filters = app(|a| a.s.tabs.get(a.s.tab).map(|t| t.filters.clone()).unwrap_or_default());
-    put_filters(&filters);
-    refresh_save_button();
-    relayout();
-    sync_filter_edits();
-    redraw_all();
-    focus_view(active_pane());
+    if incoming.is_empty() {
+        return;
+    }
+    open_tabs_beside(incoming);
 }
 
 // Window of a running copy of this same exe. A portable.txt copy keeps its own panegrid.json.
