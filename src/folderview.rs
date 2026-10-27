@@ -135,7 +135,8 @@ pub(crate) fn normalize_folder_key(path: &str) -> Option<String> {
 
 fn is_shell_parsing(path: &str) -> bool {
     let p = path.trim_start();
-    p.starts_with("::") || p.len() >= 6 && p[..6].eq_ignore_ascii_case("shell:")
+    // `get`: a byte cut inside サ / 한 / an emoji is None, not a panic.
+    p.starts_with("::") || p.get(..6).is_some_and(|h| h.eq_ignore_ascii_case("shell:"))
 }
 
 fn normalize_shell(path: &str) -> String {
@@ -154,7 +155,7 @@ fn normalize_fs(path: &str) -> Option<String> {
         s = rest.to_string();
     }
     let unc = s.starts_with("\\\\");
-    let body = if unc { &s[2..] } else { s.as_str() };
+    let body = if unc { s.get(2..).unwrap_or("") } else { s.as_str() };
     let parts: Vec<&str> = body.split('\\').filter(|p| !p.is_empty() && *p != ".").collect();
     if parts.is_empty() {
         return None;
@@ -912,5 +913,34 @@ mod strip_prefix_utf8_tests {
         assert_eq!(super::strip_prefix_ci("F:\\CAC\\サンプル", "f:\\cac\\x"), None);
         assert_eq!(super::strip_prefix_ci("サンプル", "abcd"), None);
         assert_eq!(super::strip_prefix_ci("F:\\CAC\\サ", "f:\\cac\\"), Some("サ"));
+    }
+
+    #[test]
+    fn japanese_korean_and_emoji_paths_normalize_without_panic() {
+        let samples = [
+            r"F:\CAC\サンプル",
+            r"F:\CAC\한글폴더",
+            r"F:\CAC\📁",
+            "サンプル",
+            "한글폴더",
+            "😀あ",
+            "abcdサ",
+            r"\\?\UNC\サーバー\共有\샘플",
+            "shell:Downloads",
+            "SHELL:desktop",
+        ];
+        for p in samples {
+            let _ = super::normalize_folder_key(p);
+            let _ = super::is_shell_parsing(p);
+        }
+        assert!(super::is_shell_parsing("shell:Downloads"));
+        assert!(super::is_shell_parsing("SHELL:desktop"));
+        assert!(!super::is_shell_parsing(r"F:\CAC\サンプル"));
+        assert!(!super::is_shell_parsing("abcdサ"));
+        assert!(!super::is_shell_parsing("😀あ"));
+        assert!(!super::is_shell_parsing("한글폴더"));
+        assert_eq!(super::normalize_folder_key(r"F:\CAC\サンプル").as_deref(), Some(r"f:\cac\サンプル"));
+        assert_eq!(super::normalize_folder_key(r"D:\한글폴더").as_deref(), Some(r"d:\한글폴더"));
+        assert_eq!(super::normalize_folder_key(r"E:\📁\샘플").as_deref(), Some(r"e:\📁\샘플"));
     }
 }

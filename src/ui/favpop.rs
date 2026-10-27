@@ -975,6 +975,9 @@ unsafe fn finish_drag() -> bool {
 }
 
 extern "system" fn fav_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| fav_proc_inner(h, msg, wp, lp)))
+}
+fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if msg != WM_CREATE {
             bind_owner();

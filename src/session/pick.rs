@@ -1038,6 +1038,9 @@ unsafe fn open_several(h: HWND) {
 }
 
 unsafe extern "system" fn pick_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { pick_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn pick_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
             let dpi = GetDpiForWindow(h).max(96) as i32;

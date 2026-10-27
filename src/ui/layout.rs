@@ -566,6 +566,9 @@ pub(crate) unsafe fn paint_grid(h: HWND) {
 }
 
 pub(crate) extern "system" fn grid_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| grid_proc_inner(h, msg, wp, lp)))
+}
+fn grid_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         let g = pick_geo(app(|a| a.dpi));

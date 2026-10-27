@@ -215,6 +215,9 @@ pub(crate) unsafe fn paint_match(h: HWND) {
 }
 
 pub(crate) extern "system" fn match_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| match_proc_inner(h, msg, wp, lp)))
+}
+fn match_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         // With two windows open, act on the window this popup belongs to.
         bind_hwnd(h);

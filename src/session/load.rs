@@ -172,7 +172,7 @@ pub(crate) fn session_stem_ok(input: &str) -> Option<String> {
     let s = input.trim();
     let bad = s.is_empty() || s.ends_with('.') || s.chars().any(|c| c < ' ' || r#"<>:"/\|?*"#.contains(c));
     let dev = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    let numbered = dev.len() == 4 && (dev.starts_with("COM") || dev.starts_with("LPT")) && (b'1'..=b'9').contains(&dev.as_bytes()[3]);
+    let numbered = dev.len() == 4 && (dev.starts_with("COM") || dev.starts_with("LPT")) && dev.as_bytes().get(3).is_some_and(|b| (b'1'..=b'9').contains(b));
     (!bad && !numbered && !matches!(dev.as_str(), "CON" | "PRN" | "AUX" | "NUL")).then(|| s.to_string())
 }
 
@@ -382,6 +382,9 @@ pub(crate) fn load_hit(g: &LoadGeo, x: i32, y: i32) -> Option<usize> {
 }
 
 pub(crate) extern "system" fn load_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| load_proc_inner(h, msg, wp, lp)))
+}
+fn load_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         let g = app(|a| load_geo(a.cards.len(), a.dpi));
@@ -535,3 +538,16 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_session_names_are_kept() {
+        assert_eq!(super::session_stem_ok("샘플").as_deref(), Some("샘플"));
+        assert_eq!(super::session_stem_ok("한글폴더").as_deref(), Some("한글폴더"));
+        assert_eq!(super::session_stem_ok("😀").as_deref(), Some("😀"));
+        assert_eq!(super::session_stem_ok("  サンプル  ").as_deref(), Some("サンプル"));
+        assert_eq!(super::session_stem_ok("abcdサ"), Some("abcdサ".into()));
+        assert_eq!(super::session_stem_ok("COM1"), None);
+        assert_eq!(super::session_stem_ok("lpt9"), None);
+    }
+}

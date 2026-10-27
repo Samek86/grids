@@ -1713,6 +1713,9 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
 }
 
 extern "system" fn settings_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| settings_proc_inner(h, msg, wp, lp)))
+}
+fn settings_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
             WM_CREATE => {
@@ -1935,6 +1938,9 @@ thread_local! {
 }
 
 unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { ask_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn ask_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
             paint_ask(h);

@@ -104,7 +104,10 @@ unsafe fn a11y_name(h: HWND, name: Option<&str>) {
 }
 
 /// Empty, unfocused filter: "Name filter · Ctrl+F" in the field's own font. The edit itself stays.
-unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+unsafe extern "system" fn filter_hint_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { filter_hint_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn filter_hint_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
     let hint = msg == WM_PAINT && GetWindowTextLengthW(h) == 0 && GetFocus() != h;
     if hint {
         _ = InvalidateRect(Some(h), None, true);
@@ -376,6 +379,9 @@ pub(crate) unsafe fn show_bars() {
 }
 
 pub(crate) extern "system" fn bar_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| bar_proc_inner(h, msg, wp, lp)))
+}
+fn bar_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(h, msg, wp, lp) }
 }
 
@@ -533,6 +539,9 @@ pub(crate) unsafe fn set_accent(c: u32) {
 // The hosted Explorer list ignores the app-wide dark mode, so its (new, per folder) list view is dyed here.
 pub(crate) unsafe fn dark_list(pane: HWND) {
     extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
+        crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| collect_inner(h, out)))
+    }
+    fn collect_inner(h: HWND, out: LPARAM) -> BOOL {
         let mut c = [0u16; 32];
         let n = unsafe { GetClassNameW(h, &mut c) } as usize;
         let class = String::from_utf16_lossy(&c[..n]);
@@ -573,6 +582,9 @@ pub(crate) unsafe fn dark_list(pane: HWND) {
 /// Puts a list back to the light-theme colours. Subclasses stay, and they do nothing while dark mode is off.
 pub(crate) unsafe fn light_list(pane: HWND) {
     extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
+        crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| collect_inner(h, out)))
+    }
+    fn collect_inner(h: HWND, out: LPARAM) -> BOOL {
         let mut c = [0u16; 32];
         let n = unsafe { GetClassNameW(h, &mut c) } as usize;
         if String::from_utf16_lossy(&c[..n]) == "SysListView32" {
@@ -617,7 +629,10 @@ pub(crate) fn theme_target(auto: bool, sys: Option<bool>, cur: bool) -> Option<b
 // The view re-sets the sorted column through an internal interface (no window message to catch),
 // so it is cleared right before each paint instead. The column header is the list's child, so its
 // draw notifications come through here too.
-pub(crate) unsafe extern "system" fn dark_list_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+pub(crate) unsafe extern "system" fn dark_list_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { dark_list_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn dark_list_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
     let dark = DARK_ON.load(Ordering::Relaxed);
     if msg == WM_PAINT && dark && DefSubclassProc(h, LVM_GETSELECTEDCOLUMN, WPARAM(0), LPARAM(0)).0 as i32 != -1 {
         DefSubclassProc(h, LVM_SETSELECTEDCOLUMN, WPARAM(usize::MAX), LPARAM(0));
@@ -676,7 +691,10 @@ pub(crate) unsafe fn draw_header_item(cd: &NMCUSTOMDRAW) {
     }
 }
 
-pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+pub(crate) unsafe extern "system" fn dark_view_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { dark_view_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn dark_view_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
     let r = DefSubclassProc(h, msg, wp, lp);
     if msg == WM_NOTIFY && DARK_ON.load(Ordering::Relaxed) && (*(lp.0 as *const NMHDR)).code == NM_CUSTOMDRAW {
         let cd = &mut *(lp.0 as *mut NMLVCUSTOMDRAW);

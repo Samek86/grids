@@ -115,7 +115,9 @@ fn extract_everything_exe(s: &str) -> Option<String> {
     let unquoted = unquote(s);
     let lower = unquoted.to_ascii_lowercase();
     let idx = lower.find("everything.exe")?;
-    let path = unquoted[..idx + "everything.exe".len()].trim().trim_matches('"');
+    let end = idx.checked_add("everything.exe".len())?;
+    // `idx` belongs to the lowercased copy. Cut the original only on a char boundary.
+    let path = unquoted.get(..end)?.trim().trim_matches('"');
     drive_path(path)
 }
 
@@ -155,11 +157,11 @@ fn drive_path(path: &str) -> Option<String> {
     if let Some(i) = path.rfind(":\\") {
         let start = i.saturating_sub(1);
         if path.as_bytes().get(start).is_some_and(|c| c.is_ascii_alphabetic()) {
-            return Some(path[start..].to_string());
+            return path.get(start..).map(|s| s.to_string());
         }
     }
     if let Some(i) = path.find("\\\\") {
-        return Some(path[i..].to_string());
+        return path.get(i..).map(|s| s.to_string());
     }
     None
 }
@@ -226,5 +228,30 @@ mod tests {
         let picked = first_present(&c, |p| p.starts_with(r"C:\Program Files\Everything\"));
         assert_eq!(picked.as_deref(), Some(r"C:\Program Files\Everything\Everything.exe"));
         assert!(first_present(&c, |_| false).is_none());
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_install_paths_do_not_panic() {
+        assert_eq!(
+            super::extract_everything_exe(r#""D:\샘플\Everything.exe",0"#).as_deref(),
+            Some(r"D:\샘플\Everything.exe")
+        );
+        assert_eq!(
+            super::extract_everything_exe(r"C:\한글폴더\Everything.exe").as_deref(),
+            Some(r"C:\한글폴더\Everything.exe")
+        );
+        assert_eq!(
+            super::drive_path(r"prefix E:\📁\Everything.exe").as_deref(),
+            Some(r"E:\📁\Everything.exe")
+        );
+        assert_eq!(
+            super::drive_path(r"\\サーバー\共有\Everything.exe").as_deref(),
+            Some(r"\\サーバー\共有\Everything.exe")
+        );
+        assert!(super::extract_everything_exe("サンプル").is_none());
+        assert!(super::extract_everything_exe("😀あ").is_none());
+        assert!(super::drive_path("abcdサ").is_none());
     }
 }

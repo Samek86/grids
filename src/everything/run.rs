@@ -161,6 +161,9 @@ fn reply_window() -> Option<HWND> {
 }
 
 unsafe extern "system" fn ipc_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { ipc_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn ipc_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_COPYDATA {
         let cd = &*(lp.0 as *const CopyData);
         if cd.dw == WANT.with(|w| w.get()) as usize && !cd.lp.is_null() && cd.cb > 0 {

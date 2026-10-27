@@ -145,7 +145,7 @@ pub(crate) fn exe_from_command(command: &str) -> Option<String> {
     }
     if let Some(rest) = s.strip_prefix('"') {
         let end = rest.find('"')?;
-        let exe = &rest[..end];
+        let exe = rest.get(..end)?;
         return (!exe.is_empty()).then(|| exe.to_string());
     }
     let exe = s.split_whitespace().next().unwrap_or("");
@@ -730,5 +730,23 @@ mod tests {
         // The running window opens that as a tab. It is not an in-place navigation.
         assert_eq!(route_arg(r"D:\Photos"), ArgRoute::Pane);
         assert_eq!(route_arg("shell:Downloads"), ArgRoute::Explorer);
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_commands_do_not_panic() {
+        assert_eq!(
+            super::exe_from_command(r#""D:\한글폴더\app.exe" /x"#).as_deref(),
+            Some(r"D:\한글폴더\app.exe")
+        );
+        assert_eq!(
+            super::exe_from_command(r#""E:\📁\サンプル.exe""#).as_deref(),
+            Some(r"E:\📁\サンプル.exe")
+        );
+        assert_eq!(super::exe_from_command(r"F:\샘플\abcdサ.exe").as_deref(), Some(r"F:\샘플\abcdサ.exe"));
+        assert_eq!(super::exe_from_command("😀.exe").as_deref(), Some("😀.exe"));
+        assert!(super::exe_from_command("").is_none());
+        assert!(super::exe_from_command("\"").is_none());
     }
 }
