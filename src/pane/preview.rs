@@ -119,16 +119,17 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
     }
     let ext = ext_of(path);
     let e = ext.as_str();
-    let pic = |flags| shell_pic(path, req.w, req.h, flags);
     if PICS.contains(&e) {
-        if let Some(p) = pic(SIIGBF_RESIZETOFIT) {
-            return Body::Pic(p);
-        }
+        return match super::imgjob::isolated_pic(path, req.w, req.h, SIIGBF_RESIZETOFIT.0 as u32) {
+            Ok(p) => Body::Pic(p),
+            Err(msg) => image_fail(path, &msg),
+        };
     }
     if VIDEOS.contains(&e) {
-        if let Some(p) = pic(SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY) {
-            return Body::Pic(p);
-        }
+        return match super::imgjob::isolated_pic(path, req.w, req.h, (SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).0 as u32) {
+            Ok(p) => Body::Pic(p),
+            Err(msg) => image_fail(path, &msg),
+        };
     }
     if AUDIO.contains(&e) {
         return card(path, &[]);
@@ -168,8 +169,8 @@ pub(crate) unsafe fn content(req: &PeekReq) -> Body {
     if let Some(b) = found {
         return b;
     }
-    // unknown type: any thumbnail Windows has for it, text if it reads as text, else the facts
-    if let Some(p) = pic(SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY) {
+    // unknown type: a thumbnail from a child process, text if it reads as text, else the facts
+    if let Ok(p) = super::imgjob::isolated_pic(path, req.w, req.h, (SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).0 as u32) {
         return Body::Pic(p);
     }
     if !PROGRAMS.contains(&e) && meta.as_ref().is_some_and(|m| m.len() > 0) {
@@ -191,11 +192,19 @@ pub(crate) unsafe fn shell_pic(path: &str, w: i32, h: i32, flags: SIIGBF) -> Opt
     p
 }
 
+fn checked_pix(w: i32, h: i32) -> Option<usize> {
+    if !(1..=16_384).contains(&w) || !(1..=16_384).contains(&h) {
+        return None;
+    }
+    (w as usize).checked_mul(h as usize)?.checked_mul(4)
+}
+
 pub(crate) unsafe fn bitmap_pix(bmp: HBITMAP) -> Option<Pix> {
     let mut bm = BITMAP::default();
     GetObjectW(bmp.into(), size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as _));
     let (w, h) = (bm.bmWidth, bm.bmHeight.abs());
-    let mut bgra = vec![0u8; (w.max(0) * h * 4) as usize];
+    let nbytes = checked_pix(w, h)?;
+    let mut bgra = vec![0u8; nbytes];
     let mut bmi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -225,11 +234,18 @@ pub(crate) unsafe fn decode_pic(bytes: &[u8], w: i32, h: i32) -> Option<Pix> {
     let frame = wic.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand).ok()?.GetFrame(0).ok()?;
     let (mut sw, mut sh) = (0u32, 0u32);
     frame.GetSize(&mut sw, &mut sh).ok()?;
-    if sw == 0 || sh == 0 {
+    if sw == 0 || sh == 0 || sw > 16_384 || sh > 16_384 {
         return None;
     }
-    let k = (w as f64 / sw as f64).min(h as f64 / sh as f64).min(1.0);
-    let (dw, dh) = (((sw as f64 * k) as u32).max(1), ((sh as f64 * k) as u32).max(1));
+    let k = (w.max(1) as f64 / sw as f64).min(h.max(1) as f64 / sh as f64).min(1.0);
+    let (mut dw, mut dh) = (((sw as f64 * k) as u32).max(1), ((sh as f64 * k) as u32).max(1));
+    while dw.saturating_mul(dh) > 16_000_000 {
+        dw = (dw / 2).max(1);
+        dh = (dh / 2).max(1);
+        if dw == 1 && dh == 1 {
+            break;
+        }
+    }
     let src: IWICBitmapSource = if (dw, dh) != (sw, sh) {
         let sc = wic.CreateBitmapScaler().ok()?;
         sc.Initialize(&frame, dw, dh, WICBitmapInterpolationModeFant).ok()?;
@@ -239,8 +255,10 @@ pub(crate) unsafe fn decode_pic(bytes: &[u8], w: i32, h: i32) -> Option<Pix> {
     };
     let conv = wic.CreateFormatConverter().ok()?;
     conv.Initialize(&src, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom).ok()?;
-    let mut bgra = vec![0u8; (dw * dh * 4) as usize];
-    conv.CopyPixels(std::ptr::null(), dw * 4, &mut bgra).ok()?;
+    let nbytes = (dw as usize).checked_mul(dh as usize)?.checked_mul(4)?;
+    let stride = dw.checked_mul(4)?;
+    let mut bgra = vec![0u8; nbytes];
+    conv.CopyPixels(std::ptr::null(), stride, &mut bgra).ok()?;
     Some(Pix::new(dw as i32, dh as i32, bgra))
 }
 
@@ -251,18 +269,23 @@ unsafe fn psd_thumb(path: &str, req: &PeekReq) -> Option<Pix> {
     if !b.starts_with(b"8BPS") {
         return None;
     }
-    let res = 26 + 4 + be32(26)?; // after the header and the colour mode data
-    let (mut p, stop) = (res + 4, (res + 4 + be32(res)?).min(b.len()));
-    while p + 12 <= stop && &b[p..p + 4] == b"8BIM" {
+    let res = 26usize.checked_add(4)?.checked_add(be32(26)?)?;
+    let mut p = res.checked_add(4)?;
+    let stop = p.checked_add(be32(res)?).unwrap_or(b.len()).min(b.len());
+    while p + 12 <= stop && b.get(p..p + 4) == Some(b"8BIM") {
         let id = u16::from_be_bytes([b[p + 4], b[p + 5]]);
         let mut q = p + 6 + 1 + b[p + 6] as usize;
         q += q % 2; // the Pascal name is padded to even
         let size = be32(q)?;
-        let data = b.get(q + 4..q + 4 + size)?;
+        let data = b.get(q + 4..q.checked_add(4)?.checked_add(size)?)?;
         if (id == 1036 || id == 1033) && data.len() > 28 {
             return decode_pic(&data[28..], req.w, req.h);
         }
-        p = q + 4 + size + size % 2;
+        let Some(next) = q.checked_add(4).and_then(|n| n.checked_add(size)).and_then(|n| n.checked_add(size % 2)) else { break };
+        if next <= p || next > b.len() {
+            break;
+        }
+        p = next;
     }
     None
 }
@@ -556,6 +579,14 @@ unsafe fn props(path: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+fn image_fail(path: &str, msg: &str) -> Body {
+    let mut rows = vec![(tr("Preview", "미리보기", "プレビュー").to_string(), msg.to_string())];
+    if let Ok(m) = std::fs::metadata(path) {
+        rows.push((tr("Size", "크기", "サイズ").into(), format!("{} B", group_digits(m.len()))));
+    }
+    Body::Card { icon: None, rows }
 }
 
 pub(crate) unsafe fn card(path: &str, extra: &[(String, String)]) -> Body {

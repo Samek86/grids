@@ -97,7 +97,10 @@ pub(crate) fn icon_worker(ev: isize) {
             let pidl = pidl as *const ITEMIDLIST;
             let mut sfi = SHFILEINFOW::default();
             let flags = SHGFI_PIDL | SHGFI_SYSICONINDEX | SHGFI_SMALLICON;
-            let found = com && SHGetFileInfoW(PCWSTR(pidl as _), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size_of::<SHFILEINFOW>() as u32, flags) != 0;
+            let found = crate::crash::guard(std::panic::AssertUnwindSafe(|| {
+                com && SHGetFileInfoW(PCWSTR(pidl as _), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size_of::<SHFILEINFOW>() as u32, flags) != 0
+            }))
+            .unwrap_or(false);
             ILFree(Some(pidl));
             let idx = if found { sfi.iIcon.max(-1) } else { -1 };
             _ = PostMessageW(Some(HWND(h as *mut _)), WM_PANE_ICON, WPARAM(ticket as usize), LPARAM(idx as isize));
