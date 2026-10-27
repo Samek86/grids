@@ -582,6 +582,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.start_path.clear();
         // `ext` mirrors Explorer's system-wide HideFileExt; resetting app settings must not change it.
         a.s.tree_on = fresh.tree_on;
+        a.s.fav_top = fresh.fav_top;
         a.s.edge = fresh.edge;
         a.s.confirm = fresh.confirm;
         a.s.del = fresh.del;

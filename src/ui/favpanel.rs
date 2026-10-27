@@ -1,4 +1,4 @@
-// Favourites, the bottom half of the left panel. One owner-drawn window: groups, files, and
+// Favourites, one half of the left panel. One owner-drawn window: groups, files, and
 // folders from the same tree the Ctrl+B list uses, plus two virtual Explorer groups on top.
 // Pinned folders come first. Favourite files sit directly under them, and only when Explorer has any.
 
