@@ -943,6 +943,24 @@ unsafe fn show_path(path: &str, plain: bool) {
     _ = InvalidateRect(Some(h), None, false);
 }
 
+/// Theme changed under an open quick look. Drawn pages follow the palette on the next paint.
+/// A Windows preview handler was started with the old colours, so it is opened again.
+pub(crate) unsafe fn retint_peek() {
+    let h = app(|a| a.peek);
+    if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
+        return;
+    }
+    let dark = DARK_ON.load(Ordering::Relaxed);
+    super::theme_hwnd(h, dark);
+    if let Some(host) = view(|v| v.host_win) {
+        super::theme_hwnd(host, dark);
+    }
+    _ = InvalidateRect(Some(h), None, true);
+    if HOST_GEN.load(Ordering::SeqCst) != 0 {
+        load_peek(false);
+    }
+}
+
 // Asks the worker for the pane's focused item at the picture area's size. plain: skip the preview handler.
 pub(crate) unsafe fn load_peek(plain: bool) {
     if FROM_FIND.load(Ordering::SeqCst) {
