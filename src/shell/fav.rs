@@ -129,10 +129,16 @@ pub(crate) fn fav_removes(paths: &[&str], is_fav: impl Fn(&str) -> bool) -> bool
 
 pub(crate) fn fav_menu_label(paths: &[String]) -> &'static str {
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    if fav_removes(&refs, |p| app(|a| a.s.is_fav(p))) {
-        tr("Remove from favourites", "즐겨찾기에서 빼기", "お気に入りから削除")
+    fav_action_label(fav_removes(&refs, |p| app(|a| a.s.is_fav(p))))
+}
+
+/// Panegrid's own row on the shell menu. Explorer already shows its Home favourite
+/// (`お気に入りに追加`), so this label names Panegrid in every UI language.
+pub(crate) fn fav_action_label(remove: bool) -> &'static str {
+    if remove {
+        tr("Remove from Panegrid favorites", "Panegrid 즐겨찾기에서 제거", "Panegrid のお気に入りから削除")
     } else {
-        tr("Add to favourites", "즐겨찾기에 추가", "お気に入りに追加")
+        tr("Add to Panegrid favorites", "Panegrid 즐겨찾기에 추가", "Panegrid のお気に入りに追加")
     }
 }
 
@@ -1054,13 +1060,30 @@ pub(crate) unsafe fn select_new_folder(i: usize, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parent_of;
+    use super::{fav_action_label, parent_of};
+    use crate::i18n::UI;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn parent_of_a_file_keeps_the_drive_root() {
         assert_eq!(parent_of(r"C:\a\note.txt").as_deref(), Some(r"C:\a"));
         assert_eq!(parent_of(r"C:\note.txt").as_deref(), Some(r"C:\"));
         assert_eq!(parent_of("note.txt"), None);
+    }
+
+    #[test]
+    fn panegrid_favourite_row_names_the_app_in_every_language() {
+        let prev = UI.load(Ordering::Relaxed);
+        UI.store(0, Ordering::Relaxed);
+        assert_eq!(fav_action_label(false), "Add to Panegrid favorites");
+        assert_eq!(fav_action_label(true), "Remove from Panegrid favorites");
+        UI.store(1, Ordering::Relaxed);
+        assert_eq!(fav_action_label(false), "Panegrid 즐겨찾기에 추가");
+        assert_eq!(fav_action_label(true), "Panegrid 즐겨찾기에서 제거");
+        UI.store(2, Ordering::Relaxed);
+        assert_eq!(fav_action_label(false), "Panegrid のお気に入りに追加");
+        assert_eq!(fav_action_label(true), "Panegrid のお気に入りから削除");
+        UI.store(prev, Ordering::Relaxed);
     }
 }
 

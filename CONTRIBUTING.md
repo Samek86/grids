@@ -12,5 +12,16 @@ This builds `target\release\panegrid.exe` and copies it to `build\panegrid.exe`.
 
 ## Release
 
-Upload that exe as a GitHub release asset named `panegrid.exe`. Do not zip it. The in-app updater downloads `panegrid.exe` and does not extract a zip. A release that only has a zip is shown to the user and left uninstalled.
+Upload two GitHub release assets, and do not zip them:
+
+- `panegrid.exe`
+- `panegrid.exe.sha256`
+
+Always upload `panegrid.exe.sha256` with the exe. The file is one sha256sum line, `<64 hex>  panegrid.exe` (two spaces). Create it in the folder that contains the exe so the name in the file is `panegrid.exe`:
+
+```
+sha256sum panegrid.exe > panegrid.exe.sha256
+```
+
+The in-app updater downloads both files, checks the SHA-256, and replaces the exe only when they match. A release with no `panegrid.exe.sha256`, or only a zip, is shown to the user and left uninstalled.
 
