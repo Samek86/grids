@@ -73,6 +73,62 @@ pub(crate) fn guarded() -> bool {
     GUARD_DEPTH.with(|d| d.get() > 0)
 }
 
+static SHOWING_PANIC: AtomicBool = AtomicBool::new(false);
+
+/// A panic on the UI thread. The fallback is returned and an error is shown.
+/// Unwinding out of a window procedure is undefined, and aborting is a silent exit.
+pub(crate) fn catch_ui<R>(fallback: R, f: impl FnOnce() -> R + std::panic::UnwindSafe) -> R {
+    match guard(f) {
+        Ok(v) => v,
+        Err(payload) => {
+            let detail = panic_payload(&payload);
+            log(&format!("ui panic: {detail}"));
+            show_panic_dialog(&detail);
+            fallback
+        }
+    }
+}
+
+pub(crate) fn catch_wnd(f: impl FnOnce() -> LRESULT + std::panic::UnwindSafe) -> LRESULT {
+    catch_ui(LRESULT(0), f)
+}
+
+pub(crate) fn catch_bool(f: impl FnOnce() -> BOOL + std::panic::UnwindSafe) -> BOOL {
+    catch_ui(BOOL::from(false), f)
+}
+
+pub(crate) fn catch_i32(f: impl FnOnce() -> i32 + std::panic::UnwindSafe) -> i32 {
+    catch_ui(0, f)
+}
+
+fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic".into()
+    }
+}
+
+fn show_panic_dialog(detail: &str) {
+    if cfg!(test) || SHOWING_PANIC.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let text = format!(
+        "{}\n\n{detail}",
+        crate::tr(
+            "Panegrid hit an error and kept this window open.",
+            "Panegrid에 오류가 났습니다. 이 창은 그대로 열려 있습니다.",
+            "Panegrid でエラーが起きました。このウィンドウは開いたままです。",
+        )
+    );
+    unsafe {
+        let _ = MessageBoxW(None, &HSTRING::from(text), w!("Panegrid"), MB_OK | MB_ICONWARNING);
+    }
+    SHOWING_PANIC.store(false, Ordering::SeqCst);
+}
+
 /// `--crash-watch` and `--panegrid-image` never install hooks or spawn another watcher.
 pub(crate) fn helper(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
@@ -100,6 +156,7 @@ pub(crate) fn install() {
             let msg = panic_message(info);
             let loc = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
             write_report("panic", &msg, &loc, "", "", "unknown");
+            show_panic_dialog(&msg);
         }));
         unsafe {
             AddVectoredExceptionHandler(1, Some(veh));
@@ -662,5 +719,17 @@ mod tests {
         assert_eq!(third, vec![r"C:\Program Files\Codec\codec.dll".to_string()]);
         let hit = matching_shell(&paths, &["codec.dll".into(), "shell32.dll".into()]);
         assert_eq!(hit, vec![r"C:\Program Files\Codec\codec.dll".to_string()]);
+    }
+
+    #[test]
+    fn ui_thread_panic_is_caught_and_does_not_exit() {
+        let got = super::catch_ui(0u32, || panic!("end byte index 8 is not a char boundary; inside サ"));
+        assert_eq!(got, 0);
+        let wnd = super::catch_wnd(|| panic!("한글폴더"));
+        assert_eq!(wnd.0, 0);
+        let flag = super::catch_bool(|| panic!("サンプル"));
+        assert_eq!(flag.0, 0);
+        let n = super::catch_i32(|| panic!("😀"));
+        assert_eq!(n, 0);
     }
 }

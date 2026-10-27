@@ -294,16 +294,24 @@ pub(crate) fn xml_text(xml: &str, text: &[&str], para: &[&str], tab: &[&str], br
 
 /// "AB12" -> column 27 (zero-based), row 11.
 pub(crate) fn cell_ref(r: &str) -> Option<(usize, usize)> {
-    let letters = r.chars().take_while(|c| c.is_ascii_alphabetic()).count();
-    let col = r[..letters].chars().try_fold(0usize, |a, c| Some(a * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)))?;
-    let row: usize = r[letters..].parse().ok()?;
+    // `letters` used to be a char count and was then used as a byte index.
+    let split = r.char_indices().find(|(_, c)| !c.is_ascii_alphabetic()).map(|(i, _)| i).unwrap_or(r.len());
+    let letters = r.get(..split)?;
+    let rest = r.get(split..)?;
+    if letters.is_empty() {
+        return None;
+    }
+    let col = letters.chars().try_fold(0usize, |a, c| Some(a * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1)))?;
+    let row: usize = rest.parse().ok()?;
     (col > 0 && row > 0).then(|| (col - 1, row - 1))
 }
 
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let at = tag.find(&format!(" {name}=\""))? + name.len() + 3;
-    let end = tag[at..].find('"')?;
-    Some(&tag[at..at + end])
+    let marker = format!(" {name}=\"");
+    let at = tag.find(&marker)? + marker.len();
+    let tail = tag.get(at..)?;
+    let end = tail.find('"')?;
+    tail.get(..end)
 }
 
 /// sharedStrings.xml: each <si>'s text, runs joined.
@@ -316,7 +324,8 @@ pub(crate) fn xlsx_rows(sheet: &str, strings: &[String], max_r: usize, max_c: us
     let mut rows: Vec<Vec<String>> = Vec::new();
     for c in sheet.split("<c ").skip(1) {
         let Some(end) = c.find('>') else { continue };
-        let tag = format!(" {}", &c[..end]);
+        let Some(head) = c.get(..end) else { continue };
+        let tag = format!(" {head}");
         let Some((col, row)) = attr(&tag, "r").and_then(cell_ref) else { continue };
         if row >= max_r || col >= max_c {
             continue;
@@ -375,7 +384,11 @@ pub(crate) fn html_text(html: &str) -> String {
         if (name == "script" || name == "style" || name == "head") && !tag.starts_with('/') {
             let end = format!("</{name}");
             match lower(rest).find(&end) {
-                Some(k) => rest = &rest[k..],
+                // `k` is measured on the lowercased copy, not on `rest`.
+                Some(k) => match rest.get(k..) {
+                    Some(next) => rest = next,
+                    None => break,
+                },
                 None => break,
             }
             continue;
@@ -476,10 +489,16 @@ pub(crate) fn mime_words(s: &str) -> String {
             last_word = false;
             continue;
         };
-        let (cs, enc, text) = (parts[0], parts[1], &parts[2][..end]);
+        let Some(text) = parts[2].get(..end) else {
+            out.push_str("=?");
+            rest = w;
+            last_word = false;
+            continue;
+        };
+        let (cs, enc) = (parts[0], parts[1]);
         let raw = if enc.eq_ignore_ascii_case("b") { b64(text) } else { qp(&latin(text), true) };
         out.push_str(&charset_text(&raw, cs.split('*').next().unwrap_or(cs)));
-        rest = &parts[2][end + 2..];
+        rest = parts[2].get(end + 2..).unwrap_or("");
         last_word = true;
     }
     out.push_str(rest);
@@ -731,5 +750,30 @@ mod tests {
         let head = vec![("content-type".to_string(), "multipart/mixed; boundary=b0x".to_string())];
         let mut files = Vec::new();
         assert!(mime_body(&head, &body, &mut files).is_none());
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_cells_do_not_panic() {
+        assert_eq!(super::cell_ref("AB12"), Some((27, 11)));
+        assert_eq!(super::cell_ref("A1"), Some((0, 0)));
+        assert!(super::cell_ref("サンプル").is_none());
+        assert!(super::cell_ref("한글폴더").is_none());
+        assert!(super::cell_ref("😀12").is_none());
+        assert!(super::cell_ref("Aサンプル").is_none());
+        assert!(super::cell_ref("abcdサ").is_none());
+        assert_eq!(super::attr(r#" <c r="サンプル">"#, "r"), Some("サンプル"));
+        assert_eq!(super::attr(r#" <c r="한글">"#, "r"), Some("한글"));
+        assert!(super::attr("サンプル", "r").is_none());
+        let sheet = r#"<c r="サンプル"><v>1</v></c><c r="A1"><v>2</v></c>"#;
+        assert_eq!(super::xlsx_rows(sheet, &[], 10, 10), vec![vec!["2"]]);
+        let html = super::html_text("<script>サンプル</script><p>한글폴더</p><div>😀</div>");
+        assert!(html.contains("한글폴더"), "{html}");
+        assert!(html.contains("😀"), "{html}");
+        assert!(!html.contains("サンプル"), "{html}");
+        assert_eq!(super::mime_words("=?UTF-8?B?7JWI64WV?= 한글"), "안녕 한글");
+        assert_eq!(super::mime_words("サンプル =?utf-8?B?not-closed"), "サンプル =?utf-8?B?not-closed");
+        assert!(super::mime_words("😀 =?not-a-word").contains('😀'));
     }
 }

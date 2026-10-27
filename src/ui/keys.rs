@@ -259,6 +259,9 @@ fn measure_font(font: HFONT) -> impl Fn(&str, i32, bool) -> (i32, i32) {
 }
 
 pub(crate) extern "system" fn keys_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| keys_proc_inner(h, msg, wp, lp)))
+}
+fn keys_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         // With two windows open, act on the window this popup belongs to.
         bind_hwnd(h);

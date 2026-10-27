@@ -1229,6 +1229,9 @@ pub(crate) unsafe fn place_tab_edit() {
 }
 
 pub(crate) extern "system" fn tabs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| tabs_proc_inner(h, msg, wp, lp)))
+}
+fn tabs_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
         match msg {

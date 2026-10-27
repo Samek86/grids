@@ -351,6 +351,9 @@ fn ensure_class() {
 }
 
 unsafe extern "system" fn rename_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { rename_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn rename_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
             let dpi = GetDpiForWindow(h) as i32;
@@ -414,6 +417,9 @@ unsafe extern "system" fn rename_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 }
 
 unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { host_proc_inner(h, msg, wp, lp) }))
+}
+unsafe fn host_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => paint_host(h),
         WM_ERASEBKGND => return LRESULT(1),

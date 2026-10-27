@@ -481,7 +481,10 @@ unsafe fn failed(h: HWND) {
 
 /// Every Panegrid main window of this process gets WM_CLOSE, so each saves as on a normal exit.
 unsafe fn close_all_windows() {
-    unsafe extern "system" fn each(h: HWND, _: LPARAM) -> BOOL {
+    unsafe extern "system" fn each(h: HWND, _a1: LPARAM) -> BOOL {
+        crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| unsafe { each_inner(h, _a1) }))
+    }
+    unsafe fn each_inner(h: HWND, _a1: LPARAM) -> BOOL {
         let mut pid = 0u32;
         GetWindowThreadProcessId(h, Some(&mut pid));
         let mut cls = [0u16; 32];

@@ -159,7 +159,7 @@ pub(crate) fn parent_key(key: &str) -> Option<String> {
     }
     match s.rfind('\\') {
         Some(i) => {
-            let parent = &s[..i];
+            let Some(parent) = s.get(..i) else { return None };
             if parent.len() == 2 && parent.as_bytes()[1] == b':' {
                 Some(format!("{parent}\\"))
             } else if parent.is_empty() {
@@ -1031,7 +1031,10 @@ unsafe fn hook_tip_hwnd(h: HWND) {
     }
 }
 
-unsafe extern "system" fn tip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: usize, _: usize) -> LRESULT {
+unsafe extern "system" fn tip_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { tip_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn tip_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
     if msg == WM_NOTIFY && lp.0 != 0 && (*(lp.0 as *const NMHDR)).code == LVN_GETINFOTIPW {
         let r = DefSubclassProc(h, msg, wp, lp);
         append_infotip(lp);
@@ -1363,5 +1366,19 @@ mod tests {
         assert_eq!(merge_tip("Type: File folder", extra, 80).as_deref(), Some("Type: File folder\r\nFolder size: 1 B (1 file)"));
         assert!(merge_tip("Folder size: old", extra, 80).is_none());
         assert_eq!(merge_tip("too long to keep", extra, extra.encode_utf16().count() + 1).as_deref(), Some(extra));
+    }
+}
+#[cfg(test)]
+mod utf8_boundary_tests {
+    #[test]
+    fn japanese_korean_and_emoji_parent_keys_do_not_panic() {
+        assert_eq!(super::parent_key(r"f:\한글폴더\샘플.txt").as_deref(), Some(r"f:\한글폴더"));
+        assert_eq!(super::parent_key(r"d:\サンプル\📄.txt").as_deref(), Some(r"d:\サンプル"));
+        assert_eq!(super::parent_key(r"e:\😀\あ.txt").as_deref(), Some(r"e:\😀"));
+        assert_eq!(super::parent_key(r"c:\abcdサ.txt").as_deref(), Some(r"c:\"));
+        assert_eq!(
+            super::parent_key(r"\\서버\공유\한글폴더\샘플").as_deref(),
+            Some(r"\\서버\공유\한글폴더")
+        );
     }
 }
