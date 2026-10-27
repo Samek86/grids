@@ -7,7 +7,7 @@ use crate::ui::*;
 use crate::session::*;
 use crate::shell::*;
 use crate::i18n::*;
-use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 
 // ---------- navigation ----------
 
@@ -65,6 +65,70 @@ pub(crate) fn drive_root(path: &str) -> Option<String> {
 /// Drive type 4 is `DRIVE_REMOTE`. Callers pass `None` when the path has no drive letter.
 pub(crate) fn share_kind(unc: bool, drive_type: Option<u32>) -> bool {
     unc || drive_type == Some(4)
+}
+
+/// Where a path may be checked. A share is never stat'd on the UI thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathPlace {
+    Share,
+    Local,
+    Other,
+}
+
+pub(crate) fn path_place(unc: bool, remote: bool, fs: bool) -> PathPlace {
+    if unc || remote {
+        PathPlace::Share
+    } else if fs {
+        PathPlace::Local
+    } else {
+        PathPlace::Other
+    }
+}
+
+/// `GetFileAttributesW`: valid attributes, or the Win32 error when they are not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalHit {
+    Here,
+    Gone,
+    Other,
+}
+
+/// Not found is the only result treated as missing. Access denied and busy drives are not.
+pub(crate) fn local_hit(valid: bool, err: u32) -> LocalHit {
+    if valid {
+        LocalHit::Here
+    } else if err == ERROR_FILE_NOT_FOUND.0 || err == ERROR_PATH_NOT_FOUND.0 {
+        LocalHit::Gone
+    } else {
+        LocalHit::Other
+    }
+}
+
+/// What activating a favourite should do. A share is never a missing local folder:
+/// it is not removed, and the pane can show the network error view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FavAct {
+    Open,
+    Missing,
+    Share,
+}
+
+pub(crate) fn fav_act(place: PathPlace, hit: Option<LocalHit>) -> FavAct {
+    match place {
+        PathPlace::Share => FavAct::Share,
+        PathPlace::Local if hit == Some(LocalHit::Gone) => FavAct::Missing,
+        _ => FavAct::Open,
+    }
+}
+
+/// `IExplorerBrowser::BrowseToIDList` access-violates on a null PIDL when the flags are
+/// absolute (`SBSP_ABSOLUTE` is 0). Back, forward, and parent document a null PIDL.
+pub(crate) fn pidl_browse_ok(pidl_null: bool, flags: u32) -> bool {
+    if !pidl_null {
+        return true;
+    }
+    let travel = SBSP_PARENT | SBSP_NAVIGATEBACK | SBSP_NAVIGATEFORWARD;
+    (flags & travel) != 0
 }
 
 /// UNC, or a mapped network drive. `GetDriveTypeW` is only asked about a drive root:
@@ -169,7 +233,7 @@ impl BoxI {
         x >= self.l && x < self.r && y >= self.t && y < self.b
     }
 
-    fn to_rect(self) -> RECT {
+    pub(crate) fn to_rect(self) -> RECT {
         RECT { left: self.l, top: self.t, right: self.r, bottom: self.b }
     }
 }
@@ -846,6 +910,13 @@ fn spawn_share(hwnd: isize, id: usize, path: String) -> bool {
     true
 }
 
+/// UNC or mapped path, off the UI thread. A file is launched once a PIDL comes back.
+/// An unreachable path shows this pane's network error view (Retry / Previous folder).
+/// False only when the pane is not open. The favourite itself is left in place.
+pub(crate) unsafe fn open_share(i: usize, path: &str, file: bool) -> bool {
+    start_share(i, path, file, None, None, false)
+}
+
 /// Start a share resolve. True when the pane is showing the wait (or the immediate error).
 unsafe fn start_share(i: usize, path: &str, edit: bool, run: Option<(String, String)>, dir: Option<String>, dir_share: bool) -> bool {
     let Some(h) = pane_hwnd(i) else { return false };
@@ -927,7 +998,7 @@ pub(crate) unsafe fn net_done(h: HWND, id: usize) {
         }
         return;
     }
-    let ok = eb_of(i).is_some_and(|eb| eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok());
+    let ok = eb_of(i).is_some_and(|eb| browse_id(&eb, pidl, SBSP_ABSOLUTE).is_ok());
     free_pidl(done.pidl);
     if ok {
         focus_view(i);
@@ -940,6 +1011,34 @@ pub(crate) unsafe fn navigate(i: usize, path: &str) -> bool {
     go_near(i, path)
 }
 
+/// Attributes of a local path. Does not touch a UNC or mapped drive.
+pub(crate) unsafe fn probe_local(path: &str) -> LocalHit {
+    let attr = GetFileAttributesW(&HSTRING::from(path));
+    if attr != INVALID_FILE_ATTRIBUTES {
+        LocalHit::Here
+    } else {
+        local_hit(false, GetLastError().0)
+    }
+}
+
+/// A local filesystem path that is confirmed missing. Shares and shell places are not probed:
+/// `GetFileAttributesW` on a dead share blocks for the redirector's timeout.
+pub(crate) unsafe fn local_path_gone(path: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() || !is_fs(path) || share_path(path) {
+        return false;
+    }
+    probe_local(path) == LocalHit::Gone
+}
+
+/// Browse only when the PIDL is safe to hand to the shell view. A null absolute PIDL is the crash.
+unsafe fn browse_id(eb: &IExplorerBrowser, pidl: *mut ITEMIDLIST, flags: u32) -> Result<()> {
+    if !pidl_browse_ok(pidl.is_null(), flags) {
+        return Err(Error::from(HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)));
+    }
+    eb.BrowseToIDList(pidl, flags)
+}
+
 pub(crate) unsafe fn try_nav(i: usize, path: &str) -> Result<()> {
     if share_path(path) {
         // Accepted: BrowseToIDList runs on WM_NET, after the worker has a PIDL or the wait ends.
@@ -948,10 +1047,22 @@ pub(crate) unsafe fn try_nav(i: usize, path: &str) -> Result<()> {
     if let Some(h) = pane_hwnd(i) {
         end_share(i, h);
     }
+    // A missing local folder must not reach the shell view. SHParseDisplayName can return
+    // S_OK with a null PIDL for a path that is already gone, and BrowseToIDList then
+    // access-violates inside explorerframe. The caller (go_near) opens the nearest parent.
+    if local_path_gone(path) {
+        return Err(Error::from(HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)));
+    }
     let eb = eb_of(i).ok_or_else(|| Error::from(E_FAIL))?;
     let mut pidl = std::ptr::null_mut();
-    SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None)?;
-    let r = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
+    let parsed = SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None);
+    if parsed.is_err() || pidl.is_null() {
+        if !pidl.is_null() {
+            CoTaskMemFree(Some(pidl as _));
+        }
+        return parsed.and(Err(Error::from(HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0))));
+    }
+    let r = browse_id(&eb, pidl, SBSP_ABSOLUTE);
     CoTaskMemFree(Some(pidl as _));
     r
 }
@@ -1001,6 +1112,9 @@ pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
         return false;
     }
     let cleared = app(|a| {
+        if i >= a.s.paths.len() {
+            return false;
+        }
         a.s.recent.retain(|r| !r.eq_ignore_ascii_case(path));
         let hit = a.s.paths[i].eq_ignore_ascii_case(path);
         if hit {
@@ -1019,23 +1133,25 @@ pub(crate) unsafe fn go_near(i: usize, path: &str) -> bool {
     let Some(up) = near_dir(path, |p| std::fs::metadata(p).map(|m| m.is_dir())) else { return false };
     let Some(eb) = eb_of(i) else { return false };
     let mut pidl = std::ptr::null_mut();
-    if SHParseDisplayName(&HSTRING::from(up.as_str()), None, &mut pidl, 0, None).is_err() {
+    if SHParseDisplayName(&HSTRING::from(up.as_str()), None, &mut pidl, 0, None).is_err() || pidl.is_null() {
+        if !pidl.is_null() {
+            CoTaskMemFree(Some(pidl as _));
+        }
         return false;
     }
     let target = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let arm = |set: bool| {
         app(|a| {
-            if let Some(p) = a.panes[i].as_mut() {
-                if set {
-                    p.recover = Some((path.to_string(), target.clone()));
-                } else if p.recover.as_ref().is_some_and(|(_, t)| *t == target) {
-                    p.recover = None;
-                }
+            let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) else { return };
+            if set {
+                p.recover = Some((path.to_string(), target.clone()));
+            } else if p.recover.as_ref().is_some_and(|(_, t)| *t == target) {
+                p.recover = None;
             }
         })
     };
     arm(true);
-    let ok = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok();
+    let ok = browse_id(&eb, pidl, SBSP_ABSOLUTE).is_ok();
     if !ok {
         arm(false);
     }
@@ -1059,10 +1175,13 @@ pub(crate) fn gone_note(a: &mut App, missing: &str, opened: &str) {
 }
 
 pub(crate) unsafe fn rec_event(i: usize, ev: Nav, pidl: *const ITEMIDLIST) {
+    if pidl.is_null() {
+        return;
+    }
     if app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.recover.is_some())) {
         let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
         app(|a| {
-            if let Some(p) = a.panes[i].as_mut() {
+            if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
                 rec_step(&mut p.recover, ev, &path);
             }
         });
@@ -1079,18 +1198,26 @@ pub(crate) unsafe fn browse(i: usize, flags: u32) {
         end_share(i, h);
     }
     if let Some(eb) = eb_of(i) {
-        _ = eb.BrowseToIDList(std::ptr::null(), flags);
+        _ = browse_id(&eb, std::ptr::null_mut(), flags);
     }
 }
 
 pub(crate) unsafe fn browse_item(i: usize, si: &IShellItem) {
+    let path = shell_parse(si);
+    // A deleted folder still sitting in the tree must not be handed to the shell view.
+    if local_path_gone(&path) {
+        _ = go_near(i, &path);
+        return;
+    }
     if let Some(h) = pane_hwnd(i) {
         end_share(i, h);
     }
     let Some(eb) = eb_of(i) else { return };
     if let Ok(pidl) = SHGetIDListFromObject(si) {
-        _ = eb.BrowseToIDList(pidl, SBSP_ABSOLUTE);
-        CoTaskMemFree(Some(pidl as _));
+        if !pidl.is_null() {
+            _ = browse_id(&eb, pidl, SBSP_ABSOLUTE);
+            CoTaskMemFree(Some(pidl as _));
+        }
     }
 }
 
@@ -1291,16 +1418,25 @@ pub(crate) unsafe fn go_edit(i: usize) {
             if let Some(h) = pane_hwnd(i) {
                 end_share(i, h);
             }
+            // Same rule as try_nav: a missing local path never becomes a null or dead PIDL.
+            if is_fs(&target) && local_path_gone(&target) {
+                let ok = go_near(i, &target);
+                resolved = true;
+                break 'go ok.then_some(true);
+            }
             let (mut pidl, mut sfgao) = (std::ptr::null_mut(), 0u32);
-            if SHParseDisplayName(&HSTRING::from(target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() {
+            if SHParseDisplayName(&HSTRING::from(&target), None, &mut pidl, SFGAO_FOLDER.0, Some(&mut sfgao)).is_ok() && !pidl.is_null() {
                 let r = if sfgao & SFGAO_FOLDER.0 != 0 {
-                    eb_of(i).is_some_and(|eb| eb.BrowseToIDList(pidl, SBSP_ABSOLUTE).is_ok()).then_some(true)
+                    eb_of(i).is_some_and(|eb| browse_id(&eb, pidl, SBSP_ABSOLUTE).is_ok()).then_some(true)
                 } else {
                     run(SHELLEXECUTEINFOW { fMask: SEE_MASK_IDLIST | SEE_MASK_FLAG_NO_UI, lpIDList: pidl as _, ..Default::default() }).then_some(false)
                 };
                 CoTaskMemFree(Some(pidl as _));
                 resolved = true;
                 break 'go r;
+            }
+            if !pidl.is_null() {
+                CoTaskMemFree(Some(pidl as _));
             }
         }
         let Some((prog, args)) = cmd else { break 'go None };
@@ -2170,6 +2306,11 @@ pub(crate) unsafe fn settle_cols(h: HWND) {
 }
 
 pub(crate) unsafe fn on_nav(i: usize, pidl: *const ITEMIDLIST) {
+    // A failed browse can complete with a null PIDL. Naming it, or building an IShellItem
+    // from it, is what takes the process down.
+    if pidl.is_null() || app(|a| i >= a.s.paths.len() || i >= a.panes.len() || i >= a.s.views.len() || i >= a.s.cols.len()) {
+        return;
+    }
     let parse = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
     let disp = name(pidl, SIGDN_DESKTOPABSOLUTEEDITING);
     if let Some(missing) = app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| rec_step(&mut p.recover, Nav::Complete, &parse))) {
@@ -2302,12 +2443,23 @@ pub(crate) struct Events(pub(crate) Arc<AtomicUsize>);
 impl IExplorerBrowserEvents_Impl for Events_Impl {
     fn OnNavigationPending(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
+        // Refuse a null PIDL before the shell view binds it. History uses a null list only
+        // as the argument to BrowseToIDList; the pending callback still carries the target.
+        if pidl.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
         let i = self.0.load(Ordering::SeqCst);
         pane_left(i);
         unsafe {
             // The shell is browsing. A share resolve still out for this pane is stale.
             if let Some(h) = pane_hwnd(i) {
                 end_share(i, h);
+            }
+            let path = name(pidl, SIGDN_DESKTOPABSOLUTEPARSING);
+            // Cancel before explorerframe binds a folder that is already gone (back, forward,
+            // the tree, session restore). A share is not stat'd here.
+            if local_path_gone(&path) {
+                return Err(Error::from(HRESULT::from_win32(ERROR_CANCELLED.0)));
             }
             rec_event(i, Nav::Pending, pidl);
             save_view(i);
@@ -2324,6 +2476,9 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
     }
     fn OnNavigationFailed(&self, pidl: *const ITEMIDLIST) -> Result<()> {
         NAV_GEN.fetch_add(1, Ordering::SeqCst);
+        if pidl.is_null() {
+            return Ok(());
+        }
         let i = self.0.load(Ordering::SeqCst);
         unsafe {
             rec_event(i, Nav::Failed, pidl);
@@ -2553,9 +2708,11 @@ impl IDropTarget_Impl for PaneDrop_Impl {
 #[cfg(test)]
 mod missing_tests {
     use super::{
-        addr_keep, drive_root, edit_cur_ok, edit_target, fail_hit, fail_layout, folder_step, near_dir, net_bar_text, net_fail_buttons, net_fail_message, net_fail_text, net_wait_secs, net_wait_text,
-        rec_step, retry_path, share_kind, unc_path, FailHit, FolderStep, Nav, NetBook, NetOpen, NetWait, NET_WAIT_MS,
+        addr_keep, drive_root, edit_cur_ok, edit_target, fail_hit, fail_layout, fav_act, folder_step, local_hit, near_dir, net_bar_text, net_fail_buttons, net_fail_message, net_fail_text, net_wait_secs,
+        net_wait_text, path_place, pidl_browse_ok, rec_step, retry_path, share_kind, unc_path, FailHit, FavAct, FolderStep, LocalHit, Nav, NetBook, NetOpen, NetWait, PathPlace, NET_WAIT_MS,
     };
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+    use windows::Win32::UI::Shell::{SBSP_ABSOLUTE, SBSP_NAVIGATEBACK, SBSP_NAVIGATEFORWARD, SBSP_PARENT};
     use crate::i18n::UI;
     use std::io;
     use std::path::Path;
@@ -2742,6 +2899,37 @@ mod missing_tests {
         assert!(rec.is_none());
         rec = Some((r"C:\gone".into(), r"C:\".into()));
         assert!(rec_step(&mut rec, Nav::Failed, r"C:\").is_none() && rec.is_none());
+    }
+
+    #[test]
+    fn a_missing_local_path_is_not_opened_and_a_share_is_not_a_local_miss() {
+        assert_eq!(local_hit(true, 0), LocalHit::Here);
+        assert_eq!(local_hit(false, ERROR_FILE_NOT_FOUND.0), LocalHit::Gone);
+        assert_eq!(local_hit(false, ERROR_PATH_NOT_FOUND.0), LocalHit::Gone);
+        assert_eq!(local_hit(false, 5), LocalHit::Other); // access denied is not "missing"
+        assert_eq!(path_place(false, false, true), PathPlace::Local);
+        assert_eq!(path_place(true, false, true), PathPlace::Share);
+        assert_eq!(path_place(false, true, true), PathPlace::Share);
+        assert_eq!(path_place(false, false, false), PathPlace::Other);
+        assert_eq!(fav_act(PathPlace::Local, Some(LocalHit::Gone)), FavAct::Missing);
+        assert_eq!(fav_act(PathPlace::Local, Some(LocalHit::Here)), FavAct::Open);
+        assert_eq!(fav_act(PathPlace::Local, Some(LocalHit::Other)), FavAct::Open);
+        assert_eq!(fav_act(PathPlace::Local, None), FavAct::Open);
+        // Unreachable network favourites stay; they are never classified as a local delete.
+        assert_eq!(fav_act(PathPlace::Share, Some(LocalHit::Gone)), FavAct::Share);
+        assert_eq!(fav_act(PathPlace::Share, None), FavAct::Share);
+        assert_eq!(fav_act(PathPlace::Other, Some(LocalHit::Gone)), FavAct::Open);
+    }
+
+    #[test]
+    fn a_null_pidl_is_refused_for_an_absolute_browse() {
+        assert!(!pidl_browse_ok(true, SBSP_ABSOLUTE));
+        assert!(!pidl_browse_ok(true, 0));
+        assert!(pidl_browse_ok(true, SBSP_NAVIGATEBACK));
+        assert!(pidl_browse_ok(true, SBSP_NAVIGATEFORWARD));
+        assert!(pidl_browse_ok(true, SBSP_PARENT));
+        assert!(pidl_browse_ok(false, SBSP_ABSOLUTE));
+        assert!(pidl_browse_ok(false, 0));
     }
 }
 

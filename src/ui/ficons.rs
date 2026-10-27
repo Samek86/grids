@@ -155,6 +155,37 @@ pub(crate) fn forget_missing() {
     forget_missing_in(&mut cache().mem);
 }
 
+/// The background check has already found this path gone. Paint reads this; it does not stat.
+pub(crate) fn known_missing(path: &str) -> bool {
+    let key = norm_path(path);
+    !key.is_empty() && cache().mem.missing.contains(&key)
+}
+
+/// A local probe just confirmed the path is gone. The next paint draws the row dimmed.
+pub(crate) fn mark_missing(path: &str) {
+    let norm = norm_path(path);
+    if norm.is_empty() {
+        return;
+    }
+    if note_missing(&mut cache().mem, norm) {
+        post_refresh();
+    }
+}
+
+/// The path is back, or the favourite now points somewhere else. Stop drawing it dimmed.
+pub(crate) fn mark_present(path: &str) {
+    let key = norm_path(path);
+    if key.is_empty() {
+        return;
+    }
+    let mut c = cache();
+    if c.mem.missing.remove(&key) {
+        c.mem.checked.insert(key);
+        drop(c);
+        post_refresh();
+    }
+}
+
 fn cache() -> std::sync::MutexGuard<'static, Cache> {
     static CACHE: std::sync::OnceLock<Mutex<Cache>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Cache { mem: IconMem::default(), list: 0 })).lock().unwrap_or_else(|e| e.into_inner())
@@ -297,7 +328,11 @@ fn run_job(job: IconJob) -> bool {
             store_shell(&dummy, FILE_ATTRIBUTE_NORMAL, false, key, |m, idx| m.ext.insert(ext, idx) != Some(idx))
         }
         IconJob::Path(path) => {
-            if path_missing(&path) {
+            // A UNC or mapped path is not stat'd here. The icon worker would block on a dead share.
+            if share_skip(&path) {
+                cache().mem.checked.insert(norm_path(&path));
+                false
+            } else if path_missing(&path) {
                 let norm = norm_path(&path);
                 note_missing(&mut cache().mem, norm)
             } else {
@@ -309,6 +344,10 @@ fn run_job(job: IconJob) -> bool {
             }
         }
         IconJob::Exists(path) => {
+            if share_skip(&path) {
+                cache().mem.checked.insert(norm_path(&path));
+                return false;
+            }
             let missing = path_missing(&path);
             let norm = norm_path(&path);
             let mut c = cache();
@@ -358,9 +397,17 @@ fn sys_icon(path: &str, attr: FILE_FLAGS_AND_ATTRIBUTES, real: bool) -> Option<(
     Some((ret as isize, info.iIcon))
 }
 
+/// UNC and mapped drives stay off this thread's disk calls. Navigation resolves them in the background.
+fn share_skip(path: &str) -> bool {
+    crate::unc_path(path) || unsafe { crate::share_path(path) }
+}
+
 fn path_missing(path: &str) -> bool {
     if path.is_empty() {
         return true;
+    }
+    if share_skip(path) {
+        return false;
     }
     let wide = HSTRING::from(path);
     let attr = unsafe { GetFileAttributesW(&wide) };
