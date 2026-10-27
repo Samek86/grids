@@ -46,6 +46,8 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     name_fields(h, i);
     // Folder suggestions as you type, like Explorer's address bar; folders only, since navigate() only browses folders
     _ = SHAutoComplete(edit, SHACF_FILESYS_DIRS | SHACF_AUTOSUGGEST_FORCE_ON | SHACF_AUTOAPPEND_FORCE_OFF);
+    // After autocomplete, so this proc is the top of the chain and still sees hover.
+    _ = SetWindowSubclass(edit, Some(addr_edit_proc), ADDR_SUB, 0);
     add_tip(
         filt,
         tr(
@@ -131,6 +133,29 @@ unsafe fn filter_hint_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1:
     r
 }
 
+const ADDR_SUB: usize = 5;
+
+/// The address edit covers the pill while it is up, so hover has to be watched here.
+/// Breadcrumbs are painted on the pane; that window's mouse move covers the other state.
+unsafe extern "system" fn addr_edit_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { addr_edit_proc_inner(h, msg, wp, lp, _a1, _a2) }))
+}
+unsafe fn addr_edit_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    let r = DefSubclassProc(h, msg, wp, lp);
+    let parent = GetParent(h).unwrap_or_default();
+    if parent.0.is_null() {
+        return r;
+    }
+    if msg == WM_MOUSEMOVE {
+        addr_tip_at(parent, true);
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
+    } else if msg == WM_MOUSELEAVE {
+        refresh_addr_tip(parent);
+    }
+    r
+}
+
 pub(crate) unsafe fn destroy_pane(i: usize) {
     pane_left(i);
     NAV_GEN.fetch_add(1, Ordering::SeqCst);
@@ -156,11 +181,16 @@ pub(crate) unsafe fn destroy_pane(i: usize) {
         drop_find(p.hwnd);
         drop_icon_request(p.hwnd);
         _ = KillTimer(Some(p.hwnd), TIMER_KIDS);
+        if app(|a| a.addr_tip_pane) == p.hwnd {
+            hide_addr_tip();
+        }
         for id in [ID_EDIT, ID_FILTER] {
             if let Ok(c) = GetDlgItem(Some(p.hwnd), id) {
                 a11y_name(c, None);
                 if id == ID_FILTER {
                     _ = RemoveWindowSubclass(c, Some(filter_hint_proc), 4);
+                } else if id == ID_EDIT {
+                    _ = RemoveWindowSubclass(c, Some(addr_edit_proc), ADDR_SUB);
                 }
             }
         }
@@ -887,7 +917,8 @@ pub(crate) unsafe fn apply_theme_desk() {
     if main.0.is_null() {
         return;
     }
-    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch)
+    // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch).
+    // The address-bar path tip is a tracking tool on this same window.
     let tip_theme = |t: HWND| {
         if !t.0.is_null() {
             _ = SetWindowTheme(t, if dark { w!("DarkMode_Explorer") } else { PCWSTR::null() }, PCWSTR::null());

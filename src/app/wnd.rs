@@ -131,6 +131,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_WINS);
                 open_stashed();
             }
+            WM_TIMER if wp.0 == TIMER_CTX_WARM => crate::shell::warmup::on_timer(h),
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
                     return DefWindowProcW(h, msg, wp, lp);
@@ -327,10 +328,12 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 if state != WA_INACTIVE {
                     app(|a| a.last_front = a.cur);
                     request_pins(false);
+                    crate::shell::warmup::on_activate();
                 }
                 // Keyboard activation restores focus at once. A click waits until that click is handled.
                 if state == WA_INACTIVE {
                     keep_focus(h);
+                    hide_addr_tip();
                 } else if state == WA_ACTIVE && !min {
                     restore_focus();
                     return LRESULT(0);
@@ -403,6 +406,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_FVIEWS);
                 _ = KillTimer(Some(h), TIMER_WINS);
+                crate::shell::warmup::disarm(h);
                 flush_folder_views();
                 if app(|a| a.s.autosave) {
                     autosave_associated_tabs();
@@ -427,6 +431,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = KillTimer(Some(h), TIMER_STATUS);
                 _ = KillTimer(Some(h), TIMER_SAVE);
                 _ = KillTimer(Some(h), TIMER_WINS);
+                crate::shell::warmup::disarm(h);
                 // A window that was not the last one already left the desk list in WM_CLOSE.
                 if bind_hwnd(h) {
                     destroy_every_pane();
@@ -454,9 +459,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         bind_hwnd(h);
         let nav = |flags: u32| {
             if let Some(i) = pane_of(h) {
-                set_active(i);
-                browse(i, flags);
-                focus_view(i);
+                nav_pane(i, flags);
             }
         };
         match msg {
@@ -516,14 +519,23 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 if app(|a| a.pane_press.is_none() && a.pane_drag.is_none()) {
                     let at = pane_of(h).and_then(|i| crumb_at(h, i, x, y)).and_then(|hit| hit.map(|(k, ..)| k));
                     crumb_hover(h, at);
+                    let dpi = app(|a| a.dpi);
+                    let addr = addr_rect(h, dpi);
+                    addr_tip_at(h, x >= addr.left && x < addr.right && y >= addr.top && y < addr.bottom);
+                } else {
+                    addr_tip_at(h, false);
                 }
             }
-            WM_MOUSELEAVE => crumb_hover(h, None),
+            WM_MOUSELEAVE => {
+                crumb_hover(h, None);
+                refresh_addr_tip(h);
+            }
             WM_KIDS => kids_show(h, wp.0),
             WM_NET => net_done(h, wp.0),
             WM_TIMER if wp.0 == TIMER_NET => net_timeout(h),
             WM_TIMER if wp.0 == TIMER_KIDS => kids_timeout(h),
             WM_LBUTTONDOWN => {
+                hide_addr_tip();
                 let (x, y) = xy(lp);
                 if let Some(i) = pane_of(h) {
                     if pane_drag_down(h, i, x, y) {
@@ -752,12 +764,17 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     _ => return DefWindowProcW(h, msg, wp, lp),
                 }
             }
-            // mouse side buttons
-            WM_APPCOMMAND => match (lp.0 >> 16) & 0x0fff {
-                1 => nav(SBSP_NAVIGATEBACK),
-                2 => nav(SBSP_NAVIGATEFORWARD),
-                _ => return DefWindowProcW(h, msg, wp, lp),
-            },
+            // Back / forward from a mouse driver or a browser key. Over Remote Desktop the
+            // loop handles WM_XBUTTONUP first; a mouse-sourced command for that same click
+            // is claimed there and must not step history again.
+            WM_APPCOMMAND => {
+                let Some((dir, path)) = appcommand_event(lp.0) else {
+                    return DefWindowProcW(h, msg, wp, lp);
+                };
+                if side_claim(dir, path) {
+                    nav(side_flags(dir));
+                }
+            }
             _ => return DefWindowProcW(h, msg, wp, lp),
         }
         LRESULT(0)
