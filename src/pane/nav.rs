@@ -450,6 +450,7 @@ unsafe fn repaint_link(h: HWND) {
     let dpi = app(|a| a.dpi);
     _ = InvalidateRect(Some(h), Some(&addr_rect(h, dpi)), false);
     update_status();
+    refresh_addr_tip(h);
 }
 
 /// Drop a share resolve for this pane. A local navigation, Back, or a destroyed pane.

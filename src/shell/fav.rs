@@ -637,6 +637,8 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         _ = DestroyMenu(menu);
         return false;
     }
+    // Handlers are in memory now. A later idle period is measured from this menu.
+    super::warmup::note_menu();
     // Read labels before anything is deleted, and do not change this menu while doing it.
     let targets = super::ctxmenu::click_targets(background, items);
     super::ctxmenu::observe_menu(menu, &cm, targets);
@@ -730,6 +732,8 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         }
     }
     _ = DestroyMenu(menu);
+    // Label probes CoCreate handlers. The popup is already gone, so this is not the wait to open it.
+    super::ctxmenu::learn_pending(targets);
     true
 }
 
