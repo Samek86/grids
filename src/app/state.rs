@@ -58,6 +58,13 @@ pub(crate) struct Desk {
     pub(crate) side_drag: Option<SideDrag>, // node being dragged
     pub(crate) side_drop: Option<(usize, u8)>, // visible row, drop zone
     pub(crate) side_press: Option<(i32, i32, usize)>,
+    /// An OLE drop is over the favourites panel. The location tip stays hidden so it cannot take the drop.
+    pub(crate) side_external: bool,
+    /// Client point where a scroll or a content change hid the favourites tip.
+    /// The same point does not show it again until the pointer moves.
+    pub(crate) fav_tip_hold: Option<(i32, i32)>,
+    /// Identity of the favourites rows last painted. Unchanged pin refreshes keep the tip.
+    pub(crate) side_rows_mark: Option<u64>,
     pub(crate) side_edit: HWND,
     pub(crate) side_edit_at: Vec<usize>,
     pub(crate) side_edit_key: Option<crate::NodeKey>,
@@ -148,6 +155,8 @@ pub(crate) struct Desk {
     pub(crate) tab_path_tip: bool, // tracking tooltip listing that tab's pane paths is installed
     pub(crate) addr_tip: bool,     // tracking tooltip for a truncated address path is installed
     pub(crate) addr_tip_pane: HWND, // pane that address tooltip is showing for; null while hidden
+    pub(crate) fav_tip: bool,      // tracking tooltip for a favourites row is installed
+    pub(crate) fav_pop_tip: bool,  // tracking tooltip for the favourites window is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
     pub(crate) tab_scroll: usize,  // first visible window tab while the strip overflows
@@ -217,6 +226,9 @@ pub(crate) fn blank_desk() -> Desk {
         side_drag: None,
         side_drop: None,
         side_press: None,
+        side_external: false,
+        fav_tip_hold: None,
+        side_rows_mark: None,
         side_edit: HWND::default(),
         side_edit_at: Vec::new(),
         side_edit_key: None,
@@ -303,6 +315,8 @@ pub(crate) fn blank_desk() -> Desk {
         tab_path_tip: false,
         addr_tip: false,
         addr_tip_pane: HWND::default(),
+        fav_tip: false,
+        fav_pop_tip: false,
         tab_hot_plus: false,
         tab_hot_over: false,
         tab_scroll: 0,
