@@ -1874,7 +1874,7 @@ unsafe fn header_split(i: usize, below: bool) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     };
-    commit_layout(heights, Some((perm, home)), Some((i, fresh_old)), None, Some(focus));
+    commit_layout(heights, Some((perm, home)), Some((i, fresh_old)), None, Some(focus), None);
 }
 
 /// Remove this pane. The active pane follows it to a neighbour; every other pane keeps its folder.
@@ -1897,7 +1897,7 @@ unsafe fn header_close(i: usize) {
         _ = MessageBeep(MB_ICONWARNING);
         return;
     };
-    commit_layout(heights, Some((perm, home)), None, Some(i), focus);
+    commit_layout(heights, Some((perm, home)), None, Some(i), focus, None);
 }
 
 unsafe fn pane_mode_icon(i: usize) -> Option<(i32, i32)> {

@@ -2,11 +2,20 @@ use crate::imports::*;
 use crate::app::*;
 use crate::session::*;
 use crate::ui::*;
-use super::{focus_view, pick_pane_tab, redraw_all, relayout, rename_fields, save_view, set_active, NAV_GEN, SEL_REV};
+use super::{apply_pane_tab_chrome, commit_layout, focus_view, go_near, pick_pane_tab, redraw_all, relayout, rename_fields, save_view, set_active, update_status, NAV_GEN, SEL_REV};
 
 // Grab a pane by its header or pane-tab strip and drop it on another pane.
 // The file list is not a grab: OLE drag-and-drop from the view is untouched.
 // Window-tab reorder is a different window and a different capture.
+// Ctrl copies the current pane tab instead of moving the pane. Releasing Ctrl
+// mid-drag returns to the move. A copy never leaves this window tab.
+
+/// Drop preview when a copy would pass the grid caps. The move preview stays the accent.
+pub(crate) const COPY_BLOCK: u32 = 0xE23B3B;
+
+fn ctrl_copy() -> bool {
+    unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 }
+}
 
 fn drag_cursor() {
     unsafe {
@@ -54,14 +63,25 @@ fn show_overlay(main: HWND, rect: Option<RECT>) {
         let w = (r.right - r.left).max(1);
         let hgt = (r.bottom - r.top).max(1);
         _ = SetWindowPos(h, Some(HWND_TOP), p.x, p.y, w, hgt, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        _ = InvalidateRect(Some(h), None, true);
+        _ = UpdateWindow(h);
     }
 }
 
-fn hit_drop(a: &App) -> Option<(usize, DropZone, RECT)> {
+struct DropHot {
+    onto: usize,
+    zone: DropZone,
+    preview: RECT,
+    copy: bool,
+    blocked: bool,
+}
+
+fn hit_drop(a: &App) -> Option<DropHot> {
     let from = a.pane_drag.as_ref()?.from;
     if a.zoom.is_some() {
         return None;
     }
+    let copy = ctrl_copy();
     let mut pt = POINT::default();
     unsafe { _ = GetCursorPos(&mut pt) };
     let mut c = pt;
@@ -69,12 +89,21 @@ fn hit_drop(a: &App) -> Option<(usize, DropZone, RECT)> {
     let g = geo(a);
     let n = a.s.panes();
     let heights = &a.s.heights;
-    let onto = (0..n).find(|&i| i != from && inside(cell_rect(&g, heights, i), c.x, c.y))?;
+    // A move still ignores the pane it came from. A copy may land on that pane's own edge or centre.
+    let onto = (0..n).find(|&i| (copy || i != from) && inside(cell_rect(&g, heights, i), c.x, c.y))?;
     let zone = pane_zone(cell_rect(&g, heights, onto), c.x, c.y)?;
-    pane_drop(heights, &a.s.colr, &a.s.rowr, from, onto, zone)?;
+    let plan = drag_plan(copy, heights, &a.s.colr, &a.s.rowr, from, onto, zone)?;
     let cells: Vec<RECT> = (0..n).map(|i| cell_rect(&g, heights, i)).collect();
     let preview = drop_preview(heights, &cells, onto, zone)?;
-    Some((onto, zone, preview))
+    let blocked = matches!(plan, DragPlan::Copy(CopyDrop::Blocked));
+    Some(DropHot { onto, zone, preview, copy, blocked })
+}
+
+fn copy_hint(copy: bool, blocked: bool) -> String {
+    if !copy {
+        return String::new();
+    }
+    crate::tr(if blocked { crate::Key::CopyPaneBlocked } else { crate::Key::CopyPaneDrag }).to_string()
 }
 
 fn track_pane_drag() {
@@ -83,22 +112,45 @@ fn track_pane_drag() {
             return None;
         }
         let hot = hit_drop(a);
+        let copy = hot.as_ref().is_some_and(|h| h.copy) || (hot.is_none() && ctrl_copy());
+        let blocked = hot.as_ref().is_some_and(|h| h.blocked);
         if let Some(d) = a.pane_drag.as_mut() {
-            d.hot = hot.as_ref().map(|&(i, z, _)| (i, z));
+            d.copy = copy;
+            d.blocked = blocked;
+            d.hot = hot.as_ref().filter(|h| !h.blocked).map(|h| (h.onto, h.zone));
         }
-        Some((a.main, hot.map(|(_, _, r)| r)))
+        let hint = copy_hint(copy, blocked);
+        let hint_changed = a.drag_hint != hint;
+        if hint_changed {
+            a.drag_hint = hint;
+        }
+        Some((a.main, hot.map(|h| h.preview), hint_changed))
     });
-    let Some((main, rect)) = placed else { return };
+    let Some((main, rect, hint_changed)) = placed else { return };
     show_overlay(main, rect);
+    if hint_changed {
+        unsafe { update_status() };
+    }
+}
+
+/// Ctrl went down or up while a pane is moving. The next mouse move would notice too.
+pub(crate) unsafe fn refresh_pane_drag() {
+    if app(|a| a.pane_drag.is_none()) {
+        return;
+    }
+    track_pane_drag();
 }
 
 /// True when this press is the start of a pane drag (header or strip, not a button or the list).
 pub(crate) unsafe fn pane_drag_down(h: HWND, i: usize, x: i32, y: i32) -> bool {
     let mut rc = RECT::default();
     _ = GetClientRect(h, &mut rc);
+    let copying = ctrl_copy();
     let grab = app(|a| {
         // Splitter drag, zoom, and a window-tab press each already own the mouse.
-        if a.drag.is_some() || a.zoom.is_some() || a.s.panes() < 2 || a.tab_drag.is_some() || a.tab_press.is_some() || a.pane_drag.is_some() {
+        // One pane still cannot start a move. Ctrl can start a copy of that pane.
+        let panes = a.s.panes();
+        if a.drag.is_some() || a.zoom.is_some() || panes == 0 || (!copying && panes < 2) || a.tab_drag.is_some() || a.tab_press.is_some() || a.pane_drag.is_some() {
             return None;
         }
         let n = a.s.pane_tab_list(i).len();
@@ -122,7 +174,7 @@ pub(crate) unsafe fn pane_drag_move(h: HWND, x: i32, y: i32) {
         }
         let pane = p.pane;
         a.pane_press = None;
-        a.pane_drag = Some(PaneMove { hwnd: h, from: pane, hot: None });
+        a.pane_drag = Some(PaneMove { hwnd: h, from: pane, hot: None, copy: false, blocked: false });
         Some(())
     });
     if started.is_some() {
@@ -152,8 +204,13 @@ pub(crate) unsafe fn pane_drag_up(h: HWND) -> bool {
     hide_overlay();
     _ = ReleaseCapture();
     if let Some(d) = drag {
+        clear_drag_hint();
         if let Some((onto, zone)) = d.hot {
-            commit_pane_move(d.from, onto, zone);
+            if d.copy {
+                commit_pane_copy(d.from, onto, zone);
+            } else {
+                commit_pane_move(d.from, onto, zone);
+            }
         }
         return true;
     }
@@ -178,6 +235,7 @@ pub(crate) unsafe fn cancel_pane_drag() -> bool {
         let had = a.pane_drag.is_some() || a.pane_press.is_some();
         a.pane_drag = None;
         a.pane_press = None;
+        a.drag_hint.clear();
         had
     });
     if !had {
@@ -185,12 +243,34 @@ pub(crate) unsafe fn cancel_pane_drag() -> bool {
     }
     hide_overlay();
     _ = ReleaseCapture();
+    update_status();
     true
+}
+
+fn clear_drag_hint() {
+    let changed = app(|a| {
+        if a.drag_hint.is_empty() {
+            return false;
+        }
+        a.drag_hint.clear();
+        true
+    });
+    if changed {
+        unsafe { update_status() };
+    }
 }
 
 /// Move the live panes, then the active tab's grid. Other tabs and other windows stay as they are.
 unsafe fn commit_pane_move(from: usize, onto: usize, zone: DropZone) {
-    let Some(plan) = app(|a| a.zoom.is_none().then(|| pane_drop(&a.s.heights, &a.s.colr, &a.s.rowr, from, onto, zone)).flatten()) else {
+    let Some(plan) = app(|a| {
+        if a.zoom.is_some() {
+            return None;
+        }
+        match drag_plan(false, &a.s.heights, &a.s.colr, &a.s.rowr, from, onto, zone) {
+            Some(DragPlan::Move(shift)) => Some(shift),
+            _ => None,
+        }
+    }) else {
         return;
     };
     app(|a| a.focus_req = HWND::default());
@@ -260,4 +340,75 @@ unsafe fn commit_pane_move(from: usize, onto: usize, zone: DropZone) {
     note_save();
     set_active(focus);
     focus_view(focus);
+}
+
+/// Copy the current pane tab. An edge splits, including this pane's own edge. The centre adds a pane tab in that cell.
+unsafe fn commit_pane_copy(from: usize, onto: usize, zone: DropZone) {
+    let drop = app(|a| {
+        if a.zoom.is_some() {
+            return None;
+        }
+        match drag_plan(true, &a.s.heights, &a.s.colr, &a.s.rowr, from, onto, zone) {
+            Some(DragPlan::Copy(d)) => Some(d),
+            _ => None,
+        }
+    });
+    match drop {
+        Some(CopyDrop::Split { heights, colr, rowr, slots }) => commit_split_copy(from, heights, colr, rowr, slots),
+        Some(CopyDrop::Tab) => commit_tab_copy(from, onto),
+        _ => {}
+    }
+}
+
+unsafe fn commit_split_copy(from: usize, heights: Vec<usize>, colr: Vec<f64>, rowr: Vec<Vec<f64>>, slots: Vec<Option<usize>>) {
+    let Some((perm, home, fresh, focus)) = app(|a| {
+        let placed = place_grid(&slots, None, &a.home)?;
+        let fresh = placed.fresh_old?;
+        let focus = slots.iter().position(|s| s.is_none())?;
+        Some((placed.perm, placed.home, fresh, focus))
+    }) else {
+        return;
+    };
+    // The new cell is a new Explorer browser: same folder, view, sort and columns, empty history.
+    commit_layout(heights, Some((perm, home)), Some((from, fresh)), None, Some(focus), Some((colr, rowr)));
+}
+
+/// The folder on display becomes a pane tab on `dst`. That cell keeps its view. A failed browse puts the tabs back.
+unsafe fn commit_tab_copy(src: usize, dst: usize) {
+    save_view(src);
+    let Some((before_n, before_f, before_c, to)) = app(|a| {
+        if src >= a.s.panes() || dst >= a.s.panes() {
+            return None;
+        }
+        a.s.ensure_pane_tabs();
+        let before_n = a.s.pane_tab_list(dst).len();
+        let before_f = a.s.pane_folders[dst].clone();
+        let before_c = a.s.pane_cur[dst];
+        let to = a.s.copy_pane_tab(src, dst);
+        a.s.anchor();
+        let _ = pull_dirty(a);
+        Some((before_n, before_f, before_c, to))
+    }) else {
+        return;
+    };
+    if let Some(path) = to {
+        if !go_near(dst, &path) {
+            app(|a| {
+                if dst < a.s.pane_folders.len() {
+                    a.s.pane_folders[dst] = before_f;
+                }
+                if dst < a.s.pane_cur.len() {
+                    a.s.pane_cur[dst] = before_c;
+                }
+                a.s.anchor();
+                let _ = pull_dirty(a);
+            });
+            _ = MessageBeep(MB_ICONWARNING);
+        }
+    }
+    apply_pane_tab_chrome(dst, before_n);
+    refresh_save_button();
+    note_save();
+    set_active(dst);
+    focus_view(dst);
 }

@@ -302,7 +302,8 @@ pub(crate) unsafe fn update_status() {
         // a confirmation leads until its expiry: the line's end gets cut when it's too long
         a.note = a.note.take().filter(|(_, until)| Instant::now() < *until);
         let note = a.note.as_ref().map(|(s, _)| format!("{s}     ·     ")).unwrap_or_default();
-        let status = format!("{note}{head}{size}{tail}");
+        let drag = if a.drag_hint.is_empty() { String::new() } else { format!("{}     ·     ", a.drag_hint) };
+        let status = format!("{drag}{note}{head}{size}{tail}");
         (a.status != status).then(|| {
             a.status = status;
             status_rect(&geo(a))
