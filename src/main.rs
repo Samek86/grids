@@ -808,20 +808,20 @@ mod tests {
             assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
             assert!(p.num.right > p.num.left && p.fav.right <= w && p.view.top >= p.btn[0].bottom);
         }
-        // The number is reserved first. While the address edit still has s(32), the bar matches
-        // that wide layout. Below it, the number stays and the address (then the buttons) yield.
+        // The number is reserved first. The address starts just after whichever of
+        // back, forward and up are still shown. Those buttons give way, from up
+        // toward back, so a narrow pane can still show the folder name.
         for dpi in [96, 144] {
             let s = |v: i32| v * dpi / 96;
             for w in 60..=600 {
                 let p = pane_geo(w, 500, dpi, true);
                 assert_eq!(p.num.right - p.num.left, s(18), "{w}@{dpi}");
                 assert_eq!(p.btn[0].left, p.num.right, "{w}@{dpi}");
-                let edit = (p.addr.right - s(6)) - (p.addr.left + s(8));
-                if edit >= s(32) {
-                    let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
-                    assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
-                    assert_eq!(p.addr.left, s(4) + s(18) + 3 * s(24) + s(4), "{w}@{dpi}");
-                }
+                let row = [p.num, p.btn[0], p.btn[1], p.btn[2], p.addr, p.btn[3], p.filt, p.fav];
+                assert!(row.windows(2).all(|x| x[0].right <= x[1].left), "{w}@{dpi}");
+                let shown = p.btn[..3].iter().filter(|b| b.right > b.left).count() as i32;
+                let gap = if shown > 0 { s(4) } else { 0 };
+                assert_eq!(p.addr.left, p.num.right + shown * s(24) + gap, "{w}@{dpi}");
                 for c in [p.btn[0], p.btn[1], p.btn[2], p.btn[3], p.addr, p.filt, p.fav] {
                     if c.right > c.left {
                         assert!(c.left >= p.num.right, "{w}@{dpi}");
@@ -834,8 +834,9 @@ mod tests {
             let p = pane_geo(w, 500, dpi, true);
             (p.addr.right - s(6)) - (p.addr.left + s(8))
         };
-        assert!(edit_of(240, 96) < 32 && edit_of(241, 96) >= 32);
-        assert!(edit_of(361, 144) < 48 && edit_of(362, 144) >= 48);
+        // The old cutoff collapsed the address. It now keeps room for the folder name.
+        assert!(edit_of(240, 96) >= 66 && edit_of(241, 96) >= 66);
+        assert!(edit_of(360, 144) >= 99 && edit_of(362, 144) >= 99);
     }
 
     #[test]

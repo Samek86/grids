@@ -1763,6 +1763,13 @@ pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> 
     (first, first > 0 && used + ell + sep <= avail, last)
 }
 
+/// The full crumb row is wider than the field, and there is a parent to hide.
+/// The bar then draws only the current folder. Editing still shows the whole path.
+pub(crate) fn crumb_show_leaf(w: &[i32], avail: i32, sep: i32) -> bool {
+    let n = w.len() as i32;
+    n > 1 && w.iter().sum::<i32>() + sep * (n - 1) > avail
+}
+
 /// `crumb_fit`, keeping a slot for a `›` after the current folder when that still leaves `min`.
 /// Shell places and a field too narrow for that chevron lay out as before.
 /// `(first, '…' shown, last width, tail '›')`.
@@ -1994,7 +2001,7 @@ pub(crate) fn filter_spec(text: &str) -> String {
 
 #[cfg(test)]
 mod crumb_tests {
-    use super::{addr_jumps, addr_line_truncated, addr_path_truncated, addr_tip_text, crumb_fit, crumbs, jump_pick, layout_differs, real_folder, resolve, same_type, Session};
+    use super::{addr_jumps, addr_line_truncated, addr_path_truncated, addr_tip_text, crumb_fit, crumb_show_leaf, crumbs, jump_pick, layout_differs, real_folder, resolve, same_type, Session};
     use crate::imports::{SFGAO_FOLDER, SFGAO_STREAM};
     use crate::MAXP;
     use crate::THIS_PC;
@@ -2024,6 +2031,15 @@ mod crumb_tests {
         assert_eq!(f(&[30, 40], 15), (2, false, 0));
         assert_eq!(f(&[30, 40], 0), (2, false, 0));
         assert_eq!(f(&[], 100), (0, false, 0));
+    }
+
+    #[test]
+    fn narrow_address_keeps_only_the_folder_name() {
+        // 30+4+40+4+50 = 128. Wider than that shows the whole path.
+        assert!(!crumb_show_leaf(&[30, 40, 50], 128, 4));
+        assert!(crumb_show_leaf(&[30, 40, 50], 127, 4));
+        assert!(!crumb_show_leaf(&[50], 10, 4));
+        assert!(!crumb_show_leaf(&[], 0, 4));
     }
 
     #[test]

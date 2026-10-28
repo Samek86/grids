@@ -132,6 +132,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 open_stashed();
             }
             WM_TIMER if wp.0 == TIMER_CTX_WARM => crate::shell::warmup::on_timer(h),
+            WM_TIMER if wp.0 == TIMER_DROP => on_tree_drop_timer(h),
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
                     return DefWindowProcW(h, msg, wp, lp);
@@ -160,12 +161,25 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let moved = app(|a| {
                     let d = a.drag?;
                     let g = geo(a);
-                    let min = 60 * a.dpi / 96;
+                    let min_w = pane_min_w(a.dpi);
+                    let min_h = pane_min_h(a.dpi);
                     match d {
                         Hit::Side => a.s.side = x - g.gap / 2,
                         Hit::SideSplit => a.s.side_split = tree_share_at(y - g.gap / 2, g.top, g.bot - g.top, g.gap, side_min(a.dpi), a.s.fav_top),
-                        Hit::Col(k) => drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, g.w - g.pad - g.gx, g.gap, min),
-                        Hit::Row(c, k) => drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, g.bot - g.top, g.gap, min),
+                        Hit::Col(k) => {
+                            let len = g.w - g.pad - g.gx;
+                            drag_ratio(&mut a.s.colr, k, x - g.gap / 2, g.gx, len, g.gap, min_w);
+                            if let Some(r) = ratios_matching_min(&a.s.colr, len, g.gap, min_w) {
+                                a.s.colr = r;
+                            }
+                        }
+                        Hit::Row(c, k) => {
+                            let len = g.bot - g.top;
+                            drag_ratio(&mut a.s.rowr[c], k, y - g.gap / 2, g.top, len, g.gap, min_h);
+                            if let Some(r) = ratios_matching_min(&a.s.rowr[c], len, g.gap, min_h) {
+                                a.s.rowr[c] = r;
+                            }
+                        }
                     }
                     a.s.side = kept_side(a.s.tree_on, a.s.side, geo(a).side);
                     Some(())
@@ -429,6 +443,13 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     release_desk_handles(handles.0, handles.1, handles.2, handles.3, handles.4);
                 }
             }
+            WM_GETMINMAXINFO => {
+                let m = &mut *(lp.0 as *mut MINMAXINFO);
+                let (x, y) = min_track_size(h);
+                m.ptMinTrackSize.x = x;
+                m.ptMinTrackSize.y = y;
+                return LRESULT(0);
+            }
             WM_DESTROY => {
                 release_hotkey_hwnd(h);
                 _ = KillTimer(Some(h), TIMER_STATUS);
@@ -467,6 +488,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         };
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
+            WM_TIMER if wp.0 == TIMER_DROP => on_pane_drop_timer(h),
             WM_THEME_SCROLL => apply_theme_scroll(h),
             WM_TIMER if wp.0 == TIMER_NEWFILE => {
                 let job = PENDING_FILE.lock().ok().and_then(|mut p| {
