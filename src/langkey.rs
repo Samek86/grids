@@ -571,6 +571,7 @@ pub(crate) enum Key {
     TwoPanesTopAndBottom,
     UncAndMappedDrivesOffByDefault,
     Undo,
+    UndoSkippedMissing,
     UndoneN,
     UnlockTab,
     UnpinFromExplorer,
@@ -622,7 +623,7 @@ pub(crate) enum Key {
     ZipListHead,
 }
 
-pub(crate) const KEY_COUNT: usize = 617;
+pub(crate) const KEY_COUNT: usize = 618;
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -1193,6 +1194,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Two panes, top and bottom",
     "UNC and mapped drives. Off by default. A disconnected share is not queried. WSL folders are sized either way and refresh on F5.",
     "Undo",
+    "{n} items were skipped because they no longer exist",
     "Undid {n} items",
     "Unlock tab",
     "Unpin from Explorer",
@@ -1813,6 +1815,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "two_panes_top_and_bottom",
     "unc_and_mapped_drives_off_by_default",
     "undo",
+    "undo_skipped_missing",
     "undone_n",
     "unlock_tab",
     "unpin_from_explorer",
