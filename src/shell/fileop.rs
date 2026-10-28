@@ -404,7 +404,15 @@ unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool,
         if after_drop {
             settle_drop_move(&srcs);
         }
-        if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
+        let first = run_copy(&srcs, &dst, rename, mv);
+        let result = if first.is_err() && after_drop && mv {
+            // Always-ask Move: drag source may still hold the item once after the dialog.
+            settle_drop_move(&srcs);
+            run_copy(&srcs, &dst, rename, mv)
+        } else {
+            first
+        };
+        if let Err(e) = result {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let what = if mv { tr(crate::Key::MovingFailed) } else { tr(crate::Key::CopyingFailed) };
                 let text = HSTRING::from(format!("{what}{}", e.message()));
@@ -494,8 +502,8 @@ unsafe fn drag_still_holds(path: &str) -> bool {
 /// Let `Drop` return, and let the drag source close its handle, before `MoveItem`.
 fn settle_drop_move(srcs: &[String]) {
     let start = Instant::now();
-    let min = std::time::Duration::from_millis(200);
-    let max = std::time::Duration::from_millis(2000);
+    let min = std::time::Duration::from_millis(500);
+    let max = std::time::Duration::from_millis(5000);
     loop {
         let held = srcs.iter().any(|p| unsafe { drag_still_holds(p) });
         let elapsed = start.elapsed();
