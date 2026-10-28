@@ -831,6 +831,9 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
     match m.message {
         WM_MOUSEMOVE => {
             set_hover(if is_icon_button(m.hwnd) { m.hwnd } else { HWND::default() });
+            // The folder list does not deliver WM_MOUSELEAVE to the favourites panel.
+            // A move anywhere else takes the location tip down.
+            hide_fav_tip_if_pointer_left(m.hwnd);
             false
         }
         WM_MOUSELEAVE => {
