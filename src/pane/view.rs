@@ -271,9 +271,18 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     moves.push((ctl(ID_FAV), pg.fav));
     place_find(h);
     move_all(&moves, Some((&eb, pg.view)));
-    // One tab: the add button sits beside ⇄. Two or more: the strip takes over.
-    // SW_SHOWNA so a resize does not move focus onto the button.
-    _ = ShowWindow(add, if pg.add.right > pg.add.left { SW_SHOWNA } else { SW_HIDE });
+    // A zero rect is not enough: a button window still takes the click. Hide it.
+    // SW_SHOWNA so a resize does not move focus onto a button that is coming back.
+    let show = |id: i32, r: RECT| unsafe {
+        _ = ShowWindow(ctl(id), if r.right > r.left { SW_SHOWNA } else { SW_HIDE });
+    };
+    show(ID_BACK, pg.btn[0]);
+    show(ID_FWD, pg.btn[1]);
+    show(ID_UP, pg.btn[2]);
+    show(ID_OPEN_IN, pg.btn[3]);
+    show(ID_FAV, pg.fav);
+    show(ID_PANE_ADD, pg.add);
+    show(ID_FILTER, pg.filt);
     show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);
     // After the browser is placed, so a share error stays above the file list.

@@ -451,79 +451,144 @@ pub(crate) struct PaneGeo {
     pub(crate) view: RECT,
 }
 
-/// A positive-area rect that starts before `limit` covers the pane number (or sits off the left edge).
-fn covers_number(rect: RECT, limit: i32) -> bool {
-    rect.right > rect.left && rect.left < limit
-}
+/// Address pill that still shows the current folder name. The name is cut with an ellipsis
+/// when it is longer than this. Lower-priority chrome gives up space before the pill does.
+const ADDR_MIN_DIP: i32 = 80;
 
-fn hits(a: RECT, b: RECT) -> bool {
-    a.right > a.left && b.right > b.left && a.left < b.right && b.left < a.right
-}
-
-/// Park a button on `limit` so its window no longer covers the number.
-fn drop_button(rect: &mut RECT, limit: i32) {
-    if covers_number(*rect, limit) {
-        rect.left = limit;
-        rect.right = limit;
-    }
-}
-
-/// Address and filter may shrink to nothing. A button keeps its full width or goes away.
-fn shrink_from(rect: &mut RECT, limit: i32) {
-    if rect.right <= rect.left || rect.left >= limit {
-        return;
-    }
-    rect.left = limit;
-    if rect.right < rect.left {
-        rect.right = rect.left;
-    }
+struct HeaderChrome {
+    back: bool,
+    fwd: bool,
+    up: bool,
+    swap: bool,
+    add: bool,
+    fav: bool,
+    filt: i32,
 }
 
 /// `strip` when this pane has two or more tabs. Callers that have a window use `pane_geo_of`.
+/// The number stays. The address stays wide enough for the folder name. The filter shrinks
+/// first, then up, forward, back, +, ⇄ and the star, in that order.
 pub(crate) fn pane_geo(w: i32, h: i32, dpi: i32, strip: bool) -> PaneGeo {
     let s = |v: i32| v * dpi / 96;
-    let (bar, bh, b, pad) = (s(30), s(22), s(24), s(4));
-    let strip_h = if strip { s(26) } else { 0 };
-    let y = (bar - bh) / 2;
-    let r = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
-    // The number is the header drag handle. Reserve its s(18) before the address and the
-    // buttons, and keep it inside the plate. Those controls shrink or drop in what is left.
-    // While the address edit still has s(32) inside its insets, every other rect matches the
-    // wide-pane layout (the number used to disappear to protect that minimum).
-    let num_left = if w > pad { pad } else { 0 };
-    let nw = s(18).min((w - num_left).max(0));
-    let num = r(num_left, nw);
-    let limit = num.right;
-    let mut fav = r(w - pad - b, b);
     // back, forward, up, ⇄, favourite; the add-tab button joins them while the strip is hidden
     let nbtn = if strip { 5 } else { 6 };
-    let fw = s(150).min((w - 2 * pad - nbtn * b) / 3).max(0);
-    let mut filt = r(fav.left - s(2) - fw, fw);
-    let mut add = if strip { RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh } } else { r(filt.left - s(2) - b, b) };
-    let open = r(add.left - s(2) - b, b);
-    let x = limit;
-    let addr_x = x + 3 * b + s(4);
-    let mut addr = r(addr_x, open.left - s(4) - addr_x);
-    let mut btn = [r(x, b), r(x + b, b), r(x + 2 * b, b), open];
-    drop_button(&mut fav, limit);
-    drop_button(&mut add, limit);
-    drop_button(&mut btn[3], limit);
-    shrink_from(&mut filt, limit);
-    shrink_from(&mut addr, limit);
-    if strip {
-        // The add slot stays a zero-width mark on the filter's left edge.
-        add = RECT { left: filt.left, top: y, right: filt.left, bottom: y + bh };
-    }
-    // A left button that would land on a control still showing is dropped, address side first.
-    for i in [2, 1, 0] {
-        if [btn[3], add, filt, fav, addr, num].into_iter().any(|other| hits(btn[i], other)) {
-            btn[i].right = btn[i].left;
+    let mut chrome = HeaderChrome {
+        back: true,
+        fwd: true,
+        up: true,
+        swap: true,
+        add: !strip,
+        fav: true,
+        filt: s(150).min((w - 2 * s(4) - nbtn * s(24)) / 3).max(0),
+    };
+    let addr_min = s(ADDR_MIN_DIP);
+    loop {
+        let laid = place_header(w, h, dpi, strip, &chrome);
+        let addr_w = laid.addr.right - laid.addr.left;
+        if addr_w >= addr_min {
+            return laid;
         }
+        if chrome.filt > 0 {
+            // A sliver cannot hold the search icon, so the filter goes away rather than shrink to one.
+            let need = addr_min - addr_w;
+            let next = if need < chrome.filt { chrome.filt - need } else { 0 };
+            chrome.filt = if next < s(24) { 0 } else { next };
+            continue;
+        }
+        if chrome.up {
+            chrome.up = false;
+            continue;
+        }
+        if chrome.fwd {
+            chrome.fwd = false;
+            continue;
+        }
+        if chrome.back {
+            chrome.back = false;
+            continue;
+        }
+        if chrome.add {
+            chrome.add = false;
+            continue;
+        }
+        if chrome.swap {
+            chrome.swap = false;
+            continue;
+        }
+        if chrome.fav {
+            chrome.fav = false;
+            continue;
+        }
+        return laid;
     }
+}
+
+fn place_header(w: i32, h: i32, dpi: i32, strip: bool, chrome: &HeaderChrome) -> PaneGeo {
+    let s = |v: i32| v * dpi / 96;
+    let (bar, bh, b, pad, gap) = (s(30), s(22), s(24), s(4), s(2));
+    let strip_h = if strip { s(26) } else { 0 };
+    let y = (bar - bh) / 2;
+    let rect = |x: i32, wd: i32| RECT { left: x, top: y, right: x + wd.max(0), bottom: y + bh };
+    let zero = |x: i32| rect(x, 0);
+    let num_left = if w > pad { pad } else { 0 };
+    let num = rect(num_left, s(18).min((w - num_left).max(0)));
+    let mut x = num.right;
+    let take = |x: &mut i32, on: bool| -> RECT {
+        if !on {
+            return zero(*x);
+        }
+        let r = rect(*x, b);
+        *x += b;
+        r
+    };
+    let btn0 = take(&mut x, chrome.back);
+    let btn1 = take(&mut x, chrome.fwd);
+    let btn2 = take(&mut x, chrome.up);
+    let nav = chrome.back || chrome.fwd || chrome.up;
+
+    // Right side, packed from the window edge: star, filter, +, ⇄.
+    let mut edge = w - pad;
+    let fav = if chrome.fav {
+        edge -= b;
+        rect(edge, b)
+    } else {
+        zero(edge)
+    };
+    let filt = if chrome.filt > 0 {
+        if chrome.fav {
+            edge -= gap;
+        }
+        edge -= chrome.filt;
+        rect(edge, chrome.filt)
+    } else {
+        zero(edge)
+    };
+    let add = if chrome.add {
+        if chrome.fav || chrome.filt > 0 {
+            edge -= gap;
+        }
+        edge -= b;
+        rect(edge, b)
+    } else {
+        zero(edge)
+    };
+    let swap_on = chrome.swap;
+    let btn3 = if swap_on {
+        if chrome.fav || chrome.filt > 0 || chrome.add {
+            edge -= gap;
+        }
+        edge -= b;
+        rect(edge, b)
+    } else {
+        zero(edge)
+    };
+    let right = chrome.fav || chrome.filt > 0 || chrome.add || swap_on;
+    let addr_left = if nav { x + pad } else { x };
+    let addr_right = if right { edge - pad } else { (w - pad).max(addr_left) };
     PaneGeo {
         num,
-        btn,
-        addr,
+        btn: [btn0, btn1, btn2, btn3],
+        addr: rect(addr_left, (addr_right - addr_left).max(0)),
         add,
         filt,
         fav,
@@ -1216,17 +1281,7 @@ mod tests {
         assert_eq!(one.add.right + 2, one.filt.left);
         assert_eq!(many.btn[3].right + 2, many.filt.left);
         assert!(one.addr.right < many.addr.right);
-        // The add button narrows the address, so the edit falls under s(32) on a wider pane.
         // The number is reserved first and stays either way.
-        let keeps_edit = |strip| {
-            (60..=800)
-                .find(|&w| {
-                    let p = pane_geo(w, 500, 96, strip);
-                    (p.addr.right - 6) - (p.addr.left + 8) >= 32
-                })
-                .unwrap()
-        };
-        assert!(keeps_edit(false) > keeps_edit(true));
         for strip in [false, true] {
             let narrow = pane_geo(80, 400, 96, strip);
             assert_eq!(narrow.num.right - narrow.num.left, 18, "strip={strip}");
@@ -1277,19 +1332,19 @@ mod tests {
         assert_eq!((wide.num.left, wide.num.right), (4, 22));
         assert_eq!((wide.btn[0].left, wide.btn[2].right, wide.addr.left, wide.addr.right), (22, 94, 98, 590));
         assert_eq!((wide.btn[3].left, wide.filt.left, wide.filt.right, wide.fav.left), (594, 620, 770, 772));
-        // Just below the old cutoff the number used to vanish. It stays, and the address gives up a pixel.
+        // Just below the old cutoff the number used to vanish. It stays, and the address keeps a folder name.
         let above = pane_geo(241, 500, 96, true);
         let below = pane_geo(240, 500, 96, true);
         let edit = |p: &PaneGeo| (p.addr.right - 6) - (p.addr.left + 8);
-        assert_eq!((above.num.left, above.num.right, edit(&above)), (4, 22, 32));
+        assert_eq!((above.num.left, above.num.right), (4, 22));
+        assert!(edit(&above) >= 66 && edit(&below) >= 66);
         assert_eq!((below.num.left, below.num.right), (4, 22));
-        assert_eq!(edit(&below), 31);
         assert_eq!((below.btn[0].left, below.addr.left), (above.btn[0].left, above.addr.left));
         assert!(below.btn.iter().all(|r| r.right - r.left == 24) && below.fav.right - below.fav.left == 24);
         // A ~20% column at 200% DPI (1x3). The label is the whole grab target.
         let col = pane_geo(384, 500, 192, true);
         assert_eq!(col.num.right - col.num.left, 36);
-        assert!(edit(&col) < 64);
+        assert!(col.addr.right - col.addr.left >= 160);
         for c in [col.btn[0], col.btn[1], col.btn[2], col.btn[3], col.addr, col.filt, col.fav] {
             if c.right > c.left {
                 assert!(c.left >= col.num.right);
@@ -1310,6 +1365,14 @@ mod tests {
                     assert!(c.left >= p.num.right, "overlaps the number {dpi} strip={strip} {:?}", c);
                 }
             }
+            // The pill stays, wide enough that the crumb field can draw the folder name.
+            let addr_w = p.addr.right - p.addr.left;
+            assert!(addr_w >= s(80), "address dropped {dpi} strip={strip} w={addr_w}");
+            let field = (p.addr.right - s(6)) - (p.addr.left + s(8));
+            assert!(field >= s(16), "folder name has no room {dpi} strip={strip}");
+            // Back, forward, up, ⇄ and + give way before the address does.
+            assert!(p.btn.iter().all(|r| r.right == r.left), "nav still up {dpi} strip={strip}");
+            assert_eq!(p.add.left, p.add.right, "add still up {dpi} strip={strip}");
         }
     }
 }
