@@ -67,6 +67,7 @@ pub(crate) const TIMER_FVIEWS: usize = 14; // debounced folder-views.json write
 pub(crate) const TIMER_NET: usize = 15; // pane: a UNC or mapped drive did not resolve in time
 pub(crate) const TIMER_KIDS: usize = 16; // pane: a share's subfolder list did not come back in time
 pub(crate) const TIMER_CTX_WARM: usize = 17; // after the window is up, warm shell context-menu handlers off the UI thread
+pub(crate) const TIMER_DROP: usize = 18; // re-wrap a shell drop target the view registered after we did
 pub(crate) const FVIEW_SAVE_MS: u32 = 700;
 pub(crate) const WM_FIND: u32 = WM_APP + 50; // search results arrived for this pane
 pub(crate) const WM_EV: u32 = WM_APP + 51; // Everything status changed in the settings window
