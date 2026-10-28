@@ -257,6 +257,9 @@ pub(crate) struct SideDrag {
 pub(crate) struct App {
     pub(crate) desks: Vec<Desk>,
     pub(crate) cur: usize,
+    /// Standing desk when `desks` is empty (last window torn down; quit messages still drain).
+    /// Deref hits this instead of panicking on `desks[cur]`.
+    fallback: Desk,
     /// A failed panegrid.json write is tried again after this instant. Not mid-drag.
     pub(crate) save_after: Option<Instant>,
     pub(crate) hot_on: bool,    // the global hotkey is really registered (s.hotkey is only the wish)
@@ -264,17 +267,37 @@ pub(crate) struct App {
     pub(crate) last_front: usize, // desk that was active most recently
 }
 
+impl App {
+    /// Live desk for `cur`, or `fallback` when the desk list is empty (teardown).
+    fn desk_ref(&self) -> &Desk {
+        match self.desks.get(self.cur) {
+            Some(d) => d,
+            None => self.desks.first().unwrap_or(&self.fallback),
+        }
+    }
+
+    fn desk_mut(&mut self) -> &mut Desk {
+        if self.cur < self.desks.len() {
+            return &mut self.desks[self.cur];
+        }
+        if !self.desks.is_empty() {
+            let i = self.desks.len() - 1;
+            return &mut self.desks[i];
+        }
+        &mut self.fallback
+    }
+}
+
 impl Deref for App {
     type Target = Desk;
     fn deref(&self) -> &Desk {
-        &self.desks[self.cur]
+        self.desk_ref()
     }
 }
 
 impl DerefMut for App {
     fn deref_mut(&mut self) -> &mut Desk {
-        let i = self.cur;
-        &mut self.desks[i]
+        self.desk_mut()
     }
 }
 
@@ -398,7 +421,7 @@ pub(crate) fn blank_desk() -> Desk {
 }
 
 thread_local! {
-    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, save_after: None, hot_on: false, hot_hwnd: HWND::default(), last_front: 0 });
+    static APP: RefCell<App> = RefCell::new(App { desks: vec![blank_desk()], cur: 0, fallback: blank_desk(), save_after: None, hot_on: false, hot_hwnd: HWND::default(), last_front: 0 });
 }
 
 pub(crate) fn no_panes() -> Vec<Option<Pane>> {
@@ -547,8 +570,12 @@ pub(crate) fn drop_current_desk() -> (HFONT, HFONT, HFONT, HFONT, HMENU) {
         if !brush.is_invalid() {
             unsafe { _ = DeleteObject(brush.into()) };
         }
+        // Last desk: leave `desks` empty so `window_count()==0` posts quit. Shell/COM
+        // callbacks (UNC browse, extensions) may still run before WM_QUIT; Deref uses
+        // `fallback` so those paths do not panic on `desks[cur]`.
         if a.desks.is_empty() {
             a.cur = 0;
+            a.fallback = blank_desk();
         } else {
             if a.cur >= a.desks.len() {
                 a.cur = a.desks.len() - 1;
@@ -701,3 +728,49 @@ pub(crate) unsafe fn text_of(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
+#[cfg(test)]
+mod empty_desks_deref {
+    use super::*;
+
+    #[test]
+    fn deref_and_deref_mut_tolerate_empty_desks() {
+        app(|a| {
+            a.desks.clear();
+            a.cur = 0;
+            a.fallback = blank_desk();
+        });
+        // Would panic at desks[0] before the fallback guard.
+        let main = app(|a| a.main);
+        assert!(main.0.is_null());
+        app(|a| {
+            a.status_key.clear();
+            assert!(a.desks.is_empty());
+            assert_eq!(a.cur, 0);
+        });
+        // Restore a blank desk so later tests in this process see a normal App.
+        app(|a| {
+            if a.desks.is_empty() {
+                a.desks.push(blank_desk());
+            }
+            a.cur = 0;
+        });
+    }
+
+    #[test]
+    fn drop_last_desk_leaves_empty_and_deref_safe() {
+        app(|a| {
+            a.desks.clear();
+            a.desks.push(blank_desk());
+            a.cur = 0;
+        });
+        let _ = drop_current_desk();
+        assert_eq!(window_count(), 0);
+        let _ = app(|a| a.main); // must not panic
+        app(|a| {
+            if a.desks.is_empty() {
+                a.desks.push(blank_desk());
+            }
+            a.cur = 0;
+        });
+    }
+}

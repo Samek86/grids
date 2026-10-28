@@ -481,6 +481,10 @@ pub(crate) extern "system" fn pane_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARA
 fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         bind_hwnd(h);
+        // Last desk already dropped; shell/UNC callbacks may still deliver pane messages.
+        if window_count() == 0 {
+            return DefWindowProcW(h, msg, wp, lp);
+        }
         let nav = |flags: u32| {
             if let Some(i) = pane_of(h) {
                 nav_pane(i, flags);
