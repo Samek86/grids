@@ -249,6 +249,29 @@ pub(crate) fn fav_release(group: bool, dx: i32, dy: i32, on_pressed_row: bool) -
     }
 }
 
+/// Pointer over the favourites panel.
+/// A leaf opens on click, so the hand says so. A group header only expands or
+/// collapses, and empty space is not a row, so both keep the arrow.
+/// A reorder or an outside drop already chose a cursor; that one stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FavCursor {
+    Keep,
+    Hand,
+    Arrow,
+}
+
+/// `group` is the row under the pointer. `None` is empty space (or the removal note).
+/// `Some(true)` is a header. `Some(false)` is an openable leaf.
+pub(crate) fn fav_hover_cursor(dragging: bool, group: Option<bool>) -> FavCursor {
+    if dragging {
+        FavCursor::Keep
+    } else if group == Some(false) {
+        FavCursor::Hand
+    } else {
+        FavCursor::Arrow
+    }
+}
+
 /// Row under `y`, or none. `row_h <= 0` is not a hit (that would divide by zero).
 /// The sum is widened so a large scroll does not overflow.
 pub(crate) fn fav_row_at(y: i32, scroll: i32, row_h: i32, page: i32, n: usize) -> Option<usize> {
@@ -1098,6 +1121,32 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
             WM_PAINT => paint_side(h),
             WM_ERASEBKGND => return LRESULT(1),
+            WM_SETCURSOR => {
+                // The scrollbar is not a row. A drag (reorder or a file dropped from outside)
+                // keeps the cursor it already shows; do not put a hand on top of it.
+                if (lp.0 & 0xffff) as u32 != HTCLIENT {
+                    return DefWindowProcW(h, msg, wp, lp);
+                }
+                let dragging = app(|a| a.side_drag.is_some() || a.side_external);
+                let group = if dragging {
+                    None
+                } else {
+                    cursor_in_client(h).and_then(|(_, y)| {
+                        let i = row_at(y)?;
+                        rows().get(i).map(|r| r.group)
+                    })
+                };
+                let id = match fav_hover_cursor(dragging, group) {
+                    FavCursor::Keep => return DefWindowProcW(h, msg, wp, lp),
+                    FavCursor::Hand => IDC_HAND,
+                    FavCursor::Arrow => IDC_ARROW,
+                };
+                if let Ok(c) = LoadCursorW(None, id) {
+                    SetCursor(Some(c));
+                    return LRESULT(1);
+                }
+                return DefWindowProcW(h, msg, wp, lp);
+            }
             WM_MOUSEMOVE => {
                 if TIP_GUARD.with(|c| c.get()) {
                     return LRESULT(0);
@@ -1683,7 +1732,7 @@ pub(crate) unsafe fn register_side_drop(h: HWND) {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{fav_release, fav_row_at, fav_row_height, fav_tip_act, fav_tip_hides, fav_tip_text, mark_rows, FavRelease, FavRow, FavTipAct, RowKind};
+    use super::{fav_hover_cursor, fav_release, fav_row_at, fav_row_height, fav_tip_act, fav_tip_hides, fav_tip_text, mark_rows, FavCursor, FavRelease, FavRow, FavTipAct, RowKind};
     use crate::i18n::UI;
 
     #[test]
@@ -1782,5 +1831,16 @@ mod tests {
         assert_eq!(fav_release(false, 0, 0, false), FavRelease::None);
         assert_eq!(fav_release(true, 0, 0, false), FavRelease::None);
         assert_eq!(fav_release(false, 100, 100, false), FavRelease::None);
+    }
+
+    #[test]
+    fn hover_cursor_is_hand_on_a_leaf_and_arrow_elsewhere_except_while_dragging() {
+        assert_eq!(fav_hover_cursor(false, Some(false)), FavCursor::Hand);
+        assert_eq!(fav_hover_cursor(false, Some(true)), FavCursor::Arrow);
+        assert_eq!(fav_hover_cursor(false, None), FavCursor::Arrow);
+        // Reorder and an outside drop keep the cursor that drag already shows.
+        assert_eq!(fav_hover_cursor(true, Some(false)), FavCursor::Keep);
+        assert_eq!(fav_hover_cursor(true, Some(true)), FavCursor::Keep);
+        assert_eq!(fav_hover_cursor(true, None), FavCursor::Keep);
     }
 }
