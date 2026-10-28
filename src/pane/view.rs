@@ -1432,19 +1432,73 @@ pub(crate) unsafe fn toggle_tree() {
     settings::redraw();
 }
 
+fn blank_pane_slot(s: &mut Session, i: usize) {
+    if i >= MAXP {
+        return;
+    }
+    if i < s.paths.len() {
+        s.paths[i].clear();
+    }
+    if i < s.views.len() {
+        s.views[i] = (0, 0);
+    }
+    if i < s.cols.len() {
+        s.cols[i].clear();
+    }
+    if i < s.tints.len() {
+        s.tints[i] = 0;
+    }
+    if i < s.pane_folders.len() {
+        s.pane_folders[i].clear();
+    }
+    if i < s.pane_cur.len() {
+        s.pane_cur[i] = 0;
+    }
+}
+
 pub(crate) unsafe fn set_layout(h: Vec<usize>) {
+    commit_layout(h, None, None, None, None);
+}
+
+/// `planned` is a header-menu split or close. None is the layout picker (`remap`).
+/// `seed` is `(source pane, free old slot)` copied after views are saved and before panes move.
+/// `blank_old` is a closed pane: its folder, tabs, tint and columns are dropped, and it does not return.
+/// `focus` is the new slot to activate. None keeps the pane that was active, or the nearest cell if that cell left.
+pub(crate) unsafe fn commit_layout(
+    h: Vec<usize>,
+    planned: Option<([usize; MAXP], Homes)>,
+    seed: Option<(usize, usize)>,
+    blank_old: Option<usize>,
+    focus: Option<usize>,
+) {
     if h.is_empty() || h.iter().any(|&n| n == 0) {
         return;
     }
+    let menu_edit = planned.is_some();
     app(|a| a.focus_req = HWND::default());
     for i in 0..MAXP {
         save_view(i);
     }
     let (perm, slots) = app(|a| {
-        let (perm, home) = remap(&a.s.heights, &h, &a.home);
+        let (perm, home) = match planned {
+            Some((perm, home)) => (perm, home),
+            None => remap(&a.s.heights, &h, &a.home),
+        };
+        if let Some((src, fresh)) = seed {
+            copy_pane_view(&mut a.s, src, fresh);
+            if fresh < a.s.tints.len() {
+                a.s.tints[fresh] = 0;
+            }
+            a.live_filters[fresh].clear();
+        }
         a.home = home;
         (perm, perm.map(|k| a.panes.get(k).and_then(|p| p.as_ref()).map(|p| p.slot.clone())))
     });
+    if let Some((_, fresh)) = seed {
+        if let Ok(mut f) = FILTERS.lock() {
+            f[fresh].clear();
+        }
+    }
     {
         let mut f = FILTERS.lock().unwrap_or_else(|e| e.into_inner());
         let old = f.clone();
@@ -1458,6 +1512,12 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
     let revs = SEL_REV.each_ref().map(|r| r.load(Ordering::Relaxed));
     for (j, &k) in perm.iter().enumerate() {
         SEL_REV[j].store(revs[k], Ordering::Relaxed);
+    }
+    let blank_at = blank_old.and_then(|old| perm.iter().position(|&p| p == old));
+    if let Some(at) = blank_at {
+        if let Ok(mut f) = FILTERS.lock() {
+            f[at].clear();
+        }
     }
     let gone = app(|a| {
         let (old_h, old_active) = (a.s.heights.clone(), a.s.active);
@@ -1475,7 +1535,11 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
         if let Some(b) = a.tab_base.get_mut(tab) {
             reorder_tab_slots(&mut b.grid, &order);
         }
-        a.s.anchor();
+        if let Some(at) = blank_at {
+            blank_pane_slot(&mut a.s, at);
+            a.live_filters[at].clear();
+            a.home[at] = None;
+        }
         let to = |k: &mut usize| *k = perm.iter().position(|&p| p == *k).unwrap_or(*k);
         if let Some(d) = a.drop_open.as_mut() {
             to(&mut d.1);
@@ -1491,18 +1555,56 @@ pub(crate) unsafe fn set_layout(h: Vec<usize>) {
         a.status_key.clear();
         let n: usize = h.iter().sum();
         // permute_in already moved `active` with its pane. Off the new grid means that cell is gone.
-        let gone = a.s.active >= n;
-        if gone {
-            let (c, r) = slot(&old_h, old_active);
-            let c = c.min(h.len() - 1);
-            a.s.active = h[..c].iter().sum::<usize>() + r.min(h[c] - 1);
+        let gone = if let Some(f) = focus {
+            a.s.active = f.min(n.saturating_sub(1));
+            true
+        } else {
+            let gone = a.s.active >= n;
+            if gone {
+                let (c, r) = slot(&old_h, old_active);
+                let c = c.min(h.len() - 1);
+                a.s.active = h[..c].iter().sum::<usize>() + r.min(h[c] - 1);
+            }
+            gone
+        };
+        if menu_edit {
+            let active = a.s.active;
+            let fix = |k: &mut usize| {
+                if *k >= n {
+                    *k = active;
+                }
+            };
+            if let Some(d) = a.drop_open.as_mut() {
+                fix(&mut d.1);
+            }
+            if let Some(m) = a.matcher.as_mut() {
+                fix(&mut m.pane);
+            }
+            if let Some(k) = a.kids.as_mut() {
+                fix(&mut k.i);
+            }
+            fix(&mut a.peek_pane);
         }
         a.s.set_heights(h);
+        a.s.anchor();
         let _ = pull_dirty(a);
         gone
     });
     NAV_GEN.fetch_add(1, Ordering::SeqCst);
     relayout();
+    // Destroying the closed pane writes its view back onto the parked slot. Drop that too.
+    if let Some(at) = blank_at {
+        app(|a| {
+            blank_pane_slot(&mut a.s, at);
+            a.live_filters[at].clear();
+            a.home[at] = None;
+            a.s.anchor();
+            let _ = pull_dirty(a);
+        });
+        if let Ok(mut f) = FILTERS.lock() {
+            f[at].clear();
+        }
+    }
     let named = app(|a| a.panes.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| (p.hwnd, i))).collect::<Vec<_>>());
     for (hwnd, i) in named {
         name_fields(hwnd, i);

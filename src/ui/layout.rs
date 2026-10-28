@@ -397,6 +397,180 @@ pub(crate) fn slot(h: &[usize], mut i: usize) -> (usize, usize) {
     (h.len().saturating_sub(1), h.last().copied().unwrap_or(1).saturating_sub(1))
 }
 
+/// Columns in one window, and rows in one column. 4 × 4 is the 16-pane grid.
+pub(crate) const GRID_COLS: usize = 4;
+pub(crate) const GRID_ROWS: usize = 4;
+
+/// One header-menu split or close: the new rows-per-column, and which old pane
+/// fills each new slot. `None` is the pane just added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GridChange {
+    pub(crate) heights: Vec<usize>,
+    pub(crate) slots: Vec<Option<usize>>,
+}
+
+/// Permutation that realises `slots`. `perm[new] = old`. `fresh_old` is the free
+/// slot a split copies into, before the panes are moved. A pane passed as `leaving`
+/// is parked off the grid with no home, so a later layout change does not bring it back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Placed {
+    pub(crate) perm: [usize; MAXP],
+    pub(crate) home: Homes,
+    pub(crate) fresh_old: Option<usize>,
+}
+
+fn pane_total(h: &[usize]) -> usize {
+    h.iter().sum()
+}
+
+fn grid_addressed(h: &[usize], pane: usize) -> bool {
+    !h.is_empty() && h.iter().all(|&n| n > 0) && pane < pane_total(h)
+}
+
+/// A new column of one pane, full height, immediately to the right of `pane`'s column.
+/// Panes further right move over. None when the grid already has four columns, or `pane` is not on it.
+pub(crate) fn split_right_grid(heights: &[usize], pane: usize) -> Option<GridChange> {
+    if !grid_addressed(heights, pane) || heights.len() >= GRID_COLS || pane_total(heights) >= GRID_COLS * GRID_ROWS {
+        return None;
+    }
+    let (col, _) = slot(heights, pane);
+    let mut next = heights.to_vec();
+    next.insert(col + 1, 1);
+    let mut slots = Vec::with_capacity(pane_total(heights) + 1);
+    let mut old = 0usize;
+    for (c, &n) in heights.iter().enumerate() {
+        for _ in 0..n {
+            slots.push(Some(old));
+            old += 1;
+        }
+        if c == col {
+            slots.push(None);
+        }
+    }
+    Some(GridChange { heights: next, slots })
+}
+
+/// A new row directly under `pane`, in that column only. None when the column already has four rows.
+pub(crate) fn split_below_grid(heights: &[usize], pane: usize) -> Option<GridChange> {
+    if !grid_addressed(heights, pane) || pane_total(heights) >= GRID_COLS * GRID_ROWS {
+        return None;
+    }
+    let (col, row) = slot(heights, pane);
+    if heights[col] >= GRID_ROWS {
+        return None;
+    }
+    let mut next = heights.to_vec();
+    next[col] += 1;
+    let mut slots = Vec::with_capacity(pane_total(heights) + 1);
+    let mut old = 0usize;
+    for (c, &n) in heights.iter().enumerate() {
+        for r in 0..n {
+            slots.push(Some(old));
+            old += 1;
+            if c == col && r == row {
+                slots.push(None);
+            }
+        }
+    }
+    Some(GridChange { heights: next, slots })
+}
+
+/// Remove `pane`. A column that held only that pane goes away; otherwise the rows under it move up.
+/// None when it is the last pane.
+pub(crate) fn close_pane_grid(heights: &[usize], pane: usize) -> Option<GridChange> {
+    if !grid_addressed(heights, pane) || pane_total(heights) <= 1 {
+        return None;
+    }
+    let (col, _) = slot(heights, pane);
+    let mut next = heights.to_vec();
+    if next[col] == 1 {
+        next.remove(col);
+    } else {
+        next[col] -= 1;
+    }
+    let slots = (0..pane_total(heights)).filter(|&old| old != pane).map(Some).collect();
+    Some(GridChange { heights: next, slots })
+}
+
+/// Where focus goes when the closed pane was the active one.
+/// The pane below, else the one above, else the next column, else the previous column at the same row.
+pub(crate) fn close_neighbour(heights: &[usize], pane: usize) -> Option<usize> {
+    if !grid_addressed(heights, pane) || pane_total(heights) <= 1 {
+        return None;
+    }
+    let (col, row) = slot(heights, pane);
+    let rows = heights[col];
+    if row + 1 < rows {
+        return Some(pane + 1);
+    }
+    if row > 0 {
+        return Some(pane - 1);
+    }
+    if col + 1 < heights.len() {
+        return Some(pane + 1);
+    }
+    if col == 0 {
+        return None;
+    }
+    let prev = heights[col - 1];
+    let start = heights[..col - 1].iter().sum::<usize>();
+    Some(start + row.min(prev - 1))
+}
+
+/// `slots` plus an optional pane that is leaving. The result is a permutation of every slot.
+pub(crate) fn place_grid(slots: &[Option<usize>], leaving: Option<usize>, home: &Homes) -> Option<Placed> {
+    let n = slots.len();
+    if n == 0 || n > MAXP || slots.iter().filter(|s| s.is_none()).count() > 1 {
+        return None;
+    }
+    let mut perm = [0usize; MAXP];
+    let mut used = [false; MAXP];
+    let mut fresh_at = None;
+    for (i, slot) in slots.iter().enumerate() {
+        if let Some(old) = *slot {
+            if old >= MAXP || used[old] {
+                return None;
+            }
+            perm[i] = old;
+            used[old] = true;
+        } else {
+            fresh_at = Some(i);
+        }
+    }
+    if let Some(old) = leaving {
+        if old >= MAXP || used[old] {
+            return None;
+        }
+    }
+    let fresh_old = if let Some(at) = fresh_at {
+        let pick = (0..MAXP).find(|&j| !used[j] && home[j].is_none()).or_else(|| (0..MAXP).find(|&j| !used[j]))?;
+        perm[at] = pick;
+        used[pick] = true;
+        Some(pick)
+    } else {
+        None
+    };
+    let rest: Vec<usize> = (0..MAXP).filter(|&j| !used[j]).collect();
+    if rest.len() != MAXP - n {
+        return None;
+    }
+    let mut new_home = [None; MAXP];
+    for (k, old) in (n..MAXP).zip(rest) {
+        perm[k] = old;
+        if Some(old) != leaving && Some(old) != fresh_old {
+            new_home[k] = home[old];
+        }
+    }
+    let mut seen = [false; MAXP];
+    for &p in &perm {
+        if p >= MAXP || seen[p] {
+            return None;
+        }
+        seen[p] = true;
+    }
+    Some(Placed { perm, home: new_home, fresh_old })
+}
+
 /// The cell each off-screen slot's pane last had. Runtime only.
 pub(crate) type Homes = [Option<(usize, usize)>; MAXP];
 
@@ -1374,6 +1548,138 @@ mod tests {
             assert!(p.btn.iter().all(|r| r.right == r.left), "nav still up {dpi} strip={strip}");
             assert_eq!(p.add.left, p.add.right, "add still up {dpi} strip={strip}");
         }
+    }
+    fn perm_of(p: &Placed) -> bool {
+        let mut seen = [false; MAXP];
+        p.perm.iter().all(|&i| i < MAXP && !std::mem::replace(&mut seen[i], true)) && seen.iter().all(|&s| s)
+    }
+
+    #[test]
+    fn split_right_inserts_a_full_height_column_after_this_one() {
+        let g = split_right_grid(&[2, 1], 0).unwrap();
+        assert_eq!(g.heights, vec![2, 1, 1]);
+        assert_eq!(g.slots, vec![Some(0), Some(1), None, Some(2)]);
+        let g = split_right_grid(&[2, 1], 2).unwrap();
+        assert_eq!(g.heights, vec![2, 1, 1]);
+        assert_eq!(g.slots, vec![Some(0), Some(1), Some(2), None]);
+        let g = split_right_grid(&[1, 2, 1], 0).unwrap();
+        assert_eq!(g.heights, vec![1, 1, 2, 1]);
+        assert_eq!(g.slots, vec![Some(0), None, Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn split_right_stops_at_four_columns() {
+        assert!(split_right_grid(&[1, 1, 1, 1], 0).is_none());
+        assert!(split_right_grid(&[1, 1, 1, 1], 3).is_none());
+        assert!(split_right_grid(&[4, 4, 4, 4], 0).is_none());
+        assert!(split_right_grid(&[1], 5).is_none());
+        assert!(split_right_grid(&[], 0).is_none());
+    }
+
+    #[test]
+    fn split_below_inserts_a_row_under_the_pane() {
+        let g = split_below_grid(&[2, 2], 0).unwrap();
+        assert_eq!(g.heights, vec![3, 2]);
+        assert_eq!(g.slots, vec![Some(0), None, Some(1), Some(2), Some(3)]);
+        let g = split_below_grid(&[2, 2], 1).unwrap();
+        assert_eq!(g.heights, vec![3, 2]);
+        assert_eq!(g.slots, vec![Some(0), Some(1), None, Some(2), Some(3)]);
+        let g = split_below_grid(&[2, 2], 2).unwrap();
+        assert_eq!(g.heights, vec![2, 3]);
+        assert_eq!(g.slots, vec![Some(0), Some(1), Some(2), None, Some(3)]);
+        let g = split_below_grid(&[1, 4], 0).unwrap();
+        assert_eq!(g.heights, vec![2, 4]);
+    }
+
+    #[test]
+    fn split_below_stops_at_four_rows_in_that_column() {
+        assert!(split_below_grid(&[4], 0).is_none());
+        assert!(split_below_grid(&[4], 3).is_none());
+        assert!(split_below_grid(&[1, 4], 1).is_none());
+        assert!(split_below_grid(&[4, 4, 4, 4], 15).is_none());
+        let g = split_below_grid(&[3, 3, 3, 3], 0).unwrap();
+        assert_eq!(g.heights, vec![4, 3, 3, 3]);
+        assert!(split_right_grid(&[3, 3, 3, 3], 0).is_none());
+    }
+
+    #[test]
+    fn splits_stay_inside_four_by_four() {
+        for cols in 1..=4 {
+            for rows in 1..=4 {
+                let h = vec![rows; cols];
+                if cols == 4 {
+                    assert!(split_right_grid(&h, 0).is_none());
+                } else {
+                    let g = split_right_grid(&h, 0).unwrap();
+                    assert_eq!(g.heights.len(), cols + 1);
+                    assert_eq!(g.heights[0], rows);
+                    assert_eq!(g.heights[1], 1);
+                    assert!(g.heights.iter().all(|&n| n <= 4));
+                    assert!(g.heights.iter().sum::<usize>() <= 16);
+                    assert_eq!(g.slots.iter().filter(|s| s.is_none()).count(), 1);
+                }
+                if rows == 4 {
+                    assert!(split_below_grid(&h, 0).is_none());
+                } else {
+                    let g = split_below_grid(&h, 0).unwrap();
+                    assert_eq!(g.heights[0], rows + 1);
+                    assert!(g.heights.iter().all(|&n| n <= 4));
+                    assert!(g.heights.iter().sum::<usize>() <= 16);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn close_drops_a_row_or_the_whole_column() {
+        let g = close_pane_grid(&[3, 2], 1).unwrap();
+        assert_eq!(g.heights, vec![2, 2]);
+        assert_eq!(g.slots, vec![Some(0), Some(2), Some(3), Some(4)]);
+        let g = close_pane_grid(&[1, 2, 1], 0).unwrap();
+        assert_eq!(g.heights, vec![2, 1]);
+        assert_eq!(g.slots, vec![Some(1), Some(2), Some(3)]);
+        let g = close_pane_grid(&[2, 1], 2).unwrap();
+        assert_eq!(g.heights, vec![2]);
+        assert_eq!(g.slots, vec![Some(0), Some(1)]);
+        let g = close_pane_grid(&[2, 1, 2], 2).unwrap();
+        assert_eq!(g.heights, vec![2, 2]);
+        assert_eq!(g.slots, vec![Some(0), Some(1), Some(3), Some(4)]);
+        assert!(close_pane_grid(&[1], 0).is_none());
+        assert!(close_pane_grid(&[2, 2], 9).is_none());
+    }
+
+    #[test]
+    fn close_neighbour_is_below_then_above_then_beside() {
+        assert_eq!(close_neighbour(&[3], 0), Some(1));
+        assert_eq!(close_neighbour(&[3], 1), Some(2));
+        assert_eq!(close_neighbour(&[3], 2), Some(1));
+        assert_eq!(close_neighbour(&[1, 2], 0), Some(1));
+        assert_eq!(close_neighbour(&[2, 1], 2), Some(0));
+        assert_eq!(close_neighbour(&[3, 1], 3), Some(0));
+        assert_eq!(close_neighbour(&[1], 0), None);
+    }
+
+    #[test]
+    fn place_grid_keeps_a_permutation_and_forgets_a_closed_pane() {
+        let home = [None; MAXP];
+        let change = split_right_grid(&[2, 1], 0).unwrap();
+        let placed = place_grid(&change.slots, None, &home).unwrap();
+        assert!(perm_of(&placed));
+        assert_eq!(placed.fresh_old, Some(3));
+        let fresh_new = change.slots.iter().position(|s| s.is_none()).unwrap();
+        assert_eq!(placed.perm[fresh_new], 3);
+        assert!(placed.home.iter().all(|h| h.is_none()));
+
+        let change = close_pane_grid(&[1, 1], 0).unwrap();
+        let mut parked = [None; MAXP];
+        parked[0] = Some((0, 0));
+        let placed = place_grid(&change.slots, Some(0), &parked).unwrap();
+        assert!(perm_of(&placed));
+        assert_eq!(placed.perm[0], 1);
+        let at = placed.perm.iter().position(|&p| p == 0).unwrap();
+        assert!(at >= 1);
+        assert!(placed.home[at].is_none());
+        assert!(placed.fresh_old.is_none());
     }
 }
 
