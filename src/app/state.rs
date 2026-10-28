@@ -217,8 +217,9 @@ pub(crate) struct Desk {
     pub(crate) tab_path_tip: bool, // tracking tooltip listing that tab's pane paths is installed
     pub(crate) addr_tip: bool,     // tracking tooltip for a truncated address path is installed
     pub(crate) addr_tip_pane: HWND, // pane that address tooltip is showing for; null while hidden
-    pub(crate) fav_tip: bool,      // tracking tooltip for a favourites row is installed
-    pub(crate) fav_pop_tip: bool,  // tracking tooltip for the favourites window is installed
+    pub(crate) fav_tip: bool,       // tracking tooltip for a favourites row is installed
+    pub(crate) fav_tip_shown: bool, // that tooltip is on screen (installed does not mean visible)
+    pub(crate) fav_pop_tip: bool,   // tracking tooltip for the favourites window is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
     pub(crate) tab_scroll: usize,  // first visible window tab while the strip overflows
@@ -380,6 +381,7 @@ pub(crate) fn blank_desk() -> Desk {
         addr_tip: false,
         addr_tip_pane: HWND::default(),
         fav_tip: false,
+        fav_tip_shown: false,
         fav_pop_tip: false,
         tab_hot_plus: false,
         tab_hot_over: false,

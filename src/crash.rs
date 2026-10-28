@@ -7,6 +7,7 @@
 //! never in a grids folder and never in `grids.ini`.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -55,6 +56,15 @@ thread_local! {
     static GUARD_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
+struct PanicNote {
+    message: String,
+    location: String,
+}
+
+thread_local! {
+    static PANIC_NOTE: RefCell<PanicNote> = const { RefCell::new(PanicNote { message: String::new(), location: String::new() }) };
+}
+
 struct Guard;
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -81,7 +91,10 @@ pub(crate) fn catch_ui<R>(fallback: R, f: impl FnOnce() -> R + std::panic::Unwin
     match guard(f) {
         Ok(v) => v,
         Err(payload) => {
-            let detail = panic_payload(&*payload);
+            // The hook already stored file:line. `&*payload` is the panic value.
+            // `&payload` is the Box; downcast then misses `&str` and `String` and the dialog said "panic".
+            let (hook_msg, hook_loc) = take_panic_note();
+            let (_message, detail) = caught_panic_text(&hook_msg, &hook_loc, &*payload);
             log(&format!("ui panic: {detail}"));
             show_panic_dialog(&detail);
             fallback
@@ -107,8 +120,41 @@ fn panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
     } else if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
     } else {
-        "panic".into()
+        "Box<dyn Any>".into()
     }
+}
+
+/// Dialog body: the panic's first line, then `file:line` when the hook recorded one.
+pub(crate) fn panic_dialog_detail(message: &str, location: &str) -> String {
+    let short = message.lines().next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("Box<dyn Any>");
+    if location.is_empty() { short.to_string() } else { format!("{short}\n{location}") }
+}
+
+/// Message and dialog text for a panic `catch_ui` caught.
+/// An empty hook message means the hook did not run, so the payload is used.
+fn caught_panic_text(hook_msg: &str, hook_loc: &str, payload: &(dyn std::any::Any + Send)) -> (String, String) {
+    let message = if hook_msg.is_empty() { panic_payload(payload) } else { hook_msg.to_string() };
+    let detail = panic_dialog_detail(&message, hook_loc);
+    (message, detail)
+}
+
+fn panic_location(info: &std::panic::PanicHookInfo) -> String {
+    info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default()
+}
+
+fn remember_panic(message: &str, location: &str) {
+    PANIC_NOTE.with(|n| {
+        let mut n = n.borrow_mut();
+        n.message = message.to_string();
+        n.location = location.to_string();
+    });
+}
+
+fn take_panic_note() -> (String, String) {
+    PANIC_NOTE.with(|n| {
+        let mut n = n.borrow_mut();
+        (std::mem::take(&mut n.message), std::mem::take(&mut n.location))
+    })
 }
 
 fn show_panic_dialog(detail: &str) {
@@ -146,13 +192,16 @@ pub(crate) fn install() {
         let _ = std::fs::create_dir_all(dir.join("crashes"));
         let _ = DIR.set(dir.clone());
         std::panic::set_hook(Box::new(|info| {
+            // `catch_ui` sets the guard before `catch_unwind`, so a UI panic used to return
+            // here and never write `crashes/crash-*.txt`. The dialog then had no file:line.
+            let msg = panic_payload(info.payload());
+            let loc = panic_location(info);
+            remember_panic(&msg, &loc);
+            write_report("panic", &msg, &loc, "", "", "unknown");
             if guarded() {
                 return;
             }
-            let msg = panic_message(info);
-            let loc = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
-            write_report("panic", &msg, &loc, "", "", "unknown");
-            show_panic_dialog(&msg);
+            show_panic_dialog(&panic_dialog_detail(&msg, &loc));
         }));
         unsafe {
             AddVectoredExceptionHandler(1, Some(veh));
@@ -322,6 +371,10 @@ fn write_report(kind: &str, detail: &str, location: &str, exception: &str, addre
 
 fn save_report(text: &str) -> Option<PathBuf> {
     let dir = DIR.get()?;
+    write_text_report(dir, text)
+}
+
+fn write_text_report(dir: &Path, text: &str) -> Option<PathBuf> {
     let crashes = dir.join("crashes");
     let _ = std::fs::create_dir_all(&crashes);
     let path = crashes.join(format!("crash-{}.txt", stamp()));
@@ -390,16 +443,6 @@ fn recent_lines() -> Vec<String> {
 fn thread_label() -> String {
     let t = std::thread::current();
     format!("{} id={:?}", t.name().unwrap_or("unnamed"), t.id())
-}
-
-fn panic_message(info: &std::panic::PanicHookInfo) -> String {
-    if let Some(s) = info.payload().downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = info.payload().downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "panic".into()
-    }
 }
 
 fn stamp() -> String {
@@ -715,5 +758,62 @@ mod tests {
         assert_eq!(flag.0, 0);
         let n = super::catch_i32(|| panic!("😀"));
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn payload_is_the_panic_value_not_the_box() {
+        let lit: Box<dyn std::any::Any + Send> = Box::new("already borrowed: BorrowMutError");
+        // v0.1.38 passed `&payload`. That coerces to the Box, so the dialog said "panic".
+        assert_eq!(panic_payload(&lit), "Box<dyn Any>");
+        assert_eq!(panic_payload(&*lit), "already borrowed: BorrowMutError");
+        let owned: Box<dyn std::any::Any + Send> = Box::new(String::from("index out of bounds: the len is 1 but the index is 0"));
+        assert_eq!(panic_payload(&*owned), "index out of bounds: the len is 1 but the index is 0");
+        let other: Box<dyn std::any::Any + Send> = Box::new(7u8);
+        assert_eq!(panic_payload(&*other), "Box<dyn Any>");
+    }
+
+    #[test]
+    fn dialog_shows_the_message_and_the_location() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("already borrowed: BorrowMutError");
+        let (message, detail) = caught_panic_text("already borrowed: BorrowMutError", "src/app/state.rs:667", &*payload);
+        assert_eq!(message, "already borrowed: BorrowMutError");
+        assert_eq!(detail, "already borrowed: BorrowMutError\nsrc/app/state.rs:667");
+        let (message, detail) = caught_panic_text("", "", &*payload);
+        assert_eq!(message, "already borrowed: BorrowMutError");
+        assert_eq!(detail, "already borrowed: BorrowMutError");
+        assert_eq!(panic_dialog_detail("Box<dyn Any>", "src/ui/favpanel.rs:292"), "Box<dyn Any>\nsrc/ui/favpanel.rs:292");
+        assert_eq!(panic_dialog_detail("", ""), "Box<dyn Any>");
+        let long = "assertion `left == right` failed\n  left: 1\n right: 2";
+        assert_eq!(panic_dialog_detail(long, "src/ui/favpanel.rs:10"), "assertion `left == right` failed\nsrc/ui/favpanel.rs:10");
+    }
+
+    #[test]
+    fn panic_report_is_written_in_the_crashes_folder() {
+        let dir = std::env::temp_dir().join(format!("panegrid-crash-{}-{}", std::process::id(), stamp()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = format_report(&Report {
+            version: "0.1.45".into(),
+            thread: "main".into(),
+            kind: "panic".into(),
+            detail: "already borrowed: BorrowMutError".into(),
+            location: "src/app/state.rs:602".into(),
+            exception: String::new(),
+            address: String::new(),
+            module: "unknown".into(),
+            last_path: String::new(),
+            shell_loaded: Vec::new(),
+            third_party: Vec::new(),
+            recent: vec!["ui panic: already borrowed: BorrowMutError".into()],
+        });
+        let path = write_text_report(&dir, &text).expect("crash file");
+        assert!(path.starts_with(dir.join("crashes")), "{}", path.display());
+        assert!(path.file_name().unwrap().to_string_lossy().starts_with("crash-"));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("kind: panic"), "{body}");
+        assert!(body.contains("message: already borrowed: BorrowMutError"), "{body}");
+        assert!(body.contains("location: src/app/state.rs:602"), "{body}");
+        let marker = std::fs::read_to_string(dir.join("crash-pending.txt")).unwrap();
+        assert!(marker.contains("crashes"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
