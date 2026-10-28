@@ -563,7 +563,6 @@ unsafe fn show_link_fail(i: usize, h: HWND, id: usize, path: &str, timed_out: bo
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
         _ = SetWindowTextW(e, &HSTRING::from(path.as_str()));
         _ = ShowWindow(e, SW_SHOWNA);
-        show_path_end(e, &path);
     }
     sync_net_fail(h);
     repaint_link(h);
@@ -604,8 +603,7 @@ pub(crate) unsafe fn leave_net_fail(i: usize) {
         _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
     }
     end_share(i, h);
-    if let Some(e) = pane_ctl(i, ID_EDIT) {
-        show_path_end(e, &disp);
+    if pane_ctl(i, ID_EDIT).is_some() {
         sync_addr(h);
     }
     focus_view(i);
@@ -1354,7 +1352,6 @@ pub(crate) unsafe fn addr_reset(i: usize, e: HWND) {
     let disp = app(|x| x.panes[i].as_ref().map(|p| p.disp.clone())).unwrap_or_default();
     _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
     focus_view(i);
-    show_path_end(e, &disp);
     if let Ok(p) = GetParent(e) {
         sync_addr(p);
     }
@@ -2901,7 +2898,6 @@ unsafe fn on_nav_impl(i: usize, pidl: *const ITEMIDLIST) {
     };
     if let Ok(e) = GetDlgItem(Some(h), ID_EDIT) {
         _ = SetWindowTextW(e, &HSTRING::from(disp.as_str()));
-        show_path_end(e, &disp);
     }
     sync_addr(h);
     if !theme_same {

@@ -248,7 +248,7 @@ pub(crate) unsafe fn move_all(moves: &[(HWND, RECT)], eb: Option<(&IExplorerBrow
 }
 
 pub(crate) unsafe fn layout_pane(h: HWND) {
-    let Some((eb, dpi, disp)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi, p.disp.clone()))) else {
+    let Some((eb, dpi)) = app(|a| a.panes.iter().flatten().find(|p| p.hwnd == h).map(|p| (p.eb.clone(), a.dpi))) else {
         return;
     };
     let mut rc = RECT::default();
@@ -283,7 +283,6 @@ pub(crate) unsafe fn layout_pane(h: HWND) {
     show(ID_FAV, pg.fav);
     show(ID_PANE_ADD, pg.add);
     show(ID_FILTER, pg.filt);
-    show_path_end(ctl(ID_EDIT), &disp);
     sync_addr(h);
     // After the browser is placed, so a share error stays above the file list.
     sync_net_fail(h);
@@ -2054,6 +2053,43 @@ unsafe fn select_all_list(lv: HWND) {
 #[cfg(test)]
 mod tests {
     use super::{pane_theme_due, scroll_rows, theme_scroll_rows, THEME_BROWSE_FLAGS};
+    use crate::imports::*;
+
+    // Setting the path on a narrow edit leaves the drive on screen. The control clips the tail.
+    #[test]
+    fn narrow_address_edit_shows_the_start_of_the_path() {
+        const EM_POSFROMCHAR: u32 = 0x00D6;
+        let path = r"C:\Users\Jun\Documents\VeryLongFolderName\Projects\Panegrid\src\pane";
+        let x_of = |edit: HWND, index: usize| {
+            let r = unsafe { SendMessageW(edit, EM_POSFROMCHAR, Some(WPARAM(index)), Some(LPARAM(0))) };
+            (r.0 as u16) as i16 as i32
+        };
+        unsafe {
+            let parent = CreateWindowExW(WINDOW_EX_STYLE(0), w!("Static"), w!(""), WS_POPUP, 0, 0, 400, 80, None, None, None, None).unwrap_or_default();
+            let edit = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("Edit"),
+                w!(""),
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+                0,
+                0,
+                80,
+                24,
+                Some(parent),
+                None,
+                None,
+                None,
+            )
+            .unwrap_or_default();
+            assert!(!parent.0.is_null() && !edit.0.is_null(), "the address edit could not be created");
+            _ = SetWindowTextW(edit, &HSTRING::from(path));
+            let (start, tail) = (x_of(edit, 0), x_of(edit, path.len() - 1));
+            _ = DestroyWindow(edit);
+            _ = DestroyWindow(parent);
+            assert!(start >= 0 && start < 80, "the drive stays inside the narrow edit (x={start})");
+            assert!(tail >= 80, "the last folder is past the right edge (x={tail})");
+        }
+    }
 
     #[test]
     fn theme_rebuild_does_not_write_history_or_travel() {
