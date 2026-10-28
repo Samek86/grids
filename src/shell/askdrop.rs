@@ -2,10 +2,13 @@
 // on the folder tree, and on the middle of a favourite folder. Other drop settings stay
 // with the shell (or, for favourites, with the link they already insert).
 //
-// The copy or move itself is `start_copy` on a worker thread. A move also stamps
-// "Performed DropEffect" on the data object before DROPEFFECT_MOVE goes back, so the
-// source does not delete the files a second time. If that stamp fails, the effect
-// reported back is COPY: the files were still moved, and a second delete would be worse.
+// The copy or move itself is `start_copy` / `start_drop_move` on a worker thread.
+// A move also stamps "Performed DropEffect" on the data object before DROPEFFECT_MOVE
+// goes back, so the source does not delete the files a second time. If that stamp
+// fails, the effect reported back is COPY: the files were still moved, and a second
+// delete would be worse. The move itself waits until Drop has returned. MoveItem
+// while the drag source still holds the item fails with "this item is no longer
+// located", and the file stays where it was. Copy does not need that wait.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -20,7 +23,7 @@ use crate::app::*;
 use crate::i18n::*;
 use crate::pane::*;
 use crate::session::*;
-use super::fileop::{paste_mode, start_copy};
+use super::fileop::{paste_mode, start_copy, start_drop_move};
 
 /// What Drop returns to the source. A move is reported as a copy when the source was not
 /// told that the move already happened.
@@ -181,8 +184,14 @@ unsafe fn shell_paths(d: &Ref<IDataObject>) -> Vec<String> {
 
 /// Start the file operation and the effect the source should see.
 pub(crate) unsafe fn run_asked(obj: &IDataObject, srcs: Vec<String>, dst: String, mv: bool) -> u32 {
-    let rename = !mv && paste_mode(&srcs, &dst) == Some(true);
-    if !start_copy(srcs, dst, rename, mv) {
+    let started = if mv {
+        // MoveItem inside Drop cannot see the item the drag source still holds.
+        start_drop_move(srcs, dst)
+    } else {
+        let rename = paste_mode(&srcs, &dst) == Some(true);
+        start_copy(srcs, dst, rename, false)
+    };
+    if !started {
         return DROPEFFECT_NONE.0;
     }
     let performed = mv && mark_move_performed(obj);

@@ -386,11 +386,24 @@ fn keep_job(job: std::thread::JoinHandle<()>) {
 
 // Copies (or, with `mv`, moves) `srcs` into `dst` on a worker thread. False = the thread didn't start.
 pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> bool {
+    start_transfer(srcs, dst, rename, mv, false)
+}
+
+/// Move started from a drop. `MoveItem` runs only after the drag source can release the
+/// file. Doing it inside `Drop` reports the item missing and leaves it in place.
+pub(crate) unsafe fn start_drop_move(srcs: Vec<String>, dst: String) -> bool {
+    start_transfer(srcs, dst, false, true, true)
+}
+
+unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool, after_drop: bool) -> bool {
     let busy = Busy::new();
     let job = std::thread::Builder::new().spawn(move || {
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe {
         let _busy = busy;
+        if after_drop {
+            settle_drop_move(&srcs);
+        }
         if let Err(e) = run_copy(&srcs, &dst, rename, mv) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let what = if mv { tr(crate::Key::MovingFailed) } else { tr(crate::Key::CopyingFailed) };
@@ -408,13 +421,104 @@ pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv
     true
 }
 
+/// `GetFinalPathNameByHandle` returns `\\?\C:\...` or `\\?\UNC\server\share\...`.
+/// The copy engine wants the DOS form. A device path is left unchanged.
+pub(crate) fn dos_from_final(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+}
+
+/// One path for a subst drive and for the folder it points at. A favourite stored as
+/// `G:\Docs\a.txt` and a pane on `C:\WORK\pgreadme\data\Docs\a.txt` are the same file.
+unsafe fn final_dos(path: &str) -> String {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFinalPathNameByHandleW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        VOLUME_NAME_DOS,
+    };
+    let opened = crate::winpath::win_long_path(path);
+    let Ok(handle) = CreateFileW(
+        &HSTRING::from(&opened),
+        FILE_READ_ATTRIBUTES.0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    ) else {
+        return path.to_string();
+    };
+    let mut buf = [0u16; 1024];
+    let n = GetFinalPathNameByHandleW(handle, &mut buf, VOLUME_NAME_DOS) as usize;
+    let _ = CloseHandle(handle);
+    // The count does not include the terminating NUL. Stop at a NUL anyway, so a
+    // count that does include it cannot leave a trailing zero in the path.
+    if n == 0 || n >= buf.len() {
+        return path.to_string();
+    }
+    let end = buf[..n].iter().position(|&c| c == 0).unwrap_or(n);
+    let wide = String::from_utf16_lossy(&buf[..end]);
+    let dos = dos_from_final(&wide);
+    if dos.len() >= 2 && (dos.as_bytes()[1] == b':' || dos.starts_with(r"\\")) {
+        dos
+    } else {
+        path.to_string()
+    }
+}
+
+/// True while some other handle has the file open without `FILE_SHARE_DELETE`.
+/// A drag from the folder view holds the item that way until `Drop` returns.
+unsafe fn drag_still_holds(path: &str) -> bool {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    let opened = crate::winpath::win_long_path(path);
+    match CreateFileW(
+        &HSTRING::from(&opened),
+        DELETE.0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    ) {
+        Ok(handle) => {
+            let _ = CloseHandle(handle);
+            false
+        }
+        Err(e) => e.code() == ERROR_SHARING_VIOLATION.to_hresult(),
+    }
+}
+
+/// Let `Drop` return, and let the drag source close its handle, before `MoveItem`.
+fn settle_drop_move(srcs: &[String]) {
+    let start = Instant::now();
+    let min = std::time::Duration::from_millis(200);
+    let max = std::time::Duration::from_millis(2000);
+    loop {
+        let held = srcs.iter().any(|p| unsafe { drag_still_holds(p) });
+        let elapsed = start.elapsed();
+        if !held && elapsed >= min {
+            return;
+        }
+        if elapsed >= max {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
+
 // No owner window: the progress and conflict dialogs belong to the worker thread.
+// Paths go through `final_dos` first, so a subst drive and its target folder are one place.
 pub(crate) unsafe fn run_copy(srcs: &[String], dst: &str, rename: bool, mv: bool) -> Result<()> {
+    let srcs: Vec<String> = srcs.iter().map(|s| final_dos(s)).collect();
+    let dst = final_dos(dst);
     let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
     let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOFX_ADDUNDORECORD;
     op.SetOperationFlags(if rename { flags | FOF_RENAMEONCOLLISION } else { flags })?;
-    let to: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(dst), None)?;
-    for s in srcs {
+    let to: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(&dst), None)?;
+    for s in &srcs {
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(s), None)?;
         if mv {
             op.MoveItem(&item, &to, PCWSTR::null(), None)?;
@@ -734,6 +838,66 @@ mod tests {
         assert_eq!((std::fs::read(dir.join("a.png")).unwrap(), std::fs::read(dir.join("a (2).png")).unwrap()), (vec![0; 3], b"new".to_vec()));
         assert_eq!(save_unique(&dir, name, b"x").unwrap(), "a (3).png");
         _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_path_drops_the_verbatim_prefix() {
+        assert_eq!(dos_from_final(r"\\?\C:\Work\a.txt"), r"C:\Work\a.txt");
+        assert_eq!(dos_from_final(r"\\?\UNC\server\share\a"), r"\\server\share\a");
+        assert_eq!(dos_from_final(r"C:\Work\a.txt"), r"C:\Work\a.txt");
+    }
+
+    #[test]
+    fn drop_move_waits_until_the_drag_releases_the_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("grids-drop-move-{}", std::process::id()));
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        let file = src_dir.join("moved.txt");
+        std::fs::write(&file, b"drag").unwrap();
+        let locked = file.clone();
+        let hold = std::thread::spawn(move || {
+            let f = std::fs::OpenOptions::new().read(true).share_mode(1).open(&locked).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(350));
+            drop(f);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let src = file.to_string_lossy().to_string();
+        assert!(unsafe { drag_still_holds(&src) });
+        settle_drop_move(&[src.clone()]);
+        assert!(!unsafe { drag_still_holds(&src) });
+        let dst = dst_dir.to_string_lossy().to_string();
+        let src_final = unsafe { final_dos(&src) };
+        let dst_final = unsafe { final_dos(&dst) };
+        assert!(std::path::Path::new(&src_final).is_file(), "src final missing {src_final} from {src}");
+        assert!(std::path::Path::new(&dst_final).is_dir(), "dst final missing {dst_final} from {dst}");
+        let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+        let moved = unsafe { run_copy(&[src], &dst, false, true) };
+        if com {
+            unsafe { CoUninitialize() };
+        }
+        hold.join().unwrap();
+        assert!(moved.is_ok(), "{moved:?}");
+        assert!(!file.exists());
+        assert_eq!(std::fs::read(dst_dir.join("moved.txt")).unwrap(), b"drag");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn subst_and_its_target_are_one_path() {
+        let subst = std::path::Path::new(r"G:\Documents\F29test\f31_copy_me.txt");
+        let real = std::path::Path::new(r"C:\WORK\pgreadme\data\Documents\F29test\f31_copy_me.txt");
+        if !subst.is_file() || !real.is_file() {
+            return;
+        }
+        let a = unsafe { final_dos(&subst.to_string_lossy()) };
+        let b = unsafe { final_dos(&real.to_string_lossy()) };
+        assert_eq!(a.to_lowercase(), b.to_lowercase());
+        assert!(a.to_lowercase().starts_with(r"c:\work\pgreadme\data\"));
+        assert!(!a.to_lowercase().starts_with("g:"));
     }
 }
 
