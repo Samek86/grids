@@ -189,9 +189,106 @@ pub(crate) unsafe fn run_asked(obj: &IDataObject, srcs: Vec<String>, dst: String
     reported_effect(mv, performed)
 }
 
+/// Windows the shell registers a drop target on. OLE delivers the drop to the deepest one,
+/// which is the list (or the items-view surface), not the DefView window `GetWindow` returns.
+pub(crate) fn shell_drop_class(class: &str) -> bool {
+    matches!(class, "SHELLDLL_DefView" | "SysListView32" | "DirectUIHWND" | "SysTreeView32")
+}
+
 enum AskWhere {
     Pane(Arc<AtomicUsize>),
     Tree,
+}
+
+impl Clone for AskWhere {
+    fn clone(&self) -> Self {
+        match self {
+            AskWhere::Pane(slot) => AskWhere::Pane(slot.clone()),
+            AskWhere::Tree => AskWhere::Tree,
+        }
+    }
+}
+
+const DROP_SUB: usize = 8;
+
+unsafe fn class_name(hwnd: HWND) -> String {
+    let mut buf = [0u16; 64];
+    let n = GetClassNameW(hwnd, &mut buf) as usize;
+    String::from_utf16_lossy(&buf[..n])
+}
+
+/// The drop target OLE currently has on `hwnd` is ours when the mark matches that pointer.
+/// The pointer is only compared, never called.
+unsafe fn already_ours(hwnd: HWND) -> bool {
+    let cur = GetPropW(hwnd, w!("OleDropTargetInterface")).0;
+    !cur.is_null() && cur == GetPropW(hwnd, w!("PanegridAskDrop")).0
+}
+
+unsafe fn wrap_window(hwnd: HWND, fallback: &IDropTarget, where_: AskWhere) {
+    if hwnd.0.is_null() || already_ours(hwnd) {
+        return;
+    }
+    // Drop the shell's registration. Highlight and non-ask drops go to the view's own
+    // target, which is `fallback` (the shell view), not whatever pointer the property held.
+    let _ = RevokeDragDrop(hwnd);
+    let dt: IDropTarget = AskDrop { hwnd, inner: fallback.clone(), where_ }.into();
+    if RegisterDragDrop(hwnd, &dt).is_err() {
+        let _ = RegisterDragDrop(hwnd, fallback);
+        return;
+    }
+    let now = GetPropW(hwnd, w!("OleDropTargetInterface"));
+    if !now.0.is_null() {
+        let _ = SetPropW(hwnd, w!("PanegridAskDrop"), Some(now));
+    }
+}
+
+unsafe fn wrap_family(root: HWND, fallback: &IDropTarget, where_: &AskWhere) {
+    if root.0.is_null() {
+        return;
+    }
+    let mut wins = vec![root];
+    extern "system" fn collect(h: HWND, out: LPARAM) -> BOOL {
+        crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| unsafe {
+            let want = shell_drop_class(&class_name(h)) || !GetPropW(h, w!("OleDropTargetInterface")).0.is_null();
+            if want {
+                (*(out.0 as *mut Vec<HWND>)).push(h);
+            }
+            true.into()
+        }))
+    }
+    let _ = EnumChildWindows(Some(root), Some(collect), LPARAM(&mut wins as *mut Vec<HWND> as isize));
+    for hwnd in wins {
+        wrap_window(hwnd, fallback, where_.clone());
+    }
+}
+
+unsafe fn pane_from(mut hwnd: HWND) -> Option<usize> {
+    for _ in 0..8 {
+        if let Some(i) = pane_of(hwnd) {
+            return Some(i);
+        }
+        hwnd = GetParent(hwnd).unwrap_or_default();
+        if hwnd.0.is_null() {
+            return None;
+        }
+    }
+    None
+}
+
+unsafe extern "system" fn drop_watch_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, a1: usize, a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { drop_watch_inner(h, msg, wp, lp, a1, a2) }))
+}
+
+/// A new list child means Explorer is about to register its own target on it. Wrap again
+/// once that create has returned.
+unsafe fn drop_watch_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    let r = DefSubclassProc(h, msg, wp, lp);
+    if msg == WM_PARENTNOTIFY && wp.0 & 0xFFFF == WM_CREATE as usize {
+        if let Some(i) = pane_from(h) {
+            schedule_pane_drop(i);
+        }
+    }
+    r
 }
 
 #[implement(IDropTarget)]
@@ -234,34 +331,85 @@ unsafe fn tree_destination(pt: &POINTL) -> Option<String> {
 }
 
 /// Replace the shell view's drop target so Always ask can run first. The shell target
-/// still handles the highlight and every drop that is not Always ask.
-pub(crate) unsafe fn install_view_drop(hwnd: HWND, inner: IDropTarget, slot: Arc<AtomicUsize>) {
-    if hwnd.0.is_null() {
-        return;
-    }
-    let _ = RevokeDragDrop(hwnd);
-    let dt: IDropTarget = AskDrop { hwnd, inner: inner.clone(), where_: AskWhere::Pane(slot) }.into();
-    if RegisterDragDrop(hwnd, &dt).is_err() {
-        let _ = RegisterDragDrop(hwnd, &inner);
-    }
-}
-
+/// still handles the highlight and every drop that is not Always ask. The wrapper goes on
+/// the list (and any other child that already has a target): a wrapper on the parent
+/// never sees a drop the child window has registered for.
 pub(crate) unsafe fn install_pane_drop(i: usize) {
     let Some(sv) = view_of::<IShellView>(i) else { return };
     let Ok(hwnd) = sv.GetWindow() else { return };
     let Ok(inner) = sv.cast::<IDropTarget>() else { return };
     let Some(slot) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.slot.clone())) else { return };
-    install_view_drop(hwnd, inner, slot);
+    let _ = SetWindowSubclass(hwnd, Some(drop_watch_proc), DROP_SUB, 0);
+    wrap_family(hwnd, &inner, &AskWhere::Pane(slot));
+}
+
+/// Install now, then a few times more. The view often registers its target after
+/// `OnViewCreated` returns, or again when the list is rebuilt.
+pub(crate) unsafe fn schedule_pane_drop(i: usize) {
+    install_pane_drop(i);
+    let Some(h) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)).filter(|h| !h.0.is_null()) else { return };
+    let _ = SetPropW(h, w!("PanegridDropTries"), Some(HANDLE(4 as *mut core::ffi::c_void)));
+    let _ = SetTimer(Some(h), TIMER_DROP, 50, None);
+}
+
+pub(crate) unsafe fn on_pane_drop_timer(h: HWND) {
+    let left = GetPropW(h, w!("PanegridDropTries")).0 as usize;
+    if let Some(i) = pane_of(h) {
+        install_pane_drop(i);
+    }
+    let next = left.saturating_sub(1);
+    if next == 0 {
+        let _ = KillTimer(Some(h), TIMER_DROP);
+        let _ = RemovePropW(h, w!("PanegridDropTries"));
+    } else {
+        let _ = SetPropW(h, w!("PanegridDropTries"), Some(HANDLE(next as *mut core::ffi::c_void)));
+        let _ = SetTimer(Some(h), TIMER_DROP, 200, None);
+    }
+}
+
+/// `h` is a pane or a window inside one. Re-wrap without stretching the retry timer.
+pub(crate) unsafe fn install_drop_at(h: HWND) {
+    if let Some(i) = pane_from(h) {
+        install_pane_drop(i);
+    }
+}
+
+/// `h` is a pane or a window inside one. Re-wrap, and keep checking while the view settles.
+pub(crate) unsafe fn schedule_drop_at(h: HWND) {
+    if let Some(i) = pane_from(h) {
+        schedule_pane_drop(i);
+    }
 }
 
 pub(crate) unsafe fn install_tree_drop(tree: &INameSpaceTreeControl, hwnd: HWND) {
     let Ok(inner) = tree.cast::<IDropTarget>() else { return };
-    let child = FindWindowExW(Some(hwnd), None, w!("SysTreeView32"), PCWSTR::null()).unwrap_or_default();
-    let target = if child.0.is_null() { hwnd } else { child };
-    let _ = RevokeDragDrop(target);
-    let dt: IDropTarget = AskDrop { hwnd: target, inner: inner.clone(), where_: AskWhere::Tree }.into();
-    if RegisterDragDrop(target, &dt).is_err() {
-        let _ = RegisterDragDrop(target, &inner);
+    wrap_family(hwnd, &inner, &AskWhere::Tree);
+}
+
+pub(crate) unsafe fn schedule_tree_drop() {
+    let Some((tree, hwnd, main)) = app(|a| Some((a.tree.clone()?, a.tree_hwnd, a.main))) else { return };
+    if hwnd.0.is_null() || main.0.is_null() {
+        return;
+    }
+    install_tree_drop(&tree, hwnd);
+    let _ = SetPropW(main, w!("PanegridTreeDrop"), Some(HANDLE(4 as *mut core::ffi::c_void)));
+    let _ = SetTimer(Some(main), TIMER_DROP, 50, None);
+}
+
+pub(crate) unsafe fn on_tree_drop_timer(h: HWND) {
+    let left = GetPropW(h, w!("PanegridTreeDrop")).0 as usize;
+    if let Some((tree, hwnd)) = app(|a| Some((a.tree.clone()?, a.tree_hwnd))) {
+        if !hwnd.0.is_null() {
+            install_tree_drop(&tree, hwnd);
+        }
+    }
+    let next = left.saturating_sub(1);
+    if next == 0 {
+        let _ = KillTimer(Some(h), TIMER_DROP);
+        let _ = RemovePropW(h, w!("PanegridTreeDrop"));
+    } else {
+        let _ = SetPropW(h, w!("PanegridTreeDrop"), Some(HANDLE(next as *mut core::ffi::c_void)));
+        let _ = SetTimer(Some(h), TIMER_DROP, 200, None);
     }
 }
 
@@ -281,20 +429,27 @@ impl IDropTarget_Impl for AskDrop_Impl {
     fn Drop(&self, d: Ref<IDataObject>, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
-            let ask = app(|a| a.s.dropm) == 2;
-            let srcs = if ask { drop_fs_paths(&d) } else { Vec::new() };
-            let dst = if ask && !srcs.is_empty() { self.destination(pt) } else { None };
-            if let (Some(obj), Some(dst)) = (d.as_ref(), dst) {
-                let _ = self.inner.DragLeave();
-                let owner = app(|a| a.main);
-                if let Some(mv) = ask_copy_or_move(owner) {
-                    if !effect.is_null() {
-                        *effect = DROPEFFECT(run_asked(obj, srcs, dst, mv));
+            // Always ask owns every filesystem drop, same drive included. Falling through
+            // to the shell here is what moved a same-drive file with no prompt.
+            if app(|a| a.s.dropm) == 2 {
+                let srcs = drop_fs_paths(&d);
+                if !srcs.is_empty() {
+                    let _ = self.inner.DragLeave();
+                    let dst = self.destination(pt);
+                    if let (Some(obj), Some(dst)) = (d.as_ref(), dst) {
+                        let owner = app(|a| a.main);
+                        if let Some(mv) = ask_copy_or_move(owner) {
+                            if !effect.is_null() {
+                                *effect = DROPEFFECT(run_asked(obj, srcs, dst, mv));
+                            }
+                        } else if !effect.is_null() {
+                            *effect = DROPEFFECT_NONE;
+                        }
+                    } else if !effect.is_null() {
+                        *effect = DROPEFFECT_NONE;
                     }
-                } else if !effect.is_null() {
-                    *effect = DROPEFFECT_NONE;
+                    return Ok(());
                 }
-                return Ok(());
             }
             if let Some(obj) = d.as_ref() {
                 let _ = self.inner.Drop(obj, key, *pt, effect);
@@ -306,7 +461,7 @@ impl IDropTarget_Impl for AskDrop_Impl {
 
 #[cfg(test)]
 mod tests {
-    use super::{drop_folder, fav_into_folder, reported_effect};
+    use super::{drop_folder, fav_into_folder, reported_effect, shell_drop_class};
     use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_MOVE};
 
     #[test]
@@ -323,6 +478,16 @@ mod tests {
         assert_eq!(drop_folder(r"C:\pics", None), Some(r"C:\pics".into()));
         assert_eq!(drop_folder("::{thispc}", None), None);
         assert_eq!(drop_folder("::{thispc}", Some(r"D:\work")), Some(r"D:\work".into()));
+    }
+
+    #[test]
+    fn shell_drop_goes_to_the_list_not_the_header() {
+        assert!(shell_drop_class("SysListView32"));
+        assert!(shell_drop_class("DirectUIHWND"));
+        assert!(shell_drop_class("SHELLDLL_DefView"));
+        assert!(shell_drop_class("SysTreeView32"));
+        assert!(!shell_drop_class("SysHeader32"));
+        assert!(!shell_drop_class("PanegridPane"));
     }
 
     #[test]

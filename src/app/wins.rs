@@ -340,6 +340,8 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     }
     if let Ok((t, th)) = create_tree(main) {
         app(|a| (a.tree, a.tree_hwnd) = (Some(t), th));
+        // The tree view can register its target after Initialize returns.
+        crate::schedule_tree_drop();
     }
     let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     app(|a| a.side_hwnd = side);

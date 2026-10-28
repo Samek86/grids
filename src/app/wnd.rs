@@ -132,6 +132,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 open_stashed();
             }
             WM_TIMER if wp.0 == TIMER_CTX_WARM => crate::shell::warmup::on_timer(h),
+            WM_TIMER if wp.0 == TIMER_DROP => on_tree_drop_timer(h),
             WM_SETCURSOR if wp.0 == h.0 as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
                 let Some(d) = app(|a| a.drag).or_else(|| cursor_for(h)) else {
                     return DefWindowProcW(h, msg, wp, lp);
@@ -487,6 +488,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         };
         match msg {
             WM_TIMER if wp.0 == TIMER_SETTLE => settle_cols(h),
+            WM_TIMER if wp.0 == TIMER_DROP => on_pane_drop_timer(h),
             WM_THEME_SCROLL => apply_theme_scroll(h),
             WM_TIMER if wp.0 == TIMER_NEWFILE => {
                 let job = PENDING_FILE.lock().ok().and_then(|mut p| {
