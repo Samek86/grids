@@ -1787,6 +1787,10 @@ pub(crate) unsafe fn commit_pane_view(i: usize, mode: i32, icon: i32) {
             _ = MessageBeep(MB_ICONWARNING);
             return;
         }
+        // A new list view registers Explorer's own drop target. Wrap that window too.
+        if let Ok(view) = fv.cast::<IShellView>().and_then(|sv| sv.GetWindow()) {
+            schedule_drop_at(view);
+        }
     }
     let (remember, path) = app(|a| (a.s.remember_views, a.s.paths.get(i).cloned().unwrap_or_default()));
     let key = remember.then(|| crate::folderview::normalize_folder_key(&path)).flatten();
@@ -2394,6 +2398,8 @@ pub(crate) unsafe fn free_min_widths(lv: HWND) {
             SendMessageW(lv, LVM_SETCOLUMNWIDTH, Some(WPARAM(c)), Some(LPARAM(w)));
         }
     }
+    // The list is the window OLE drops on. Re-wrap it whenever this runs.
+    install_drop_at(lv);
     // and no snapping to the floor or ideal width while dragging, no automatic sizing: the user's width
     let snap = LVS_EX_COLUMNSNAPPOINTS | LVS_EX_AUTOSIZECOLUMNS;
     if SendMessageW(lv, LVM_GETEXTENDEDLISTVIEWSTYLE, None, None).0 as usize & snap != 0 {
@@ -2532,6 +2538,9 @@ unsafe fn apply_planned(fv: &IFolderView2, writes: u8, mode: i32, icon: i32, col
     }
     if plan.mode {
         let _ = fv.SetViewModeAndIconSize(FOLDERVIEWMODE(mode), icon);
+        if let Ok(view) = fv.cast::<IShellView>().and_then(|sv| sv.GetWindow()) {
+            schedule_drop_at(view);
+        }
     }
     if plan.columns || plan.sort || plan.widths {
         free_min_widths(lv);
@@ -2911,7 +2920,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
                 }
             }
         }
-        unsafe { install_pane_drop(i) };
+        unsafe { schedule_pane_drop(i) };
         Ok(())
     }
     fn OnNavigationComplete(&self, pidl: *const ITEMIDLIST) -> Result<()> {
@@ -2919,7 +2928,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         let i = self.0.load(Ordering::SeqCst);
         unsafe {
             on_nav(i, pidl);
-            install_pane_drop(i);
+            schedule_pane_drop(i);
         }
         Ok(())
     }
