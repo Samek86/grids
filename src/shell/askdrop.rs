@@ -231,7 +231,7 @@ unsafe fn wrap_window(hwnd: HWND, fallback: &IDropTarget, where_: AskWhere) {
     // Drop the shell's registration. Highlight and non-ask drops go to the view's own
     // target, which is `fallback` (the shell view), not whatever pointer the property held.
     let _ = RevokeDragDrop(hwnd);
-    let dt: IDropTarget = AskDrop { hwnd, inner: fallback.clone(), where_ }.into();
+    let dt: IDropTarget = AskDrop { hwnd, inner: fallback.clone(), where_, srcs: RefCell::new(Vec::new()) }.into();
     if RegisterDragDrop(hwnd, &dt).is_err() {
         let _ = RegisterDragDrop(hwnd, fallback);
         return;
@@ -296,12 +296,30 @@ pub(crate) struct AskDrop {
     hwnd: HWND,
     inner: IDropTarget,
     where_: AskWhere,
+    /// Filesystem paths seen on DragEnter for a tree drop. Kept so Drop does not have to
+    /// read the data object a second time, and so DragOver can allow the drop.
+    srcs: RefCell<Vec<String>>,
 }
 
 impl AskDrop {
-    unsafe fn forward_enter(&self, d: Ref<IDataObject>, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) {
+    unsafe fn forward_enter(&self, d: &Ref<IDataObject>, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) {
         if let Some(obj) = d.as_ref() {
             let _ = self.inner.DragEnter(obj, key, *pt, effect);
+        }
+    }
+
+    /// The tree's own target often reports no effect for a file. Without one, OLE never calls
+    /// Drop, so Always ask would not run. Offer copy or move while the pointer is on a folder.
+    unsafe fn keep_tree_drop(&self, pt: &POINTL, effect: *mut DROPEFFECT) {
+        if effect.is_null() || !matches!(self.where_, AskWhere::Tree) || self.srcs.borrow().is_empty() {
+            return;
+        }
+        bind_hwnd(self.hwnd);
+        if tree_destination(pt).is_none() {
+            return;
+        }
+        if (*effect).0 & (DROPEFFECT_COPY.0 | DROPEFFECT_MOVE.0) == 0 {
+            *effect = DROPEFFECT(DROPEFFECT_COPY.0 | DROPEFFECT_MOVE.0);
         }
     }
 
@@ -321,13 +339,31 @@ unsafe fn pane_destination(slot: &AtomicUsize) -> Option<String> {
     drop_folder(&cur, child.as_deref())
 }
 
+/// Folder under a drop on the left tree. `pt` is the screen point from `IDropTarget`.
+/// `HitTest` wants that point in the control's client area; a screen point misses the node,
+/// and the drop then ends with no prompt.
 unsafe fn tree_destination(pt: &POINTL) -> Option<String> {
-    let tree = app(|a| a.tree.clone())?;
-    let at = POINT { x: pt.x, y: pt.y };
+    let (tree, hwnd) = app(|a| a.tree.clone().map(|t| (t, a.tree_hwnd)))?;
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let mut at = POINT { x: pt.x, y: pt.y };
+    if !ScreenToClient(hwnd, &mut at).as_bool() {
+        return None;
+    }
     let item = tree.HitTest(&at).ok()?;
-    let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
-    let path = pwstr(name);
-    is_fs(&path).then_some(path)
+    shell_fs_path(&item)
+}
+
+unsafe fn shell_fs_path(item: &IShellItem) -> Option<String> {
+    for kind in [SIGDN_FILESYSPATH, SIGDN_DESKTOPABSOLUTEPARSING] {
+        let Ok(name) = item.GetDisplayName(kind) else { continue };
+        let path = pwstr(name);
+        if is_fs(&path) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Replace the shell view's drop target so Always ask can run first. The shell target
@@ -383,7 +419,21 @@ pub(crate) unsafe fn schedule_drop_at(h: HWND) {
 
 pub(crate) unsafe fn install_tree_drop(tree: &INameSpaceTreeControl, hwnd: HWND) {
     let Ok(inner) = tree.cast::<IDropTarget>() else { return };
+    let _ = SetWindowSubclass(hwnd, Some(tree_drop_watch), DROP_SUB, 0);
     wrap_family(hwnd, &inner, &AskWhere::Tree);
+}
+
+unsafe extern "system" fn tree_drop_watch(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, a1: usize, a2: usize) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { tree_drop_watch_inner(h, msg, wp, lp, a1, a2) }))
+}
+
+unsafe fn tree_drop_watch_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, _a2: usize) -> LRESULT {
+    let r = DefSubclassProc(h, msg, wp, lp);
+    if msg == WM_PARENTNOTIFY && wp.0 & 0xFFFF == WM_CREATE as usize {
+        let _ = h;
+        schedule_tree_drop();
+    }
+    r
 }
 
 pub(crate) unsafe fn schedule_tree_drop() {
@@ -415,24 +465,39 @@ pub(crate) unsafe fn on_tree_drop_timer(h: HWND) {
 
 impl IDropTarget_Impl for AskDrop_Impl {
     fn DragEnter(&self, d: Ref<IDataObject>, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
-        unsafe { self.forward_enter(d, key, pt, effect) };
+        unsafe {
+            self.forward_enter(&d, key, pt, effect);
+            // Remember the files now. A second read on Drop fails for some objects, and
+            // DragOver has to know this is a file drop before it can offer an effect.
+            if matches!(self.where_, AskWhere::Tree) && app(|a| a.s.dropm) == 2 {
+                *self.srcs.borrow_mut() = drop_fs_paths(&d);
+                self.keep_tree_drop(pt, effect);
+            }
+        }
         Ok(())
     }
     fn DragOver(&self, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
-        unsafe { let _ = self.inner.DragOver(key, *pt, effect); }
+        unsafe {
+            let _ = self.inner.DragOver(key, *pt, effect);
+            self.keep_tree_drop(pt, effect);
+        }
         Ok(())
     }
     fn DragLeave(&self) -> Result<()> {
-        unsafe { let _ = self.inner.DragLeave(); }
+        unsafe {
+            self.srcs.borrow_mut().clear();
+            let _ = self.inner.DragLeave();
+        }
         Ok(())
     }
     fn Drop(&self, d: Ref<IDataObject>, key: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
+            let stored = std::mem::take(&mut *self.srcs.borrow_mut());
             // Always ask owns every filesystem drop, same drive included. Falling through
             // to the shell here is what moved a same-drive file with no prompt.
             if app(|a| a.s.dropm) == 2 {
-                let srcs = drop_fs_paths(&d);
+                let srcs = if stored.is_empty() { drop_fs_paths(&d) } else { stored };
                 if !srcs.is_empty() {
                     let _ = self.inner.DragLeave();
                     let dst = self.destination(pt);
