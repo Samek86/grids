@@ -3575,6 +3575,8 @@ unsafe fn open_file_item(item: &IShellItem) {
 /// The pane is recorded either way, so a verb that still slips through is caught by
 /// the single-instance handoff and applied to this pane.
 pub(crate) unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
+    // The empty-space handler also sees this click. A verb the shell already ran must not run again.
+    mark_shell_activate();
     if let Some(sv) = sv {
         if let Ok(h) = sv.GetWindow() {
             bind_hwnd(h);

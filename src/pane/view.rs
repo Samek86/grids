@@ -1157,21 +1157,25 @@ pub(crate) struct Click {
     pub(crate) time: u32,
     pub(crate) x: i32,
     pub(crate) y: i32,
+    pub(crate) kind: u8,
 }
 
 thread_local! {
     static LAST_CLICK: Cell<Option<Click>> = const { Cell::new(None) };
 }
 
-// Windows 11's list (DirectUIHWND) has no CS_DBLCLKS, so a double-click is two background presses in a row,
-// within the system's double-click time and box. The pair is consumed: a third click doesn't go up again.
-pub(crate) fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx: i32, cy: i32) -> (Option<Click>, bool) {
-    if !bg {
+// Windows 11's list (DirectUIHWND) has no CS_DBLCLKS, so a double-click is two presses in a row,
+// within the system's double-click time and box. The pair is consumed: a third click doesn't repeat it.
+// `hit` is 0 (an item the shell handles, or nothing), 1 (empty list), or 2 (a details cell). Only two
+// presses of the same kind pair.
+pub(crate) fn next_click(prev: Option<Click>, now: Click, hit: u8, ms: u32, cx: i32, cy: i32) -> (Option<Click>, bool) {
+    if hit == 0 || now.kind != hit {
         return (None, false);
     }
     match prev {
         Some(p)
-            if p.win == now.win
+            if p.kind == hit
+                && p.win == now.win
                 && p.gen == now.gen
                 && now.time.wrapping_sub(p.time) <= ms
                 && (now.x - p.x).abs() <= cx / 2
@@ -1189,9 +1193,20 @@ pub(crate) fn next_click(prev: Option<Click>, now: Click, bg: bool, ms: u32, cx:
 // column headers are never background.
 // The column header of a details view is a list too, nested in the item list: never background, so a
 // double-click on a header divider (auto-fit a column) does not go up a folder.
+// Windows 11 does not report a details cell as a list item. The icon is a graphic and the name, date and
+// size are text. Those belong to the row: a double-click opens the item, and only the real list background
+// goes up.
 pub(crate) fn bg_role(role: u32, parent: Option<u32>) -> bool {
     (role == ROLE_SYSTEM_LIST && parent != Some(ROLE_SYSTEM_LIST)) || role == ROLE_SYSTEM_LISTITEM
 }
+
+pub(crate) fn cell_role(role: u32) -> bool {
+    matches!(role, ROLE_SYSTEM_GRAPHIC | ROLE_SYSTEM_STATICTEXT | ROLE_SYSTEM_TEXT)
+}
+
+const HIT_NONE: u8 = 0;
+const HIT_BLANK: u8 = 1;
+const HIT_CELL: u8 = 2;
 
 unsafe fn role_of(a: &IAccessible, child: &VARIANT) -> Option<u32> {
     let mut role = a.get_accRole(child).ok()?;
@@ -1215,37 +1230,58 @@ pub(crate) fn confirm(cand: (usize, isize), query: impl FnOnce() -> (Option<isiz
     view == Some(cand.1) && sel == Some(0) && gen() == cand.0
 }
 
+fn hit_kind(role: u32, parent: Option<u32>) -> u8 {
+    if cell_role(role) {
+        HIT_CELL
+    } else if bg_role(role, parent) {
+        HIT_BLANK
+    } else {
+        HIT_NONE
+    }
+}
+
 // Same-thread window, so WM_GETOBJECT runs inline; call outside app().
 pub(crate) unsafe fn on_background(m: &MSG) -> bool {
+    point_hit(m) == HIT_BLANK
+}
+
+unsafe fn point_hit(m: &MSG) -> u8 {
     if WindowFromPoint(m.pt) != m.hwnd {
-        return false;
+        return HIT_NONE;
     }
     let mut acc: Option<IAccessible> = None;
     let mut child = VARIANT::default();
     if AccessibleObjectFromPoint(m.pt, &mut acc, &mut child).is_err() {
-        return false;
+        return HIT_NONE;
     }
-    let bg = acc.is_some_and(|a| {
-        let Some(role) = role_of(&a, &child) else { return false };
+    let hit = acc.as_ref().map(|a| {
+        let Some(role) = role_of(a, &child) else { return HIT_NONE };
         let parent = (role == ROLE_SYSTEM_LIST)
             .then(|| a.accParent().ok().and_then(|p| p.cast::<IAccessible>().ok()))
             .flatten()
             .and_then(|p| role_of(&p, &VARIANT::from(0i32)));
-        bg_role(role, parent)
-    });
+        hit_kind(role, parent)
+    }).unwrap_or(HIT_NONE);
     _ = VariantClear(&mut child);
-    bg
+    hit
 }
 
-// A double-click on empty space in a list goes up a folder: (pane, generation, view window) when this press
-// completes a background pair.
-pub(crate) unsafe fn up_candidate(m: &MSG) -> Option<(usize, usize, isize)> {
+#[derive(Clone, Copy)]
+pub(crate) enum RowClick {
+    Up(usize, usize, isize),
+    Open(usize, usize),
+}
+
+// A double-click on empty space in a list goes up a folder. A double-click on a details cell
+// (text or icon) opens that row. `None` until the second press of the pair.
+pub(crate) unsafe fn up_candidate(m: &MSG) -> Option<RowClick> {
     if !matches!(m.message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK) || !app(|a| a.s.dblup) {
         return None;
     }
     let i = pane_of(m.hwnd)?;
     let svh = Cell::new(HWND::default());
-    let (g0, bg) = bg_probe(gen, || {
+    let hit = Cell::new(HIT_NONE);
+    let (g0, armed) = bg_probe(gen, || {
         let Some(h) = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()) else {
             return false;
         };
@@ -1253,15 +1289,105 @@ pub(crate) unsafe fn up_candidate(m: &MSG) -> Option<(usize, usize, isize)> {
         let mut c = [0u16; 32];
         let n = GetClassNameW(m.hwnd, &mut c) as usize;
         let list = matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32");
-        list && (h == m.hwnd || IsChild(h, m.hwnd).as_bool())
-            && m.wParam.0 & (MK_CONTROL.0 | MK_SHIFT.0) as usize == 0
-            && on_background(m)
+        if !(list && (h == m.hwnd || IsChild(h, m.hwnd).as_bool()) && m.wParam.0 & (MK_CONTROL.0 | MK_SHIFT.0) as usize == 0) {
+            return false;
+        }
+        let kind = point_hit(m);
+        hit.set(kind);
+        kind != HIT_NONE
     });
-    let now = Click { win: m.hwnd.0 as isize, gen: g0, time: m.time, x: m.pt.x, y: m.pt.y };
+    let kind = if armed { hit.get() } else { HIT_NONE };
+    let now = Click { win: m.hwnd.0 as isize, gen: g0, time: m.time, x: m.pt.x, y: m.pt.y, kind };
     let (cx, cy) = (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK));
-    let (next, up) = next_click(LAST_CLICK.get(), now, bg, GetDoubleClickTime(), cx, cy);
+    let (next, fire) = next_click(LAST_CLICK.get(), now, kind, GetDoubleClickTime(), cx, cy);
     LAST_CLICK.set(next);
-    up.then(|| (i, g0, svh.get().0 as isize))
+    if !fire {
+        return None;
+    }
+    match kind {
+        HIT_BLANK => Some(RowClick::Up(i, g0, svh.get().0 as isize)),
+        HIT_CELL => Some(RowClick::Open(i, g0)),
+        _ => None,
+    }
+}
+
+thread_local! {
+    static SHELL_ACT: Cell<u32> = const { Cell::new(u32::MAX) };
+}
+
+pub(crate) fn mark_shell_activate() {
+    SHELL_ACT.set(unsafe { GetMessageTime() as u32 });
+}
+
+pub(crate) fn shell_activated(time: u32) -> bool {
+    SHELL_ACT.get() == time
+}
+
+fn acc_label(a: &IAccessible, child: &VARIANT) -> Option<String> {
+    let b = unsafe { a.get_accName(child).ok() }?;
+    let s = String::from_utf16_lossy(&b);
+    (!s.is_empty()).then_some(s)
+}
+
+// The list item that owns the text or icon under the pointer. A header graphic has no list item.
+unsafe fn list_item_at(pt: POINT) -> Option<(IAccessible, VARIANT)> {
+    let mut acc: Option<IAccessible> = None;
+    let mut child = VARIANT::default();
+    if AccessibleObjectFromPoint(pt, &mut acc, &mut child).is_err() {
+        return None;
+    }
+    let start = acc?;
+    if role_of(&start, &child) == Some(ROLE_SYSTEM_LISTITEM) {
+        return Some((start, child));
+    }
+    let mut cur = start;
+    for _ in 0..6 {
+        let parent = cur.accParent().ok().and_then(|p| p.cast::<IAccessible>().ok())?;
+        let role = role_of(&parent, &VARIANT::from(0i32))?;
+        if role == ROLE_SYSTEM_LISTITEM {
+            _ = VariantClear(&mut child);
+            return Some((parent, VARIANT::from(0i32)));
+        }
+        if role == ROLE_SYSTEM_LIST {
+            let outer = parent.accParent().ok().and_then(|p| p.cast::<IAccessible>().ok());
+            if outer.as_ref().and_then(|p| role_of(p, &VARIANT::from(0i32))) == Some(ROLE_SYSTEM_LIST) {
+                break;
+            }
+        }
+        cur = parent;
+    }
+    _ = VariantClear(&mut child);
+    None
+}
+
+unsafe fn select_named(i: usize, name: &str) -> bool {
+    let Some(fv) = view_of::<IFolderView2>(i) else { return false };
+    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
+    let flags = (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_FOCUSED.0 | SVSI_ENSUREVISIBLE.0) as u32;
+    for k in 0..n {
+        let Ok(it) = fv.GetItem::<IShellItem>(k) else { continue };
+        let disp = it.GetDisplayName(SIGDN_NORMALDISPLAY).ok().map(|p| pwstr(p)).unwrap_or_default();
+        if disp.eq_ignore_ascii_case(name) {
+            return fv.SelectItem(k, flags).is_ok();
+        }
+    }
+    false
+}
+
+// Double-click on a details cell the shell did not activate: open the row that owns the text or icon.
+pub(crate) unsafe fn open_row_cell(i: usize, pt: POINT) {
+    let Some((item, mut child)) = list_item_at(pt) else { return };
+    let acted = item.accDoDefaultAction(&child).is_ok();
+    if !acted {
+        let name = acc_label(&item, &child).or_else(|| acc_label(&item, &VARIANT::from(0i32)));
+        if let Some(name) = name {
+            if select_named(i, &name) {
+                let sv = view_of::<IShellView>(i);
+                take_default(i, sv.as_ref());
+            }
+        }
+    }
+    _ = VariantClear(&mut child);
 }
 
 pub(crate) unsafe fn cycle(d: i32) {

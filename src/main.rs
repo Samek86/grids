@@ -243,17 +243,24 @@ fn main() -> Result<()> {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if !pre_translate(&msg) {
                 let up = up_candidate(&msg);
+                let (click_time, click_pt) = (msg.time, msg.pt);
                 _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
-                if let Some((i, g, svh)) = up {
-                    let query = || {
-                        let view = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()).map(|h| h.0 as isize);
-                        let sel = view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()).map(|n| n as u32);
-                        (view, sel)
-                    };
-                    if confirm((g, svh), query, gen) {
-                        browse(i, SBSP_PARENT);
+                match up {
+                    Some(RowClick::Up(i, g, svh)) => {
+                        let query = || {
+                            let view = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok()).map(|h| h.0 as isize);
+                            let sel = view_of::<IFolderView2>(i).and_then(|fv| fv.ItemCount(SVGIO_SELECTION).ok()).map(|n| n as u32);
+                            (view, sel)
+                        };
+                        if confirm((g, svh), query, gen) {
+                            browse(i, SBSP_PARENT);
+                        }
                     }
+                    // A details cell reported as text or a graphic. The shell's own hit test misses it
+                    // once the accessibility probe has run, so open that row when the shell did not.
+                    Some(RowClick::Open(i, g)) if gen() == g && !shell_activated(click_time) => open_row_cell(i, click_pt),
+                    _ => {}
                 }
             }
         }
@@ -386,8 +393,8 @@ mod tests {
 
     #[test]
     fn dblclick_up() {
-        let c = |time, x, y| Click { win: 7, gen: 1, time, x, y };
-        let next = |prev, now, bg| next_click(prev, now, bg, 500, 4, 4);
+        let c = |time, x, y| Click { win: 7, gen: 1, time, x, y, kind: 1 };
+        let next = |prev, now, bg| next_click(prev, now, if bg { 1 } else { 0 }, 500, 4, 4);
         // background, then background in time and box: up, and the pair is consumed
         let (rec, up) = next(None, c(100, 10, 10), true);
         assert!(rec == Some(c(100, 10, 10)) && !up);
@@ -409,9 +416,15 @@ mod tests {
         assert!(!next(p, Click { gen: 2, ..c(200, 10, 10) }, true).1);
 
         assert!(bg_role(33, None) && bg_role(33, Some(9)) && bg_role(34, Some(33)));
-        assert!([20, 43, 25, 3, 62].iter().all(|&r| !bg_role(r, None)));
+        assert!([20, 43, 25, 3, 62, 40, 41, 42].iter().all(|&r| !bg_role(r, None)));
         // The details-view header: a list inside the item list.
         assert!(!bg_role(33, Some(33)));
+        // Windows 11 details cells: icon is a graphic, name/date/size are text. Those are the row, not empty space.
+        assert!(cell_role(40) && cell_role(41) && cell_role(42));
+        assert!(!cell_role(33) && !cell_role(34) && !cell_role(62));
+        let cell = |time| Click { kind: 2, ..c(time, 10, 10) };
+        assert!(next_click(Some(cell(100)), cell(200), 2, 500, 4, 4).1);
+        assert!(!next_click(Some(c(100, 10, 10)), cell(200), 2, 500, 4, 4).1);
 
         // a navigation during the probe voids it; g0 is the value before
         let g = Cell::new(5);
