@@ -701,18 +701,3 @@ pub(crate) unsafe fn text_of(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n])
 }
 
-// scroll an unfocused, untouched address bar to its end, so a cut-off path shows the current folder
-pub(crate) unsafe fn show_path_end(e: HWND, disp: &str) {
-    let (mut s, mut en) = (0u32, 0u32);
-    SendMessageW(e, EM_GETSEL, Some(WPARAM(&mut s as *mut u32 as usize)), Some(LPARAM(&mut en as *mut u32 as isize)));
-    if GetFocus() == e || s != en || text_of(e) != disp {
-        return;
-    }
-    let len = GetWindowTextLengthW(e) as usize;
-    // back to the start first: drops any scroll left from when the box was 0 px wide
-    for at in [0, len] {
-        SendMessageW(e, EM_SETSEL, Some(WPARAM(at)), Some(LPARAM(at as isize)));
-        SendMessageW(e, EM_SCROLLCARET, None, None);
-    }
-}
-
