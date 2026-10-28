@@ -1025,6 +1025,27 @@ impl Session {
         t
     }
 
+    /// The folder on display in `src` becomes a new pane tab on `dst`, just after the tab on display, and is made current.
+    /// Only that folder is copied: `src`'s other pane tabs stay, and `dst` keeps the tabs it already had.
+    /// None when `dst` is already showing that folder (nothing to browse). The caller does not clone a back/forward stack.
+    pub(crate) fn copy_pane_tab(&mut self, src: usize, dst: usize) -> Option<String> {
+        if src >= MAXP || dst >= MAXP {
+            return None;
+        }
+        self.ensure_pane_tabs();
+        let path = self.paths.get(src).cloned().unwrap_or_default();
+        let mut t = self.pane_tab_list(dst);
+        if t.is_empty() {
+            t.push(self.paths.get(dst).cloned().unwrap_or_default());
+        }
+        let cur = if t.len() > 1 { self.pane_cur[dst].min(t.len() - 1) } else { 0 };
+        let at = cur + 1;
+        t.insert(at, path.clone());
+        let showing = self.paths.get(dst).is_some_and(|p| p == &path);
+        (self.pane_folders[dst], self.pane_cur[dst]) = (t, at);
+        if showing { None } else { Some(path) }
+    }
+
     /// A copy of the current pane tab, placed just after it and made current. Same folder, so nothing browses.
     pub(crate) fn add_pane_tab(&mut self, i: usize) {
         if i >= MAXP {
@@ -2268,6 +2289,39 @@ mod crumb_tests {
         let (tabs, at) = super::tabs_from_json(&super::tabs_json(&saved.view_tabs(), saved.tab)).unwrap();
         assert_eq!(tabs[at].pane_folders[2].len(), 3);
         assert_eq!(tabs[at].pane_cur[2], 1);
+    }
+
+    #[test]
+    fn copy_pane_tab_takes_only_the_folder_on_display() {
+        let mut s = Session::default();
+        s.paths[0] = r"C:\src".into();
+        s.views[0] = (4, 32);
+        s.cols[0] = "name:1".into();
+        s.pane_folders[0] = vec![r"C:\old".into(), r"C:\src".into(), r"C:\later".into()];
+        s.pane_cur[0] = 1;
+        s.paths[1] = r"D:\dst".into();
+        s.views[1] = (1, 16);
+        s.cols[1] = "size".into();
+        s.pane_folders[2] = vec!["keep".into(), "me".into()];
+        s.pane_cur[2] = 1;
+        assert_eq!(s.copy_pane_tab(0, 1).as_deref(), Some(r"C:\src"));
+        // The list shows the folder on display in the current tab, which stays D:\dst until the browse.
+        assert_eq!(s.pane_folders[1], vec![r"D:\dst".to_string(), r"C:\src".into()]);
+        assert_eq!(s.pane_cur[1], 1);
+        // The source's other pane tabs stay, and so does every other slot.
+        assert_eq!(s.pane_tab_list(0), vec![r"C:\old".to_string(), r"C:\src".into(), r"C:\later".into()]);
+        assert_eq!((s.views[1], s.cols[1].as_str()), ((1, 16), "size"));
+        assert_eq!(s.pane_folders[2], vec!["keep".to_string(), "me".into()]);
+        // Same folder already on display: a new tab, and nothing to browse.
+        assert_eq!(s.copy_pane_tab(0, 0), None);
+        assert_eq!(s.pane_cur[0], 2);
+        assert_eq!(s.pane_tab_list(0), vec![r"C:\old".to_string(), r"C:\src".into(), r"C:\src".into(), r"C:\later".into()]);
+        assert_eq!(s.paths[0], r"C:\src");
+
+        crate::copy_pane_view(&mut s, 0, 3);
+        assert_eq!((s.paths[3].as_str(), s.views[3], s.cols[3].as_str()), (r"C:\src", (4, 32), "name:1"));
+        assert!(s.pane_folders[3].is_empty() && s.pane_cur[3] == 0);
+        assert_eq!(s.pane_folders[0].len(), 4);
     }
 
     #[test]

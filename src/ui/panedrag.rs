@@ -37,11 +37,16 @@ pub(crate) struct PanePress {
 }
 
 /// A pane drag that has passed the click slack. `hot` is the pane and zone under the pointer.
+/// A blocked copy still has no `hot`: the red preview is not a drop.
 #[derive(Clone, Copy)]
 pub(crate) struct PaneMove {
     pub(crate) hwnd: HWND,
     pub(crate) from: usize,
     pub(crate) hot: Option<(usize, DropZone)>,
+    /// Ctrl is down. The drop copies the current pane tab instead of moving the pane.
+    pub(crate) copy: bool,
+    /// The copy's edge would pass 4 columns, 4 rows, or 16 panes.
+    pub(crate) blocked: bool,
 }
 
 /// New grid after a drop. `perm[slot]` is the slot whose pane lands there (same rule as `reorder`).
@@ -363,6 +368,115 @@ pub(crate) fn pane_drop(heights: &[usize], colr: &[f64], rowr: &[Vec<f64>], from
     Some(LayoutShift { heights, colr, rowr, perm, focus })
 }
 
+/// A Ctrl+drag drop. The source pane stays where it is.
+/// `Split` adds one cell. `Tab` adds a pane tab in the target cell (this window tab only).
+/// `Blocked` is an edge that would pass 4 columns, 4 rows in a column, or 16 panes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CopyDrop {
+    Split {
+        heights: Vec<usize>,
+        colr: Vec<f64>,
+        rowr: Vec<Vec<f64>>,
+        /// `None` is the new cell. Every other entry is the old slot that stays there.
+        slots: Vec<Option<usize>>,
+    },
+    Tab,
+    Blocked,
+}
+
+/// Move when Ctrl is up, copy when it is down. None is not a drop.
+/// A blocked copy is still `Some`, so the preview can turn red and the drop can refuse it.
+#[derive(Clone, Debug)]
+pub(crate) enum DragPlan {
+    Move(LayoutShift),
+    Copy(CopyDrop),
+}
+
+pub(crate) fn drag_plan(copy: bool, heights: &[usize], colr: &[f64], rowr: &[Vec<f64>], from: usize, onto: usize, zone: DropZone) -> Option<DragPlan> {
+    if copy {
+        pane_copy(heights, colr, rowr, onto, zone).map(DragPlan::Copy)
+    } else {
+        pane_drop(heights, colr, rowr, from, onto, zone).map(DragPlan::Move)
+    }
+}
+
+fn copy_slots(heights: &[usize], onto: usize, zone: DropZone) -> Vec<Option<usize>> {
+    let (tc, tr) = slot(heights, onto);
+    let mut slots = Vec::new();
+    let mut old = 0usize;
+    for (c, &rows) in heights.iter().enumerate() {
+        if c == tc && zone == DropZone::Left {
+            slots.push(None);
+        }
+        for r in 0..rows {
+            if c == tc && r == tr && zone == DropZone::Top {
+                slots.push(None);
+            }
+            slots.push(Some(old));
+            old += 1;
+            if c == tc && r == tr && zone == DropZone::Bottom {
+                slots.push(None);
+            }
+        }
+        if c == tc && zone == DropZone::Right {
+            slots.push(None);
+        }
+    }
+    slots
+}
+
+/// Copy onto `onto`. The dragged pane is not removed, so its own edge is a normal split.
+/// Centre adds a pane tab in that cell. An edge past the grid caps is `Blocked`.
+pub(crate) fn pane_copy(heights: &[usize], colr: &[f64], rowr: &[Vec<f64>], onto: usize, zone: DropZone) -> Option<CopyDrop> {
+    if heights.is_empty() || heights.iter().any(|&n| n == 0) {
+        return None;
+    }
+    let n: usize = heights.iter().sum();
+    if n == 0 || n > MAXP || onto >= n {
+        return None;
+    }
+    if zone == DropZone::Center {
+        return Some(CopyDrop::Tab);
+    }
+    if n >= MAXP {
+        return Some(CopyDrop::Blocked);
+    }
+    let (tc, tr) = slot(heights, onto);
+    let horizontal = matches!(zone, DropZone::Left | DropZone::Right);
+    if horizontal && heights.len() >= GRID_CAP {
+        return Some(CopyDrop::Blocked);
+    }
+    if !horizontal && heights[tc] >= GRID_CAP {
+        return Some(CopyDrop::Blocked);
+    }
+    let slots = copy_slots(heights, onto, zone);
+    if slots.len() != n + 1 || slots.iter().filter(|s| s.is_none()).count() != 1 {
+        return None;
+    }
+    let (mut colr, mut rowr) = kept_ratios(heights, colr, rowr);
+    let mut heights = heights.to_vec();
+    if horizontal {
+        let half = colr[tc] / 2.0;
+        colr[tc] = half;
+        let at = if zone == DropZone::Right { tc + 1 } else { tc };
+        heights.insert(at, 1);
+        colr.insert(at, half);
+        rowr.insert(at, vec![1.0]);
+    } else {
+        let half = rowr[tc][tr] / 2.0;
+        rowr[tc][tr] = half;
+        let at = if zone == DropZone::Bottom { tr + 1 } else { tr };
+        rowr[tc].insert(at, half);
+        heights[tc] += 1;
+    }
+    if heights.len() > GRID_CAP || heights.iter().any(|&k| k == 0 || k > GRID_CAP) || heights.iter().sum::<usize>() > MAXP {
+        return Some(CopyDrop::Blocked);
+    }
+    let colr = fix(colr, heights.len());
+    let rowr: Vec<Vec<f64>> = heights.iter().enumerate().map(|(c, &rows)| fix(rowr.get(c).cloned().unwrap_or_default(), rows)).collect();
+    Some(CopyDrop::Split { heights, colr, rowr, slots })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +685,130 @@ mod tests {
         assert_eq!(reorder.heights, vec![4]);
         assert_eq!(&reorder.perm[..4], &[1, 2, 3, 0]);
         assert_shift(&reorder, 4, 0);
+    }
+
+    fn copy_split(plan: Option<DragPlan>) -> (Vec<usize>, Vec<f64>, Vec<Vec<f64>>, Vec<Option<usize>>) {
+        match plan {
+            Some(DragPlan::Copy(CopyDrop::Split { heights, colr, rowr, slots })) => (heights, colr, rowr, slots),
+            other => panic!("expected a split, got {other:?}"),
+        }
+    }
+
+    fn slots_keep_every_old_pane(slots: &[Option<usize>], n: usize) {
+        assert_eq!(slots.iter().filter(|s| s.is_none()).count(), 1);
+        let mut seen = vec![false; n];
+        for s in slots.iter().flatten() {
+            assert!(*s < n && !seen[*s], "{slots:?}");
+            seen[*s] = true;
+        }
+        assert!(seen.iter().all(|&k| k));
+    }
+
+    #[test]
+    fn ctrl_copies_and_without_it_the_move_is_unchanged() {
+        let one = (&[1usize][..], &[1.0][..], &[vec![1.0]][..]);
+        // One pane has nowhere to move, including onto itself.
+        assert!(drag_plan(false, one.0, one.1, one.2, 0, 0, DropZone::Left).is_none());
+        assert!(drag_plan(false, one.0, one.1, one.2, 0, 0, DropZone::Center).is_none());
+        assert!(matches!(drag_plan(true, one.0, one.1, one.2, 0, 0, DropZone::Left), Some(DragPlan::Copy(CopyDrop::Split { .. }))));
+        assert!(matches!(drag_plan(true, one.0, one.1, one.2, 0, 0, DropZone::Center), Some(DragPlan::Copy(CopyDrop::Tab))));
+
+        let two_h = &[1usize, 1][..];
+        let two_c = &[0.25, 0.75][..];
+        let two_r = &[vec![1.0], vec![1.0]][..];
+        assert!(matches!(drag_plan(false, two_h, two_c, two_r, 0, 1, DropZone::Center), Some(DragPlan::Move(_))));
+        assert!(matches!(drag_plan(true, two_h, two_c, two_r, 0, 1, DropZone::Center), Some(DragPlan::Copy(CopyDrop::Tab))));
+        // The same edge is a move without Ctrl and a split with Ctrl.
+        assert!(matches!(drag_plan(false, two_h, two_c, two_r, 0, 1, DropZone::Right), Some(DragPlan::Move(_))));
+        let (_, colr, _, slots) = copy_split(drag_plan(true, two_h, two_c, two_r, 0, 1, DropZone::Right));
+        assert_eq!(slots, vec![Some(0), Some(1), None]);
+        assert!(near_slice(&colr, &[0.25, 0.375, 0.375]));
+    }
+
+    #[test]
+    fn copy_edge_splits_without_removing_the_source_including_its_own_edge() {
+        let (heights, colr, rowr, slots) = copy_split(pane_copy(&[1], &[1.0], &[vec![1.0]], 0, DropZone::Left).map(DragPlan::Copy));
+        assert_eq!(heights, vec![1, 1]);
+        assert!(near_slice(&colr, &[0.5, 0.5]));
+        assert_eq!(slots, vec![None, Some(0)]);
+        assert!(near_slice(&rowr[0], &[1.0]));
+        slots_keep_every_old_pane(&slots, 1);
+
+        let (heights, colr, rowr, slots) = copy_split(pane_copy(&[2], &[1.0], &[vec![0.4, 0.6]], 0, DropZone::Right).map(DragPlan::Copy));
+        assert_eq!(heights, vec![2, 1]);
+        assert!(near_slice(&colr, &[0.5, 0.5]));
+        assert!(near_slice(&rowr[0], &[0.4, 0.6]));
+        assert_eq!(slots, vec![Some(0), Some(1), None]);
+
+        let rowr0 = vec![vec![0.4, 0.6], vec![1.0]];
+        let (heights, colr, rowr, slots) = copy_split(pane_copy(&[2, 1], &[0.4, 0.6], &rowr0, 1, DropZone::Top).map(DragPlan::Copy));
+        assert_eq!(heights, vec![3, 1]);
+        assert!(near_slice(&colr, &[0.4, 0.6]));
+        assert!(near_slice(&rowr[0], &[0.4, 0.3, 0.3]));
+        assert!(near_slice(&rowr[1], &[1.0]));
+        assert_eq!(slots, vec![Some(0), None, Some(1), Some(2)]);
+        slots_keep_every_old_pane(&slots, 3);
+
+        let (heights, _, rowr, slots) = copy_split(pane_copy(&[2, 1], &[0.4, 0.6], &rowr0, 0, DropZone::Bottom).map(DragPlan::Copy));
+        assert_eq!(heights, vec![3, 1]);
+        assert!(near_slice(&rowr[0], &[0.2, 0.2, 0.6]));
+        assert_eq!(slots, vec![Some(0), None, Some(1), Some(2)]);
+
+        // Left of the second column inserts a column between them and halves that column.
+        let (heights, colr, _, slots) = copy_split(pane_copy(&[2, 1], &[0.4, 0.6], &rowr0, 2, DropZone::Left).map(DragPlan::Copy));
+        assert_eq!(heights, vec![2, 1, 1]);
+        assert!(near_slice(&colr, &[0.4, 0.3, 0.3]));
+        assert_eq!(slots, vec![Some(0), Some(1), None, Some(2)]);
+    }
+
+    #[test]
+    fn copy_centre_is_a_tab_and_a_full_grid_edge_is_blocked() {
+        let quarter = vec![vec![0.25; 4]; 4];
+        let ones = vec![vec![1.0]; 4];
+        assert!(matches!(pane_copy(&[4, 4, 4, 4], &[0.25; 4], &quarter, 15, DropZone::Center), Some(CopyDrop::Tab)));
+        assert!(matches!(pane_copy(&[1, 1, 1, 1], &[0.25; 4], &ones, 3, DropZone::Right), Some(CopyDrop::Blocked)));
+        assert!(matches!(pane_copy(&[1, 1, 1, 1], &[0.25; 4], &ones, 0, DropZone::Left), Some(CopyDrop::Blocked)));
+        assert!(matches!(pane_copy(&[4], &[1.0], &[vec![0.25; 4]], 3, DropZone::Bottom), Some(CopyDrop::Blocked)));
+        assert!(matches!(pane_copy(&[4], &[1.0], &[vec![0.25; 4]], 0, DropZone::Top), Some(CopyDrop::Blocked)));
+        assert!(matches!(pane_copy(&[4, 4, 4, 4], &[0.25; 4], &quarter, 0, DropZone::Bottom), Some(CopyDrop::Blocked)));
+        // Four columns, but the short column can still gain a row. The centre is never a split.
+        let tall = vec![vec![1.0 / 3.0; 3], vec![1.0], vec![1.0], vec![1.0]];
+        // Pane 3 is the one-row column. Its bottom edge can still split. Pane 1 is in the three-row column.
+        let (heights, _, _, slots) = copy_split(pane_copy(&[3, 1, 1, 1], &[0.25; 4], &tall, 3, DropZone::Bottom).map(DragPlan::Copy));
+        assert_eq!(heights, vec![3, 2, 1, 1]);
+        assert_eq!(slots.iter().filter(|s| s.is_none()).count(), 1);
+        assert!(matches!(pane_copy(&[3, 1, 1, 1], &[0.25; 4], &tall, 0, DropZone::Right), Some(CopyDrop::Blocked)));
+        assert!(matches!(pane_copy(&[3, 1, 1, 1], &[0.25; 4], &tall, 0, DropZone::Center), Some(CopyDrop::Tab)));
+        assert!(pane_copy(&[1], &[1.0], &[vec![1.0]], 4, DropZone::Left).is_none());
+        assert!(pane_copy(&[], &[], &[], 0, DropZone::Center).is_none());
+    }
+
+    #[test]
+    fn drag_plan_copy_blocks_at_four_columns_four_rows_and_sixteen_panes() {
+        let cols_h = &[1usize, 1, 1, 1][..];
+        let cols_c = &[0.25; 4][..];
+        let cols_r = vec![vec![1.0]; 4];
+        assert!(matches!(drag_plan(true, cols_h, cols_c, &cols_r, 0, 3, DropZone::Right), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        assert!(matches!(drag_plan(true, cols_h, cols_c, &cols_r, 0, 0, DropZone::Left), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        // The same edge still moves when Ctrl is up.
+        assert!(matches!(drag_plan(false, cols_h, cols_c, &cols_r, 0, 3, DropZone::Right), Some(DragPlan::Move(_))));
+
+        let rows_h = &[4usize][..];
+        let rows_c = &[1.0][..];
+        let rows_r = vec![vec![0.25; 4]];
+        assert!(matches!(drag_plan(true, rows_h, rows_c, &rows_r, 0, 3, DropZone::Bottom), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        assert!(matches!(drag_plan(true, rows_h, rows_c, &rows_r, 0, 0, DropZone::Top), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        assert!(matches!(drag_plan(true, rows_h, rows_c, &rows_r, 0, 0, DropZone::Center), Some(DragPlan::Copy(CopyDrop::Tab))));
+
+        let full_h = &[4usize, 4, 4, 4][..];
+        let full_c = &[0.25; 4][..];
+        let full_r = vec![vec![0.25; 4]; 4];
+        assert!(matches!(drag_plan(true, full_h, full_c, &full_r, 0, 15, DropZone::Left), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        assert!(matches!(drag_plan(true, full_h, full_c, &full_r, 15, 0, DropZone::Bottom), Some(DragPlan::Copy(CopyDrop::Blocked))));
+        assert!(matches!(drag_plan(true, full_h, full_c, &full_r, 0, 15, DropZone::Center), Some(DragPlan::Copy(CopyDrop::Tab))));
+        // A short column in a full-width grid can still gain a row. A fifth column cannot.
+        let short_r = vec![vec![1.0 / 3.0; 3], vec![1.0], vec![1.0], vec![1.0]];
+        assert!(matches!(drag_plan(true, &[3, 1, 1, 1], cols_c, &short_r, 0, 1, DropZone::Bottom), Some(DragPlan::Copy(CopyDrop::Split { .. }))));
+        assert!(matches!(drag_plan(true, &[3, 1, 1, 1], cols_c, &short_r, 0, 1, DropZone::Right), Some(DragPlan::Copy(CopyDrop::Blocked))));
     }
 }

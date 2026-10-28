@@ -145,7 +145,8 @@ pub(crate) struct Desk {
     pub(crate) drag: Option<Hit>,
     pub(crate) pane_press: Option<PanePress>, // header press; a drag only after it moves
     pub(crate) pane_drag: Option<PaneMove>,   // pane grabbed by its header or tab strip
-    pub(crate) pane_over: HWND,               // accent preview of the drop region
+    pub(crate) drag_hint: String,             // status while Ctrl copies; empty while moving
+    pub(crate) pane_over: HWND,               // accent or red preview of the drop region
     pub(crate) gap_hot: Option<Hit>, // splitter under the pointer, drawn in the accent colour
     pub(crate) sizing: bool, // inside the window's own move/size loop
     pub(crate) was_max: bool, // maximized when last not minimized (kept while minimized)
@@ -312,6 +313,7 @@ pub(crate) fn blank_desk() -> Desk {
         drag: None,
         pane_press: None,
         pane_drag: None,
+        drag_hint: String::new(),
         pane_over: HWND::default(),
         gap_hot: None,
         sizing: false,
