@@ -1240,12 +1240,27 @@ unsafe fn undo() {
         return;
     }
     let Some(pairs) = exec::last_undo() else { return };
+    // An old batch can name files that were deleted or renamed again. Skipping them here
+    // keeps the ones that are still there, instead of failing the whole undo with "file not found".
+    let (present, skipped) = exec::partition_undo(&pairs, exec::file_still_there);
+    if present.is_empty() {
+        if skipped > 0 {
+            exec::pop_undo();
+            let note = undo_skipped_note(skipped);
+            ST.with(|s| s.borrow_mut().note.clone_from(&note));
+            sync_buttons();
+            let h = hwnd();
+            let _ = InvalidateRect(Some(h), None, false);
+            tell_skipped(h, &note);
+        }
+        return;
+    }
     let pending = ST.with(|s| {
         s.borrow()
             .items
             .iter()
             .map(|it| {
-                pairs
+                present
                     .iter()
                     .find(|(d, from, _)| engine::dir_key(d) == engine::dir_key(&it.dir) && from == &it.name)
                     .map(|(_, _, to)| to.clone())
@@ -1253,8 +1268,17 @@ unsafe fn undo() {
             })
             .collect::<Vec<_>>()
     });
-    let note = undone_note(pairs.len());
-    launch(pairs, pending, note, false);
+    let note = undo_result_note(present.len(), skipped);
+    if skipped > 0 {
+        tell_skipped(hwnd(), &undo_skipped_note(skipped));
+    }
+    launch(present, pending, note, false);
+}
+
+/// One summary for every name the undo could not find. Not a warning: those items are skipped.
+unsafe fn tell_skipped(owner: HWND, note: &str) {
+    let parent = if owner.0.is_null() { None } else { Some(owner) };
+    let _ = MessageBoxW(parent, &HSTRING::from(note), w!("Panegrid"), MB_OK | MB_ICONINFORMATION);
 }
 
 unsafe fn launch(pairs: Vec<(String, String, String)>, pending: Vec<String>, note: String, record: bool) {
@@ -2342,6 +2366,20 @@ fn renamed_note(n: usize) -> String {
 
 fn undone_note(n: usize) -> String {
     tf(crate::Key::UndoneN, &[("n", &n.to_string())])
+}
+
+fn undo_skipped_note(n: usize) -> String {
+    tf(crate::Key::UndoSkippedMissing, &[("n", &n.to_string())])
+}
+
+/// The summary after an undo. Missing names are one sentence, not a per-file error.
+fn undo_result_note(undone: usize, skipped: usize) -> String {
+    let base = if undone == 0 { String::new() } else { undone_note(undone) };
+    if skipped == 0 {
+        return base;
+    }
+    let skip = undo_skipped_note(skipped);
+    if base.is_empty() { skip } else { format!("{base} {skip}") }
 }
 
 fn issue_text(issue: Issue) -> &'static str {
