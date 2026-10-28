@@ -52,6 +52,7 @@ pub(crate) enum Key {
     Calculating2,
     CanTOpen,
     CanTOpenThisFolder,
+    CopyPaneBlocked,
     Cancel,
     Cancelled,
     CancelledFinishedStepsWerePutBack,
@@ -104,6 +105,7 @@ pub(crate) enum Key {
     CopyOrMoveTheseItems,
     CopyingFailed,
     CopyingMoving,
+    CopyPaneDrag,
     CouldNotChangeDefaultFolderApp,
     CouldNotDeletePreset,
     CouldNotExportSettingsFile,
@@ -630,7 +632,7 @@ pub(crate) enum Key {
     ZipListHead,
 }
 
-pub(crate) const KEY_COUNT: usize = 625;
+pub(crate) const KEY_COUNT: usize = 627;
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -682,6 +684,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     " (calculating…)",
     "can't open",
     "Can't open this folder",
+    "Can't split here: 4 columns, 4 rows in a column, or 16 panes",
     "Cancel",
     "Cancelled",
     "Cancelled. Finished steps were put back.",
@@ -734,6 +737,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Copy or move these items?",
     "Copying failed: ",
     "Copying / moving…",
+    "Copying this pane. An edge splits; the centre adds a pane tab. Release Ctrl to move",
     "Could not change the default folder app.",
     "Could not delete the preset: ",
     "Could not export the settings file.",
@@ -855,7 +859,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     " h ago",
     "Help",
     "F2, Del, Ctrl+C/X/V, F5\tSame as Explorer. F5 reloads the active pane from anywhere in the window; a failed network folder is tried again\nCtrl+V\tWith a copied picture (screenshot, browser image): save it here as a PNG file\nSpace\tQuick look, same as F3. A space within a second of typing, or during IME composition, stays part of the name. Settings → Panes & view can turn this off\n\n",
-    "Address bar: click a folder in the path to go there; click a › to list the folders inside; click the current folder or empty space, or press Ctrl+L, to type a path\nLayout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns (order, widths, sort) and view; or copy / move the selected files to another pane's folder (up to 10,000). With only one pane, split side by side (new pane on the right, even split) and open that folder there. Nothing selected duplicates the current folder. Only files selected also duplicates it, and does not copy or move them\nSave (Ctrl+S): save this tab (pane layout, folders, view, colour labels). A green dot means this tab's layout is unsaved (not folder moves)\nOpen session: open the saved tab as a new tab beside the current one. Open several opens each selected session as its own tab\nDouble-click a splitter: split evenly\nRight-click a pane header: colour label (saved with the session, separate from the tab colour)\nPane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\nArguments: panegrid.exe C:\\a D:\\b ... or panegrid.exe work.grids\nCtrl+Alt+C compares the active pane's folder with the next pane in WinMerge. The gear menu and the file list can also compare two selected files, or one file with the same name in another pane. Settings → General sets the WinMerge path.\nIf Panegrid is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.",
+    "Address bar: click a folder in the path to go there; click a › to list the folders inside; click the current folder or empty space, or press Ctrl+L, to type a path\nLayout button: click for an even grid, press and drag for rows per column (arrow keys + Enter work too)\n⇄ button: open the selected folder (or the current one) in another pane, with this pane's columns (order, widths, sort) and view; or copy / move the selected files to another pane's folder (up to 10,000). With only one pane, split side by side (new pane on the right, even split) and open that folder there. Nothing selected duplicates the current folder. Only files selected also duplicates it, and does not copy or move them\nSave (Ctrl+S): save this tab (pane layout, folders, view, colour labels). A green dot means this tab's layout is unsaved (not folder moves)\nOpen session: open the saved tab as a new tab beside the current one. Open several opens each selected session as its own tab\nDouble-click a splitter: split evenly\nRight-click a pane header: colour label (saved with the session, separate from the tab colour)\nPane tabs: folders inside one pane, separate from the window tabs. One folder hides the strip; the button to the right of ⇄ adds a tab (Ctrl+Alt+T). Two or more show the strip. Ctrl+Alt+W / Ctrl+Alt+PageDown / Ctrl+Alt+PageUp by default, and only while the focus is in a pane. + , ×, a middle click and a double-click on the empty strip also work\nArguments: panegrid.exe C:\\a D:\\b ... or panegrid.exe work.grids\nCtrl+Alt+C compares the active pane's folder with the next pane in WinMerge. The gear menu and the file list can also compare two selected files, or one file with the same name in another pane. Settings → General sets the WinMerge path.\nIf Panegrid is already running, a new window opens in that process. Single-window mode brings that window forward instead, and opens paths as tabs.\nPane number: drag moves the pane. Ctrl+drag copies the current pane tab: an edge splits, including this pane, and the centre adds a pane tab in that cell. A red preview is past the limit (4 columns, 4 rows in a column, or 16 panes). Release Ctrl while dragging to move instead",
     "Help (online)\tF1",
     "{chord} is already used by another app",
     "Import",
@@ -1310,6 +1314,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "calculating_2",
     "can_t_open",
     "can_t_open_this_folder",
+    "copy_pane_blocked",
     "cancel",
     "cancelled",
     "cancelled_finished_steps_were_put_back",
@@ -1362,6 +1367,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "copy_or_move_these_items",
     "copying_failed",
     "copying_moving",
+    "copy_pane_drag",
     "could_not_change_default_folder_app",
     "could_not_delete_preset",
     "could_not_export_settings_file",
