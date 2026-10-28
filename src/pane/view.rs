@@ -422,7 +422,32 @@ pub(crate) extern "system" fn bar_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM
     crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| bar_proc_inner(h, msg, wp, lp)))
 }
 fn bar_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_ERASEBKGND || msg == WM_PAINT {
+        let rgb = app(|a| {
+            (a.pane_over == h && !h.0.is_null()).then(|| {
+                if a.pane_drag.as_ref().is_some_and(|d| d.blocked) { COPY_BLOCK } else { a.s.accent_now() }
+            })
+        });
+        if let Some(rgb) = rgb {
+            return unsafe { paint_drop_overlay(h, msg, wp, rgb) };
+        }
+    }
     unsafe { DefWindowProcW(h, msg, wp, lp) }
+}
+
+/// The drop preview keeps the class brush as the accent. A blocked copy paints red here instead.
+unsafe fn paint_drop_overlay(h: HWND, msg: u32, wp: WPARAM, rgb: u32) -> LRESULT {
+    let mut rc = RECT::default();
+    _ = GetClientRect(h, &mut rc);
+    if msg == WM_ERASEBKGND {
+        fill(HDC(wp.0 as _), rc, rgb);
+        return LRESULT(1);
+    }
+    let mut ps = PAINTSTRUCT::default();
+    let dc = BeginPaint(h, &mut ps);
+    fill(dc, rc, rgb);
+    _ = EndPaint(h, &ps);
+    LRESULT(0)
 }
 
 pub(crate) unsafe fn end_drag() {
@@ -1583,19 +1608,21 @@ fn blank_pane_slot(s: &mut Session, i: usize) {
 }
 
 pub(crate) unsafe fn set_layout(h: Vec<usize>) {
-    commit_layout(h, None, None, None, None);
+    commit_layout(h, None, None, None, None, None);
 }
 
 /// `planned` is a header-menu split or close. None is the layout picker (`remap`).
 /// `seed` is `(source pane, free old slot)` copied after views are saved and before panes move.
 /// `blank_old` is a closed pane: its folder, tabs, tint and columns are dropped, and it does not return.
 /// `focus` is the new slot to activate. None keeps the pane that was active, or the nearest cell if that cell left.
+/// `ratios` keeps a copy-split's column and row sizes. None lets `set_heights` even them.
 pub(crate) unsafe fn commit_layout(
     h: Vec<usize>,
     planned: Option<([usize; MAXP], Homes)>,
     seed: Option<(usize, usize)>,
     blank_old: Option<usize>,
     focus: Option<usize>,
+    ratios: Option<(Vec<f64>, Vec<Vec<f64>>)>,
 ) {
     if h.is_empty() || h.iter().any(|&n| n == 0) {
         return;
@@ -1712,6 +1739,10 @@ pub(crate) unsafe fn commit_layout(
             fix(&mut a.peek_pane);
         }
         a.s.set_heights(h);
+        if let Some((colr, rowr)) = ratios {
+            a.s.colr = colr;
+            a.s.rowr = rowr;
+        }
         a.s.anchor();
         let _ = pull_dirty(a);
         gone

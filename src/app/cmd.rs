@@ -866,8 +866,12 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             false
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let vk = m.wParam.0 as u16;
+            if vk == VK_CONTROL.0 || vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 {
+                refresh_pane_drag();
+            }
             kids_cancel();
-            let (eat, next) = held_key(app(|a| a.held), m.wParam.0 as u16, m.lParam.0 & (1 << 30) != 0);
+            let (eat, next) = held_key(app(|a| a.held), vk, m.lParam.0 & (1 << 30) != 0);
             app(|a| a.held = next);
             if eat {
                 return true;
@@ -885,6 +889,9 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
         }
         WM_KEYUP | WM_SYSKEYUP => {
             let vk = m.wParam.0 as u16;
+            if vk == VK_CONTROL.0 || vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 {
+                refresh_pane_drag();
+            }
             app(|a| a.held = a.held.filter(|&k| k != vk));
             crate::keys::clear_swallow(vk);
             false

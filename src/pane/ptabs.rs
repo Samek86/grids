@@ -9,7 +9,7 @@ use crate::session::*;
 use super::{focus_view, go_near, layout_pane, set_active};
 
 /// The bar and the list move when the strip appears or disappears. Otherwise only the strip repaints.
-unsafe fn apply_pane_tab_chrome(i: usize, before: usize) {
+pub(crate) unsafe fn apply_pane_tab_chrome(i: usize, before: usize) {
     let after = app(|a| a.s.pane_tab_list(i).len());
     let Some(h) = app(|a| a.panes.get(i)?.as_ref().map(|p| p.hwnd)) else { return };
     if (before > 1) != (after > 1) {
