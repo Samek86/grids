@@ -1536,7 +1536,7 @@ pub(crate) fn side_by_side() -> Vec<usize> {
 
 /// Path, view mode, icon size, and columns of `src` land on `dst`. Pane tabs on `dst` go,
 /// so the right side is one folder rather than a previously hidden strip.
-fn copy_pane_view(s: &mut Session, src: usize, dst: usize) {
+pub(crate) fn copy_pane_view(s: &mut Session, src: usize, dst: usize) {
     if src == dst || src >= MAXP || dst >= MAXP {
         return;
     }
@@ -1717,31 +1717,73 @@ pub(crate) unsafe fn open_in_menu(h: HWND, src: usize) {
     }
 }
 
-/// Right-click on a pane header: this pane's Explorer view, then a colour label.
+/// Right-click on a pane header: view, colour, then split / tab / path / close.
 const VIEW_CMD: usize = 210;
 const SAVE_VIEW_CMD: usize = 218;
+const SPLIT_RIGHT_CMD: usize = 230;
+const SPLIT_BELOW_CMD: usize = 231;
+const NEW_TAB_CMD: usize = 232;
+const COPY_PATH_CMD: usize = 233;
+const EXPLORER_CMD: usize = 234;
+const CLOSE_PANE_CMD: usize = 235;
 
 pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
-    let cur = app(|a| a.s.tints.get(i).copied().unwrap_or(0));
+    let (cur, cols, rows_here, panes, path_ready) = app(|a| {
+        let panes = a.s.panes();
+        let heights = a.s.heights.clone();
+        let rows_here = if i < panes { heights.get(slot(&heights, i).0).copied().unwrap_or(0) } else { 0 };
+        let path_ready = a.s.paths.get(i).is_some_and(|p| !p.is_empty());
+        (a.s.tints.get(i).copied().unwrap_or(0), heights.len(), rows_here, panes, path_ready)
+    });
     let live = pane_mode_icon(i);
     let checked = live.and_then(|(m, z)| explorer_view_index(m, z));
+    let can_right = i < panes && cols < GRID_COLS && panes < GRID_COLS * GRID_ROWS;
+    let can_below = i < panes && rows_here > 0 && rows_here < GRID_ROWS && panes < GRID_COLS * GRID_ROWS;
+    let can_close = panes > 1 && i < panes;
     let Ok(menu) = CreatePopupMenu() else { return };
+    let Ok(view) = CreatePopupMenu() else {
+        _ = DestroyMenu(menu);
+        return;
+    };
+    let Ok(colors) = CreatePopupMenu() else {
+        _ = DestroyMenu(view);
+        _ = DestroyMenu(menu);
+        return;
+    };
     for (k, &(_, _, label)) in EXPLORER_VIEWS.iter().enumerate() {
-        _ = AppendMenuW(menu, MF_STRING, VIEW_CMD + k, &HSTRING::from(tr(label)));
+        _ = AppendMenuW(view, MF_STRING, VIEW_CMD + k, &HSTRING::from(tr(label)));
     }
     if let Some(k) = checked {
-        _ = CheckMenuRadioItem(menu, VIEW_CMD as u32, (VIEW_CMD + EXPLORER_VIEWS.len() - 1) as u32, (VIEW_CMD + k) as u32, MF_BYCOMMAND.0);
+        _ = CheckMenuRadioItem(view, VIEW_CMD as u32, (VIEW_CMD + EXPLORER_VIEWS.len() - 1) as u32, (VIEW_CMD + k) as u32, MF_BYCOMMAND.0);
     }
+    _ = AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null());
     let save_flags = if checked.is_some() { MF_STRING } else { MF_STRING | MF_GRAYED };
-    _ = AppendMenuW(menu, save_flags, SAVE_VIEW_CMD, &HSTRING::from(tr(crate::Key::SaveAsDefaultView)));
-    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, &HSTRING::from(tr(crate::Key::PaneColour)));
-    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    _ = AppendMenuW(view, save_flags, SAVE_VIEW_CMD, &HSTRING::from(tr(crate::Key::SaveAsDefaultView)));
+    _ = AppendMenuW(menu, MF_POPUP, view.0 as usize, &HSTRING::from(tr(crate::Key::View)));
     for k in 0..=6u8 {
         let flags = if k == cur { MF_STRING | MF_CHECKED } else { MF_STRING };
         let name = if k == 0 { tr(crate::Key::None) } else { tint_name(k) };
-        _ = AppendMenuW(menu, flags, k as usize + 1, &HSTRING::from(name));
+        _ = AppendMenuW(colors, flags, k as usize + 1, &HSTRING::from(name));
     }
+    _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, &HSTRING::from(tr(crate::Key::PaneColour)));
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let item = |id: usize, text: &str, on: bool| {
+        let flags = if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+        _ = AppendMenuW(menu, flags, id, &HSTRING::from(text));
+    };
+    item(SPLIT_RIGHT_CMD, tr(crate::Key::SplitRightSameFolder), can_right);
+    item(SPLIT_BELOW_CMD, tr(crate::Key::SplitBelowSameFolder), can_below);
+    let chord = crate::keys::index("pane.tab.new").map(crate::keys::chord_text).unwrap_or_default();
+    let new_tab = if chord.is_empty() {
+        tr(crate::Key::NewPaneTab).to_string()
+    } else {
+        format!("{}\t{chord}", tr(crate::Key::NewPaneTab))
+    };
+    item(NEW_TAB_CMD, &new_tab, i < panes);
+    item(COPY_PATH_CMD, tr(crate::Key::CopyCurrentPath), path_ready);
+    item(EXPLORER_CMD, tr(crate::Key::OpenInExplorer), path_ready);
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    item(CLOSE_PANE_CMD, tr(crate::Key::ClosePane), can_close);
     let pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, None, h, None).0 as usize;
     _ = DestroyMenu(menu);
     if (VIEW_CMD..VIEW_CMD + EXPLORER_VIEWS.len()).contains(&pick) {
@@ -1762,7 +1804,100 @@ pub(crate) unsafe fn tint_menu(h: HWND, i: usize, at: POINT) {
         repaint_header(h);
         check_dirty();
         note_save();
+        return;
     }
+    match pick {
+        SPLIT_RIGHT_CMD => header_split(i, false),
+        SPLIT_BELOW_CMD => header_split(i, true),
+        NEW_TAB_CMD => {
+            set_active(i);
+            new_pane_tab(i);
+            focus_view(i);
+        }
+        COPY_PATH_CMD => copy_pane_path(i),
+        EXPLORER_CMD => open_pane_in_explorer(i),
+        CLOSE_PANE_CMD => header_close(i),
+        _ => {}
+    }
+}
+
+/// Shell parsing name of the folder on display. A filesystem folder's name is its path.
+unsafe fn pane_parsing_name(i: usize) -> String {
+    if let Some(fv) = view_of::<IFolderView2>(i) {
+        if let Ok(item) = fv.GetFolder::<IShellItem>() {
+            if let Ok(p) = item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+                let s = pwstr(p);
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+        }
+    }
+    app(|a| a.s.paths.get(i).cloned().unwrap_or_default())
+}
+
+unsafe fn copy_pane_path(i: usize) {
+    let path = pane_parsing_name(i);
+    if path.is_empty() || !copy_plain(&path) {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    app(|a| a.note = Some((tr(crate::Key::CopiedPath).to_string(), Instant::now() + std::time::Duration::from_secs(3))));
+    update_status();
+}
+
+/// This pane's folder in Windows Explorer. Virtual folders (This PC) use the shell parsing name.
+unsafe fn open_pane_in_explorer(i: usize) {
+    let path = pane_parsing_name(i);
+    if path.is_empty() {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    crate::folderapp::open_in_explorer(&path);
+}
+
+/// New column to the right, or new row under this pane. The new pane shows this folder
+/// with the same sort, column widths and view, and an empty back/forward list.
+unsafe fn header_split(i: usize, below: bool) {
+    let plan = app(|a| {
+        if i >= a.s.panes() {
+            return None;
+        }
+        let heights = a.s.heights.clone();
+        let change = if below { split_below_grid(&heights, i) } else { split_right_grid(&heights, i) }?;
+        let placed = place_grid(&change.slots, None, &a.home)?;
+        let fresh_old = placed.fresh_old?;
+        let focus = change.slots.iter().position(|s| s.is_none())?;
+        Some((change.heights, placed.perm, placed.home, fresh_old, focus))
+    });
+    let Some((heights, perm, home, fresh_old, focus)) = plan else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    commit_layout(heights, Some((perm, home)), Some((i, fresh_old)), None, Some(focus));
+}
+
+/// Remove this pane. The active pane follows it to a neighbour; every other pane keeps its folder.
+unsafe fn header_close(i: usize) {
+    let plan = app(|a| {
+        if i >= a.s.panes() {
+            return None;
+        }
+        let heights = a.s.heights.clone();
+        let change = close_pane_grid(&heights, i)?;
+        let placed = place_grid(&change.slots, Some(i), &a.home)?;
+        let focus = if a.s.active == i {
+            close_neighbour(&heights, i).and_then(|old| change.slots.iter().position(|s| *s == Some(old)))
+        } else {
+            None
+        };
+        Some((change.heights, placed.perm, placed.home, focus))
+    });
+    let Some((heights, perm, home, focus)) = plan else {
+        _ = MessageBeep(MB_ICONWARNING);
+        return;
+    };
+    commit_layout(heights, Some((perm, home)), None, Some(i), focus);
 }
 
 unsafe fn pane_mode_icon(i: usize) -> Option<(i32, i32)> {
