@@ -1549,6 +1549,7 @@ mod tests {
             assert_eq!(p.add.left, p.add.right, "add still up {dpi} strip={strip}");
         }
     }
+
     fn perm_of(p: &Placed) -> bool {
         let mut seen = [false; MAXP];
         p.perm.iter().all(|&i| i < MAXP && !std::mem::replace(&mut seen[i], true)) && seen.iter().all(|&s| s)

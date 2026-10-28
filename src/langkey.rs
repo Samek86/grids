@@ -93,6 +93,7 @@ pub(crate) enum Key {
     Connecting,
     CopiedPath,
     CopiedPaths,
+    Copy,
     CopyCurrentPath,
     CopyFullPath,
     CopyMoveMoreThan10000Selected,
@@ -100,6 +101,7 @@ pub(crate) enum Key {
     CopyMoveSelectFilesFirst,
     CopyMoveSomeSelectedItemsArenT,
     CopyNSelectedItems,
+    CopyOrMoveTheseItems,
     CopyingFailed,
     CopyingMoving,
     CouldNotChangeDefaultFolderApp,
@@ -628,7 +630,7 @@ pub(crate) enum Key {
     ZipListHead,
 }
 
-pub(crate) const KEY_COUNT: usize = 623;
+pub(crate) const KEY_COUNT: usize = 625;
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -721,6 +723,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Connecting…",
     "Copied path",
     "Copied {n} paths",
+    "Copy",
     "Copy current path",
     "Copy full path",
     "Copy / move: more than 10,000 selected items — use Ctrl+C / Ctrl+V",
@@ -728,6 +731,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Copy / move: select files first",
     "Copy / move: some selected items aren't regular files",
     "Copy {n} selected items to",
+    "Copy or move these items?",
     "Copying failed: ",
     "Copying / moving…",
     "Could not change the default folder app.",
@@ -906,7 +910,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Match case",
     "Maximise",
     "Maximise / restore the pane",
-    "The ⇄ menu. A drag inside a pane still follows Explorer.",
+    "The ⇄ menu. Always ask also asks before a drag in a pane, the folder tree, or a favourite folder.",
     " min ago",
     "MIT License · © 2026 efww",
     "Modified",
@@ -1347,6 +1351,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "connecting",
     "copied_path",
     "copied_paths",
+    "copy",
     "copy_current_path",
     "copy_full_path",
     "copy_move_more_than_10_000_selected",
@@ -1354,6 +1359,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "copy_move_select_files_first",
     "copy_move_some_selected_items_aren_t",
     "copy_n_selected_items",
+    "copy_or_move_these_items",
     "copying_failed",
     "copying_moving",
     "could_not_change_default_folder_app",
