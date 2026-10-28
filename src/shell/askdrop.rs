@@ -3,12 +3,12 @@
 // with the shell (or, for favourites, with the link they already insert).
 //
 // The copy or move itself is `start_copy` / `start_drop_move` on a worker thread.
-// A move also stamps "Performed DropEffect" on the data object before DROPEFFECT_MOVE
-// goes back, so the source does not delete the files a second time. If that stamp
-// fails, the effect reported back is COPY: the files were still moved, and a second
-// delete would be worse. The move itself waits until Drop has returned. MoveItem
-// while the drag source still holds the item fails with "this item is no longer
-// located", and the file stays where it was. Copy does not need that wait.
+// A deferred MoveItem must not report DROPEFFECT_MOVE from Drop. Some shell drag
+// sources delete the originals as soon as they see MOVE, before our worker has
+// settled and called MoveItem — the file then vanishes. Report COPY instead so the
+// source keeps the files; MoveItem removes them after Drop returns. Copy does not
+// need that wait. `mark_move_performed` stays for callers that finish the move
+// before Drop returns.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -96,6 +96,7 @@ pub(crate) unsafe fn ask_copy_or_move(owner: HWND) -> Option<bool> {
 }
 
 /// Tell the source the move already happened, so it does not delete the originals.
+#[allow(dead_code)] // kept for a sync move that finishes before Drop returns
 pub(crate) unsafe fn mark_move_performed(obj: &IDataObject) -> bool {
     let fmt = RegisterClipboardFormatW(w!("Performed DropEffect"));
     if fmt == 0 {
@@ -184,6 +185,7 @@ unsafe fn shell_paths(d: &Ref<IDataObject>) -> Vec<String> {
 
 /// Start the file operation and the effect the source should see.
 pub(crate) unsafe fn run_asked(obj: &IDataObject, srcs: Vec<String>, dst: String, mv: bool) -> u32 {
+    let _ = obj; // deferred move must not stamp Performed DropEffect from Drop
     let started = if mv {
         // MoveItem inside Drop cannot see the item the drag source still holds.
         start_drop_move(srcs, dst)
@@ -194,8 +196,9 @@ pub(crate) unsafe fn run_asked(obj: &IDataObject, srcs: Vec<String>, dst: String
     if !started {
         return DROPEFFECT_NONE.0;
     }
-    let performed = mv && mark_move_performed(obj);
-    reported_effect(mv, performed)
+    // Deferred MoveItem: always COPY back to the source. Reporting MOVE here made
+    // the shell delete before settle+MoveItem, so the file disappeared.
+    reported_effect(false, false)
 }
 
 /// Windows the shell registers a drop target on. OLE delivers the drop to the deepest one,
@@ -544,6 +547,13 @@ mod tests {
         assert_eq!(reported_effect(false, true), DROPEFFECT_COPY.0);
         assert_eq!(reported_effect(true, true), DROPEFFECT_MOVE.0);
         assert_eq!(reported_effect(true, false), DROPEFFECT_COPY.0);
+    }
+
+
+    #[test]
+    fn deferred_ask_move_reports_copy_so_the_source_keeps_the_file() {
+        // Same effect run_asked returns after start_drop_move: never MOVE from Drop.
+        assert_eq!(reported_effect(false, false), DROPEFFECT_COPY.0);
     }
 
     #[test]
