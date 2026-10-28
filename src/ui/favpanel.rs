@@ -1414,6 +1414,18 @@ fn hits_of(list: &[FavRow]) -> Vec<DropHit> {
     list.iter().map(|r| DropHit { tree: r.in_tree(), group: r.group, id: r.id.clone() }).collect()
 }
 
+/// Always ask, middle of a filesystem folder row: copy or move into that folder.
+fn into_folder_at(y: i32) -> Option<String> {
+    let dropm = app(|a| a.s.dropm);
+    let list = rows();
+    let i = row_at(y)?;
+    let row = list.get(i)?;
+    let scroll = app(|a| a.side_scroll);
+    let rh = row_h();
+    let top = i as i32 * rh - scroll;
+    fav_into_folder(dropm, row.group, row.file, &row.path, y - top, rh).then(|| row.path.clone())
+}
+
 fn fav_target(y: i32) -> (DropSpot, Option<(usize, u8)>) {
     let list = rows();
     let hits = hits_of(&list);
@@ -1490,6 +1502,12 @@ impl SideDrop {
             self.paint_line(None);
             return;
         }
+        if y.and_then(into_folder_at).is_some() {
+            let offer = (*effect).0 & (DROPEFFECT_COPY.0 | DROPEFFECT_MOVE.0);
+            *effect = if offer == 0 { DROPEFFECT_COPY } else { DROPEFFECT(offer) };
+            self.paint_line(None);
+            return;
+        }
         *effect = DROPEFFECT(fav_link_effect((*effect).0));
         if (*effect).0 == 0 {
             self.paint_line(None);
@@ -1526,7 +1544,7 @@ impl IDropTarget_Impl for SideDrop_Impl {
         unsafe { self.clear() };
         Ok(())
     }
-    fn Drop(&self, _: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+    fn Drop(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
             let pending = self.pending.borrow().clone();
@@ -1556,6 +1574,21 @@ impl IDropTarget_Impl for SideDrop_Impl {
                         HomeDrop::Files(paths) => {
                             for path in paths {
                                 pin_home(path, "", true);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+            if let Some(dst) = y.and_then(into_folder_at) {
+                let srcs: Vec<String> = pending.items.iter().map(|it| it.path.clone()).filter(|p| is_fs(p)).collect();
+                if srcs.len() == pending.items.len() && !srcs.is_empty() {
+                    if let Some(obj) = d.as_ref() {
+                        let owner = app(|a| a.main);
+                        if let Some(mv) = ask_copy_or_move(owner) {
+                            let eff = run_asked(obj, srcs, dst, mv);
+                            if !effect.is_null() {
+                                *effect = DROPEFFECT(eff);
                             }
                         }
                     }

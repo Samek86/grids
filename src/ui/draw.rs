@@ -513,8 +513,17 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     };
     let m = crumb_metrics(dc, font, dpi, &parse, &disp);
     let (sep, ell) = (m.sep, m.ell);
-    let (items, w) = (m.items, m.w);
-    let (first, more, last, tail) = crumb_fit_tail(&w, field.right - field.left, sep, ell, m.min, m.fs);
+    let avail = field.right - field.left;
+    // A narrow bar shows the folder name alone. The full path comes back when it fits,
+    // and the edit (while focused) already shows it.
+    let leaf = crumb_show_leaf(&m.w, avail, sep);
+    let (items, w, fs) = if leaf {
+        let i = m.items.len() - 1;
+        (vec![m.items[i].clone()], vec![m.w[i]], false)
+    } else {
+        (m.items, m.w, m.fs)
+    };
+    let (first, more, last, tail) = crumb_fit_tail(&w, avail, sep, ell, m.min, fs);
     let mut out = Vec::new();
     let mut x = field.left;
     let mut put = |wd: i32, label: &str, c: Crumb| {
