@@ -753,7 +753,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     recent_menu(i);
                 }
             }
-            // Right-click on the header itself (not its buttons or fields): colour label.
+            // Right-click on the header itself (not its buttons or fields): view, colour, split, close.
             WM_CONTEXTMENU if wp.0 == h.0 as usize => {
                 let mut p = POINT { x: (lp.0 & 0xffff) as i16 as i32, y: (lp.0 >> 16 & 0xffff) as i16 as i32 };
                 let screen = p;
