@@ -9,7 +9,7 @@ use crate::session::*;
 use crate::i18n::*;
 use crate::shell::*;
 use super::*;
-use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 const ID_SIDE_EDIT: i32 = 209;
 /// Tracking tool for a row in the favourites panel. Lock is 7, tab paths 8, address 9.
@@ -194,6 +194,40 @@ fn tree_pos(list: &[FavRow], id: &[usize]) -> Option<usize> {
     list.iter().position(|r| r.in_tree() && r.id == id)
 }
 
+/// What the favourites location tip should do for this pointer.
+/// `inside` is the panel client area. `row` is the hit-test; `None` is no item.
+/// An index past `rows` is stale after the tree changed and hides the tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FavTipAct {
+    Hide,
+    Show(usize),
+}
+
+pub(crate) fn fav_tip_act(inside: bool, row: Option<usize>, rows: usize) -> FavTipAct {
+    if !inside {
+        return FavTipAct::Hide;
+    }
+    match row {
+        Some(i) if i < rows => FavTipAct::Show(i),
+        _ => FavTipAct::Hide,
+    }
+}
+
+/// A visible tip hides when the pointer is no longer on the panel.
+pub(crate) fn fav_tip_hides(shown: bool, on_panel: bool) -> bool {
+    shown && !on_panel
+}
+
+/// Row under `y`, or none. `row_h <= 0` is not a hit (that would divide by zero).
+/// The sum is widened so a large scroll does not overflow.
+pub(crate) fn fav_row_at(y: i32, scroll: i32, row_h: i32, page: i32, n: usize) -> Option<usize> {
+    if row_h <= 0 || y < 0 || y >= page || n == 0 {
+        return None;
+    }
+    let i = (y as i64 + scroll as i64) / row_h as i64;
+    if i < 0 || i as usize >= n { None } else { Some(i as usize) }
+}
+
 /// Location tooltip for one favourites row.
 /// A filesystem path is the absolute path. A shell place has no file path, so the tip is its
 /// display name, or the parsing name when that name is empty — the address-bar rule.
@@ -234,8 +268,24 @@ fn fav_tip_info(owner: HWND, id: usize, label: &HSTRING) -> TTTOOLINFOW {
     }
 }
 
+thread_local! {
+    /// Set while a tip is being hidden. Tooltip messages are synchronous and can deliver
+    /// WM_MOUSEMOVE back into the panel; that must not show the tip again.
+    static TIP_GUARD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Clears `TIP_GUARD` on drop, including when hiding the tip panics.
+struct TipGuard;
+impl Drop for TipGuard {
+    fn drop(&mut self) {
+        TIP_GUARD.with(|c| c.set(false));
+    }
+}
+
 /// Show `text` on the window tooltip, or hide that tool when `text` is empty.
 /// The tool stays installed. It sits below the pointer so a click still hits the row.
+/// Hiding sends `TTM_POP` as well as deactivating: a tracking tip the pointer has
+/// already left (or landed on) ignores deactivate and stays on screen.
 unsafe fn place_fav_tip(owner: HWND, id: usize, installed: bool, text: &str) -> bool {
     let tip = app(|a| a.tip);
     if tip.0.is_null() || owner.0.is_null() {
@@ -246,6 +296,7 @@ unsafe fn place_fav_tip(owner: HWND, id: usize, installed: bool, text: &str) -> 
             let label = HSTRING::from("");
             let ti = fav_tip_info(owner, id, &label);
             SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
+            SendMessageW(tip, TTM_POP, None, None);
         }
         return installed;
     }
@@ -285,29 +336,48 @@ unsafe fn cursor_in_client(h: HWND) -> Option<(i32, i32)> {
 }
 
 /// Hide the panel tip and let the next hover show it.
+/// `place_fav_tip` borrows the app state itself, so it runs outside `app()`.
+/// Calling it inside `app()` panics with `already borrowed` (v0.1.38, fixed in 0.1.39).
 pub(crate) unsafe fn hide_side_fav_tip() {
-    let (owner, on) = app(|a| (a.side_hwnd, a.fav_tip));
-    app(|a| a.fav_tip_hold = None);
-    if on {
-        // place_fav_tip borrows the app state itself, so it runs outside app().
+    if TIP_GUARD.with(|c| c.replace(true)) {
+        return;
+    }
+    let _clear = TipGuard;
+    let (owner, shown) = app(|a| {
+        a.fav_tip_hold = None;
+        // Cleared before the tooltip message, so a nested mouse move does not hide or show again.
+        let shown = std::mem::replace(&mut a.fav_tip_shown, false);
+        (a.side_hwnd, shown)
+    });
+    if shown {
         let now = place_fav_tip(owner, FAV_TIP_ID, true, "");
         app(|a| a.fav_tip = now);
+    }
+    let back = cursor_in_client(owner);
+    if back.is_none() {
+        let paint = app(|a| a.side_hot.take().is_some());
+        if paint && !owner.0.is_null() {
+            _ = InvalidateRect(Some(owner), None, false);
+        }
+    } else if !owner.0.is_null() {
+        // The tip was covering the panel. Arm leave again, but do not show until the pointer moves.
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: owner, dwHoverTime: 0 };
+        _ = TrackMouseEvent(&mut t);
     }
 }
 
 /// Hide the panel tip after a scroll or a change of the rows. The pointer has to move before it returns.
 pub(crate) unsafe fn dismiss_side_fav_tip() {
     let h = app(|a| a.side_hwnd);
-    let on = app(|a| a.fav_tip);
-    if on {
-        let now = place_fav_tip(h, FAV_TIP_ID, true, "");
-        app(|a| a.fav_tip = now);
-    }
+    hide_side_fav_tip();
     app(|a| a.fav_tip_hold = cursor_in_client(h));
 }
 
 /// `x` and `y` are client coordinates. A drag, or the point that just scrolled away, shows nothing.
 pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
+    if TIP_GUARD.with(|c| c.get()) {
+        return;
+    }
     if app(|a| a.side_drag.is_some() || a.side_external) {
         hide_side_fav_tip();
         return;
@@ -318,9 +388,29 @@ pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
     app(|a| a.fav_tip_hold = None);
     let owner = app(|a| a.side_hwnd);
     let text = row.map(fav_row_tip).unwrap_or_default();
+    if text.is_empty() {
+        hide_side_fav_tip();
+        return;
+    }
     let installed = app(|a| a.fav_tip);
     let now = place_fav_tip(owner, FAV_TIP_ID, installed, &text);
-    app(|a| a.fav_tip = now);
+    app(|a| {
+        a.fav_tip = now;
+        a.fav_tip_shown = now;
+    });
+}
+
+/// Mouse moved over `hwnd`. The panel tip hides once the pointer is on anything else,
+/// including the tip window itself and the folder list.
+pub(crate) unsafe fn hide_fav_tip_if_pointer_left(hwnd: HWND) {
+    let (side, shown, tip) = app(|a| (a.side_hwnd, a.fav_tip_shown, a.tip));
+    if !shown {
+        return;
+    }
+    let on_panel = !side.0.is_null() && hwnd != tip && (hwnd == side || IsChild(side, hwnd).as_bool());
+    if fav_tip_hides(shown, on_panel) {
+        hide_side_fav_tip();
+    }
 }
 
 /// The favourites window uses the same tooltip. `owner` is that window; the desk is already current.
@@ -350,17 +440,14 @@ pub(crate) unsafe fn drop_pop_fav_tip(owner: HWND) {
     let ti = fav_tip_info(owner, FAV_POP_TIP_ID, &label);
     let lp = LPARAM(&ti as *const _ as isize);
     SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
+    SendMessageW(tip, TTM_POP, None, None);
     SendMessageW(tip, TTM_DELTOOLW, None, Some(lp));
 }
 
 fn row_at(y: i32) -> Option<usize> {
     let n = rows().len();
     let scroll = app(|a| a.side_scroll);
-    if y < 0 || y >= list_page() || n == 0 {
-        return None;
-    }
-    let i = (y + scroll) / row_h();
-    (i >= 0 && (i as usize) < n).then_some(i as usize)
+    fav_row_at(y, scroll, row_h(), list_page(), n)
 }
 
 fn chevron_hit(x: i32, row: &FavRow, dpi: i32) -> bool {
@@ -940,7 +1027,12 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     if let Some((x, y)) = cursor_in_client(h) {
                         let hot = row_at(y);
                         let list = rows();
-                        show_side_fav_tip(x, y, hot.and_then(|i| list.get(i)));
+                        match fav_tip_act(true, hot, list.len()) {
+                            FavTipAct::Hide => hide_side_fav_tip(),
+                            FavTipAct::Show(i) => show_side_fav_tip(x, y, list.get(i)),
+                        }
+                    } else if app(|a| a.fav_tip_shown) {
+                        hide_side_fav_tip();
                     }
                 }
             }
@@ -976,6 +1068,9 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             WM_PAINT => paint_side(h),
             WM_ERASEBKGND => return LRESULT(1),
             WM_MOUSEMOVE => {
+                if TIP_GUARD.with(|c| c.get()) {
+                    return LRESULT(0);
+                }
                 let (x, y) = xy(lp);
                 let hot = row_at(y);
                 let dragging = app(|a| a.side_drag.is_some());
@@ -999,16 +1094,25 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 } else if app(|a| a.side_external) {
                     hide_side_fav_tip();
                 } else {
+                    let list = rows();
+                    let act = fav_tip_act(true, hot, list.len());
                     let paint = app(|a| {
-                        let paint = a.side_hot != hot;
-                        a.side_hot = hot;
+                        let next = match act {
+                            FavTipAct::Show(i) => Some(i),
+                            FavTipAct::Hide => None,
+                        };
+                        let paint = a.side_hot != next;
+                        a.side_hot = next;
                         paint
                     });
                     if paint {
                         _ = InvalidateRect(Some(h), None, false);
                     }
-                    let list = rows();
-                    show_side_fav_tip(x, y, hot.and_then(|i| list.get(i)));
+                    match act {
+                        FavTipAct::Hide => hide_side_fav_tip(),
+                        FavTipAct::Show(i) => show_side_fav_tip(x, y, list.get(i)),
+                    }
+                    // After the tip is shown. Activating it can replace an earlier leave request.
                     let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
                     _ = TrackMouseEvent(&mut t);
                 }
@@ -1547,7 +1651,7 @@ pub(crate) unsafe fn register_side_drop(h: HWND) {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{fav_row_height, fav_tip_text, mark_rows, FavRow, RowKind};
+    use super::{fav_row_at, fav_row_height, fav_tip_act, fav_tip_hides, fav_tip_text, mark_rows, FavRow, FavTipAct, RowKind};
     use crate::i18n::UI;
 
     #[test]
@@ -1603,5 +1707,31 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(c, d);
         assert_eq!(a, mark_rows(&[row(r"D:\없는\폴더")]));
+    }
+
+    #[test]
+    fn row_hit_misses_empty_space_a_stale_index_and_a_zero_height() {
+        assert_eq!(fav_row_at(10, 0, 20, 100, 4), Some(0));
+        assert_eq!(fav_row_at(20, 0, 20, 100, 4), Some(1));
+        assert_eq!(fav_row_at(10, 60, 20, 100, 4), Some(3));
+        // index 4 is past the last row after the tree shrinks
+        assert_eq!(fav_row_at(10, 80, 20, 100, 4), None);
+        assert_eq!(fav_row_at(100, 0, 20, 100, 4), None);
+        assert_eq!(fav_row_at(-1, 0, 20, 100, 4), None);
+        assert_eq!(fav_row_at(10, 0, 0, 100, 4), None);
+        assert_eq!(fav_row_at(10, i32::MAX, 20, 100, 4), None);
+        assert_eq!(fav_row_at(0, 0, 20, 100, 0), None);
+    }
+
+    #[test]
+    fn tip_hides_when_the_pointer_leaves_misses_a_row_or_the_index_is_stale() {
+        assert_eq!(fav_tip_act(false, Some(1), 3), FavTipAct::Hide);
+        assert_eq!(fav_tip_act(true, None, 3), FavTipAct::Hide);
+        assert_eq!(fav_tip_act(true, Some(3), 3), FavTipAct::Hide);
+        assert_eq!(fav_tip_act(true, Some(0), 0), FavTipAct::Hide);
+        assert_eq!(fav_tip_act(true, Some(1), 3), FavTipAct::Show(1));
+        assert!(fav_tip_hides(true, false));
+        assert!(!fav_tip_hides(true, true));
+        assert!(!fav_tip_hides(false, false));
     }
 }
