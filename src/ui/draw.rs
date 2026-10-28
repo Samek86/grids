@@ -1,4 +1,4 @@
-use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL, TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL, TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
 
 use crate::imports::*;
 use super::*;
@@ -986,16 +986,30 @@ unsafe fn addr_tip_body(h: HWND) -> Option<String> {
     addr_path_truncated(&m.w, field.right - field.left, m.sep, m.ell, m.min, m.fs).then_some(tip)
 }
 
+/// A visible address tip hides when the pointer is no longer on that pane's address pill.
+pub(crate) fn addr_tip_hides(shown: bool, on_addr: bool) -> bool {
+    shown && !on_addr
+}
+
 /// Hide the address tooltip. The tool stays installed for the next hover.
+/// Hiding sends `TTM_POP` as well as deactivating: a tracking tip the pointer has
+/// already left (or landed on) ignores deactivate and stays on screen — same as #175.
 pub(crate) unsafe fn hide_addr_tip() {
-    let (tip, main, added, pane) = app(|a| (a.tip, a.main, a.addr_tip, a.addr_tip_pane));
-    if !added || tip.0.is_null() || pane.0.is_null() {
+    let (tip, main, added, pane, shown) = app(|a| {
+        let shown = std::mem::replace(&mut a.addr_tip_shown, false);
+        (a.tip, a.main, a.addr_tip, a.addr_tip_pane, shown)
+    });
+    app(|a| a.addr_tip_pane = HWND::default());
+    if (!added && !shown) || tip.0.is_null() {
+        return;
+    }
+    if pane.0.is_null() && !shown {
         return;
     }
     let label = HSTRING::from("");
     let ti = addr_tip_info(main, &label);
     send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(0)));
-    app(|a| a.addr_tip_pane = HWND::default());
+    SendMessageW(tip, TTM_POP, None, None);
 }
 
 /// `over` is the pointer on pane `h`'s address pill. A drag hides it. The text is the full
@@ -1009,8 +1023,8 @@ pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
     let over = over && app(|a| a.pane_drag.is_none() && a.pane_press.is_none());
     let text = if over { addr_tip_body(h) } else { None };
     let Some(text) = text else {
-        let pane = app(|a| a.addr_tip_pane);
-        if pane == h || (over && !pane.0.is_null()) {
+        let (pane, shown) = app(|a| (a.addr_tip_pane, a.addr_tip_shown));
+        if shown || pane == h || (over && !pane.0.is_null()) {
             hide_addr_tip();
         }
         return;
@@ -1032,18 +1046,38 @@ pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
     let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
     SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
     send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(1)));
-    app(|a| a.addr_tip_pane = h);
+    app(|a| {
+        a.addr_tip_pane = h;
+        a.addr_tip_shown = true;
+    });
+    // The folder list is a child; leaving the address into it may not deliver WM_MOUSELEAVE
+    // the way we need. Arm leave on the pane, and pre_translate also pops on any other move.
+    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+    _ = TrackMouseEvent(&mut t);
 }
 
 /// Navigation and resize: keep the tip in step with the path now on screen.
 pub(crate) unsafe fn refresh_addr_tip(h: HWND) {
     if h.0.is_null() || !IsWindow(Some(h)).as_bool() {
-        if app(|a| a.addr_tip_pane) == h {
+        if app(|a| a.addr_tip_pane == h || a.addr_tip_shown) {
             hide_addr_tip();
         }
         return;
     }
     addr_tip_at(h, cursor_on_addr(h));
+}
+
+/// Mouse moved over `hwnd`. The address tip hides once the pointer is off that pane's
+/// address pill, including when it lands on the tip window or the folder list (#175 pattern).
+pub(crate) unsafe fn hide_addr_tip_if_pointer_left(hwnd: HWND) {
+    let (shown, tip, pane) = app(|a| (a.addr_tip_shown, a.tip, a.addr_tip_pane));
+    if !shown {
+        return;
+    }
+    let on_addr = !pane.0.is_null() && hwnd != tip && cursor_on_addr(pane);
+    if addr_tip_hides(shown, on_addr) {
+        hide_addr_tip();
+    }
 }
 
 pub(crate) unsafe fn crumb_hover(h: HWND, at: Option<usize>) {
@@ -1230,6 +1264,15 @@ mod kids_tests {
     }
 
     #[test]
+
+    #[test]
+    fn address_tip_hides_once_the_pointer_leaves_the_pill() {
+        assert!(addr_tip_hides(true, false));
+        assert!(!addr_tip_hides(true, true));
+        assert!(!addr_tip_hides(false, false));
+        assert!(!addr_tip_hides(false, true));
+    }
+
     fn kids_anchor_follows_layout() {
         let r = |l| RECT { left: l, top: 0, right: l + 10, bottom: 20 };
         let kids = |d: &str| Crumb::Kids(d.into(), None);

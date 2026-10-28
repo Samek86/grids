@@ -834,6 +834,8 @@ pub(crate) unsafe fn pre_translate(m: &MSG) -> bool {
             // The folder list does not deliver WM_MOUSELEAVE to the favourites panel.
             // A move anywhere else takes the location tip down.
             hide_fav_tip_if_pointer_left(m.hwnd);
+            // Same gap as favourites: the folder list may not deliver WM_MOUSELEAVE to the pane.
+            hide_addr_tip_if_pointer_left(m.hwnd);
             false
         }
         WM_MOUSELEAVE => {
