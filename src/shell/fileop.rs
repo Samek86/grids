@@ -83,6 +83,31 @@ pub(crate) fn collect_all(n: u32, mut get: impl FnMut(u32) -> Option<String>) ->
     }
 }
 
+/// Plain text on the clipboard. A folder path is not quoted, so a shell parsing name stays pasteable.
+pub(crate) unsafe fn copy_plain(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let main = app(|a| a.main);
+    let mut ok = false;
+    if let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) {
+        let p = GlobalLock(h) as *mut u16;
+        if !p.is_null() {
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+            _ = GlobalUnlock(h);
+            if OpenClipboard(Some(main)).is_ok() {
+                ok = EmptyClipboard().is_ok() && SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(h.0))).is_ok();
+                _ = CloseClipboard();
+            }
+        }
+        if !ok {
+            _ = GlobalFree(Some(h));
+        }
+    }
+    ok
+}
+
 // Ctrl+Shift+C in a file list: the selected items' paths (or the folder's), quoted, one per line.
 // Virtual items without a file path are skipped. The clipboard is only touched once the text is ready.
 pub(crate) unsafe fn copy_paths(a: usize) {
