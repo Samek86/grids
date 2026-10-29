@@ -439,7 +439,7 @@ pub(crate) unsafe fn paint_main(h: HWND) {
 pub(crate) enum Crumb {
     Here,
     Go(String),
-    More(Vec<(String, String)>), // folded parents, nearest first
+    More(Vec<(String, String)>), // omitted segments (trailing when start-biased), nearest first
     /// `›`: the folder on its left, and the crumb shown after it (bold in the menu).
     Kids(String, Option<String>),
 }
@@ -507,6 +507,8 @@ unsafe fn crumb_metrics(dc: HDC, font: HFONT, dpi: i32, parse: &str, disp: &str)
 }
 
 /// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
+/// A narrow bar keeps the path **start** (drive / early folders) and folds the rest into a trailing
+/// '…'. The edit (while focused) already keeps the leading path the same way.
 pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
     let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
         return Vec::new();
@@ -514,16 +516,8 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     let m = crumb_metrics(dc, font, dpi, &parse, &disp);
     let (sep, ell) = (m.sep, m.ell);
     let avail = field.right - field.left;
-    // A narrow bar shows the folder name alone. The full path comes back when it fits,
-    // and the edit (while focused) already shows it.
-    let leaf = crumb_show_leaf(&m.w, avail, sep);
-    let (items, w, fs) = if leaf {
-        let i = m.items.len() - 1;
-        (vec![m.items[i].clone()], vec![m.w[i]], false)
-    } else {
-        (m.items, m.w, m.fs)
-    };
-    let (first, more, last, tail) = crumb_fit_tail(&w, avail, sep, ell, m.min, fs);
+    let (items, w, fs) = (m.items, m.w, m.fs);
+    let (end, more, last, tail) = crumb_fit_tail(&w, avail, sep, ell, m.min, fs);
     let mut out = Vec::new();
     let mut x = field.left;
     let mut put = |wd: i32, label: &str, c: Crumb| {
@@ -531,18 +525,22 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
         x += wd;
     };
     let kids = |k: usize| Crumb::Kids(items[k].1.clone(), items.get(k + 1).map(|n| n.0.clone()));
-    if more {
-        put(ell, "…", Crumb::More(items[..first].iter().rev().cloned().collect()));
-        put(sep, "›", kids(first - 1));
-    }
-    for k in first..items.len() {
-        if k + 1 == items.len() {
-            put(last, &items[k].0, Crumb::Here);
+    for k in 0..end {
+        let wd = if k + 1 == end { last } else { w[k] };
+        let crumb = if k + 1 == items.len() {
+            Crumb::Here
+        } else {
+            Crumb::Go(items[k].1.clone())
+        };
+        put(wd, &items[k].0, crumb);
+        if k + 1 == end {
             if tail {
                 put(sep, "›", kids(k));
+            } else if more {
+                put(sep, "›", kids(k));
+                put(ell, "…", Crumb::More(items[end..].iter().cloned().collect()));
             }
         } else {
-            put(w[k], &items[k].0, Crumb::Go(items[k].1.clone()));
             put(sep, "›", kids(k));
         }
     }
