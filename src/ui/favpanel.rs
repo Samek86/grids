@@ -1279,7 +1279,11 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
             WM_MOUSELEAVE => {
                 // The post-drop hold ends only once the pointer has actually left.
-                app(|a| a.fav_tip_after_drop = false);
+                // OLE drop and tip hide can synthesize a leave while the cursor is still
+                // inside; ignore those so the tip stays down until a real exit.
+                if cursor_in_client(h).is_none() {
+                    app(|a| a.fav_tip_after_drop = false);
+                }
                 hide_side_fav_tip();
                 app(|a| a.side_hot = None);
                 _ = InvalidateRect(Some(h), None, false);
@@ -1629,20 +1633,22 @@ impl IDropTarget_Impl for SideDrop_Impl {
     fn Drop(&self, d: Ref<IDataObject>, _: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
         unsafe {
             bind_hwnd(self.hwnd);
-            // `clear` drops `side_external` before the tree changes. The pointer is still
-            // inside, so keep the tip down until it leaves. A drag that leaves without a
-            // drop does not set this: that path is `DragLeave`.
-            app(|a| a.fav_tip_after_drop = true);
+            // Hide while side_external is still set. Do not arm TME_LEAVE here: during an
+            // OLE drop Win32 may treat the pointer as outside, so leave would fire as soon as
+            // changed pumps paint and clear the hold before the pointer has really left.
             hide_side_fav_tip();
-            // Arm leave on this window. OLE ate the moves that would have armed it, and the
-            // hold is cleared only by WM_MOUSELEAVE.
-            let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
-            _ = TrackMouseEvent(&mut t);
             let pending = self.pending.borrow().clone();
             let y = self.client_y(pt);
             let at = y.and_then(|y| self.home_at(y));
             let allowed = if effect.is_null() { DROPEFFECT_NONE } else { *effect };
             self.clear();
+            // clear drops side_external before the tree changes. The pointer is still
+            // inside, so keep the tip down until a real leave. A drag that leaves without a
+            // drop does not set this: that path is DragLeave. Set the flag after clear
+            // so a nested leave from the hide above cannot wipe it, and before changed
+            // so hover during the tree update stays quiet. The next WM_MOUSEMOVE arms leave.
+            app(|a| a.fav_tip_after_drop = true);
+            hide_side_fav_tip();
             if !effect.is_null() {
                 *effect = DROPEFFECT_NONE;
             }
