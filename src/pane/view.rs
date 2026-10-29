@@ -146,9 +146,15 @@ unsafe fn addr_edit_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: u
         return r;
     }
     if msg == WM_MOUSEMOVE {
-        addr_tip_at(parent, true);
-        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
-        _ = TrackMouseEvent(&mut t);
+        // Selecting text in the edit: do not run tip work on every move. Measuring the path and
+        // pumping TTM_TRACK* / TTM_UPDATETIPTEXT stalls the next WM_MOUSEMOVE, so the highlight
+        // and caret lag behind the mouse (#184 tip tracking on the edit subclass).
+        let buttons = (wp.0 as u32) & (MK_LBUTTON.0 | MK_RBUTTON.0);
+        if buttons == 0 {
+            addr_tip_at(parent, true);
+            let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+            _ = TrackMouseEvent(&mut t);
+        }
     } else if msg == WM_MOUSELEAVE {
         refresh_addr_tip(parent);
     }
