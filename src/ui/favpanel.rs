@@ -9,7 +9,7 @@ use crate::session::*;
 use crate::i18n::*;
 use crate::shell::*;
 use super::*;
-use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_TRACKACTIVATE, TTM_DELTOOLW};
 
 const ID_SIDE_EDIT: i32 = 209;
 /// Tracking tool for a row in the favourites panel. Lock is 7, tab paths 8, address 9.
@@ -222,15 +222,9 @@ pub(crate) fn fav_tip_blocked(renaming: bool, composing: bool, after_drop: bool)
 /// The tracking tip already shows this tool's text at this screen point.
 /// Another `TTM_UPDATETIPTEXTW` / `TTM_TRACKPOSITION` / `TTM_TRACKACTIVATE` would only re-enter it.
 /// An empty `text` is a hide, and a missing point is not "unchanged".
-pub(crate) fn fav_tip_same(
-    shown_id: Option<usize>,
-    shown_text: &str,
-    shown_at: Option<(i32, i32)>,
-    id: usize,
-    text: &str,
-    at: Option<(i32, i32)>,
-) -> bool {
-    !text.is_empty() && shown_id == Some(id) && shown_text == text && shown_at.is_some() && shown_at == at
+/// Same favourites tip tool and text (item-anchored; position is fixed on enter).
+pub(crate) fn fav_tip_same(live_id: Option<usize>, live_text: &str, id: usize, text: &str) -> bool {
+    !text.is_empty() && live_id == Some(id) && live_text == text
 }
 
 /// A visible tip hides when the pointer is no longer on the panel.
@@ -346,8 +340,6 @@ thread_local! {
     /// Set while a tip is being hidden. Tooltip messages are synchronous and can deliver
     /// WM_MOUSEMOVE back into the panel; that must not show the tip again.
     static TIP_GUARD: Cell<bool> = const { Cell::new(false) };
-    /// Set while a tip is being shown. A nested move must not send the tracking messages again.
-    static TIP_PUMP: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Clears `TIP_GUARD` on drop, including when hiding the tip panics.
@@ -358,112 +350,63 @@ impl Drop for TipGuard {
     }
 }
 
-/// Clears `TIP_PUMP` on drop, including when showing the tip panics.
-struct PumpGuard;
-impl Drop for PumpGuard {
-    fn drop(&mut self) {
-        TIP_PUMP.with(|c| c.set(false));
+
+/// Stable tip key for a favourites row path.
+fn fav_tip_key(tool: usize, path: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325u64 ^ ((tool as u64) << 32);
+    for b in path.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
     }
+    h
 }
 
-/// Screen point the tracking tip would use: just below the pointer.
-/// `None` when the cursor cannot be read, which is not "the same place".
-unsafe fn fav_tip_at() -> Option<(i32, i32)> {
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
-        return None;
-    }
-    Some((pt.x, pt.y + 22 * app(|a| a.dpi) / 96))
-}
-
-/// Show `text` on the window tooltip, or hide that tool when `text` is empty.
-/// The tool stays installed. It sits below the pointer so a click still hits the row.
-/// Hiding sends `TTM_POP` as well as deactivating: a tracking tip the pointer has
-/// already left (or landed on) ignores deactivate and stays on screen.
-/// The same tool, text, and point skip `TTM_UPDATETIPTEXTW` / `TTM_TRACKPOSITION` /
-/// `TTM_TRACKACTIVATE`. Those messages are synchronous and re-enter this window.
-unsafe fn place_fav_tip(owner: HWND, id: usize, installed: bool, text: &str) -> bool {
-    let tip = app(|a| a.tip);
-    if tip.0.is_null() || owner.0.is_null() {
-        return installed;
-    }
-    if text.is_empty() {
-        app(|a| {
-            if a.fav_tip_live.as_ref().is_some_and(|(live_id, ..)| *live_id == id) {
-                a.fav_tip_live = None;
-            }
-        });
-        if installed {
-            let label = HSTRING::from("");
-            let ti = fav_tip_info(owner, id, &label);
-            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
-            SendMessageW(tip, TTM_POP, None, None);
-        }
-        return installed;
-    }
-    let at = fav_tip_at();
-    // Skip only while this tool is still installed. A removed tool has to be added again.
-    if installed && at.is_some() && app(|a| {
-        a.fav_tip_live.as_ref().is_some_and(|(live_id, live_text, x, y)| {
-            fav_tip_same(Some(*live_id), live_text, Some((*x, *y)), id, text, at)
-        })
-    }) {
-        return true;
-    }
-    // Same tool+text, only the pointer moved: update track position. Avoid re-sending
-    // UPDATETIPTEXT/TRACKACTIVATE on every pixel (those re-enter the panel wndproc).
-    if installed && !text.is_empty() {
-        let only_moved = app(|a| {
-            a.fav_tip_live.as_ref().is_some_and(|(live_id, live_text, ..)| {
-                *live_id == id && live_text == text
-            })
-        });
-        if only_moved {
-            if let Some((x, y)) = at {
-                if TIP_PUMP.with(|c| c.replace(true)) {
-                    return true;
-                }
-                let _pump = PumpGuard;
-                app(|a| a.fav_tip_live = Some((id, text.to_string(), x, y)));
-                let packed = LPARAM((x as u16 as usize as isize) | ((y as u16 as usize as isize) << 16));
-                SendMessageW(tip, TTM_TRACKPOSITION, None, Some(packed));
-                return true;
-            }
-        }
-    }
-    // Already inside the tracking messages. A nested hover must not send them again.
-    if TIP_PUMP.with(|c| c.replace(true)) {
-        return true;
-    }
-    let _pump = PumpGuard;
-    let label = HSTRING::from(text);
-    let ti = fav_tip_info(owner, id, &label);
-    let lp = LPARAM(&ti as *const _ as isize);
-    // Record the point before the tooltip messages. Those are synchronous and can deliver
-    // WM_MOUSEMOVE back here; the nested call has to see that this text is already going up.
-    if let Some((x, y)) = at {
-        app(|a| a.fav_tip_live = Some((id, text.to_string(), x, y)));
-    }
-    // Wide enough that a normal path stays one line. A positive width is what lets the missing note break.
-    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
-    if !installed {
-        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
-    }
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
-    let Some((x, y)) = at else {
-        app(|a| a.fav_tip_live = None);
-        return true;
-    };
-    let packed = LPARAM((x as u16 as usize as isize) | ((y as u16 as usize as isize) << 16));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(packed));
-    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
-    true
-}
-
-unsafe fn cursor_in_client(h: HWND) -> Option<(i32, i32)> {
+/// Client row rect for visible favourites row `i`, mapped to screen.
+unsafe fn side_row_item(i: usize) -> Option<RECT> {
+    let (h, scroll) = app(|a| (a.side_hwnd, a.side_scroll));
     if h.0.is_null() {
         return None;
     }
+    let mut rc = RECT::default();
+    if GetClientRect(h, &mut rc).is_err() {
+        return None;
+    }
+    let rh = row_h();
+    let top = (i as i32) * rh - scroll;
+    let row = RECT {
+        left: rc.left,
+        top,
+        right: rc.right,
+        bottom: top + rh,
+    };
+    Some(crate::ui::tip_screen_rect(h, row))
+}
+
+/// Show or hide a favourites tracking tip anchored to `item` (screen). Empty text hides once.
+unsafe fn place_fav_tip(
+    owner: HWND,
+    id: usize,
+    installed: bool,
+    key: u64,
+    text: &str,
+    item: Option<RECT>,
+) -> (bool, bool) {
+    if text.is_empty() || item.is_none() {
+        return crate::ui::tip_leave(owner, id, installed);
+    }
+    crate::ui::tip_enter(
+        owner,
+        id,
+        key,
+        text,
+        item.unwrap(),
+        crate::ui::TipSide::Right,
+        installed,
+    )
+}
+
+/// Client point of the cursor when it is inside `h`, else None.
+unsafe fn cursor_in_client(h: HWND) -> Option<(i32, i32)> {
     let mut pt = POINT::default();
     if GetCursorPos(&mut pt).is_err() || !ScreenToClient(h, &mut pt).as_bool() {
         return None;
@@ -476,24 +419,20 @@ unsafe fn cursor_in_client(h: HWND) -> Option<(i32, i32)> {
 }
 
 /// Hide the panel tip and let the next hover show it.
-/// `place_fav_tip` borrows the app state itself, so it runs outside `app()`.
-/// Calling it inside `app()` panics with `already borrowed` (v0.1.38, fixed in 0.1.39).
+/// `place_fav_tip` / `tip_leave` borrow the app state themselves, so they run outside `app()`.
 pub(crate) unsafe fn hide_side_fav_tip() {
     if TIP_GUARD.with(|c| c.replace(true)) {
         return;
     }
     let _clear = TipGuard;
-    let (owner, shown, _installed) = app(|a| {
+    let (owner, shown, installed) = app(|a| {
         a.fav_tip_hold = None;
-        // Cleared before the tooltip message, so a nested mouse move does not hide or show again.
         let shown = std::mem::replace(&mut a.fav_tip_shown, false);
         (a.side_hwnd, shown, a.fav_tip)
     });
-    // Only POP when the tip was actually shown. #188 also POPed whenever the tool was
-    // installed; hide runs on every quiet/after_drop/empty-row WM_MOUSEMOVE, so that
-    // re-sent TTM_TRACKACTIVATE+TTM_POP on every pixel and starved IME / paints.
+    // Only leave when the tip was actually shown (#189: no POP storm on quiet moves).
     if shown {
-        let now = place_fav_tip(owner, FAV_TIP_ID, true, "");
+        let (now, _) = crate::ui::tip_leave(owner, FAV_TIP_ID, installed);
         app(|a| a.fav_tip = now);
     }
     let back = cursor_in_client(owner);
@@ -503,10 +442,12 @@ pub(crate) unsafe fn hide_side_fav_tip() {
             _ = InvalidateRect(Some(owner), None, false);
         }
     } else if !owner.0.is_null() && !app(|a| a.fav_tip_after_drop) {
-        // The tip was covering the panel. Arm leave again, but do not show until the pointer moves.
-        // Skip while after_drop: OLE drop can make TrackMouseEvent fire leave with the cursor
-        // still over the panel (or still owned by the drag source), which would clear the hold.
-        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: owner, dwHoverTime: 0 };
+        let mut t = TRACKMOUSEEVENT {
+            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: owner,
+            dwHoverTime: 0,
+        };
         _ = TrackMouseEvent(&mut t);
     }
 }
@@ -521,21 +462,18 @@ pub(crate) unsafe fn dismiss_side_fav_tip() {
 /// Rename, an open IME composition, or the hover that follows an outside drop.
 fn side_tip_quiet() -> bool {
     let (renaming, after_drop, hwnd) = app(|a| (!a.side_edit_at.is_empty(), a.fav_tip_after_drop, a.side_hwnd));
-    // Skip Imm* walks when rename/after_drop already force quiet — those run per mousemove.
     if renaming || after_drop {
         return true;
     }
     fav_tip_blocked(false, ime_composing(hwnd), false)
 }
 
-/// `x` and `y` are client coordinates. A drag, or the point that just scrolled away, shows nothing.
-/// A rename, an IME composition, or the pointer still inside after an outside drop shows nothing either.
-pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
+/// `x` and `y` are client coordinates. `row_i` is the visible row index for anchoring.
+pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row_i: Option<usize>, row: Option<&FavRow>) {
     if TIP_GUARD.with(|c| c.get()) {
         return;
     }
     if app(|a| a.side_drag.is_some() || a.side_external) || side_tip_quiet() {
-        // Tip already down stays down; avoid hide→TTM_* on every quiet mousemove.
         if app(|a| a.fav_tip_shown) {
             hide_side_fav_tip();
         }
@@ -547,15 +485,18 @@ pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
     app(|a| a.fav_tip_hold = None);
     let owner = app(|a| a.side_hwnd);
     let text = row.map(fav_row_tip).unwrap_or_default();
-    if text.is_empty() {
+    let path = row.map(|r| r.path.as_str()).unwrap_or("");
+    if text.is_empty() || row_i.is_none() {
         hide_side_fav_tip();
         return;
     }
+    let item = side_row_item(row_i.unwrap());
     let installed = app(|a| a.fav_tip);
-    let now = place_fav_tip(owner, FAV_TIP_ID, installed, &text);
+    let key = fav_tip_key(FAV_TIP_ID, path);
+    let (now, shown) = place_fav_tip(owner, FAV_TIP_ID, installed, key, &text, item);
     app(|a| {
         a.fav_tip = now;
-        a.fav_tip_shown = now;
+        a.fav_tip_shown = shown;
     });
 }
 
@@ -572,27 +513,32 @@ pub(crate) unsafe fn hide_fav_tip_if_pointer_left(hwnd: HWND) {
     }
 }
 
-/// The favourites window uses the same tooltip. `owner` is that window; the desk is already current.
-pub(crate) unsafe fn show_pop_fav_tip(owner: HWND, row: Option<&FavRow>) {
+/// Favourites window tip, anchored to the hit row's screen rect.
+pub(crate) unsafe fn show_pop_fav_tip(owner: HWND, row: Option<&FavRow>, item: Option<RECT>) {
     let text = row.map(fav_row_tip).unwrap_or_default();
+    let path = row.map(|r| r.path.as_str()).unwrap_or("");
     let installed = app(|a| a.fav_pop_tip);
-    let now = place_fav_tip(owner, FAV_POP_TIP_ID, installed, &text);
+    if text.is_empty() || item.is_none() {
+        let (now, _) = crate::ui::tip_leave(owner, FAV_POP_TIP_ID, installed);
+        app(|a| a.fav_pop_tip = now);
+        return;
+    }
+    let key = fav_tip_key(FAV_POP_TIP_ID, path);
+    let (now, _) = place_fav_tip(owner, FAV_POP_TIP_ID, installed, key, &text, item);
     app(|a| a.fav_pop_tip = now);
 }
 
 pub(crate) unsafe fn hide_pop_fav_tip(owner: HWND) {
-    let on = app(|a| a.fav_pop_tip);
-    if on {
-        let now = place_fav_tip(owner, FAV_POP_TIP_ID, true, "");
-        app(|a| a.fav_pop_tip = now);
-    }
+    let installed = app(|a| a.fav_pop_tip);
+    let (now, _) = crate::ui::tip_leave(owner, FAV_POP_TIP_ID, installed);
+    app(|a| a.fav_pop_tip = now);
 }
 
 /// The window is going away, so the tool has to come off the tooltip. The next window adds its own.
 pub(crate) unsafe fn drop_pop_fav_tip(owner: HWND) {
     let (tip, on) = app(|a| {
-        if a.fav_tip_live.as_ref().is_some_and(|(live_id, ..)| *live_id == FAV_POP_TIP_ID) {
-            a.fav_tip_live = None;
+        if a.hover_tip.as_ref().is_some_and(|l| l.tool == FAV_POP_TIP_ID) {
+            a.hover_tip = None;
         }
         let on = a.fav_pop_tip;
         a.fav_pop_tip = false;
@@ -1196,7 +1142,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                         let list = rows();
                         match fav_tip_act(true, hot, list.len()) {
                             FavTipAct::Hide => hide_side_fav_tip(),
-                            FavTipAct::Show(i) => show_side_fav_tip(x, y, list.get(i)),
+                            FavTipAct::Show(i) => show_side_fav_tip(x, y, Some(i), list.get(i)),
                         }
                     } else if app(|a| a.fav_tip_shown) {
                         hide_side_fav_tip();
@@ -1261,7 +1207,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 return DefWindowProcW(h, msg, wp, lp);
             }
             WM_MOUSEMOVE => {
-                if TIP_GUARD.with(|c| c.get()) || TIP_PUMP.with(|c| c.get()) {
+                if TIP_GUARD.with(|c| c.get()) || crate::ui::tip_pumping() {
                     return LRESULT(0);
                 }
                 let (x, y) = xy(lp);
@@ -1323,7 +1269,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     }
                     match act {
                         FavTipAct::Hide => hide_side_fav_tip(),
-                        FavTipAct::Show(i) => show_side_fav_tip(x, y, list.get(i)),
+                        FavTipAct::Show(i) => show_side_fav_tip(x, y, Some(i), list.get(i)),
                     }
                     // After the tip is shown. Activating it can replace an earlier leave request.
                     let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
@@ -2018,16 +1964,12 @@ mod tests {
     }
 
     #[test]
-    fn tip_pump_skips_only_the_same_tool_text_and_point() {
-        assert!(fav_tip_same(Some(10), r"C:\a", Some((1, 22)), 10, r"C:\a", Some((1, 22))));
-        assert!(!fav_tip_same(Some(10), r"C:\a", Some((1, 22)), 10, r"C:\b", Some((1, 22))));
-        assert!(!fav_tip_same(Some(10), r"C:\a", Some((1, 22)), 11, r"C:\a", Some((1, 22))));
-        assert!(!fav_tip_same(Some(10), r"C:\a", Some((1, 22)), 10, r"C:\a", Some((2, 22))));
-        // Empty text hides. A missing point is not an unchanged position.
-        assert!(!fav_tip_same(Some(10), "", Some((1, 22)), 10, "", Some((1, 22))));
-        assert!(!fav_tip_same(None, r"C:\a", None, 10, r"C:\a", Some((1, 22))));
-        assert!(!fav_tip_same(Some(10), r"C:\a", Some((1, 22)), 10, r"C:\a", None));
-        assert!(!fav_tip_same(Some(10), r"C:\a", None, 10, r"C:\a", None));
+    fn tip_pump_skips_only_the_same_tool_and_text() {
+        assert!(fav_tip_same(Some(10), r"C:", 10, r"C:"));
+        assert!(!fav_tip_same(Some(10), r"C:", 10, r"C:"));
+        assert!(!fav_tip_same(Some(10), r"C:", 11, r"C:"));
+        assert!(!fav_tip_same(Some(10), "", 10, ""));
+        assert!(!fav_tip_same(None, r"C:", 10, r"C:"));
     }
 
     #[test]

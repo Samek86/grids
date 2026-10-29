@@ -227,9 +227,8 @@ pub(crate) struct Desk {
     pub(crate) addr_tip_shown: bool, // that tooltip is on screen (installed does not mean visible)
     pub(crate) fav_tip: bool,       // tracking tooltip for a favourites row is installed
     pub(crate) fav_tip_shown: bool, // that tooltip is on screen (installed does not mean visible)
-    /// Last favourites tracking tip that was actually shown: tool id, text, screen point.
-    /// The same triple does not send `TTM_UPDATETIPTEXTW` / `TTM_TRACKPOSITION` / `TTM_TRACKACTIVATE` again.
-    pub(crate) fav_tip_live: Option<(usize, String, i32, i32)>,
+    /// Live tracking tip (tool, key, text). Same key+text while shown sends no tip messages.
+    pub(crate) hover_tip: Option<crate::ui::TipLive>,
     pub(crate) fav_pop_tip: bool,   // tracking tooltip for the favourites window is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
@@ -420,7 +419,7 @@ pub(crate) fn blank_desk() -> Desk {
         addr_tip_shown: false,
         fav_tip: false,
         fav_tip_shown: false,
-        fav_tip_live: None,
+        hover_tip: None,
         fav_pop_tip: false,
         tab_hot_plus: false,
         tab_hot_over: false,

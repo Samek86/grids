@@ -1,4 +1,4 @@
-use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL, TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{IImageList, ILD_NORMAL};
 
 use crate::imports::*;
 use super::*;
@@ -908,17 +908,6 @@ pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
 const ADDR_TIP_ID: usize = 9;
 const EM_GETRECT: u32 = 0xB2;
 
-fn addr_tip_info(owner: HWND, label: &HSTRING) -> TTTOOLINFOW {
-    TTTOOLINFOW {
-        cbSize: size_of::<TTTOOLINFOW>() as u32,
-        uFlags: TTF_TRACK | TTF_ABSOLUTE,
-        hwnd: owner,
-        uId: ADDR_TIP_ID,
-        lpszText: PWSTR(label.as_ptr() as *mut u16),
-        ..Default::default()
-    }
-}
-
 unsafe fn cursor_on_addr(h: HWND) -> bool {
     let mut pt = POINT::default();
     if GetCursorPos(&mut pt).is_err() {
@@ -1001,29 +990,24 @@ pub(crate) fn addr_tip_hides(shown: bool, on_addr: bool) -> bool {
 }
 
 /// Hide the address tooltip. The tool stays installed for the next hover.
-/// Hiding sends `TTM_POP` as well as deactivating: a tracking tip the pointer has
-/// already left (or landed on) ignores deactivate and stays on screen — same as #175.
+/// Hiding sends `TTM_POP` as well as deactivating — same as #175 / #189.
 pub(crate) unsafe fn hide_addr_tip() {
-    let (tip, main, added, pane, shown) = app(|a| {
+    let (main, added, shown) = app(|a| {
         let shown = std::mem::replace(&mut a.addr_tip_shown, false);
-        (a.tip, a.main, a.addr_tip, a.addr_tip_pane, shown)
+        a.addr_tip_pane = HWND::default();
+        (a.main, a.addr_tip, shown)
     });
-    app(|a| a.addr_tip_pane = HWND::default());
-    if (!added && !shown) || tip.0.is_null() {
+    if !shown && !added {
         return;
     }
-    if pane.0.is_null() && !shown {
-        return;
+    if shown {
+        let (now, _) = crate::ui::tip_leave(main, ADDR_TIP_ID, added);
+        app(|a| a.addr_tip = now);
     }
-    let label = HSTRING::from("");
-    let ti = addr_tip_info(main, &label);
-    send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(0)));
-    SendMessageW(tip, TTM_POP, None, None);
 }
 
 /// `over` is the pointer on pane `h`'s address pill. A drag hides it. The text is the full
-/// path, and only while that path does not fit. Same tracking tooltip as a tab's path tip,
-/// on the window tooltip `tip_text` fills and `tip_theme` colours.
+/// path, and only while that path does not fit. Anchored just below the address rect + 4px.
 pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
     let (tip, main) = app(|a| (a.tip, a.main));
     if tip.0.is_null() || main.0.is_null() || h.0.is_null() {
@@ -1042,30 +1026,31 @@ pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
         }
         return;
     };
-    let label = HSTRING::from(text);
-    let ti = addr_tip_info(main, &label);
-    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
-    if !app(|a| a.addr_tip) {
-        send_tip(&ti, TTM_ADDTOOLW, None);
-        app(|a| a.addr_tip = true);
-    }
-    send_tip(&ti, TTM_UPDATETIPTEXTW, None);
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
-        return;
-    }
-    // Below the pointer so the tip never sits under it and swallows a click.
-    let below = pt.y + 22 * app(|a| a.dpi) / 96;
-    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
-    send_tip(&ti, TTM_TRACKACTIVATE, Some(WPARAM(1)));
+    let dpi = app(|a| a.dpi);
+    let item = crate::ui::tip_screen_rect(h, addr_rect(h, dpi));
+    let key = 0x9000_0000_0000_0000u64 ^ (h.0 as usize as u64);
+    let added = app(|a| a.addr_tip);
+    let (now, shown) = crate::ui::tip_enter(
+        main,
+        ADDR_TIP_ID,
+        key,
+        &text,
+        item,
+        crate::ui::TipSide::Below,
+        added,
+    );
     app(|a| {
+        a.addr_tip = now;
         a.addr_tip_pane = h;
-        a.addr_tip_shown = true;
+        a.addr_tip_shown = shown;
     });
-    // The folder list is a child; leaving the address into it may not deliver WM_MOUSELEAVE
-    // the way we need. Arm leave on the pane, and pre_translate also pops on any other move.
-    let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+    // The folder list is a child; leaving the address into it may not deliver WM_MOUSELEAVE.
+    let mut t = TRACKMOUSEEVENT {
+        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: h,
+        dwHoverTime: 0,
+    };
     _ = TrackMouseEvent(&mut t);
 }
 

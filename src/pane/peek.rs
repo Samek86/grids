@@ -9,7 +9,7 @@ use super::{focus_find_list, focus_view, step_find_sel};
 use windows::Win32::Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Controls::ILD_NORMAL;
-use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_POP, TTM_TRACKACTIVATE};
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
 
 /// Quick look was opened on a search result, so arrows walk that list and closing it returns there.
@@ -2647,44 +2647,54 @@ unsafe fn peek_tip(h: HWND, hot: Hot) {
         Hot::Close => Some(tr(crate::Key::Close)),
         _ => None,
     };
+    let installed = view(|v| v.tip_on);
     let Some(text) = text else {
-        if view(|v| v.tip_on) {
-            let empty = HSTRING::from("");
-            let ti = peek_tip_info(h, &empty);
-            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
+        if installed {
+            let _ = crate::ui::tip_leave(h, PEEK_TIP, true);
         }
         return;
     };
-    let label = HSTRING::from(text);
-    let ti = peek_tip_info(h, &label);
-    let lp = LPARAM(&ti as *const _ as isize);
-    if !view(|v| v.tip_on) {
-        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
-        view(|v| v.tip_on = true);
-    }
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
-        return;
-    }
-    let below = pt.y + 22 * app(|a| a.dpi) / 96;
-    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
-    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+    let g = geo_of(h);
+    let (item_client, kid) = match hot {
+        Hot::Max => (g.max, 1u64),
+        Hot::Close => (g.close, 2u64),
+        _ => return,
+    };
+    let item = crate::ui::tip_screen_rect(h, item_client);
+    let key = 0x6100_0000_0000_0000u64 | kid;
+    let (now, _) = crate::ui::tip_enter(
+        h,
+        PEEK_TIP,
+        key,
+        text,
+        item,
+        crate::ui::TipSide::Below,
+        installed,
+    );
+    view(|v| v.tip_on = now);
 }
 
 unsafe fn drop_peek_tip(h: HWND) {
     let tip = app(|a| a.tip);
-    if tip.0.is_null() || !view(|v| v.tip_on) {
+    let on = view(|v| {
+        let on = v.tip_on;
+        v.tip_on = false;
+        on
+    });
+    if app(|a| a.hover_tip.as_ref().is_some_and(|l| l.tool == PEEK_TIP)) {
+        app(|a| a.hover_tip = None);
+    }
+    if !on || tip.0.is_null() || h.0.is_null() {
         return;
     }
-    let label = HSTRING::from("");
-    let ti = peek_tip_info(h, &label);
+    let empty = HSTRING::from("");
+    let ti = peek_tip_info(h, &empty);
     let lp = LPARAM(&ti as *const _ as isize);
     SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
+    SendMessageW(tip, TTM_POP, None, None);
     SendMessageW(tip, TTM_DELTOOLW, None, Some(lp));
-    view(|v| v.tip_on = false);
 }
+
 
 unsafe fn maximize_peek(h: HWND) {
     let cur = window_rect(h);

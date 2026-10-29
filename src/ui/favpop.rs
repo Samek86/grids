@@ -941,7 +941,8 @@ unsafe fn pop_tip_at(h: HWND, x: i32, y: i32) {
     ST.with(|s| s.borrow_mut().tip_hold = None);
     bind_owner();
     let hit = hit_row(h, x, y);
-    show_pop_fav_tip(h, hit.as_ref().map(|hit| &hit.row));
+    let item = hit.as_ref().map(|hit| crate::ui::tip_screen_rect(h, hit.rect));
+    show_pop_fav_tip(h, hit.as_ref().map(|hit| &hit.row), item);
 }
 
 fn shown_mark() -> u64 {
