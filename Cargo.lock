@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "grids"
-version = "0.1.61"
+version = "0.1.62"
 dependencies = [
  "miniz_oxide",
  "regex",

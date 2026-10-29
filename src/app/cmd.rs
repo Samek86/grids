@@ -164,7 +164,7 @@ unsafe fn refresh_pane(a: usize) {
 
 /// Korean and Japanese IMEs keep a composition string while a syllable or a reading is open.
 /// Space then belongs to the IME (commit or convert), not to the preview.
-fn ime_composing(hwnd: HWND) -> bool {
+pub(crate) fn ime_composing(hwnd: HWND) -> bool {
     unsafe { composition_pending(hwnd) || composition_pending(GetFocus()) }
 }
 

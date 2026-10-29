@@ -122,6 +122,12 @@ pub(crate) struct Desk {
     pub(crate) side_press: Option<(i32, i32, usize)>,
     /// An OLE drop is over the favourites panel. The location tip stays hidden so it cannot take the drop.
     pub(crate) side_external: bool,
+    /// An outside drop just landed and the pointer is still inside. The location tip stays
+    /// hidden until `WM_MOUSELEAVE`. `side_external` is cleared before the tree changes, so
+    /// without this the hover path shows the tip while the pointer has not moved off.
+    pub(crate) fav_tip_after_drop: bool,
+    /// Set by the first post-drop move inside the panel; OLE leave before that is ignored.
+    pub(crate) fav_tip_leave_armed: bool,
     /// Client point where a scroll or a content change hid the favourites tip.
     /// The same point does not show it again until the pointer moves.
     pub(crate) fav_tip_hold: Option<(i32, i32)>,
@@ -221,6 +227,9 @@ pub(crate) struct Desk {
     pub(crate) addr_tip_shown: bool, // that tooltip is on screen (installed does not mean visible)
     pub(crate) fav_tip: bool,       // tracking tooltip for a favourites row is installed
     pub(crate) fav_tip_shown: bool, // that tooltip is on screen (installed does not mean visible)
+    /// Last favourites tracking tip that was actually shown: tool id, text, screen point.
+    /// The same triple does not send `TTM_UPDATETIPTEXTW` / `TTM_TRACKPOSITION` / `TTM_TRACKACTIVATE` again.
+    pub(crate) fav_tip_live: Option<(usize, String, i32, i32)>,
     pub(crate) fav_pop_tip: bool,   // tracking tooltip for the favourites window is installed
     pub(crate) tab_hot_plus: bool,
     pub(crate) tab_hot_over: bool, // pointer over the overflow chevron
@@ -317,6 +326,8 @@ pub(crate) fn blank_desk() -> Desk {
         side_drop: None,
         side_press: None,
         side_external: false,
+        fav_tip_after_drop: false,
+        fav_tip_leave_armed: false,
         fav_tip_hold: None,
         side_rows_mark: None,
         side_edit: HWND::default(),
@@ -409,6 +420,7 @@ pub(crate) fn blank_desk() -> Desk {
         addr_tip_shown: false,
         fav_tip: false,
         fav_tip_shown: false,
+        fav_tip_live: None,
         fav_pop_tip: false,
         tab_hot_plus: false,
         tab_hot_over: false,
