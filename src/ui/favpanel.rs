@@ -480,8 +480,10 @@ pub(crate) unsafe fn hide_side_fav_tip() {
         if paint && !owner.0.is_null() {
             _ = InvalidateRect(Some(owner), None, false);
         }
-    } else if !owner.0.is_null() {
+    } else if !owner.0.is_null() && !app(|a| a.fav_tip_after_drop) {
         // The tip was covering the panel. Arm leave again, but do not show until the pointer moves.
+        // Skip while after_drop: OLE drop can make TrackMouseEvent fire leave with the cursor
+        // still over the panel (or still owned by the drag source), which would clear the hold.
         let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: owner, dwHoverTime: 0 };
         _ = TrackMouseEvent(&mut t);
     }
@@ -1159,7 +1161,7 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 clear_icon_refresh();
                 _ = InvalidateRect(Some(h), None, false);
                 // A row may have just been marked missing. Refresh the note if the pointer is still on it.
-                if app(|a| a.fav_tip_hold.is_none() && a.side_drag.is_none() && !a.side_external) {
+                if app(|a| a.fav_tip_hold.is_none() && a.side_drag.is_none() && !a.side_external && !a.fav_tip_after_drop) {
                     if let Some((x, y)) = cursor_in_client(h) {
                         let hot = row_at(y);
                         let list = rows();
@@ -1255,9 +1257,11 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     }
                 } else if app(|a| a.side_external || a.fav_tip_after_drop) {
                     // Same as an outside drag: no tip until the pointer leaves (after_drop)
-                    // or the drag ends (side_external). Arm leave so a real exit clears the hold.
+                    // or the drag ends (side_external). Arm leave only after a real post-drop
+                    // hover inside, so OLE leave during Drop cannot clear the hold early.
                     hide_side_fav_tip();
                     if app(|a| a.fav_tip_after_drop) && cursor_in_client(h).is_some() {
+                        app(|a| a.fav_tip_leave_armed = true);
                         let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
                         _ = TrackMouseEvent(&mut t);
                     }
@@ -1286,11 +1290,17 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 }
             }
             WM_MOUSELEAVE => {
-                // The post-drop hold ends only once the pointer has actually left.
-                // OLE drop and tip hide can synthesize a leave while the cursor is still
-                // inside; ignore those so the tip stays down until a real exit.
+                // The post-drop hold ends only once the pointer has actually left after a
+                // real post-drop hover. OLE drop and tip hide can synthesize a leave while
+                // the cursor is still inside (or still owned by the drag source); ignore
+                // those so the tip stays down until a real exit.
                 if cursor_in_client(h).is_none() {
-                    app(|a| a.fav_tip_after_drop = false);
+                    app(|a| {
+                        if a.fav_tip_leave_armed {
+                            a.fav_tip_after_drop = false;
+                            a.fav_tip_leave_armed = false;
+                        }
+                    });
                 }
                 hide_side_fav_tip();
                 app(|a| a.side_hot = None);

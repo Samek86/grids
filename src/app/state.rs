@@ -126,6 +126,8 @@ pub(crate) struct Desk {
     /// hidden until `WM_MOUSELEAVE`. `side_external` is cleared before the tree changes, so
     /// without this the hover path shows the tip while the pointer has not moved off.
     pub(crate) fav_tip_after_drop: bool,
+    /// Set by the first post-drop move inside the panel; OLE leave before that is ignored.
+    pub(crate) fav_tip_leave_armed: bool,
     /// Client point where a scroll or a content change hid the favourites tip.
     /// The same point does not show it again until the pointer moves.
     pub(crate) fav_tip_hold: Option<(i32, i32)>,
@@ -325,6 +327,7 @@ pub(crate) fn blank_desk() -> Desk {
         side_press: None,
         side_external: false,
         fav_tip_after_drop: false,
+        fav_tip_leave_armed: false,
         fav_tip_hold: None,
         side_rows_mark: None,
         side_edit: HWND::default(),
