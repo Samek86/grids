@@ -1401,6 +1401,36 @@ unsafe fn list_item_at(pt: POINT) -> Option<(IAccessible, VARIANT)> {
     None
 }
 
+/// Right-click on a DirectUI items view. An already selected row keeps a multi-selection.
+/// A header or empty gap has no list item, so the shell's selection is left as it is.
+pub(crate) unsafe fn select_accessible_row(i: usize, pt: POINT) {
+    let Some((item, mut child)) = list_item_at(pt) else { return };
+    let name = acc_label(&item, &child).or_else(|| acc_label(&item, &VARIANT::from(0i32)));
+    _ = VariantClear(&mut child);
+    let Some(name) = name else { return };
+    let Some(fv) = view_of::<IFolderView2>(i) else { return };
+    // The shell usually focuses the row on the way down. That index is the hit, so a big folder
+    // does not walk every name. A details cell that did not move focus still needs the walk.
+    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
+    let focus = fv.GetFocusedItem().ok().filter(|&k| k >= 0 && k < n);
+    let first = focus.into_iter().chain(0..n);
+    for k in first {
+        let Ok(it) = fv.GetItem::<IShellItem>(k) else { continue };
+        let disp = it.GetDisplayName(SIGDN_NORMALDISPLAY).ok().map(|p| pwstr(p)).unwrap_or_default();
+        if !disp.eq_ignore_ascii_case(&name) {
+            continue;
+        }
+        let Ok(pidl) = fv.Item(k) else { return };
+        let selected = fv.GetSelectionState(pidl).unwrap_or(0) & SVSI_SELECT.0 as u32 != 0;
+        CoTaskMemFree(Some(pidl as _));
+        if !selected {
+            let flags = (SVSI_SELECT.0 | SVSI_DESELECTOTHERS.0 | SVSI_FOCUSED.0) as u32;
+            _ = fv.SelectItem(k, flags);
+        }
+        return;
+    }
+}
+
 unsafe fn select_named(i: usize, name: &str) -> bool {
     let Some(fv) = view_of::<IFolderView2>(i) else { return false };
     let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
@@ -1916,8 +1946,8 @@ unsafe fn capture_theme(i: usize) -> Option<ThemeKeep> {
     let watch = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).and_then(|p| p.view_watch.clone()));
     let mode = snap.as_ref().map(|s| s.mode).unwrap_or(0);
     let lv = view_list(&fv);
-    let top = if lv.0.is_null() { 0 } else { SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32 };
-    let (sx, sy) = list_scroll(lv);
+    let top = if is_sys_list(lv) { SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32 } else { 0 };
+    let (sx, sy) = if is_sys_list(lv) { list_scroll(lv) } else { (0, 0) };
     let total = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0);
     let nsel = fv.ItemCount(SVGIO_SELECTION).unwrap_or(0);
     let select_all = total > 0 && nsel >= total;
@@ -1964,7 +1994,9 @@ pub(crate) unsafe fn apply_theme_scroll(h: HWND) {
         return;
     };
     let lv = view_list(&fv);
-    let count = if lv.0.is_null() { 0 } else { SendMessageW(lv, LVM_GETITEMCOUNT, None, None).0 as i32 };
+    let sys = is_sys_list(lv);
+    // DirectUIHWND does not answer LVM_GETITEMCOUNT. The folder view's own count is the row count.
+    let count = if sys { SendMessageW(lv, LVM_GETITEMCOUNT, None, None).0 as i32 } else { fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0) };
     let wants = if theme_scroll_rows(job.mode) { job.top > 0 } else { job.x != 0 || job.y != 0 };
     let waiting_sel = job.select_all || !job.sel.is_empty() || job.focus != 0;
     // The list is filled after navigation completes. Keep the PIDLs until it has rows, or the tries run out.
@@ -1972,12 +2004,19 @@ pub(crate) unsafe fn apply_theme_scroll(h: HWND) {
         repost_scroll(h, i, job);
         return;
     }
-    if job.select_all && count > 0 && !lv.0.is_null() {
-        select_all_list(lv);
+    if job.select_all && count > 0 {
+        if sys {
+            select_all_list(lv);
+        } else {
+            let flags = SVSI_SELECT.0 as u32;
+            for k in 0..count {
+                _ = fv.SelectItem(k, flags);
+            }
+        }
         job.select_all = false;
     }
     restore_theme_selection(i, &mut job);
-    if !lv.0.is_null() && count > 0 {
+    if sys && count > 0 {
         if theme_scroll_rows(job.mode) {
             let cur = SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32;
             if let Some(rows) = scroll_rows(cur, job.top, count) {
@@ -1993,7 +2032,7 @@ pub(crate) unsafe fn apply_theme_scroll(h: HWND) {
             job.x_done = true;
         }
     }
-    if theme_scroll_rows(job.mode) && job.top > 0 && !lv.0.is_null() && count > 0 {
+    if theme_scroll_rows(job.mode) && job.top > 0 && sys && count > 0 {
         let cur = SendMessageW(lv, LVM_GETTOPINDEX, None, None).0 as i32;
         let count = SendMessageW(lv, LVM_GETITEMCOUNT, None, None).0 as i32;
         if scroll_rows(cur, job.top, count).is_some() {

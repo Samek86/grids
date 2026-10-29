@@ -2480,7 +2480,11 @@ unsafe fn apply_group(fv: &IFolderView2, group: &str) {
 
 // Column names in on-screen order, from the pane's list header: dragging a column to a new place
 // changes only the header's order, which the view's own column list doesn't follow.
+// DirectUIHWND has no header child. LVM_GETHEADER on it is not a header window.
 pub(crate) unsafe fn header_names(lv: HWND) -> Vec<String> {
+    if !is_sys_list(lv) {
+        return Vec::new();
+    }
     let n = list_titles(lv).len();
     let mut order = vec![0i32; n];
     SendMessageW(lv, LVM_GETCOLUMNORDERARRAY, Some(WPARAM(n)), Some(LPARAM(order.as_mut_ptr() as isize)));
@@ -2490,6 +2494,9 @@ pub(crate) unsafe fn header_names(lv: HWND) -> Vec<String> {
 
 // Column titles of a list, by column index.
 pub(crate) unsafe fn list_titles(lv: HWND) -> Vec<String> {
+    if !is_sys_list(lv) {
+        return Vec::new();
+    }
     let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
     let n = SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize;
     (0..n)
@@ -2502,11 +2509,68 @@ pub(crate) unsafe fn list_titles(lv: HWND) -> Vec<String> {
         .collect()
 }
 
+unsafe fn class_of(h: HWND) -> String {
+    let mut c = [0u16; 64];
+    let n = GetClassNameW(h, &mut c) as usize;
+    String::from_utf16_lossy(&c[..n])
+}
+
+/// True only for a real list-view. `LVM_*` on a DirectUIHWND items view does not read or resize columns.
+pub(crate) unsafe fn is_sys_list(h: HWND) -> bool {
+    !h.0.is_null() && class_of(h) == "SysListView32"
+}
+
 // The list inside a view. During a folder change the old view's list is still around, so it is
 // found from the view itself, not by looking through the pane.
+// Windows 10's file list is a DirectUIHWND child of SHELLDLL_DefView, not a SysListView32, so a
+// direct search for that class returns null and every caller no-ops. A SysListView32 still wins
+// when one is nested under the items view: only that window accepts list-view messages.
 pub(crate) unsafe fn view_list(fv: &IFolderView2) -> HWND {
     let view = fv.cast::<IShellView>().and_then(|v| v.GetWindow()).unwrap_or_default();
-    FindWindowExW(Some(view), None, w!("SysListView32"), PCWSTR::null()).unwrap_or_default()
+    list_under(view)
+}
+
+/// File-list window under `root`: SysListView32 if there is one, otherwise the items-view DirectUIHWND.
+pub(crate) unsafe fn list_under(root: HWND) -> HWND {
+    if root.0.is_null() {
+        return HWND::default();
+    }
+    let mut sys = HWND::default();
+    let mut dui = HWND::default();
+    if is_sys_list(root) {
+        return root;
+    }
+    if class_of(root) == "DirectUIHWND" {
+        dui = root;
+    }
+    collect_list(root, &mut sys, &mut dui, 0);
+    if !sys.0.is_null() { sys } else { dui }
+}
+
+unsafe fn collect_list(parent: HWND, sys: &mut HWND, dui: &mut HWND, depth: u8) {
+    if !sys.0.is_null() || depth > 8 {
+        return;
+    }
+    let mut after = None;
+    loop {
+        let Ok(c) = FindWindowExW(Some(parent), after, PCWSTR::null(), PCWSTR::null()) else { break };
+        if c.0.is_null() {
+            break;
+        }
+        match class_of(c).as_str() {
+            "SysListView32" => {
+                *sys = c;
+                return;
+            }
+            "DirectUIHWND" if dui.0.is_null() => *dui = c,
+            _ => {}
+        }
+        collect_list(c, sys, dui, depth + 1);
+        if !sys.0.is_null() {
+            return;
+        }
+        after = Some(c);
+    }
 }
 
 // Explorer puts a floor under some columns (Size stops at 90 px) so numbers never get cut, and puts it
@@ -2515,6 +2579,12 @@ pub(crate) unsafe fn view_list(fv: &IFolderView2) -> HWND {
 // width set on the list.
 pub(crate) unsafe fn free_min_widths(lv: HWND) {
     if lv.0.is_null() {
+        return;
+    }
+    // The 90 px Size floor is an LVCOLUMN minimum. DirectUIHWND has neither that message nor a
+    // header notify, so the subclass would never see a drag. The items view is still the drop target.
+    if !is_sys_list(lv) {
+        install_drop_at(lv);
         return;
     }
     let mut was = 0usize;
@@ -2540,6 +2610,9 @@ pub(crate) unsafe fn free_min_widths(lv: HWND) {
 }
 
 pub(crate) unsafe fn lower_floors(lv: HWND) {
+    if !is_sys_list(lv) {
+        return;
+    }
     let floor = 20 * GetDpiForWindow(lv) as i32 / 96;
     let header = HWND(SendMessageW(lv, LVM_GETHEADER, None, None).0 as _);
     for c in 0..SendMessageW(header, HDM_GETITEMCOUNT, None, None).0.max(0) as usize {
@@ -2615,7 +2688,10 @@ pub(crate) static NARROWING: std::sync::atomic::AtomicI64 = std::sync::atomic::A
 // Widths come from the list: one narrowed below the view's floor is only there (the view still says 90).
 pub(crate) unsafe fn read_cols(fv: &IFolderView2, lv: HWND) -> Option<String> {
     let cm: IColumnManager = fv.cast().ok()?;
-    let (titles, shown) = (list_titles(lv), header_names(lv));
+    // A list-view can show a width below the column manager's floor. DirectUIHWND keeps the live
+    // width on IColumnManager, and LVM_GETCOLUMNWIDTH against it is not a column width.
+    let sys = is_sys_list(lv);
+    let (titles, shown) = if sys { (list_titles(lv), header_names(lv)) } else { (Vec::new(), Vec::new()) };
     let mut keys = vec![PROPERTYKEY::default(); cm.GetColumnCount(CM_ENUM_VISIBLE).ok()? as usize];
     cm.GetColumns(CM_ENUM_VISIBLE, &mut keys).ok()?;
     let info = |k: &PROPERTYKEY| {
@@ -2623,7 +2699,7 @@ pub(crate) unsafe fn read_cols(fv: &IFolderView2, lv: HWND) -> Option<String> {
         let mut ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: mask, ..Default::default() };
         _ = cm.GetColumnInfo(k, &mut ci);
         let name = String::from_utf16_lossy(&ci.wszName[..ci.wszName.iter().position(|&c| c == 0).unwrap_or(0)]);
-        let on_list = titles.iter().position(|t| *t == name).map(|c| SendMessageW(lv, LVM_GETCOLUMNWIDTH, Some(WPARAM(c)), None).0 as u32);
+        let on_list = sys.then(|| titles.iter().position(|t| *t == name).map(|c| SendMessageW(lv, LVM_GETCOLUMNWIDTH, Some(WPARAM(c)), None).0 as u32)).flatten();
         (*k, on_list.filter(|&w| w > 0).unwrap_or(ci.uWidth), name)
     };
     let mut left: Vec<_> = keys.iter().map(info).collect();
@@ -2644,6 +2720,14 @@ pub(crate) unsafe fn read_cols(fv: &IFolderView2, lv: HWND) -> Option<String> {
 // folder's columns: narrower ones go straight onto the list, which lets them through (list_floor_proc).
 pub(crate) unsafe fn put_widths(fv: &IFolderView2, text: &str, lv: HWND) {
     let Ok(cm) = fv.cast::<IColumnManager>() else { return };
+    // No list-view: the column manager is the width. SetColumnInfo is what a drag already stored.
+    if !is_sys_list(lv) {
+        for (k, w) in parse_cols(text).0 {
+            let ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: CM_MASK_WIDTH.0 as u32, uWidth: w, ..Default::default() };
+            _ = cm.SetColumnInfo(&k, &ci);
+        }
+        return;
+    }
     let titles = list_titles(lv);
     for (k, w) in parse_cols(text).0 {
         let mut ci = CM_COLUMNINFO { cbSize: size_of::<CM_COLUMNINFO>() as u32, dwMask: CM_MASK_NAME.0 as u32, ..Default::default() };
@@ -3489,7 +3573,7 @@ pub(crate) unsafe fn acc_name_at_cursor() -> Option<String> {
 /// passed to `IFolderView::GetItem` (grouped views do not share that index).
 unsafe fn listed_name(fv: &IFolderView2) -> Option<String> {
     let lv = view_list(fv);
-    if !lv.0.is_null() {
+    if is_sys_list(lv) {
         // LVM_GETNEXTITEM, start at -1. LVNI_FOCUSED then LVNI_SELECTED.
         let mut idx = SendMessageW(lv, 0x100C, Some(WPARAM(usize::MAX)), Some(LPARAM(1))).0 as i32;
         if idx < 0 {
@@ -4128,5 +4212,93 @@ mod swap_dup_tests {
         // The only visible pane stays on the left. The right column is a different slot.
         let home = [None; crate::MAXP];
         assert_eq!(right_slot_before(&[1], &home), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod list_hwnd_tests {
+    use super::{is_sys_list, list_under};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
+    use windows::Win32::UI::Controls::{InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, GetClassInfoW, RegisterClassW, UnregisterClassW, CS_DBLCLKS, WINDOW_EX_STYLE, WS_CHILD, WS_POPUP, WS_VISIBLE, WNDCLASSW};
+    use windows::core::w;
+
+    unsafe extern "system" fn probe_proc(h: HWND, m: u32, w: windows::Win32::Foundation::WPARAM, l: windows::Win32::Foundation::LPARAM) -> windows::Win32::Foundation::LRESULT {
+        windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(h, m, w, l)
+    }
+
+    unsafe fn popup() -> HWND {
+        CreateWindowExW(WINDOW_EX_STYLE(0), w!("Static"), w!(""), WS_POPUP, 0, 0, 400, 300, None, None, None, None).unwrap_or_default()
+    }
+
+    unsafe fn child(parent: HWND, class: windows::core::PCWSTR) -> HWND {
+        CreateWindowExW(WINDOW_EX_STYLE(0), class, w!(""), WS_CHILD | WS_VISIBLE, 0, 0, 80, 40, Some(parent), None, None, None).unwrap_or_default()
+    }
+
+    /// A DirectUIHWND stand-in, only when that class is not already registered. The real items-view
+    /// class refuses a bare CreateWindow; the walker only looks at the class name.
+    unsafe fn directui(parent: HWND) -> (HWND, bool) {
+        _ = LoadLibraryW(w!("dui70.dll"));
+        let made = child(parent, w!("DirectUIHWND"));
+        if !made.0.is_null() {
+            return (made, false);
+        }
+        let inst = GetModuleHandleW(None).unwrap_or_default();
+        let mut existing = WNDCLASSW::default();
+        if GetClassInfoW(Some(inst.into()), w!("DirectUIHWND"), &mut existing).is_ok() || GetClassInfoW(None, w!("DirectUIHWND"), &mut existing).is_ok() {
+            return (HWND::default(), false);
+        }
+        let wc = WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(probe_proc),
+            hInstance: inst.into(),
+            lpszClassName: w!("DirectUIHWND"),
+            ..Default::default()
+        };
+        if RegisterClassW(&wc) == 0 {
+            return (HWND::default(), false);
+        }
+        (child(parent, w!("DirectUIHWND")), true)
+    }
+
+    #[test]
+    fn list_under_prefers_syslistview_and_accepts_directui() {
+        unsafe {
+            let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_LISTVIEW_CLASSES };
+            _ = InitCommonControlsEx(&icc);
+            let root = popup();
+            assert!(!root.0.is_null(), "parent window");
+            let decoy = child(root, w!("Static"));
+            let sys = child(root, w!("SysListView32"));
+            assert!(!sys.0.is_null(), "SysListView32 could not be created");
+            assert!(is_sys_list(sys));
+            assert!(!is_sys_list(decoy));
+            assert!(!is_sys_list(root));
+            assert_eq!(list_under(root), sys, "a SysListView32 is the file list");
+            assert_eq!(list_under(HWND::default()), HWND::default());
+
+            _ = DestroyWindow(sys);
+            let (dui, registered) = directui(root);
+            assert!(!dui.0.is_null(), "DirectUIHWND stand-in");
+            assert!(!is_sys_list(dui));
+            assert_eq!(list_under(root), dui, "Windows 10's items view is the DirectUIHWND");
+
+            let holder = child(root, w!("Static"));
+            let nested = child(holder, w!("SysListView32"));
+            assert!(!nested.0.is_null(), "nested SysListView32");
+            assert_eq!(list_under(root), nested, "a list-view nested under the items view still wins");
+
+            _ = DestroyWindow(nested);
+            _ = DestroyWindow(holder);
+            _ = DestroyWindow(dui);
+            _ = DestroyWindow(decoy);
+            assert_eq!(list_under(root), HWND::default());
+            _ = DestroyWindow(root);
+            if registered {
+                let inst = GetModuleHandleW(None).unwrap_or_default();
+                _ = UnregisterClassW(w!("DirectUIHWND"), Some(inst.into()));
+            }
+        }
     }
 }
