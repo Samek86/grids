@@ -462,13 +462,15 @@ pub(crate) unsafe fn hide_side_fav_tip() {
         return;
     }
     let _clear = TipGuard;
-    let (owner, shown) = app(|a| {
+    let (owner, shown, installed) = app(|a| {
         a.fav_tip_hold = None;
         // Cleared before the tooltip message, so a nested mouse move does not hide or show again.
         let shown = std::mem::replace(&mut a.fav_tip_shown, false);
-        (a.side_hwnd, shown)
+        (a.side_hwnd, shown, a.fav_tip)
     });
-    if shown {
+    // Tracking tips can stay painted after deactivate was skipped (shown false, tool still live).
+    // Always POP when the tool is installed, not only when we think it is shown.
+    if shown || installed {
         let now = place_fav_tip(owner, FAV_TIP_ID, true, "");
         app(|a| a.fav_tip = now);
     }
@@ -1251,8 +1253,14 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                             }
                         }
                     }
-                } else if app(|a| a.side_external) {
+                } else if app(|a| a.side_external || a.fav_tip_after_drop) {
+                    // Same as an outside drag: no tip until the pointer leaves (after_drop)
+                    // or the drag ends (side_external). Arm leave so a real exit clears the hold.
                     hide_side_fav_tip();
+                    if app(|a| a.fav_tip_after_drop) && cursor_in_client(h).is_some() {
+                        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                        _ = TrackMouseEvent(&mut t);
+                    }
                 } else {
                     let list = rows();
                     let act = fav_tip_act(true, hot, list.len());
