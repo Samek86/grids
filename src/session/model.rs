@@ -1762,79 +1762,127 @@ pub(crate) fn crumbs(parse: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Crumb widths `w` into `avail` px: (end exclusive of visible crumbs, trailing '…', width of last visible).
-/// Everything when it fits. Otherwise keep the path **start** (drive and early folders), clip the last
-/// visible segment if needed, and fold the rest into a trailing '…'. Matches a narrow edit that keeps
-/// the leading path on screen (see also the address-edit path-start fix).
-pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> (usize, bool, i32) {
+/// Crumb widths `w` into `avail` px.
+/// Returns `(prefix_end, suffix_start, middle_ellipsis, leaf_width)`.
+///
+/// Paint `0..prefix_end`, then optional `…`, then `suffix_start..n`. The **leaf** (last crumb)
+/// always sits at the right and stays full unless even the leaf alone is wider than `avail`
+/// (then `leaf_width` is clipped). When the path is wider than the field, keep the drive in the
+/// prefix when it fits, fold the middle into `…`, and show as many crumbs adjacent to the leaf
+/// as the leftover allows — never collapse to the leaf alone while a parent still fits.
+pub(crate) fn crumb_fit(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32) -> (usize, usize, bool, i32) {
     let n = w.len();
+    let _ = min;
     if n == 0 || avail <= 0 {
-        return (0, false, 0);
+        return (0, 0, false, 0);
     }
-    if w.iter().sum::<i32>() + sep * (n as i32 - 1) <= avail {
-        return (n, false, w[n - 1]);
+    let total = w.iter().sum::<i32>() + sep * (n as i32 - 1);
+    if total <= avail {
+        return (n, n, false, w[n - 1]);
     }
-    // Show as many leading crumbs as fit, reserving room for a trailing '…' when more remain.
-    // Clip one more crumb into leftover space when it is at least `min` (or the first crumb alone).
-    let mut end = 0usize;
-    let mut used = 0i32;
-    for k in 0..n {
-        let omit_after = k + 1 < n;
-        let need_ell = if omit_after { sep + ell } else { 0 };
-        let pad = if k > 0 { sep } else { 0 };
-        let add = w[k] + pad;
-        if used + add + need_ell <= avail {
-            used += add;
-            end = k + 1;
-            continue;
-        }
-        let room = avail - used - need_ell - pad;
-        if room > 0 && (room >= min || end == 0) {
-            let show = room.min(w[k]);
-            if show > 0 {
-                return (k + 1, omit_after, show);
-            }
-        }
-        if end == 0 {
-            let show = avail.min(w[0]).max(0);
-            return (1, false, show);
-        }
-        break;
+    let leaf = w[n - 1];
+    if n == 1 || leaf >= avail {
+        return (0, n - 1, false, leaf.min(avail).max(0));
     }
-    let more = end < n;
-    let last = w[end - 1];
-    (end, more, last)
+
+    // Width of crumbs[0..pre) + optional ellipsis + crumbs[suf..n).
+    let layout_w = |pre: usize, suf: usize, mid: bool| -> i32 {
+        let mut segs: Vec<i32> = Vec::with_capacity(n + 1);
+        segs.extend_from_slice(&w[..pre]);
+        if mid {
+            segs.push(ell);
+        }
+        segs.extend_from_slice(&w[suf..]);
+        if segs.is_empty() {
+            return 0;
+        }
+        segs.iter().sum::<i32>() + sep * (segs.len() as i32 - 1)
+    };
+
+    // (vis, has_drive, suffix_len, prefix_len, pre, suf, mid)
+    let mut best: Option<(i32, i32, i32, i32, usize, usize, bool)> = None;
+    let consider = |best: &mut Option<(i32, i32, i32, i32, usize, usize, bool)>, pre: usize, suf: usize, mid: bool| {
+        if suf > n - 1 {
+            return;
+        }
+        if mid && pre >= suf {
+            return;
+        }
+        if !mid && pre != 0 {
+            // Without a middle ellipsis the only non-full layout is a pure right suffix.
+            return;
+        }
+        if !mid && pre == 0 && suf == 0 {
+            return; // full path
+        }
+        let wd = layout_w(pre, suf, mid);
+        if wd > avail {
+            return;
+        }
+        let vis = (pre + (n - suf)) as i32;
+        let drive = if pre >= 1 { 1 } else { 0 };
+        let suffix_len = (n - suf) as i32;
+        let key = (vis, drive, suffix_len, pre as i32, pre, suf, mid);
+        let better = match best {
+            None => true,
+            Some(b) => (key.0, key.1, key.2, key.3) > (b.0, b.1, b.2, b.3),
+        };
+        if better {
+            *best = Some(key);
+        }
+    };
+
+    for suf in (1..n).rev() {
+        for pre in 0..suf {
+            consider(&mut best, pre, suf, true);
+        }
+        // Pure suffix without ellipsis (drive omitted, no room for …).
+        consider(&mut best, 0, suf, false);
+    }
+    consider(&mut best, 0, n - 1, false);
+
+    let Some((_, _, _, _, pre, suf, mid)) = best else {
+        return (0, n - 1, false, leaf.min(avail).max(0));
+    };
+    (pre, suf, mid, leaf)
 }
 
-/// `crumb_fit`, keeping a slot for a `›` after the current folder when that folder is still
-/// visible and the field has room. Shell places and a field too narrow for that chevron lay out as before.
-/// `(end exclusive, trailing '…', last width, tail '›')`.
-pub(crate) fn crumb_fit_tail(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32, fs: bool) -> (usize, bool, i32, bool) {
+/// `crumb_fit`, keeping a slot for a `›` after the current folder when the full path is visible
+/// and the field has room. Shell places and a field too narrow for that chevron lay out as before.
+/// `(prefix_end, suffix_start, middle_ellipsis, leaf_width, tail_›)`.
+pub(crate) fn crumb_fit_tail(
+    w: &[i32],
+    avail: i32,
+    sep: i32,
+    ell: i32,
+    min: i32,
+    fs: bool,
+) -> (usize, usize, bool, i32, bool) {
     let n = w.len();
     let want_tail = fs && sep >= 0 && min >= 0 && avail >= sep.saturating_add(min);
-    let (end, more, last) = crumb_fit(w, if want_tail { avail - sep } else { avail }, sep, ell, min);
-    let tail = want_tail && end == n && !more;
+    let (pre, suf, mid, last) = crumb_fit(w, if want_tail { avail - sep } else { avail }, sep, ell, min);
+    let full = n > 0 && pre == n && suf == n && !mid;
+    let tail = want_tail && full;
     if want_tail && !tail {
-        // Current folder not shown — reclaim the reserved chevron width and fit again.
-        let (e, m, l) = crumb_fit(w, avail, sep, ell, min);
-        return (e, m, l, false);
+        let (p, s, m, l) = crumb_fit(w, avail, sep, ell, min);
+        return (p, s, m, l, false);
     }
-    (end, more, last, tail)
+    (pre, suf, mid, last, tail)
 }
 
 /// The address crumbs hide part of the path. `w` is each segment's laid-out width.
-/// Trailing segments are missing when `more` or `end < w.len()`. The last visible name is cut when
-/// `last` is narrower than that segment's full width. No segments means nothing to cut.
+/// A middle `…`, a missing segment, or a clipped leaf means the bar is truncated.
 pub(crate) fn addr_path_truncated(w: &[i32], avail: i32, sep: i32, ell: i32, min: i32, fs: bool) -> bool {
     if w.is_empty() {
         return false;
     }
-    let (end, more, last, _) = crumb_fit_tail(w, avail, sep, ell, min, fs);
-    if end == 0 {
+    let n = w.len();
+    let (pre, suf, mid, last, _) = crumb_fit_tail(w, avail, sep, ell, min, fs);
+    if n > 0 && pre == 0 && suf == 0 && last == 0 {
         return true;
     }
-    let full = w[end - 1];
-    more || end < w.len() || last < full
+    let full_leaf = w[n - 1];
+    mid || pre + (n - suf) < n || last < full_leaf
 }
 
 /// One line of address text (the edit, or a shell name drawn as a single crumb)
@@ -2070,74 +2118,75 @@ mod crumb_tests {
     #[test]
     fn crumb_fits() {
         let f = |w: &[i32], avail| crumb_fit(w, avail, 4, 20, 16);
-        // Full path fits → end = n, no trailing …
-        assert_eq!(f(&[30, 40, 50], 500), (3, false, 50));
-        assert_eq!(f(&[14, 15, 15], 52), (3, false, 15));
-        // 51: only first + … (14+4+20 = 38); leftover too small to clip second
-        assert_eq!(f(&[14, 15, 15], 51), (1, true, 14));
-        // First full + clipped second (last segment, no trailing …)
-        assert_eq!(f(&[10, 200], 100), (2, false, 86));
-        // 70: first + second fit with room to clip the leaf (30+4+10+4+22)
-        assert_eq!(f(&[30, 10, 50], 70), (3, false, 22));
-        // 78: first + second + clipped leaf
-        assert_eq!(f(&[30, 10, 50], 78), (3, false, 30));
-        // Too narrow for first + …: force clipped first, no …
-        assert_eq!(f(&[30, 40], 15), (1, false, 15));
-        assert_eq!(f(&[30, 40], 0), (0, false, 0));
-        assert_eq!(f(&[], 100), (0, false, 0));
+        assert_eq!(f(&[30, 40, 50], 500), (3, 3, false, 50));
+        assert_eq!(f(&[14, 15, 15], 52), (3, 3, false, 15));
+        // 51: parent+leaf = 34 (vis=2). Drive+ellipsis+leaf needs 57.
+        assert_eq!(f(&[14, 15, 15], 51), (0, 1, false, 15));
+        // Leaf alone does not fit -> clip the leaf.
+        assert_eq!(f(&[10, 200], 100), (0, 1, false, 100));
+        // 70: parent+leaf = 64 fits; ellipsis+parent+leaf = 88 does not.
+        assert_eq!(f(&[30, 10, 50], 70), (0, 1, false, 50));
+        // Room for ellipsis+parent+leaf (88) but not drive+ellipsis+leaf (108).
+        assert_eq!(f(&[30, 10, 50], 88), (0, 1, true, 50));
+        // Full path is only 98 wide, so 108 shows everything. Use a longer middle for drive+ellipsis+leaf.
+        assert_eq!(f(&[30, 10, 50], 98), (3, 3, false, 50));
+        // [30,40,50] total=128; drive+ellipsis+leaf = 108.
+        assert_eq!(f(&[30, 40, 50], 108), (1, 2, true, 50));
+        assert_eq!(f(&[30, 40], 15), (0, 1, false, 15));
+        assert_eq!(f(&[30, 40], 0), (0, 0, false, 0));
+        assert_eq!(f(&[], 100), (0, 0, false, 0));
+        // Wide drive: ellipsis+parent+leaf (118) before drive+ellipsis+leaf (178).
+        assert_eq!(f(&[100, 40, 50], 118), (0, 1, true, 50));
     }
 
     #[test]
-    fn narrow_address_keeps_the_path_start() {
-        // Full path 30+4+40+4+50 = 128 fits; narrower keeps leading crumbs, clips / folds the rest.
+    fn narrow_address_keeps_leaf_and_preceding() {
         let f = |avail| crumb_fit(&[30, 40, 50], avail, 4, 20, 16);
-        assert_eq!(f(128), (3, false, 50));
-        // 30 + sep + …  = 30+4+20 = 54 → only first + …
-        assert_eq!(f(54), (1, true, 30));
-        // 98: first two + clipped leaf (30+4+40+4+20) rather than first two + …
-        assert_eq!(f(98), (3, false, 20));
-        // 90: first + clipped second + … (need_ell after second)
-        // room after first+ell reserve: 90-30-24-4 = 32 >= min → clip second, more=true
-        assert_eq!(f(90), (2, true, 32));
-        assert_eq!(f(0), (0, false, 0));
-        assert_eq!(crumb_fit(&[50], 10, 4, 20, 16), (1, false, 10)); // single crumb clipped
+        assert_eq!(f(128), (3, 3, false, 50));
+        assert_eq!(f(108), (1, 2, true, 50));
+        assert_eq!(f(118), (1, 2, true, 50));
+        assert_eq!(f(120), (1, 2, true, 50));
+        assert_eq!(f(50), (0, 2, false, 50));
+        assert_eq!(f(49), (0, 2, false, 49));
+        assert_eq!(f(0), (0, 0, false, 0));
+        assert_eq!(crumb_fit(&[50], 10, 4, 20, 16), (0, 0, false, 10));
+        let g = |avail| crumb_fit(&[20, 30, 40, 50], avail, 4, 20, 16);
+        assert_eq!(g(152), (4, 4, false, 50));
+        assert_eq!(g(142), (1, 2, true, 50));
+        assert_eq!(g(98), (1, 3, true, 50));
+        assert_eq!(g(118), (1, 3, true, 50));
     }
 
     #[test]
     fn crumb_tail_room() {
         let f = |avail, fs| super::crumb_fit_tail(&[30, 40], avail, 4, 20, 16, fs);
-        // Too narrow for the trailing '›': show a clipped leading crumb, no tail.
-        assert_eq!(f(16, true), (1, false, 16, false));
-        assert_eq!(f(19, true), (1, false, 19, false));
-        // 20 >= sep+min so a tail is reserved; leaf still not shown → reclaim, clipped first.
-        assert_eq!(f(20, true), (1, false, 20, false));
-        // Full path + tail '›'
-        assert_eq!(f(500, true), (2, false, 40, true));
-        assert!(!f(500, false).3); // a shell place never grows a tail
-        assert!(!f(16, false).3);
-        assert_eq!(f(0, true).3, false);
+        assert_eq!(f(16, true), (0, 1, false, 16, false));
+        assert_eq!(f(19, true), (0, 1, false, 19, false));
+        assert_eq!(f(40, true), (0, 1, false, 40, false));
+        assert_eq!(f(500, true), (2, 2, false, 40, true));
+        assert!(!f(500, false).4);
+        assert!(!f(16, false).4);
+        assert_eq!(f(0, true).4, false);
     }
 
     #[test]
     fn address_tip_only_when_the_path_is_cut() {
         let cut = |w: &[i32], avail, fs| addr_path_truncated(w, avail, 4, 20, 16, fs);
         assert!(!cut(&[30, 40, 50], 500, true), "every segment fits");
-        // 14+4+15+4+15 = 52. The tail `›` needs another 4.
-        // When the full path fits only by reclaiming the chevron, prefer the path (no tip).
         assert!(!cut(&[14, 15, 15], 56, true), "names and the tail chevron fit");
         assert!(!cut(&[14, 15, 15], 52, true), "reclaiming the chevron lets the full path fit");
         assert!(!cut(&[14, 15, 15], 52, false), "without the chevron the same width fits");
-        assert!(cut(&[14, 15, 15], 51, true), "a trailing segment is folded into …");
-        assert!(cut(&[10, 200], 100, true), "the last visible name is narrower than its text");
-        assert!(cut(&[30, 10, 50], 70, true));
-        assert!(cut(&[30, 40], 15, true), "the field is too narrow to show the path");
+        assert!(cut(&[14, 15, 15], 51, true), "a segment is omitted");
+        assert!(cut(&[10, 200], 100, true), "the leaf is clipped");
+        assert!(cut(&[30, 10, 50], 70, true), "drive is omitted");
+        assert!(cut(&[30, 40], 15, true), "the leaf is clipped");
         assert!(cut(&[30, 40], 0, true));
         assert!(!cut(&[], 100, true));
         assert!(!cut(&[30], 80, false), "a shell name that fits gets no tip");
         assert!(cut(&[80], 40, false), "a shell name that does not fit does");
         assert!(cut(&[100], 40, true));
-        // 30 + sep + 40 = 74. The tail `›` costs another sep. 76 clips the leaf; 78 shows both.
-        assert!(cut(&[30, 40], 76, true));
+        // Full path is 74; reclaiming the tail chevron still shows it — not truncated.
+        assert!(!cut(&[30, 40], 76, true));
         assert!(!cut(&[30, 40], 78, true));
         assert!(!cut(&[30, 40], 76, false), "a shell place does not reserve the tail chevron");
         assert!(!addr_line_truncated(40, 40));
@@ -2146,6 +2195,7 @@ mod crumb_tests {
         assert!(addr_line_truncated(10, 0));
         assert!(!addr_line_truncated(0, -4));
     }
+
 
     #[test]
     fn address_tip_text_uses_the_path_or_the_shell_name() {

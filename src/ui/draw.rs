@@ -439,7 +439,7 @@ pub(crate) unsafe fn paint_main(h: HWND) {
 pub(crate) enum Crumb {
     Here,
     Go(String),
-    More(Vec<(String, String)>), // omitted segments (trailing when start-biased), nearest first
+    More(Vec<(String, String)>), // omitted middle (or leading) segments
     /// `›`: the folder on its left, and the crumb shown after it (bold in the menu).
     Kids(String, Option<String>),
 }
@@ -507,8 +507,8 @@ unsafe fn crumb_metrics(dc: HDC, font: HFONT, dpi: i32, parse: &str, disp: &str)
 }
 
 /// Pane `i`'s crumbs in `field`: (rect, label, what a click does).
-/// A narrow bar keeps the path **start** (drive / early folders) and folds the rest into a trailing
-/// '…'. The edit (while focused) already keeps the leading path the same way.
+/// The **leaf** stays at the right (full unless it alone is too wide). Leftover width keeps the
+/// drive when possible, folds the middle into `…`, and shows crumbs next to the leaf.
 pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -> Vec<(RECT, String, Crumb)> {
     let Some((parse, disp, dpi)) = app(|a| Some((a.s.paths[i].clone(), a.panes[i].as_ref()?.disp.clone(), a.dpi))) else {
         return Vec::new();
@@ -516,8 +516,8 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     let m = crumb_metrics(dc, font, dpi, &parse, &disp);
     let (sep, ell) = (m.sep, m.ell);
     let avail = field.right - field.left;
-    let (items, w, fs) = (m.items, m.w, m.fs);
-    let (end, more, last, tail) = crumb_fit_tail(&w, avail, sep, ell, m.min, fs);
+    let (items, w) = (m.items, m.w);
+    let (pre, suf, mid, last, tail) = crumb_fit_tail(&w, avail, sep, ell, m.min, m.fs);
     let mut out = Vec::new();
     let mut x = field.left;
     let mut put = |wd: i32, label: &str, c: Crumb| {
@@ -525,20 +525,30 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
         x += wd;
     };
     let kids = |k: usize| Crumb::Kids(items[k].1.clone(), items.get(k + 1).map(|n| n.0.clone()));
-    for k in 0..end {
-        let wd = if k + 1 == end { last } else { w[k] };
-        let crumb = if k + 1 == items.len() {
+    let n = items.len();
+
+    for k in 0..pre {
+        put(w[k], &items[k].0, Crumb::Go(items[k].1.clone()));
+        put(sep, "›", kids(k));
+    }
+    if mid {
+        put(ell, "…", Crumb::More(items[pre..suf].iter().cloned().collect()));
+        if suf < n {
+            let anchor = if pre > 0 { pre - 1 } else if suf > 0 { suf - 1 } else { 0 };
+            put(sep, "›", kids(anchor.min(n.saturating_sub(1))));
+        }
+    }
+    for k in suf..n {
+        let wd = if k + 1 == n { last } else { w[k] };
+        let crumb = if k + 1 == n {
             Crumb::Here
         } else {
             Crumb::Go(items[k].1.clone())
         };
         put(wd, &items[k].0, crumb);
-        if k + 1 == end {
+        if k + 1 == n {
             if tail {
                 put(sep, "›", kids(k));
-            } else if more {
-                put(sep, "›", kids(k));
-                put(ell, "…", Crumb::More(items[end..].iter().cloned().collect()));
             }
         } else {
             put(sep, "›", kids(k));
@@ -550,6 +560,7 @@ pub(crate) unsafe fn crumb_layout(dc: HDC, font: HFONT, i: usize, field: RECT) -
     });
     out
 }
+
 
 /// None when the edit is showing or the point misses the pill. Some(None) is empty space on the pill.
 pub(crate) unsafe fn crumb_at(h: HWND, i: usize, x: i32, y: i32) -> Option<Option<(usize, RECT, Crumb)>> {
@@ -1018,6 +1029,10 @@ pub(crate) unsafe fn addr_tip_at(h: HWND, over: bool) {
     if tip.0.is_null() || main.0.is_null() || h.0.is_null() {
         return;
     }
+    // Text selection / drag in the address edit: never measure or re-track the tip.
+    if GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 || GetAsyncKeyState(VK_RBUTTON.0 as i32) < 0 {
+        return;
+    }
     let over = over && app(|a| a.pane_drag.is_none() && a.pane_press.is_none());
     let text = if over { addr_tip_body(h) } else { None };
     let Some(text) = text else {
@@ -1262,8 +1277,6 @@ mod kids_tests {
     }
 
     #[test]
-
-    #[test]
     fn address_tip_hides_once_the_pointer_leaves_the_pill() {
         assert!(addr_tip_hides(true, false));
         assert!(!addr_tip_hides(true, true));
@@ -1271,6 +1284,7 @@ mod kids_tests {
         assert!(!addr_tip_hides(false, true));
     }
 
+    #[test]
     fn kids_anchor_follows_layout() {
         let r = |l| RECT { left: l, top: 0, right: l + 10, bottom: 20 };
         let kids = |d: &str| Crumb::Kids(d.into(), None);
