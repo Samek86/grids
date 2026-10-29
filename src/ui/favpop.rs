@@ -2,7 +2,7 @@
 // One window at a time. It edits the same tree as Settings and the left panel.
 // Explorer pins and favourite files lead the list, with the same labels and collapse as the left panel.
 
-use crate::app::{app, bind_hwnd};
+use crate::app::{app, bind_hwnd, ime_composing};
 use crate::open_fav_row;
 use crate::i18n::tr;
 use crate::imports::*;
@@ -928,6 +928,13 @@ unsafe fn pop_tip_hold(h: HWND) {
 }
 
 unsafe fn pop_tip_at(h: HWND, x: i32, y: i32) {
+    // The search edit, or an IME composition on it, owns the screen. The tracking tip
+    // re-enters this window and stalls the candidate the same way the side panel does.
+    if search_focused(h) || ime_composing(h) {
+        bind_owner();
+        hide_pop_fav_tip(h);
+        return;
+    }
     if ST.with(|s| s.borrow().tip_hold) == Some((x, y)) {
         return;
     }
