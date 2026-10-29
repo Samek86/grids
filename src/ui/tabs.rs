@@ -4,7 +4,7 @@ use crate::app::*;
 use crate::pane::*;
 use crate::session::*;
 use crate::i18n::*;
-use windows::Win32::UI::Controls::{TTF_ABSOLUTE, TTF_TRACK, TTM_SETMAXTIPWIDTH, TTM_TRACKACTIVATE, TTM_TRACKPOSITION};
+
 
 /// Widest a tab grows, at 96 DPI. A longer title is drawn with `DT_END_ELLIPSIS`.
 const TAB_MAX_W: i32 = 135;
@@ -1146,44 +1146,53 @@ pub(crate) unsafe fn tab_mouse(x: i32, y: i32) -> TabHit {
     tab_hit(&current_tab_lay(), x, y)
 }
 
-/// "Locked" beside the lock glyph. The same tooltip window follows light and dark.
-unsafe fn lock_tooltip(show: bool) {
+/// Screen rect of window-tab body `i`, or None when off-screen.
+unsafe fn tab_body_screen(i: usize) -> Option<RECT> {
+    let tabs = app(|a| a.tabs_hwnd);
+    if tabs.0.is_null() {
+        return None;
+    }
+    let lay = current_tab_lay();
+    let r = lay.body.get(i).copied().filter(|r| r.right > r.left)?;
+    Some(crate::ui::tip_screen_rect(tabs, r))
+}
+
+/// Screen rect of the lock glyph on tab `i` (drawn in the close-box slot).
+unsafe fn tab_lock_screen(i: usize) -> Option<RECT> {
+    let tabs = app(|a| a.tabs_hwnd);
+    if tabs.0.is_null() {
+        return None;
+    }
+    let lay = current_tab_lay();
+    if !lay.lock.get(i).copied().unwrap_or(false) {
+        return None;
+    }
+    let r = lay.close.get(i).copied().flatten().filter(|r| r.right > r.left)?;
+    Some(crate::ui::tip_screen_rect(tabs, r))
+}
+
+/// "Locked" beside the lock glyph. Anchored below the glyph with a 4px gap.
+unsafe fn lock_tooltip(show: bool, tab: Option<usize>) {
     let (tip, tabs, added) = app(|a| (a.tip, a.tabs_hwnd, a.tab_lock_tip));
     if tip.0.is_null() || tabs.0.is_null() {
         return;
     }
-    let label = HSTRING::from(tr(crate::Key::Locked2));
-    let ti = TTTOOLINFOW {
-        cbSize: size_of::<TTTOOLINFOW>() as u32,
-        uFlags: TTF_TRACK | TTF_ABSOLUTE,
-        hwnd: tabs,
-        uId: 7,
-        lpszText: PWSTR(label.as_ptr() as *mut u16),
-        ..Default::default()
-    };
-    let lp = LPARAM(&ti as *const _ as isize);
-    if show && !added {
-        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
-        app(|a| a.tab_lock_tip = true);
-    }
+    const LOCK_ID: usize = 7;
     if !show {
-        if added {
-            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(lp));
-        }
+        let (now, _) = crate::ui::tip_leave(tabs, LOCK_ID, added);
+        app(|a| a.tab_lock_tip = now);
         return;
     }
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
-        return;
-    }
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
-    let at = LPARAM((pt.x as u16 as usize as isize) | ((pt.y as u16 as usize as isize) << 16));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
-    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
+    let Some(i) = tab else { return };
+    let Some(item) = tab_lock_screen(i) else { return };
+    let label = tr(crate::Key::Locked2);
+    let key = 0x7000_0000_0000_0000u64 | (i as u64);
+    let (now, _) = crate::ui::tip_enter(tabs, LOCK_ID, key, label, item, crate::ui::TipSide::Below, added);
+    app(|a| a.tab_lock_tip = now);
 }
 
 /// Full paths of the panes in `tab`, one per line. `None` hides it.
-/// A positive `TTM_SETMAXTIPWIDTH` is what makes the tooltip honour the line breaks.
+/// Anchored below the tab body with a 4px gap; never covers the tab title.
 unsafe fn path_tooltip(tab: Option<usize>) {
     let (tip, tabs, added) = app(|a| (a.tip, a.tabs_hwnd, a.tab_path_tip));
     if tip.0.is_null() || tabs.0.is_null() {
@@ -1191,46 +1200,29 @@ unsafe fn path_tooltip(tab: Option<usize>) {
     }
     let text = tab.filter(|_| app(|a| a.tab_drag.is_none())).and_then(|i| {
         let body = app(|a| tab_text(a, i).1);
-        (!body.is_empty()).then_some(body)
+        (!body.is_empty()).then_some((i, body))
     });
-    let Some(text) = text else {
-        if added {
-            let label = HSTRING::from("");
-            let ti = path_tip_info(tabs, &label);
-            SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(0)), Some(LPARAM(&ti as *const _ as isize)));
-        }
+    let Some((i, text)) = text else {
+        let (now, _) = crate::ui::tip_leave(tabs, TAB_TIP_ID, added);
+        app(|a| a.tab_path_tip = now);
         return;
     };
-    let label = HSTRING::from(text);
-    let ti = path_tip_info(tabs, &label);
-    let lp = LPARAM(&ti as *const _ as isize);
-    // Wide enough that a normal path stays one line; the breaks between panes still show.
-    SendMessageW(tip, TTM_SETMAXTIPWIDTH, Some(WPARAM(0)), Some(LPARAM(720)));
-    if !added {
-        SendMessageW(tip, TTM_ADDTOOLW, None, Some(lp));
-        app(|a| a.tab_path_tip = true);
-    }
-    SendMessageW(tip, TTM_UPDATETIPTEXTW, None, Some(lp));
-    let mut pt = POINT::default();
-    if GetCursorPos(&mut pt).is_err() {
+    let Some(item) = tab_body_screen(i) else {
+        let (now, _) = crate::ui::tip_leave(tabs, TAB_TIP_ID, added);
+        app(|a| a.tab_path_tip = now);
         return;
-    }
-    // Below the pointer so the tip never sits under it and swallows a click or double-click.
-    let below = pt.y + 22 * app(|a| a.dpi) as i32 / 96;
-    let at = LPARAM((pt.x as u16 as usize as isize) | ((below as u16 as usize as isize) << 16));
-    SendMessageW(tip, TTM_TRACKPOSITION, None, Some(at));
-    SendMessageW(tip, TTM_TRACKACTIVATE, Some(WPARAM(1)), Some(lp));
-}
-
-fn path_tip_info(tabs: HWND, label: &HSTRING) -> TTTOOLINFOW {
-    TTTOOLINFOW {
-        cbSize: size_of::<TTTOOLINFOW>() as u32,
-        uFlags: TTF_TRACK | TTF_ABSOLUTE,
-        hwnd: tabs,
-        uId: TAB_TIP_ID,
-        lpszText: PWSTR(label.as_ptr() as *mut u16),
-        ..Default::default()
-    }
+    };
+    let key = 0x8000_0000_0000_0000u64 | (i as u64);
+    let (now, _) = crate::ui::tip_enter(
+        tabs,
+        TAB_TIP_ID,
+        key,
+        &text,
+        item,
+        crate::ui::TipSide::Below,
+        added,
+    );
+    app(|a| a.tab_path_tip = now);
 }
 
 /// Inline tab rename, centred in the same rectangle the title is drawn in. No-op while hidden.
@@ -1273,7 +1265,7 @@ fn tabs_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     TabHit::Overflow => (None, false, false, true),
                     TabHit::Empty => (None, false, false, false),
                 };
-                lock_tooltip(matches!(hit, TabHit::Lock(_)));
+                lock_tooltip(matches!(hit, TabHit::Lock(_)), match hit { TabHit::Lock(i) => Some(i), _ => None });
                 let path_tab = match hit {
                     TabHit::Tab(i) | TabHit::Close(i) => Some(i),
                     _ => None,
@@ -1318,7 +1310,7 @@ fn tabs_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = TrackMouseEvent(&mut t);
             }
             WM_MOUSELEAVE => {
-                lock_tooltip(false);
+                lock_tooltip(false, None);
                 path_tooltip(None);
                 app(|a| {
                     a.tab_hot = None;
