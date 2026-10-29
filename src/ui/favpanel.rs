@@ -1665,7 +1665,10 @@ impl IDropTarget_Impl for SideDrop_Impl {
             // drop does not set this: that path is DragLeave. Set the flag after clear
             // so a nested leave from the hide above cannot wipe it, and before changed
             // so hover during the tree update stays quiet. The next WM_MOUSEMOVE arms leave.
-            app(|a| a.fav_tip_after_drop = true);
+            app(|a| {
+                a.fav_tip_after_drop = true;
+                a.fav_tip_leave_armed = false;
+            });
             hide_side_fav_tip();
             if !effect.is_null() {
                 *effect = DROPEFFECT_NONE;
