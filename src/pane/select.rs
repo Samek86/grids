@@ -63,7 +63,15 @@ pub(crate) unsafe fn open_match(i: usize, desel: bool) {
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let g = match_geo_now(desel);
     let mut rc = RECT::default();
-    _ = GetWindowRect(view_list(&fv), &mut rc);
+    // Win10 has no SysListView32. The items view (or the shell view, if that child is not up yet)
+    // is the rect the pattern box sits on. A null window leaves the box at the origin.
+    let mut anchor = view_list(&fv);
+    if anchor.0.is_null() {
+        anchor = fv.cast::<IShellView>().and_then(|v| v.GetWindow()).unwrap_or_default();
+    }
+    if !anchor.0.is_null() {
+        _ = GetWindowRect(anchor, &mut rc);
+    }
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
     _ = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi);
     let work = mi.rcWork;

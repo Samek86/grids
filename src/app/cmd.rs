@@ -292,8 +292,8 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         let svh = sv.GetWindow().unwrap_or_default();
         (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
     };
-    // The file list is a SysListView32 on some systems and a DirectUIHWND on others (Windows 10 has no list
-    // window to find), so the focus counts as "in the list" when it is that kind of window inside the view.
+    // view_list is the items surface: SysListView32, or the DirectUIHWND Windows 10 uses instead.
+    // Focus on a child of the shell view (a scrollbar, an in-place edit) still counts by class.
     let list = view_of::<IFolderView2>(a).is_some_and(|fv| {
         if view_list(&fv) == m.hwnd {
             return true;

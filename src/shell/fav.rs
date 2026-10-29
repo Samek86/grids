@@ -430,7 +430,9 @@ pub(crate) struct LvHit {
 pub(crate) unsafe fn select_clicked(i: usize, screen: POINT) {
     let Some(fv) = view_of::<IFolderView2>(i) else { return };
     let lv = view_list(&fv);
-    if lv.0.is_null() {
+    // Win10's items view has no LVM_HITTEST. The accessible row name is the shell display name.
+    if !is_sys_list(lv) {
+        select_accessible_row(i, screen);
         return;
     }
     let mut pt = screen;
