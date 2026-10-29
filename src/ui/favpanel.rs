@@ -410,6 +410,27 @@ unsafe fn place_fav_tip(owner: HWND, id: usize, installed: bool, text: &str) -> 
     }) {
         return true;
     }
+    // Same tool+text, only the pointer moved: update track position. Avoid re-sending
+    // UPDATETIPTEXT/TRACKACTIVATE on every pixel (those re-enter the panel wndproc).
+    if installed && !text.is_empty() {
+        let only_moved = app(|a| {
+            a.fav_tip_live.as_ref().is_some_and(|(live_id, live_text, ..)| {
+                *live_id == id && live_text == text
+            })
+        });
+        if only_moved {
+            if let Some((x, y)) = at {
+                if TIP_PUMP.with(|c| c.replace(true)) {
+                    return true;
+                }
+                let _pump = PumpGuard;
+                app(|a| a.fav_tip_live = Some((id, text.to_string(), x, y)));
+                let packed = LPARAM((x as u16 as usize as isize) | ((y as u16 as usize as isize) << 16));
+                SendMessageW(tip, TTM_TRACKPOSITION, None, Some(packed));
+                return true;
+            }
+        }
+    }
     // Already inside the tracking messages. A nested hover must not send them again.
     if TIP_PUMP.with(|c| c.replace(true)) {
         return true;
@@ -462,15 +483,16 @@ pub(crate) unsafe fn hide_side_fav_tip() {
         return;
     }
     let _clear = TipGuard;
-    let (owner, shown, installed) = app(|a| {
+    let (owner, shown, _installed) = app(|a| {
         a.fav_tip_hold = None;
         // Cleared before the tooltip message, so a nested mouse move does not hide or show again.
         let shown = std::mem::replace(&mut a.fav_tip_shown, false);
         (a.side_hwnd, shown, a.fav_tip)
     });
-    // Tracking tips can stay painted after deactivate was skipped (shown false, tool still live).
-    // Always POP when the tool is installed, not only when we think it is shown.
-    if shown || installed {
+    // Only POP when the tip was actually shown. #188 also POPed whenever the tool was
+    // installed; hide runs on every quiet/after_drop/empty-row WM_MOUSEMOVE, so that
+    // re-sent TTM_TRACKACTIVATE+TTM_POP on every pixel and starved IME / paints.
+    if shown {
         let now = place_fav_tip(owner, FAV_TIP_ID, true, "");
         app(|a| a.fav_tip = now);
     }
@@ -499,7 +521,11 @@ pub(crate) unsafe fn dismiss_side_fav_tip() {
 /// Rename, an open IME composition, or the hover that follows an outside drop.
 fn side_tip_quiet() -> bool {
     let (renaming, after_drop, hwnd) = app(|a| (!a.side_edit_at.is_empty(), a.fav_tip_after_drop, a.side_hwnd));
-    fav_tip_blocked(renaming, ime_composing(hwnd), after_drop)
+    // Skip Imm* walks when rename/after_drop already force quiet — those run per mousemove.
+    if renaming || after_drop {
+        return true;
+    }
+    fav_tip_blocked(false, ime_composing(hwnd), false)
 }
 
 /// `x` and `y` are client coordinates. A drag, or the point that just scrolled away, shows nothing.
@@ -509,7 +535,10 @@ pub(crate) unsafe fn show_side_fav_tip(x: i32, y: i32, row: Option<&FavRow>) {
         return;
     }
     if app(|a| a.side_drag.is_some() || a.side_external) || side_tip_quiet() {
-        hide_side_fav_tip();
+        // Tip already down stays down; avoid hide→TTM_* on every quiet mousemove.
+        if app(|a| a.fav_tip_shown) {
+            hide_side_fav_tip();
+        }
         return;
     }
     if app(|a| a.fav_tip_hold) == Some((x, y)) {
@@ -1259,11 +1288,23 @@ fn side_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     // Same as an outside drag: no tip until the pointer leaves (after_drop)
                     // or the drag ends (side_external). Arm leave only after a real post-drop
                     // hover inside, so OLE leave during Drop cannot clear the hold early.
-                    hide_side_fav_tip();
+                    // Hide once; repeating hide while the tool stayed installed was a TTM_POP storm.
+                    if app(|a| a.fav_tip_shown) {
+                        hide_side_fav_tip();
+                    }
                     if app(|a| a.fav_tip_after_drop) && cursor_in_client(h).is_some() {
-                        app(|a| a.fav_tip_leave_armed = true);
-                        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
-                        _ = TrackMouseEvent(&mut t);
+                        let arm = app(|a| {
+                            if a.fav_tip_leave_armed {
+                                false
+                            } else {
+                                a.fav_tip_leave_armed = true;
+                                true
+                            }
+                        });
+                        if arm {
+                            let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                            _ = TrackMouseEvent(&mut t);
+                        }
                     }
                 } else {
                     let list = rows();
