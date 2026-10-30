@@ -639,6 +639,7 @@ fn copy_shared(dst: &mut Session, src: &Session) {
     dst.del = src.del;
     dst.new_name = src.new_name.clone();
     dst.dropm = src.dropm;
+    dst.fast_copy = src.fast_copy;
     dst.layout_new = src.layout_new;
     dst.boot = src.boot;
     dst.boot_file = src.boot_file.clone();

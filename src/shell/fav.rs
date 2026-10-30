@@ -276,6 +276,40 @@ pub(crate) unsafe fn fav_anchor_pos(menu: HMENU, cm: &IContextMenu, id_first: u3
     fav_anchor(properties, n)
 }
 
+/// Puts Fast paste directly under the shell Paste row. No row when Paste is absent.
+unsafe fn insert_fast_paste(menu: HMENU, cm: &IContextMenu) {
+    if let Some(i) = menu_index(menu, ID_CTX_FAST as usize) {
+        let _ = DeleteMenu(menu, i, MF_BYPOSITION);
+    }
+    let n = GetMenuItemCount(Some(menu));
+    if n <= 0 {
+        return;
+    }
+    let mut at = None;
+    for i in 0..n as u32 {
+        if menu_sep(menu, i) {
+            continue;
+        }
+        let id = GetMenuItemID(menu, i as i32);
+        if id == u32::MAX || id < 1 || id >= ID_CTX_FAV {
+            continue;
+        }
+        if cmd_verb(cm, (id - 1) as usize).trim().eq_ignore_ascii_case("paste") {
+            at = Some(i + 1);
+            break;
+        }
+    }
+    let Some(at) = at else { return };
+    let _ = InsertMenuW(menu, at, MF_STRING | MF_BYPOSITION, ID_CTX_FAST as usize, &HSTRING::from(tr(crate::Key::FastPaste)));
+}
+
+fn fast_paste_dest(pane: usize, background: bool, items: &[(String, bool)]) -> String {
+    if !background && items.len() == 1 && !items[0].1 && is_fs(&items[0].0) {
+        return items[0].0.clone();
+    }
+    app(|a| a.s.paths.get(pane).cloned().unwrap_or_default())
+}
+
 /// Separators often have a zero id, so GetMenuItemID cannot tell them from a command. MFT_SEPARATOR can.
 pub(crate) unsafe fn menu_sep(menu: HMENU, pos: u32) -> bool {
     let mut info = MENUITEMINFOW {
@@ -362,6 +396,7 @@ pub(crate) const CTX_SUB: usize = 4;
 pub(crate) const ID_CTX_FAV: u32 = 0x8000; // outside the id range handed to IContextMenu::QueryContextMenu
 pub(crate) const ID_CTX_PROPS: u32 = 0x8001; // folder Properties, added when the background menu has none (Windows 10)
 pub(crate) const ID_CTX_BATCH: u32 = 0x8002; // batch rename, also outside the shell id range
+pub(crate) const ID_CTX_FAST: u32 = 0x8003; // Fast paste, also outside the shell id range
 
 pub(crate) struct MenuBridge {
     pub(crate) cm3: Option<IContextMenu3>,
@@ -704,13 +739,17 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     // After every removal and insertion. The shell can still add a row when the menu opens.
     finish_shell_menu(menu, Some(&cm), background);
     tidy_fav_item(menu, ID_CTX_FAV as usize);
+    insert_fast_paste(menu, &cm);
     MENU_BRIDGE.with(|b| {
         *b.borrow_mut() = Some(MenuBridge { cm3: cm.cast().ok(), cm2: cm.cast().ok() });
     });
     CTX_MENU.with(|m| m.set(menu.0 as isize));
     let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, owner, None).0;
     MENU_BRIDGE.with(|b| *b.borrow_mut() = None);
-    if cmd == ID_CTX_BATCH as i32 {
+    if cmd == ID_CTX_FAST as i32 {
+        let dest = fast_paste_dest(pane, background, items);
+        super::fileop::try_fast_paste(pane, Some(dest));
+    } else if cmd == ID_CTX_BATCH as i32 {
         // The pane's own menu can re-read the selection in view order. Search results pass their paths.
         if pane_selection {
             crate::rename::open_active();
@@ -793,6 +832,9 @@ unsafe fn ctx_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: usize, 
         // Favourites keeps its one separator after New folder and the bars are settled.
         if top {
             tidy_fav_item(popup, ID_CTX_FAV as usize);
+            if let Some(cm) = open_cm() {
+                insert_fast_paste(popup, &cm);
+            }
         }
         if let Some(lr) = lr {
             return lr;

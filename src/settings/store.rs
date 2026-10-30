@@ -239,6 +239,10 @@ struct SettingsFile {
     new_name: String,
     #[serde(default)]
     drop: u8,
+    /// Paste and drag use robocopy when a network folder is involved. Missing means off.
+    /// Omitted while off. Fast paste on the menu does not read this.
+    #[serde(default, skip_serializing_if = "is_off")]
+    fast_copy: bool,
     /// New tab / new window. Omitted when 0, which is two panes side by side.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     layout_new: u8,
@@ -379,6 +383,7 @@ impl SettingsFile {
             del: 0,
             new_name: String::new(),
             drop: 0,
+            fast_copy: false,
             layout_new: 0,
             boot: 0,
             boot_file: String::new(),
@@ -478,6 +483,7 @@ impl SettingsFile {
             del: s.del,
             new_name: s.new_name.clone(),
             drop: s.dropm.min(2),
+            fast_copy: s.fast_copy,
             layout_new: s.layout_new.min(3),
             boot: s.boot.min(2),
             boot_file: s.boot_file.clone(),
@@ -550,6 +556,7 @@ impl SettingsFile {
         self.extra.remove("remember_folder_view");
         self.extra.remove("show_folder_sizes");
         self.extra.remove("folder_sizes_network");
+        self.extra.remove("fast_copy");
         self.extra.remove("layout_new");
         self.extra.remove("ctx_menu");
         self.extra.remove("ctx_labels");
@@ -633,6 +640,7 @@ impl SettingsFile {
         s.del = if self.del == 1 { 1 } else { 0 };
         s.new_name = self.new_name.clone();
         s.dropm = self.drop.min(2);
+        s.fast_copy = self.fast_copy;
         s.layout_new = self.layout_new.min(3);
         s.boot = self.boot.min(2);
         s.boot_file = self.boot_file.clone();
@@ -1886,6 +1894,34 @@ mod tests {
         let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
         assert_eq!(saved["show_folder_sizes"], false);
         assert_eq!(saved["folder_sizes_network"], true);
+        assert_eq!(saved["future_flag"], 1);
+        assert!(saved.get("extra").is_none());
+    }
+
+    #[test]
+    fn fast_copy_defaults_off_and_round_trips() {
+        assert!(!Session::default().fast_copy);
+        assert!(!adopt("{}").unwrap().fast_copy);
+        assert!(!adopt(r#"{"version":1}"#).unwrap().fast_copy);
+        assert!(!Session::parse("side=1\n").fast_copy);
+        assert!(Session::parse("fastcopy=1").fast_copy);
+        assert!(!Session::parse("fastcopy=0").fast_copy);
+        let mut s = Session::default();
+        s.fast_copy = true;
+        assert!(Session::parse(&s.to_ini()).fast_copy);
+        assert!(s.to_ini().contains("fastcopy=1\n"));
+        assert!(!Session::default().to_ini().contains("fastcopy"));
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"fast_copy\": true"), "{text}");
+        assert!(adopt(&text).unwrap().fast_copy);
+        let def = pretty(&SettingsFile::from_session(&Session::default()));
+        assert!(!def.contains("fast_copy"), "{def}");
+        let mut file = SettingsFile::from_session(&s);
+        file.extra.insert("fast_copy".into(), serde_json::json!(false));
+        file.extra.insert("future_flag".into(), serde_json::json!(1));
+        file.merge_forward(&file.clone());
+        let saved: Value = serde_json::from_str(&pretty(&file)).unwrap();
+        assert_eq!(saved["fast_copy"], true);
         assert_eq!(saved["future_flag"], 1);
         assert!(saved.get("extra").is_none());
     }

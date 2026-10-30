@@ -3,6 +3,7 @@ pub(crate) mod ctxpack;
 pub(crate) mod blockext;
 pub(crate) mod warmup;
 mod askdrop;
+mod fastcopy;
 mod fav;
 mod fileop;
 mod gather;
