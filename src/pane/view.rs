@@ -982,6 +982,12 @@ pub(crate) unsafe fn prime_theme(dark: bool) {
         let set_preferred_app_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
         set_preferred_app_mode(if dark { 2 } else { 3 }); // ForceDark / ForceLight
     }
+    // Without this, a process that first built a light shell view can keep minting light
+    // DirectUIHWND after ForceDark + remake (Win10 22H2). Fresh dark starts were fine.
+    if let Some(f) = uxtheme(104) {
+        let refresh_immersive: unsafe extern "system" fn() = std::mem::transmute(f);
+        refresh_immersive();
+    }
     if let Some(f) = uxtheme(136) {
         let flush_menu_themes: unsafe extern "system" fn() = std::mem::transmute(f);
         flush_menu_themes();
@@ -1084,7 +1090,14 @@ pub(crate) unsafe fn apply_theme() {
     crate::rename::refresh();
     refresh_fav_manager();
     if changed {
-        across_windows(|| schedule_theme_panes());
+        // DirectUIHWND (Win10) locks light/dark at IExplorerBrowser::Initialize. Remaking the
+        // browser under ForceDark/ForceLight still mints the first-birth colour in-process;
+        // a fresh start matches chrome. SysListView32 can recolour in place via ThemeKeep.
+        if any_dui_pane() {
+            schedule_theme_relaunch();
+        } else {
+            across_windows(|| schedule_theme_panes());
+        }
     }
 }
 
@@ -1823,37 +1836,56 @@ pub(crate) unsafe fn theme_pane_step() {
     }
 }
 
-unsafe fn refresh_one_pane(i: usize, epoch: u64) {
-    let hwnd = app(|a| {
-        let p = a.panes.get_mut(i).and_then(|p| p.as_mut())?;
-        p.themed = epoch;
-        Some(p.hwnd)
-    });
-    let Some(hwnd) = hwnd else { return };
-    paint_list_theme(hwnd);
-    // A share that has not resolved yet is still the worker's. Recolouring is enough until it lands.
-    let pending_net = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.net.as_ref().is_some_and(|n| !n.bad)));
-    if pending_net {
-        return;
-    }
-    let Some(keep) = capture_theme(i) else { return };
-    let Some(pidl) = folder_pidl(i) else { return };
-    app(|a| match a.panes.get_mut(i).and_then(|p| p.as_mut()) {
-        Some(p) => p.theme_keep = Some(keep),
-        None => drop(keep),
-    });
-    let ok = eb_of(i).is_some_and(|eb| pidl_browse_ok(false, THEME_BROWSE_FLAGS) && eb.BrowseToIDList(pidl, THEME_BROWSE_FLAGS).is_ok());
-    CoTaskMemFree(Some(pidl as _));
-    if !ok {
-        clear_theme_keep(i);
+/// True when pane `i`'s shell view hosts a DirectUIHWND items surface (typical on Windows 10).
+/// That surface takes light/dark only when it is created; mid-process remake under a new
+/// PreferredAppMode still keeps the first-birth colour on Win10 22H2.
+pub(crate) unsafe fn dui_list(i: usize) -> bool {
+    let view = view_of::<IShellView>(i).and_then(|v| v.GetWindow().ok());
+    view.is_some_and(|v| FindWindowExW(Some(v), None, w!("DirectUIHWND"), PCWSTR::null()).is_ok())
+}
+
+unsafe fn any_dui_pane() -> bool {
+    let n = app(|a| a.panes.len());
+    (0..n).any(|i| app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| IsWindow(Some(p.hwnd)).as_bool())) && dui_list(i))
+}
+
+/// After the current message returns (and the caller has saved the session), relaunch so new
+/// DirectUIHWND surfaces are born under ForceLight/ForceDark. Paths, filters, and layout come
+/// back from the session; the ExplorerBrowser travel log resets (same as an in-place remake).
+pub(crate) unsafe fn schedule_theme_relaunch() {
+    let main = app(|a| a.main);
+    if !main.0.is_null() {
+        _ = PostMessageW(Some(main), WM_THEME_RELAUNCH, WPARAM(0), LPARAM(0));
     }
 }
 
-unsafe fn folder_pidl(i: usize) -> Option<*mut ITEMIDLIST> {
-    let fv = view_of::<IFolderView2>(i)?;
-    let item = fv.GetFolder::<IShellItem>().ok()?;
-    let pidl = SHGetIDListFromObject(&item).ok()?;
-    (!pidl.is_null()).then_some(pidl)
+pub(crate) unsafe fn theme_relaunch() {
+    save_session();
+    let _ = crate::relaunch_same_session();
+}
+
+unsafe fn mark_themed(i: usize, epoch: u64) {
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.themed = epoch;
+        }
+    });
+}
+
+unsafe fn refresh_one_pane(i: usize, epoch: u64) {
+    let hwnd = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd));
+    let Some(hwnd) = hwnd else { return };
+    paint_list_theme(hwnd);
+    // SysListView32 (and any non-DUI surface): in-place recolour is enough. DirectUI theme
+    // flips go through schedule_theme_relaunch instead of this path.
+    let pending_net = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.net.as_ref().is_some_and(|n| !n.bad)));
+    if pending_net || !dui_list(i) {
+        mark_themed(i, epoch);
+        return;
+    }
+    // DUI pane still due: remake cannot fix birth theme — ask for relaunch once.
+    mark_themed(i, epoch);
+    schedule_theme_relaunch();
 }
 
 unsafe fn capture_theme(i: usize) -> Option<ThemeKeep> {

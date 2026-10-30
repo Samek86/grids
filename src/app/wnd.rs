@@ -417,6 +417,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
             WM_THEME_SYNC => theme_sync(),
             WM_THEME_PANE => theme_pane_step(),
+            WM_THEME_RELAUNCH => theme_relaunch(),
             WM_UPDATE => on_update(h, wp.0),
             WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {

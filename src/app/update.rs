@@ -111,9 +111,12 @@ fn sha_asset(assets: &[serde_json::Value]) -> Option<(String, u64)> {
 
 /// First sha256sum line naming `panegrid.exe`: `<64 hex>  panegrid.exe`.
 /// Binary mode (`hash *panegrid.exe`) and a directory prefix on the name are accepted.
+/// A bare 64-hex line (no filename) is also accepted so a mis-uploaded checksum asset still verifies;
+/// a named `panegrid.exe` line wins when both appear.
 /// The hex is returned as published so the compare can be case-insensitive.
 pub(crate) fn parse_sha256sum(text: &str) -> Option<String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut bare: Option<String> = None;
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -121,17 +124,28 @@ pub(crate) fn parse_sha256sum(text: &str) -> Option<String> {
         }
         let mut parts = line.split_whitespace();
         let Some(hash) = parts.next() else { continue };
-        let Some(name) = parts.next() else { continue };
-        if parts.next().is_some() {
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             continue;
         }
-        let name = name.trim_start_matches('*');
-        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
-        if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) && name.eq_ignore_ascii_case(EXE_ASSET) {
-            return Some(hash.to_string());
+        match parts.next() {
+            None => {
+                if bare.is_none() {
+                    bare = Some(hash.to_string());
+                }
+            }
+            Some(name) => {
+                if parts.next().is_some() {
+                    continue;
+                }
+                let name = name.trim_start_matches('*');
+                let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                if name.eq_ignore_ascii_case(EXE_ASSET) {
+                    return Some(hash.to_string());
+                }
+            }
         }
     }
-    None
+    bare
 }
 
 /// Case-insensitive match of two SHA-256 hex digests. A value that is not 64 hex digits does not match.
@@ -605,7 +619,11 @@ mod tests {
         assert!(parse_sha256sum("deadbeef  panegrid.exe").is_none());
         assert!(parse_sha256sum(&format!("{hash}  other.exe")).is_none());
         assert!(parse_sha256sum(&format!("{hash}  panegrid.exe extra")).is_none());
-        assert!(parse_sha256sum(&format!("{hash}")).is_none());
+        // Bare hash (no filename) — tolerant of a mis-uploaded sha256 asset.
+        assert_eq!(parse_sha256sum(&format!("{hash}")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}\n")).as_deref(), Some(hash));
+        // Named line wins over a bare hash earlier in the file.
+        assert_eq!(parse_sha256sum(&format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n{hash}  panegrid.exe")).as_deref(), Some(hash));
         assert!(parse_sha256sum("").is_none());
         assert!(parse_sha256sum("SHA256 (panegrid.exe) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").is_none());
         assert!(!hashes_match("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", hash));
