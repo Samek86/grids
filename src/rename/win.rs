@@ -87,6 +87,8 @@ struct St {
     host: HWND,
     dpi: i32,
     font: HFONT,
+    /// Same face and size as `font`, weight 700, for the accent Rename button.
+    bold: HFONT,
     small: HFONT,
     rules: Vec<Rule>,
     enabled: Vec<bool>,
@@ -115,6 +117,7 @@ impl Default for St {
             host: HWND::default(),
             dpi: 96,
             font: HFONT::default(),
+            bold: HFONT::default(),
             small: HFONT::default(),
             rules: vec![Rule::Replace { find: String::new(), replace: String::new(), case_sensitive: false, include_ext: false }],
             enabled: vec![true],
@@ -1902,7 +1905,7 @@ unsafe fn paint(h: HWND) {
         crate::text(dc, g.rules_lbl, tx(crate::Key::Rules), font, crate::pal().text, DT_LEFT);
         let hint = tx(crate::Key::TopBottom);
         crate::text(dc, RECT { left: g.rules_lbl.left + sc(dpi, 70), ..g.rules_lbl }, hint, small, crate::pal().sub, DT_LEFT);
-        paint_field_frame(dc, tool_rects(g.tools, dpi).ext, dpi, crate::pal().card);
+        paint_field_frame(dc, tool_rects(g.tools, dpi).ext, dpi, crate::pal().card, crate::pal().bg);
         if g.list.left > g.host.right {
             let x = g.host.right + (g.list.left - g.host.right) / 2;
             crate::fill(dc, RECT { left: x, top: g.rules_lbl.top, right: x + 1, bottom: g.host.bottom }, crate::pal().line);
@@ -1926,7 +1929,7 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
     if list.bottom <= list.top {
         return;
     }
-    rfill(dc, list, sc(dpi, 8), crate::pal().card, Some(crate::pal().line));
+    crate::aa_rfill(dc, list, sc(dpi, 8), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
     let head = sc(dpi, 28);
     let split = list.left + (list.right - list.left) * 42 / 100;
     let new_left = split + sc(dpi, 28);
@@ -1990,7 +1993,7 @@ unsafe fn paint_list(dc: HDC, list: RECT, dpi: i32, font: HFONT, small: HFONT, r
     let _ = RestoreDC(dc, -1);
     let max = preview_max(rows.len());
     if max > 0 {
-        paint_thumb(dc, list, ST.with(|s| s.borrow().preview_scroll), max, dpi);
+        paint_thumb(dc, list, ST.with(|s| s.borrow().preview_scroll), max, dpi, crate::pal().card);
     }
 }
 
@@ -2015,7 +2018,7 @@ unsafe fn paint_host(h: HWND) {
             if card.bottom < 0 || card.top > rc.bottom {
                 continue;
             }
-            rfill(dc, card, sc(dpi, 8), crate::pal().card, Some(crate::pal().line));
+            crate::aa_rfill(dc, card, sc(dpi, 8), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
             let gx = card.left + sc(dpi, 6);
             let gy = card.top + (card.bottom - card.top) / 2;
             let ink = crate::blend(crate::pal().card, crate::pal().text, 0.45);
@@ -2026,7 +2029,7 @@ unsafe fn paint_host(h: HWND) {
             // Frame is the combo-height slot. The edit itself is only the font cell, centred in it.
             for (field, outer) in card_slots(card, dpi, rule, width) {
                 if is_text_field(field) {
-                    paint_field_frame(dc, outer, dpi, crate::pal().card);
+                    paint_field_frame(dc, outer, dpi, crate::pal().card, crate::pal().card);
                 }
             }
         }
@@ -2046,19 +2049,20 @@ unsafe fn paint_host(h: HWND) {
         let view = rc.bottom - rc.top;
         let max = (content - view).max(0);
         if max > 0 {
-            paint_thumb(dc, rc, scroll, max, dpi);
+            paint_thumb(dc, rc, scroll, max, dpi, crate::pal().bg);
         }
     });
 }
 
-unsafe fn paint_thumb(dc: HDC, r: RECT, scroll: i32, max: i32, dpi: i32) {
+unsafe fn paint_thumb(dc: HDC, r: RECT, scroll: i32, max: i32, dpi: i32, ground: u32) {
     let track = RECT { left: r.right - sc(dpi, 8), top: r.top + sc(dpi, 6), right: r.right - sc(dpi, 4), bottom: r.bottom - sc(dpi, 6) };
-    rfill(dc, track, sc(dpi, 2), crate::blend(crate::pal().bg, crate::pal().text, 0.08), None);
+    let track_c = crate::blend(crate::pal().bg, crate::pal().text, 0.08);
+    crate::aa_rfill(dc, track, sc(dpi, 2), track_c, None, ground);
     let span = (track.bottom - track.top).max(1);
     let thumb_h = (span * span / (span + max)).clamp(sc(dpi, 18), span);
     let travel = (span - thumb_h).max(1);
     let y = track.top + scroll.clamp(0, max) * travel / max.max(1);
-    rfill(dc, RECT { left: track.left, top: y, right: track.right, bottom: y + thumb_h }, sc(dpi, 2), crate::blend(crate::pal().bg, crate::pal().text, 0.35), None);
+    crate::aa_rfill(dc, RECT { left: track.left, top: y, right: track.right, bottom: y + thumb_h }, sc(dpi, 2), crate::blend(crate::pal().bg, crate::pal().text, 0.35), None, track_c);
 }
 
 unsafe fn paint_marked(dc: HDC, rect: RECT, text: &str, span: Option<(usize, usize)>, font: HFONT, normal: u32, wash: u32, mark: u32) {
@@ -2113,7 +2117,17 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let dis = d.itemState.0 & 4 != 0;
     let pressed = d.itemState.0 & 1 != 0;
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
-    let font = if id >= ID_BASE { ST.with(|s| s.borrow().small) } else { ST.with(|s| s.borrow().font) };
+    let (font, bold) = if id >= ID_BASE {
+        ST.with(|s| {
+            let st = s.borrow();
+            (st.small, st.small)
+        })
+    } else {
+        ST.with(|s| {
+            let st = s.borrow();
+            (st.font, st.bold)
+        })
+    };
     let accent = chrome();
     let in_card = id >= ID_BASE;
     let ground = if in_card { crate::pal().card } else { crate::pal().bg };
@@ -2128,29 +2142,10 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     } else {
         (ground, crate::pal().line, crate::pal().text)
     };
-    rfill(d.hDC, d.rcItem, sc(dpi, 6), fill, Some(border));
+    crate::aa_rfill(d.hDC, d.rcItem, sc(dpi, 6), fill, Some(border), ground);
     let label = crate::text_of(d.hwndItem);
-    crate::text(d.hDC, d.rcItem, &label, font, ink, DT_CENTER);
-}
-
-unsafe fn rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>) {
-    if r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let brush = CreateSolidBrush(crate::cref(fill));
-    let pen = match border {
-        Some(c) => CreatePen(PS_SOLID, 1, crate::cref(c)),
-        None => HPEN(GetStockObject(NULL_PEN).0),
-    };
-    let op = SelectObject(dc, pen.into());
-    let ob = SelectObject(dc, brush.into());
-    let _ = RoundRect(dc, r.left, r.top, r.right, r.bottom, rad.max(1), rad.max(1));
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    let _ = DeleteObject(brush.into());
-    if border.is_some() {
-        let _ = DeleteObject(pen.into());
-    }
+    let label_font = if accent_btn && !bold.is_invalid() { bold } else { font };
+    crate::text(d.hDC, d.rcItem, &label, label_font, ink, DT_CENTER);
 }
 
 fn chrome() -> u32 {
@@ -2169,11 +2164,11 @@ fn err_color() -> u32 {
 
 /// Rounded field at `outer`. The borderless edit sits inside this rect, so the
 /// box stays the same height as the combo or button it lines up with.
-unsafe fn paint_field_frame(dc: HDC, outer: RECT, dpi: i32, fill: u32) {
+unsafe fn paint_field_frame(dc: HDC, outer: RECT, dpi: i32, fill: u32, ground: u32) {
     if outer.right <= outer.left || outer.bottom <= outer.top {
         return;
     }
-    rfill(dc, outer, sc(dpi, 4), fill, Some(crate::pal().line));
+    crate::aa_rfill(dc, outer, sc(dpi, 4), fill, Some(crate::pal().line), ground);
 }
 
 fn current_filter() -> engine::Filter {
@@ -2526,27 +2521,33 @@ fn rebuild_fonts() {
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
     let custom = crate::app(|a| a.s.font_face.clone());
     let face = if custom.is_empty() { crate::ui_face() } else { custom.as_str() };
-    let new = (make_font(face, 14, 400, dpi), make_font(face, 12, 400, dpi));
+    let new = (make_font(face, 14, 400, dpi), make_font(face, 14, 700, dpi), make_font(face, 12, 400, dpi));
     let old = ST.with(|s| {
         let mut st = s.borrow_mut();
-        let old = (st.font, st.small);
-        (st.font, st.small) = new;
+        let old = (st.font, st.bold, st.small);
+        (st.font, st.bold, st.small) = new;
         old
     });
-    unsafe { drop_font(old.0); drop_font(old.1); }
+    unsafe {
+        drop_font(old.0);
+        drop_font(old.1);
+        drop_font(old.2);
+    }
 }
 
 fn drop_fonts() {
     let old = ST.with(|s| {
         let mut st = s.borrow_mut();
-        let old = (st.font, st.small);
+        let old = (st.font, st.bold, st.small);
         st.font = HFONT::default();
+        st.bold = HFONT::default();
         st.small = HFONT::default();
         old
     });
     unsafe {
         drop_font(old.0);
         drop_font(old.1);
+        drop_font(old.2);
     }
 }
 

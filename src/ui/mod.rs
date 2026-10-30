@@ -1,3 +1,4 @@
+mod aa;
 mod draw;
 mod drives;
 mod sicon;
@@ -20,6 +21,7 @@ pub(crate) use favpanel::*;
 pub(crate) use hovertip::*;
 pub(crate) use favpop::*;
 pub(crate) use ficons::*;
+pub(crate) use aa::*;
 pub(crate) use draw::*;
 pub(crate) use drives::*;
 pub(crate) use sicon::*;

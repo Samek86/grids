@@ -831,8 +831,8 @@ unsafe fn paint(h: HWND) {
         let accent = settings::chrome_color();
         fill(dc, rc, pal().bg);
         let focused = unsafe { search_focused(h) };
-        rfill(dc, lay.search, px(dpi, settings::FIELD_RADIUS_DIP), pal().card, Some(if focused { accent } else { pal().line }));
-        rfill(dc, lay.list, px(dpi, 6), pal().card, Some(pal().line));
+        crate::aa_rfill(dc, lay.search, px(dpi, settings::FIELD_RADIUS_DIP), pal().card, Some(if focused { accent } else { pal().line }), pal().bg);
+        crate::aa_rfill(dc, lay.list, px(dpi, 6), pal().card, Some(pal().line), pal().bg);
         let board = board_at(rows.len(), &lay, scroll, dpi);
         let _ = SaveDC(dc);
         let _ = IntersectClipRect(dc, lay.list.left, lay.list.top, lay.list.right, lay.list.bottom);
@@ -862,26 +862,6 @@ unsafe fn paint(h: HWND) {
     });
 }
 
-unsafe fn rfill(dc: HDC, r: RECT, rad: i32, fill_c: u32, border: Option<u32>) {
-    if r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let brush = CreateSolidBrush(crate::cref(fill_c));
-    let pen = match border {
-        Some(c) => CreatePen(PS_SOLID, 1, crate::cref(c)),
-        None => HPEN(GetStockObject(NULL_PEN).0),
-    };
-    let op = SelectObject(dc, pen.into());
-    let ob = SelectObject(dc, brush.into());
-    let _ = RoundRect(dc, r.left, r.top, r.right, r.bottom, rad.max(1), rad.max(1));
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    let _ = DeleteObject(brush.into());
-    if border.is_some() {
-        let _ = DeleteObject(pen.into());
-    }
-}
-
 unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let dis = d.itemState.0 & 4 != 0;
     let pressed = d.itemState.0 & 1 != 0;
@@ -900,7 +880,7 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     } else {
         (ground, pal().line, pal().text)
     };
-    rfill(d.hDC, d.rcItem, px(dpi, 4), fill_c, Some(border));
+    crate::aa_rfill(d.hDC, d.rcItem, px(dpi, 4), fill_c, Some(border), ground);
     text(d.hDC, d.rcItem, &crate::text_of(d.hwndItem), font, ink, DT_CENTER);
 }
 
