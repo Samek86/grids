@@ -371,6 +371,8 @@ pub(crate) enum ActKind {
 pub(crate) enum ListAct {
     /// The hosted view runs the default verb.
     Shell,
+    /// Swallow the activate (S_OK). Blocks Explorer leak when the row is unknown/empty.
+    Consume,
     /// Browse `index` in this pane. The verb must not run on any row.
     Browse(usize),
     /// Open the files. Do not let the verb run: a selected folder would become a new tab.
@@ -380,13 +382,20 @@ pub(crate) enum ListAct {
 /// Enter with several rows selected used to look only at the focused item. When that
 /// item was not a proven folder, the view ran the verb on every selected folder.
 pub(crate) fn list_activation(registered: bool, ctrl: bool, middle: bool, kinds: &[ActKind]) -> ListAct {
-    if !registered || ctrl || middle || kinds.is_empty() {
+    // Ctrl / middle: let the view run the verb (new tab / handoff). Never fall through for an
+    // unresolved folder activate — that is how rapid double-clicks open a real Explorer window.
+    if ctrl || middle {
         return ListAct::Shell;
+    }
+    if kinds.is_empty() || kinds.iter().all(|k| *k == ActKind::Unknown) {
+        return ListAct::Consume;
     }
     let any_folder = kinds.iter().any(|k| *k == ActKind::Folder);
     if !any_folder {
         return ListAct::Shell;
     }
+    // Folders always browse in-pane, even when the folder-app verb is off (shown_on false).
+    let _ = registered;
     if kinds[0] == ActKind::Folder {
         return ListAct::Browse(0);
     }
@@ -396,7 +405,7 @@ pub(crate) fn list_activation(registered: bool, ctrl: bool, middle: bool, kinds:
         }
         return ListAct::Browse(i);
     }
-    ListAct::Shell
+    ListAct::Consume
 }
 
 /// A context-menu command whose verb string could not be read. The default item
@@ -843,7 +852,7 @@ mod tests {
         use ActKind::*;
         assert_eq!(list_activation(true, false, false, &[Folder]), ListAct::Browse(0));
         assert_eq!(list_activation(true, false, false, &[File]), ListAct::Shell);
-        assert_eq!(list_activation(true, false, false, &[Unknown]), ListAct::Shell);
+        assert_eq!(list_activation(true, false, false, &[Unknown]), ListAct::Consume);
         // Focused row is a folder; other selected files must not make the verb run.
         assert_eq!(list_activation(true, false, false, &[Folder, File, Folder]), ListAct::Browse(0));
         // Focused row is a file and a folder is also selected. Open the files only.
@@ -853,8 +862,8 @@ mod tests {
         assert_eq!(list_activation(true, false, false, &[Unknown, Folder]), ListAct::Browse(1));
         assert_eq!(list_activation(true, true, false, &[Folder, Folder]), ListAct::Shell);
         assert_eq!(list_activation(true, false, true, &[Folder]), ListAct::Shell);
-        assert_eq!(list_activation(false, false, false, &[Folder]), ListAct::Shell);
-        assert_eq!(list_activation(true, false, false, &[]), ListAct::Shell);
+        assert_eq!(list_activation(false, false, false, &[Folder]), ListAct::Browse(0));
+        assert_eq!(list_activation(true, false, false, &[]), ListAct::Consume);
     }
 
     #[test]
