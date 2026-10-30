@@ -141,6 +141,7 @@ fn rebuild_fonts() {
     };
     let new = (
         make_font(face, 14, 400, dpi),
+        make_font(face, 14, 700, dpi),
         make_font(face, 12, 400, dpi),
         make_font(face, 16, 700, dpi),
         make_font(title_face, 24, title_w, dpi),
@@ -149,12 +150,12 @@ fn rebuild_fonts() {
     );
     let old = ST.with(|s| {
         let mut st = s.borrow_mut();
-        let old = (st.font, st.small, st.bold, st.title_font, st.mono, st.icon);
-        (st.font, st.small, st.bold, st.title_font, st.mono, st.icon) = new;
+        let old = (st.font, st.btn_bold, st.small, st.bold, st.title_font, st.mono, st.icon);
+        (st.font, st.btn_bold, st.small, st.bold, st.title_font, st.mono, st.icon) = new;
         old
     });
     unsafe {
-        for f in [old.0, old.1, old.2, old.3, old.4, old.5] {
+        for f in [old.0, old.1, old.2, old.3, old.4, old.5, old.6] {
             if !f.is_invalid() {
                 let _ = DeleteObject(f.into());
             }
@@ -507,7 +508,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
     let accent = chrome();
     crate::fill(dc, rc, crate::pal().bg);
     crate::fill(dc, RECT { bottom: g.footer.top + 1, top: g.footer.top, ..g.footer }, crate::pal().line);
-    draw_field(dc, g.search, dpi);
+    draw_field(dc, g.search, dpi, crate::pal().bg);
     if !g.show.iter().any(|s| *s) {
         crate::text(dc, RECT { left: sc(dpi, 16), top: g.search.bottom + sc(dpi, 12), right: g.nav_w - sc(dpi, 8), bottom: g.search.bottom + sc(dpi, 40) }, tx(NONE), sn.font, crate::pal().sub, DT_LEFT);
     }
@@ -519,11 +520,11 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
         let on = i == sn.page;
         if on || sn.hot == Some(i) {
             let t = if on { 0.08 } else { 0.04 };
-            rfill(dc, r, sc(dpi, 4), crate::blend(crate::pal().bg, crate::pal().text, t), None);
+            crate::aa_rfill(dc, r, sc(dpi, 4), crate::blend(crate::pal().bg, crate::pal().text, t), None, crate::pal().bg);
         }
         if on {
             let bar = RECT { left: r.left, top: r.top + sc(dpi, 10), right: r.left + sc(dpi, 3), bottom: r.bottom - sc(dpi, 10) };
-            rfill(dc, bar, sc(dpi, 2), accent, None);
+            crate::aa_rfill(dc, bar, sc(dpi, 2), accent, None, crate::pal().bg);
         }
         crate::text(dc, RECT { left: r.left + sc(dpi, 14), ..r }, tx(PAGES[i]), sn.font, crate::pal().text, DT_LEFT);
     }
@@ -550,7 +551,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
         match item {
             Item::Card(c) => draw_card(dc, c, sn, accent),
             Item::Head(r, t) => crate::text(dc, *r, tx(*t), sn.font, crate::pal().text, DT_LEFT),
-            Item::Table(r) => rfill(dc, *r, sc(dpi, 6), crate::pal().card, Some(crate::pal().line)),
+            Item::Table(r) => crate::aa_rfill(dc, *r, sc(dpi, 6), crate::pal().card, Some(crate::pal().line), crate::pal().bg),
             Item::FavHead(r) => crate::paint_fav_head(dc, *r, dpi, sn.small),
             Item::FavRow { i, rect, .. } => {
                 let empty = *i == usize::MAX;
@@ -573,7 +574,7 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
             }
             Item::CtxSub { rect, mark, bit, tick, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *tick, sn, accent),
             Item::CtxEmpty(r, key) => crate::text(dc, *r, tx(*key), sn.small, crate::pal().sub, DT_LEFT),
-            Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
+            Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi, crate::pal().bg),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
                 crate::text(dc, a, tx(crate::Key::Category), sn.small, crate::pal().sub, DT_LEFT);
@@ -585,8 +586,9 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
         }
     }
     if g.has_bar {
-        rfill(dc, g.track, sc(dpi, 4), crate::blend(crate::pal().bg, crate::pal().text, 0.08), None);
-        rfill(dc, g.thumb, sc(dpi, 4), crate::blend(crate::pal().bg, crate::pal().text, 0.35), None);
+        let track = crate::blend(crate::pal().bg, crate::pal().text, 0.08);
+        crate::aa_rfill(dc, g.track, sc(dpi, 4), track, None, crate::pal().bg);
+        crate::aa_rfill(dc, g.thumb, sc(dpi, 4), crate::blend(crate::pal().bg, crate::pal().text, 0.35), None, track);
     }
     let _ = RestoreDC(dc, -1);
 }
@@ -695,7 +697,7 @@ pub(crate) unsafe fn key_row_heights(labels: &[String], row: RECT, dpi: i32, fon
 unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     // Disabled rows stay on a white (or dark-theme card) ground; only the label grays.
-    rfill(dc, c.rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
+    crate::aa_rfill(dc, c.rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
     if c.spec.ctl == Ctl::WmPath {
         let title_r = RECT {
             left: c.rect.left + sc(dpi, 16),
@@ -711,7 +713,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
             bottom: c.ctl.top - sc(dpi, 4),
         };
         crate::text(dc, desc_r, tx(c.spec.desc), sn.small, crate::pal().sub, DT_LEFT);
-        draw_field(dc, c.ctl, dpi);
+        draw_field(dc, c.ctl, dpi, crate::pal().card);
         return;
     }
     let color = if c.spec.live { crate::pal().text } else { crate::pal().sub };
@@ -765,10 +767,20 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
             let cur = app(|a| a.s.accent_now());
             for (i, r) in c.sw.iter().enumerate() {
                 let col = colors.get(i).map(|(_, c)| *c).unwrap_or(0);
-                if col == cur {
-                    ellipse(dc, RECT { left: r.left - sc(dpi, 2), top: r.top - sc(dpi, 2), right: r.right + sc(dpi, 2), bottom: r.bottom + sc(dpi, 2) }, crate::pal().text, None);
+                let ring = (col == cur).then(|| RECT { left: r.left - sc(dpi, 2), top: r.top - sc(dpi, 2), right: r.right + sc(dpi, 2), bottom: r.bottom + sc(dpi, 2) });
+                let outer = ring.unwrap_or(*r);
+                let painted = crate::aa_blit(dc, outer, crate::pal().card, |mem, scale, ox, oy| unsafe {
+                    if let Some(ring) = ring {
+                        crate::ellipse(mem, crate::scaled_from(outer, ring, scale, ox, oy), crate::pal().text, None);
+                    }
+                    crate::ellipse(mem, crate::scaled_from(outer, *r, scale, ox, oy), col, None);
+                });
+                if !painted {
+                    if let Some(ring) = ring {
+                        crate::ellipse(dc, ring, crate::pal().text, None);
+                    }
+                    crate::ellipse(dc, *r, col, None);
                 }
-                ellipse(dc, *r, col, None);
             }
         }
         _ => {}
@@ -779,15 +791,15 @@ unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent:
     let rad = sc(dpi, 3);
     match tick {
         crate::shell::ctxmenu::Tick::On => {
-            aa_rfill(dc, r, rad, accent, Some(accent), ground);
+            crate::aa_rfill(dc, r, rad, accent, Some(accent), ground);
             crate::text(dc, r, "\u{E73E}", icon, on_chrome(accent), DT_CENTER);
         }
         crate::shell::ctxmenu::Tick::Mixed => {
-            aa_rfill(dc, r, rad, crate::pal().card, Some(accent), ground);
+            crate::aa_rfill(dc, r, rad, crate::pal().card, Some(accent), ground);
             let mid = (r.top + r.bottom) / 2;
             crate::fill(dc, RECT { left: r.left + sc(dpi, 3), top: mid - sc(dpi, 1), right: r.right - sc(dpi, 3), bottom: mid + sc(dpi, 1) }, accent);
         }
-        crate::shell::ctxmenu::Tick::Off => aa_rfill(dc, r, rad, crate::pal().card, Some(crate::pal().line), ground),
+        crate::shell::ctxmenu::Tick::Off => crate::aa_rfill(dc, r, rad, crate::pal().card, Some(crate::pal().line), ground),
     }
 }
 
@@ -795,17 +807,19 @@ unsafe fn draw_seg(dc: HDC, r: RECT, label: &str, on: bool, sn: &Snap, accent: u
     let h = (r.bottom - r.top).max(1);
     let ground = crate::pal().bg;
     if on {
-        aa_rfill(dc, r, h / 2, accent, None, ground);
-        crate::text(dc, r, label, sn.font, on_chrome(accent), DT_CENTER);
+        crate::aa_rfill(dc, r, h / 2, accent, None, ground);
+        // Same size as the resting label. Weight 700 so the ink stays readable on the fill.
+        let face = if sn.btn_bold.is_invalid() { sn.font } else { sn.btn_bold };
+        crate::text(dc, r, label, face, on_chrome(accent), DT_CENTER);
     } else {
-        aa_rfill(dc, r, h / 2, crate::pal().card, Some(crate::pal().line), ground);
+        crate::aa_rfill(dc, r, h / 2, crate::pal().card, Some(crate::pal().line), ground);
         crate::text(dc, r, label, sn.font, crate::pal().text, DT_CENTER);
     }
 }
 
 unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, packaged: bool, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
-    rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
+    crate::aa_rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
     draw_tick(dc, mark, tick, accent, dpi, sn.icon, crate::pal().card);
     let text_left = if packaged {
         mark.right + sc(dpi, 8)
@@ -835,7 +849,7 @@ unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, 
         }
     }
     for (bit, r) in chips {
-        rfill(dc, *r, sc(dpi, 4), crate::blend(crate::pal().card, crate::pal().text, 0.06), Some(crate::pal().line));
+        crate::aa_rfill(dc, *r, sc(dpi, 4), crate::blend(crate::pal().card, crate::pal().text, 0.06), Some(crate::pal().line), crate::pal().card);
         crate::text(dc, *r, crate::shell::ctxmenu::target_label(*bit), sn.small, crate::pal().sub, DT_CENTER);
     }
 }
@@ -876,13 +890,13 @@ unsafe fn draw_toggle(dc: HDC, r: RECT, on: bool, enabled: bool, accent: u32, dp
     let rad = (r.bottom - r.top).max(1);
     let knob_r = toggle_knob_rect(r, on, dpi);
     // One pass so the knob's edge blends into the pill, not into a second square blit.
-    let painted = aa_blit(dc, r, crate::pal().card, |mem, scale, ox, oy| unsafe {
-        paint_round(mem, scaled_from(r, r, scale, ox, oy), rad * scale, fill, Some(border), scale);
-        ellipse(mem, scaled_from(r, knob_r, scale, ox, oy), knob, None);
+    let painted = crate::aa_blit(dc, r, crate::pal().card, |mem, scale, ox, oy| unsafe {
+        crate::paint_round(mem, crate::scaled_from(r, r, scale, ox, oy), rad * scale, fill, Some(border), scale);
+        crate::ellipse(mem, crate::scaled_from(r, knob_r, scale, ox, oy), knob, None);
     });
     if !painted {
-        rfill(dc, r, rad, fill, Some(border));
-        ellipse(dc, knob_r, knob, None);
+        crate::rfill(dc, r, rad, fill, Some(border));
+        crate::ellipse(dc, knob_r, knob, None);
     }
 }
 
@@ -896,9 +910,13 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn
         crate::text(dc, r, tx(NONE), sn.small, crate::pal().sub, DT_CENTER);
         return;
     }
-    if crate::keys::capture_row() == Some(i) {
-        crate::fill(dc, r, crate::blend(crate::pal().bg, chrome(), 0.16));
-    }
+    let row_ground = if crate::keys::capture_row() == Some(i) {
+        let wash = crate::blend(crate::pal().bg, chrome(), 0.16);
+        crate::fill(dc, r, wash);
+        wash
+    } else {
+        crate::pal().card
+    };
     let (cat_s, act_s, chord) = crate::keys::row(i);
     let shown = if crate::keys::capture_row() == Some(i) {
         tx(crate::Key::PressKey).to_string()
@@ -924,7 +942,7 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn
             let right = (x + w).min(limit);
             let chip = RECT { left: x, top: y, right, bottom: (y + ch).min(r.bottom - 1) };
             if chip.right > chip.left && chip.bottom > chip.top {
-                rfill(dc, chip, sc(dpi, 6), crate::pal().bg, Some(border));
+                crate::aa_rfill(dc, chip, sc(dpi, 6), crate::pal().bg, Some(border), row_ground);
                 crate::text(dc, chip, &shown, sn.mono, crate::pal().text, DT_CENTER);
             }
             x = right + chord_gap(dpi);
@@ -935,7 +953,7 @@ unsafe fn draw_key_row(dc: HDC, i: usize, r: RECT, change: RECT, reset: RECT, sn
             return;
         }
         let ink = if on { crate::pal().text } else { crate::pal().sub };
-        rfill(dc, rect, sc(dpi, 4), crate::pal().card, Some(if on { crate::pal().line } else { crate::pal().line }));
+        crate::aa_rfill(dc, rect, sc(dpi, 4), crate::pal().card, Some(crate::pal().line), row_ground);
         crate::text(dc, rect, label, sn.small, ink, DT_CENTER);
     };
     mini(change, tx(crate::Key::Change), true);
@@ -956,191 +974,10 @@ unsafe fn text_w(dc: HDC, font: HFONT, s: &str) -> i32 {
 }
 
 /// Search-box frame: card fill, `line` border, 4 DIP corners. The name prompt uses this too.
-unsafe fn draw_field(dc: HDC, r: RECT, dpi: i32) {
-    rfill(dc, r, sc(dpi, FIELD_RADIUS_DIP), crate::pal().card, Some(crate::pal().line));
+unsafe fn draw_field(dc: HDC, r: RECT, dpi: i32, ground: u32) {
+    crate::aa_rfill(dc, r, sc(dpi, FIELD_RADIUS_DIP), crate::pal().card, Some(crate::pal().line), ground);
 }
 
-/// Supersample factor. 3× is enough for the knob; the DIB is thrown away after the blit.
-const AA_SCALE: i32 = 3;
-/// Parent-coloured pixels around the shape so a curve that crosses a sample block can blend.
-const AA_PAD: i32 = 2;
-
-fn scaled_from(outer: RECT, part: RECT, scale: i32, ox: i32, oy: i32) -> RECT {
-    RECT {
-        left: ox + (part.left - outer.left) * scale,
-        top: oy + (part.top - outer.top) * scale,
-        right: ox + (part.right - outer.left) * scale,
-        bottom: oy + (part.bottom - outer.top) * scale,
-    }
-}
-
-/// Average each `scale`×`scale` block. Flat fills stay exact; only an edge that mixes both colours softens.
-fn box_down(src: &[u8], sw: usize, dst: &mut [u8], dw: usize, dh: usize, scale: usize) {
-    let area = (scale * scale) as u32;
-    for y in 0..dh {
-        for x in 0..dw {
-            let mut b = 0u32;
-            let mut g = 0u32;
-            let mut rch = 0u32;
-            let y0 = y * scale;
-            let x0 = x * scale;
-            for sy in 0..scale {
-                let row = (y0 + sy) * sw + x0;
-                for sx in 0..scale {
-                    let i = (row + sx) * 4;
-                    b += src[i] as u32;
-                    g += src[i + 1] as u32;
-                    rch += src[i + 2] as u32;
-                }
-            }
-            let o = (y * dw + x) * 4;
-            dst[o] = (b / area) as u8;
-            dst[o + 1] = (g / area) as u8;
-            dst[o + 2] = (rch / area) as u8;
-            // Already composited against `ground`. Opaque so the buffered DC does not blend it again.
-            dst[o + 3] = 255;
-        }
-    }
-}
-
-unsafe fn dib_section(dc: HDC, w: i32, h: i32) -> Option<(HBITMAP, *mut u8)> {
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits = std::ptr::null_mut();
-    let bmp = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-    if bits.is_null() {
-        let _ = DeleteObject(bmp.into());
-        return None;
-    }
-    Some((bmp, bits.cast()))
-}
-
-/// Draw the shape at `AA_SCALE` into a DIB cleared to `ground`, box-filter it, and copy it down.
-/// `paint` gets the memory DC, the scale, and the origin of `r` inside the padded bitmap.
-unsafe fn aa_blit(dc: HDC, r: RECT, ground: u32, paint: impl FnOnce(HDC, i32, i32, i32)) -> bool {
-    let (w, h) = (r.right - r.left, r.bottom - r.top);
-    if w <= 0 || h <= 0 || w > 2400 || h > 800 {
-        return false;
-    }
-    let scale = AA_SCALE;
-    let pad = AA_PAD;
-    let (bw, bh) = (w + pad * 2, h + pad * 2);
-    let (sw, sh) = (bw * scale, bh * scale);
-    let Some((big, big_bits)) = dib_section(dc, sw, sh) else { return false };
-    let mem = CreateCompatibleDC(Some(dc));
-    if mem.is_invalid() {
-        let _ = DeleteObject(big.into());
-        return false;
-    }
-    let old = SelectObject(mem, big.into());
-    crate::fill(mem, RECT { left: 0, top: 0, right: sw, bottom: sh }, ground);
-    paint(mem, scale, pad * scale, pad * scale);
-    let _ = GdiFlush();
-    SelectObject(mem, old);
-    let _ = DeleteDC(mem);
-
-    let Some((small, small_bits)) = dib_section(dc, bw, bh) else {
-        let _ = DeleteObject(big.into());
-        return false;
-    };
-    box_down(
-        std::slice::from_raw_parts(big_bits, (sw as usize) * (sh as usize) * 4),
-        sw as usize,
-        std::slice::from_raw_parts_mut(small_bits, (bw as usize) * (bh as usize) * 4),
-        bw as usize,
-        bh as usize,
-        scale as usize,
-    );
-    let _ = DeleteObject(big.into());
-
-    let mem = CreateCompatibleDC(Some(dc));
-    if mem.is_invalid() {
-        let _ = DeleteObject(small.into());
-        return false;
-    }
-    let old = SelectObject(mem, small.into());
-    let copied = StretchBlt(dc, r.left - pad, r.top - pad, bw, bh, Some(mem), 0, 0, bw, bh, SRCCOPY);
-    SelectObject(mem, old);
-    let _ = DeleteDC(mem);
-    let _ = DeleteObject(small.into());
-    copied.as_bool()
-}
-
-unsafe fn aa_rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>, ground: u32) {
-    let painted = aa_blit(dc, r, ground, |mem, scale, ox, oy| unsafe {
-        paint_round(mem, scaled_from(r, r, scale, ox, oy), rad.max(1) * scale, fill, border, scale);
-    });
-    if !painted {
-        rfill(dc, r, rad, fill, border);
-    }
-}
-
-/// Border is a 1px ring: the outer shape is the border colour, the fill sits `inset` source pixels in.
-unsafe fn paint_round(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>, inset: i32) {
-    let Some(edge) = border.filter(|c| *c != fill) else {
-        rfill(dc, r, rad.max(1), fill, None);
-        return;
-    };
-    rfill(dc, r, rad.max(1), edge, None);
-    let inner = RECT { left: r.left + inset, top: r.top + inset, right: r.right - inset, bottom: r.bottom - inset };
-    if inner.right <= inner.left || inner.bottom <= inner.top {
-        return;
-    }
-    rfill(dc, inner, (rad - inset).max(1), fill, None);
-}
-
-unsafe fn rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>) {
-    if r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let brush = CreateSolidBrush(crate::cref(fill));
-    let pen = match border {
-        Some(c) => CreatePen(PS_SOLID, 1, crate::cref(c)),
-        None => HPEN(GetStockObject(NULL_PEN).0),
-    };
-    let op = SelectObject(dc, pen.into());
-    let ob = SelectObject(dc, brush.into());
-    let _ = RoundRect(dc, r.left, r.top, r.right, r.bottom, rad.max(1), rad.max(1));
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    let _ = DeleteObject(brush.into());
-    if border.is_some() {
-        let _ = DeleteObject(pen.into());
-    }
-}
-
-unsafe fn ellipse(dc: HDC, r: RECT, fill: u32, border: Option<u32>) {
-    if r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let brush = CreateSolidBrush(crate::cref(fill));
-    let pen = match border {
-        Some(c) => CreatePen(PS_SOLID, 1, crate::cref(c)),
-        None => HPEN(GetStockObject(NULL_PEN).0),
-    };
-    let op = SelectObject(dc, pen.into());
-    let ob = SelectObject(dc, brush.into());
-    let _ = Ellipse(dc, r.left, r.top, r.right, r.bottom);
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    let _ = DeleteObject(brush.into());
-    if border.is_some() {
-        let _ = DeleteObject(pen.into());
-    }
-}
 
 unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let id = d.CtlID as i32;
@@ -1148,7 +985,17 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let pressed = d.itemState.0 & 1 != 0;
     let hot = app(|a| a.hover) == d.hwndItem;
     let dpi = ST.with(|s| s.borrow().dpi.max(96));
-    let font = ST.with(|s| s.borrow().font);
+    let (font, heavy) = ST.with(|s| {
+        let st = s.borrow();
+        (st.font, st.btn_bold)
+    });
+    // The name prompt can open after Settings has dropped its fonts. The control then
+    // carries the UI face; the accent label uses that face at weight 700.
+    let font = if font.is_invalid() {
+        HFONT(SendMessageW(d.hwndItem, WM_GETFONT, None, None).0 as _)
+    } else {
+        font
+    };
     let accent = chrome();
     // Prompt Close is also id 2 (S_CLOSE). Only a settings child uses that id as the accent;
     // the prompt accents OK, which is id 1.
@@ -1173,9 +1020,19 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     } else {
         (ground, crate::pal().line, crate::pal().text)
     };
-    rfill(dc_of(d), d.rcItem, sc(dpi, 4), fill, Some(border));
+    crate::aa_rfill(dc_of(d), d.rcItem, sc(dpi, 4), fill, Some(border), ground);
     let label = crate::text_of(d.hwndItem);
-    crate::text(dc_of(d), d.rcItem, &label, font, ink, DT_CENTER);
+    let label_font = if accent_btn && !dis {
+        if !heavy.is_invalid() {
+            heavy
+        } else {
+            let bold = crate::bold_ui_font();
+            if bold.is_invalid() { font } else { bold }
+        }
+    } else {
+        font
+    };
+    crate::text(dc_of(d), d.rcItem, &label, label_font, ink, DT_CENTER);
 }
 
 fn dc_of(d: &DRAWITEMSTRUCT) -> HDC {
@@ -2103,11 +1960,11 @@ fn settings_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 crate::keys::cancel();
                 let old = ST.with(|s| {
                     let mut st = s.borrow_mut();
-                    let old = (st.font, st.small, st.bold, st.title_font, st.mono, st.icon);
+                    let old = (st.font, st.btn_bold, st.small, st.bold, st.title_font, st.mono, st.icon);
                     *st = St::default(); // drops the installed-family list
                     old
                 });
-                for f in [old.0, old.1, old.2, old.3, old.4, old.5] {
+                for f in [old.0, old.1, old.2, old.3, old.4, old.5, old.6] {
                     if !f.is_invalid() {
                         let _ = DeleteObject(f.into());
                     }
@@ -2256,7 +2113,7 @@ unsafe fn paint_ask(h: HWND) {
     crate::buffered(h, |dc, rc| {
         crate::fill(dc, rc, crate::pal().card);
         let lay = ask_lay(rc.right - rc.left, rc.bottom - rc.top, dpi);
-        draw_field(dc, lay.field, dpi);
+        draw_field(dc, lay.field, dpi, crate::pal().card);
     });
 }
 
@@ -2463,8 +2320,8 @@ mod tests {
                 }
             }
             // The blit pad stays on the card (16 DIP) and inside the segment gap (8 DIP).
-            assert!(AA_PAD < sc(dpi, 16));
-            assert!(AA_PAD * 2 < sc(dpi, 8));
+            assert!(crate::AA_PAD < sc(dpi, 16));
+            assert!(crate::AA_PAD * 2 < sc(dpi, 8));
         }
     }
 
@@ -2485,7 +2342,7 @@ mod tests {
             }
         }
         let mut dst = vec![0u8; 8];
-        box_down(&src, sw, &mut dst, 2, 1, scale);
+        crate::box_down(&src, sw, &mut dst, 2, 1, scale);
         assert_eq!(&dst[0..4], &[0, 0, 255, 255]);
         assert_eq!(&dst[4..8], &[255, 0, 0, 255]);
         for y in 0..sh {
@@ -2493,7 +2350,7 @@ mod tests {
             src[i] = 0;
             src[i + 2] = 255;
         }
-        box_down(&src, sw, &mut dst, 2, 1, scale);
+        crate::box_down(&src, sw, &mut dst, 2, 1, scale);
         assert_eq!(dst[4], (255u32 * 6 / 9) as u8);
         assert_eq!(dst[5], 0);
         assert_eq!(dst[6], (255u32 * 3 / 9) as u8);
