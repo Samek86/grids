@@ -420,6 +420,7 @@ pub(crate) enum Key {
     ReadmeMd,
     RecentFolders,
     RecycleBin,
+    Refresh,
     RegularExpression,
     RememberViewPerFolder,
     RemovableDrive,
@@ -632,7 +633,7 @@ pub(crate) enum Key {
     ZipListHead,
 }
 
-pub(crate) const KEY_COUNT: usize = 627;
+pub(crate) const KEY_COUNT: usize = 628;
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -1052,6 +1053,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "README.md",
     "Recent folders",
     "Recycle Bin",
+    "Refresh",
     "Regular expression",
     "Remember view per folder",
     "Removable drive",
@@ -1682,6 +1684,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "readme_md",
     "recent_folders",
     "recycle_bin",
+    "refresh",
     "regular_expression",
     "remember_view_per_folder",
     "removable_drive",

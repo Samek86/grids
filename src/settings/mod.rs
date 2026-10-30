@@ -32,6 +32,7 @@ const S_FV_DEF: i32 = 33;
 const S_FV_RESET: i32 = 34;
 const S_FV_CLEAR: i32 = 35;
 pub(crate) const S_CTX_RESET: i32 = 36;
+pub(crate) const S_CTX_REFRESH: i32 = 38;
 const S_LAYOUT: i32 = 29;
 const S_SIDE: i32 = 37;
 const S_WM: i32 = 30;
@@ -143,6 +144,7 @@ const PAGES: [crate::Key; PAGE_N] = [
 
 const CTX_NOTE: crate::Key = crate::Key::TheseItemsAppearInPanegridSRight;
 const CTX_RESET_L: crate::Key = crate::Key::ResetAllEnabled;
+const CTX_REFRESH_L: crate::Key = crate::Key::Refresh;
 const CTX_EMPTY: crate::Key = crate::Key::NoThirdPartyMenuItems;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -295,7 +297,7 @@ fn page_match(q: &str, page: usize) -> bool {
         return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
     }
     if page == CTX_PAGE {
-        return has(tx(CTX_NOTE), q) || has(tx(CTX_RESET_L), q) || has(tx(CTX_EMPTY), q) || crate::shell::ctxmenu::name_hit(q);
+        return has(tx(CTX_NOTE), q) || has(tx(CTX_RESET_L), q) || has(tx(CTX_REFRESH_L), q) || has(tx(CTX_EMPTY), q) || crate::shell::ctxmenu::name_hit(q);
     }
     false
 }
@@ -455,7 +457,7 @@ enum Item {
     FavRow { i: usize, rect: RECT, rename: RECT, btn: RECT },
     Note(RECT, crate::Key),
     CtxNote(RECT),
-    CtxBar { reset: RECT },
+    CtxBar { reset: RECT, refresh: RECT },
     CtxRow {
         id: String,
         ids: Vec<String>,
@@ -658,10 +660,18 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     }
     let (off, on, seen, quiet) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_on.clone(), a.s.ctx_labels.clone(), a.s.ctx_quiet.clone()));
     let rows = crate::shell::ctxmenu::ui_rows(&off, &on, &seen, &quiet, rq);
-    let bw = sc(dpi, 220);
+    let reset_w = sc(dpi, 220);
+    let refresh_w = sc(dpi, 140);
     let bh = sc(dpi, 32);
-    let reset = RECT { left: (right - bw).max(left), top: y, right, bottom: y + bh };
-    g.items.push(Item::CtxBar { reset });
+    let gap = sc(dpi, 8);
+    let reset = RECT { left: (right - reset_w).max(left), top: y, right, bottom: y + bh };
+    let refresh = RECT {
+        left: (reset.left - gap - refresh_w).max(left),
+        top: y,
+        right: (reset.left - gap).max(left),
+        bottom: y + bh,
+    };
+    g.items.push(Item::CtxBar { reset, refresh });
     y += bh + sc(dpi, 12);
     if rows.is_empty() {
         g.items.push(Item::CtxEmpty(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }));
@@ -1196,16 +1206,30 @@ mod tests {
         assert_eq!(PAGES.len(), PAGE_N);
         assert_eq!(tx(PAGES[CTX_PAGE]), "Right-click menu items");
         assert_eq!(tx(CTX_RESET_L), "Reset to all enabled");
+        assert_eq!(tx(CTX_REFRESH_L), "Refresh");
+        assert!(page_match("Refresh", CTX_PAGE));
         let (anchor, page) = commit_search(0, 0, "Right-click menu");
         assert_eq!((anchor, page), (0, CTX_PAGE));
         let g = geo(client(), &shot(page, "Right-click menu"));
         assert!(g.show[CTX_PAGE]);
         assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
-        assert!(g.items.iter().any(|it| matches!(it, Item::CtxBar { .. })));
+        let (reset, refresh) = g.items.iter().find_map(|it| match it {
+            Item::CtxBar { reset, refresh } => Some((*reset, *refresh)),
+            _ => None,
+        }).expect("ctx bar");
+        assert_eq!(reset.right - reset.left, 220);
+        assert_eq!(refresh.right - refresh.left, 140);
+        assert_eq!(reset.bottom - reset.top, 32);
+        assert_eq!(refresh.bottom - refresh.top, 32);
+        assert_eq!(refresh.top, reset.top);
+        assert_eq!(reset.left - refresh.right, 8);
+        assert!(refresh.left >= g.content.left);
 
         crate::UI.store(1, Ordering::Relaxed);
         assert_eq!(tx(PAGES[CTX_PAGE]), "우클릭 메뉴 항목");
         assert_eq!(tx(CTX_RESET_L), "모두 사용");
+        assert_eq!(tx(CTX_REFRESH_L), "새로고침");
+        assert!(page_match("새로고침", CTX_PAGE));
         assert_eq!(tx(CTX_EMPTY), "타사 메뉴 항목이 없어요");
         let (_, page) = commit_search(0, 0, "우클릭 메뉴 항목");
         assert_eq!(page, CTX_PAGE);
