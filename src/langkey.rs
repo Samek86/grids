@@ -590,6 +590,14 @@ pub(crate) enum Key {
     ThisPaneIsNotFolderOpenFolder,
     ThisPc,
     ThisSessionCanTBeRead,
+    TimeMinute,
+    TimeMinuteSecond,
+    TimeMinuteSeconds,
+    TimeMinutes,
+    TimeMinutesSecond,
+    TimeMinutesSeconds,
+    TimeSecond,
+    TimeSeconds,
     TitleCase,
     TooManyItemsMatchOver10000,
     TopBottom,
@@ -652,7 +660,9 @@ pub(crate) enum Key {
 
 }
 
-pub(crate) const KEY_COUNT: usize = 646;
+pub(crate) const KEY_COUNT: usize = 654;
+
+const _: () = assert!((Key::ZipListHead as usize) + 1 == KEY_COUNT);
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -1052,7 +1062,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Parent folder",
     "Parent folder  (Alt+↑)",
     "partial",
-    "Paste and drag use robocopy when a network folder is involved. Off keeps the Windows copy window. Fast paste always uses robocopy.",
+    "When a network folder is involved, paste and drag use robocopy. Off keeps the Windows copy window.",
     "Path",
     "Path too long",
     "Pattern",
@@ -1242,6 +1252,14 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "This pane is not a folder. Open a folder, then compare.",
     "This PC",
     "This session can't be read.",
+    "{n} minute",
+    "{m} minute {s} second",
+    "{m} minute {s} seconds",
+    "{n} minutes",
+    "{m} minutes {s} second",
+    "{m} minutes {s} seconds",
+    "{n} second",
+    "{n} seconds",
     "Title Case",
     "Too many items to match (over 10,000)",
     "Top to bottom",
@@ -1892,6 +1910,14 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "this_pane_is_not_folder_open_folder",
     "this_pc",
     "this_session_can_t_be_read",
+    "time_minute",
+    "time_minute_second",
+    "time_minute_seconds",
+    "time_minutes",
+    "time_minutes_second",
+    "time_minutes_seconds",
+    "time_second",
+    "time_seconds",
     "title_case",
     "too_many_items_match_over_10_000",
     "top_bottom",
