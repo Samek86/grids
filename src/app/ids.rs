@@ -38,6 +38,7 @@ pub(crate) const ID_SESS_OPEN: usize = 1131; // gear: open a saved tab as a new 
 pub(crate) const WM_THEME_SYNC: u32 = WM_APP + 47;
 pub(crate) const WM_THEME_PANE: u32 = WM_APP + 63; // rebuild one shell view for the theme that just changed
 pub(crate) const WM_THEME_SCROLL: u32 = WM_APP + 64; // scroll and select-all, after that view has rows
+pub(crate) const WM_THEME_RELAUNCH: u32 = WM_APP + 65; // DirectUIHWND birth theme: save+relaunch after theme flip
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;
 pub(crate) const HOME: &str = "https://github.com/Samek86/panegrid";
