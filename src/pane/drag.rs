@@ -31,7 +31,7 @@ fn overlay_hwnd(main: HWND) -> HWND {
         return cur;
     }
     let ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-    let h = unsafe { CreateWindowExW(ex, w!("PanegridBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None).unwrap_or_default() };
+    let h = unsafe { CreateWindowExW(ex, w!("MaguroBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None).unwrap_or_default() };
     if h.0.is_null() {
         return h;
     }

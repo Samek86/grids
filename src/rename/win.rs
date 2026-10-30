@@ -201,7 +201,7 @@ unsafe fn open_items(items: Vec<BatchItem>) {
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE;
     let h = CreateWindowExW(
         WINDOW_EX_STYLE(0),
-        w!("PanegridRename"),
+        w!("MaguroRename"),
         &HSTRING::from(tx(crate::Key::BatchRename)),
         style,
         x,
@@ -336,7 +336,7 @@ fn ensure_class() {
             hInstance: hinst,
             hCursor: arrow,
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
-            lpszClassName: w!("PanegridRename"),
+            lpszClassName: w!("MaguroRename"),
             ..Default::default()
         });
         let _ = RegisterClassW(&WNDCLASSW {
@@ -344,7 +344,7 @@ fn ensure_class() {
             lpfnWndProc: Some(host_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridRenameRules"),
+            lpszClassName: w!("MaguroRenameRules"),
             ..Default::default()
         });
     });
@@ -493,7 +493,7 @@ unsafe fn build_shell(h: HWND) {
     refill_presets(None);
     cue(ext, "jpg, png");
     cue(ctl(h, ID_PRESET), tx(crate::Key::PresetName));
-    let host = child(h, w!("PanegridRenameRules"), "", 0x02000000 | 0x04000000, 50, font);
+    let host = child(h, w!("MaguroRenameRules"), "", 0x02000000 | 0x04000000, 50, font);
     ST.with(|s| s.borrow_mut().host = host);
 }
 
@@ -1281,7 +1281,7 @@ unsafe fn undo() {
 /// One summary for every name the undo could not find. Not a warning: those items are skipped.
 unsafe fn tell_skipped(owner: HWND, note: &str) {
     let parent = if owner.0.is_null() { None } else { Some(owner) };
-    let _ = MessageBoxW(parent, &HSTRING::from(note), w!("Panegrid"), MB_OK | MB_ICONINFORMATION);
+    let _ = MessageBoxW(parent, &HSTRING::from(note), w!("Maguro"), MB_OK | MB_ICONINFORMATION);
 }
 
 unsafe fn launch(pairs: Vec<(String, String, String)>, pending: Vec<String>, note: String, record: bool) {
@@ -1349,7 +1349,7 @@ unsafe fn on_done(h: HWND) {
         ST.with(|s| s.borrow_mut().note.clone_from(&msg));
         let cancelled = msg.starts_with(tr(crate::Key::Cancelled));
         if !cancelled {
-            let _ = MessageBoxW(Some(h), &HSTRING::from(&msg), w!("Panegrid"), MB_ICONWARNING);
+            let _ = MessageBoxW(Some(h), &HSTRING::from(&msg), w!("Maguro"), MB_ICONWARNING);
         }
     }
     let items = ST.with(|s| s.borrow().items.clone());

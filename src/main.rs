@@ -1,4 +1,4 @@
-// Panegrid: multi-pane file manager. Shell tree on the left, up to 4 columns of up to 4 Explorer views on the right.
+// Maguro: multi-pane file manager. Shell tree on the left, up to 4 columns of up to 4 Explorer views on the right.
 // Each pane hosts the real Explorer control (IExplorerBrowser), so context menus, drag & drop, rename,
 // thumbnails, columns etc. come from Windows itself.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
@@ -57,7 +57,7 @@ fn main() -> Result<()> {
         }
         // Read first so single=0 can opt out of handing arguments to the running window.
         // one_window still hands off: the running window comes forward and opens paths as tabs.
-        // panegrid.json is the store. If it is missing, a previous grids.json is copied;
+        // maguro.json is the store. If it is missing, a previous grids.json is copied;
         // otherwise grids.ini or qdir.ini is imported read-only. Those sources stay untouched.
         // A file that is there but unreadable must not be overwritten with defaults.
         let mut s = loop {
@@ -65,18 +65,18 @@ fn main() -> Result<()> {
                 Ok(s) => break s,
                 Err(e) => {
                     let text = HSTRING::from(format!(
-                        "Panegrid could not read its settings file (panegrid.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
-                         Panegrid 설정 파일(panegrid.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
-                         Panegrid の設定ファイル (panegrid.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
+                        "Maguro could not read its settings file (maguro.json): {e}. Retry, or Cancel to quit without changing it.\n\n\
+                         Maguro 설정 파일(maguro.json)을 읽지 못했습니다: {e}. 다시 시도하거나, 취소하면 파일을 바꾸지 않고 종료합니다.\n\n\
+                         Maguro の設定ファイル (maguro.json) を読めませんでした: {e}。再試行するか、キャンセルするとファイルを変えずに終了します。"
                     ));
-                    if MessageBoxW(None, &text, w!("Panegrid"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
+                    if MessageBoxW(None, &text, w!("Maguro"), MB_RETRYCANCEL | MB_ICONWARNING) != IDRETRY {
                         return Ok(());
                     }
                 }
             }
         };
         // Old named sessions that stored every tab are split into one file per tab.
-        // The open window (panegrid.json) is only retargeted in memory: its tabs stay.
+        // The open window (maguro.json) is only retargeted in memory: its tabs stay.
         let split_maps = migrate_named_sessions();
         if !split_maps.is_empty() {
             retarget_session_links(&mut s, &split_maps);
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
             hInstance: hinst,
             hCursor: arrow,
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(), // app.ico, group id 1
-            lpszClassName: w!("PanegridMain"),
+            lpszClassName: w!("MaguroMain"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -147,13 +147,13 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(pane_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridPane"),
+            lpszClassName: w!("MaguroPane"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(bar_proc),
             hInstance: hinst,
-            lpszClassName: w!("PanegridBar"),
+            lpszClassName: w!("MaguroBar"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -161,7 +161,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(fav_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridFav"),
+            lpszClassName: w!("MaguroFav"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(load_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridLoad"),
+            lpszClassName: w!("MaguroLoad"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -177,7 +177,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(grid_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridPicker"),
+            lpszClassName: w!("MaguroPicker"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -185,21 +185,21 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(side_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridSide"),
+            lpszClassName: w!("MaguroSide"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(match_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridMatch"),
+            lpszClassName: w!("MaguroMatch"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(keys_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridKeys"),
+            lpszClassName: w!("MaguroKeys"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -207,14 +207,14 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(peek_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridPeek"),
+            lpszClassName: w!("MaguroPeek"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(peek_host_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridPeekHost"),
+            lpszClassName: w!("MaguroPeekHost"),
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(tabs_proc),
             hInstance: hinst,
             hCursor: arrow,
-            lpszClassName: w!("PanegridTabs"),
+            lpszClassName: w!("MaguroTabs"),
             ..Default::default()
         });
         install_languages();
@@ -389,7 +389,7 @@ mod tests {
         assert!(layout_differs(&cur, &base));
         assert!(is_fs(r"C:\") && is_fs(r"\\srv\share") && !is_fs("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"));
         let titles = [r"C:\Users\x\Downloads", "", r"C:\"].map(window_title);
-        assert_eq!(titles, ["Downloads - Panegrid", "Panegrid", "C: - Panegrid"]);
+        assert_eq!(titles, ["Downloads - Maguro", "Maguro", "C: - Maguro"]);
     }
 
     #[test]

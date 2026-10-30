@@ -100,7 +100,7 @@ pub(crate) unsafe fn open_server_dialog(owner: HWND, parent: &[usize], edit: Opt
     let title = if dlg.editing { tr(crate::Key::EditServerConnection) } else { tr(crate::Key::AddServerConnection) };
     let hwnd = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
-        w!("PanegridServer"),
+        w!("MaguroServer"),
         &HSTRING::from(title),
         WS_POPUP | WS_CLIPCHILDREN,
         x,
@@ -461,7 +461,7 @@ unsafe fn commit(h: HWND) {
             wipe(&mut pass);
             pass_units.fill(0);
             let q = tr(crate::Key::AddressIsRequired);
-            let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+            let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
             _ = SetFocus(Some((*v).edits[1]));
             return;
         }
@@ -476,7 +476,7 @@ unsafe fn commit(h: HWND) {
         wipe(&mut pass);
         pass_units.fill(0);
         let q = tr(crate::Key::AlreadyExists);
-        let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
         return;
     }
     if !store_secret(old.as_ref(), &built.link, &pass) {
@@ -498,7 +498,7 @@ unsafe fn commit(h: HWND) {
     });
     if !saved {
         let q = tr(crate::Key::AlreadyExists);
-        let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
         return;
     }
     app(|a| a.s.sync_favs());
@@ -594,7 +594,7 @@ fn ensure_class() {
         let Ok(m) = GetModuleHandleW(None) else { return };
         let hinst: HINSTANCE = m.into();
         let mut existing = WNDCLASSW::default();
-        if GetClassInfoW(Some(hinst), w!("PanegridServer"), &mut existing).is_ok() {
+        if GetClassInfoW(Some(hinst), w!("MaguroServer"), &mut existing).is_ok() {
             return;
         }
         let arrow = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
@@ -604,7 +604,7 @@ fn ensure_class() {
             hInstance: hinst,
             hCursor: arrow,
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
-            lpszClassName: w!("PanegridServer"),
+            lpszClassName: w!("MaguroServer"),
             ..Default::default()
         });
     }

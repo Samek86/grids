@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn credential_round_trip_does_not_keep_the_secret() {
-        let target = format!("Panegrid:test:{}:{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let target = format!("Maguro:test:{}:{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
         let secret = "s3cret-pl4in-pgtest";
         assert!(write_secret(&target, secret), "CredWrite");
         assert_eq!(read_secret(&target).as_deref(), Some(secret));

@@ -1,4 +1,4 @@
-//! Robocopy copy/move with Panegrid's own progress and conflict window.
+//! Robocopy copy/move with Maguro's own progress and conflict window.
 //!
 //! Local-to-local stays on IFileOperation unless the user picks Fast paste.
 //! The argument builder never emits `/MIR`, `/PURGE`, `/MOV`, or `/MOVE`.
@@ -226,7 +226,7 @@ fn robocopy_exe() -> Option<std::path::PathBuf> {
 fn work_dir() -> Option<std::path::PathBuf> {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("panegrid-fast-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("maguro-fast-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -234,7 +234,7 @@ fn work_dir() -> Option<std::path::PathBuf> {
 fn complain(owner: isize, text: &str) {
     let owner = HWND(owner as *mut _);
     unsafe {
-        let _ = MessageBoxW(Some(owner), &HSTRING::from(text), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(owner), &HSTRING::from(text), w!("Maguro"), MB_ICONWARNING);
     }
 }
 
@@ -996,7 +996,7 @@ fn view(hwnd: HWND) -> Option<*mut View> {
 }
 
 fn open_progress(owner: HWND, accent: u32, face: &str, mv: bool, cancel: Arc<AtomicBool>) -> HWND {
-    ensure_class(w!("PanegridFastCopy"), Some(progress_proc));
+    ensure_class(w!("MaguroFastCopy"), Some(progress_proc));
     let dpi = dpi_of(owner);
     let geom = progress_geom(dpi);
     let (w, h) = (geom.w, geom.h);
@@ -1026,7 +1026,7 @@ fn open_progress(owner: HWND, accent: u32, face: &str, mv: bool, cancel: Arc<Ato
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW,
-            w!("PanegridFastCopy"),
+            w!("MaguroFastCopy"),
             &HSTRING::from(title),
             WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE,
             x,
@@ -1071,7 +1071,7 @@ struct AskView {
 }
 
 fn open_ask(owner: HWND, accent: u32, face: &str, name: &str, choice: Arc<AtomicU8>, all_flag: Arc<AtomicBool>) -> HWND {
-    ensure_class(w!("PanegridFastAsk"), Some(ask_proc));
+    ensure_class(w!("MaguroFastAsk"), Some(ask_proc));
     let dpi = dpi_of(owner);
     let (w, h) = (sc(dpi, 480), sc(dpi, 176));
     let (x, y) = center_on(owner, w, h);
@@ -1095,8 +1095,8 @@ fn open_ask(owner: HWND, accent: u32, face: &str, name: &str, choice: Arc<Atomic
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW,
-            w!("PanegridFastAsk"),
-            w!("Panegrid"),
+            w!("MaguroFastAsk"),
+            w!("Maguro"),
             WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE,
             x,
             y,
@@ -1559,7 +1559,7 @@ unsafe fn text_px(owner: HWND, text: &str) -> i32 {
     let mut buf = [0u16; 64];
     let n = GetClassNameW(owner, &mut buf) as usize;
     let class = String::from_utf16_lossy(&buf[..n]);
-    if class == "PanegridFastAsk" {
+    if class == "MaguroFastAsk" {
         if let Some(a) = ask_view(owner) {
             return measure(owner, text, (*a).small);
         }

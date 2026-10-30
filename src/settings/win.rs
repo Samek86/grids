@@ -31,7 +31,7 @@ pub unsafe fn open(owner: HWND) {
     let x = orc.left + (orc.right - orc.left - ww) / 2;
     let y = orc.top + (orc.bottom - orc.top - hh) / 2;
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE;
-    let _ = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridSettings"), w!("Panegrid"), style, x, y, ww, hh, Some(owner), None, None, None);
+    let _ = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroSettings"), w!("Maguro"), style, x, y, ww, hh, Some(owner), None, None, None);
 }
 
 pub unsafe fn close() {
@@ -100,7 +100,7 @@ fn ensure_class() {
             hInstance: hinst,
             hCursor: arrow,
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
-            lpszClassName: w!("PanegridSettings"),
+            lpszClassName: w!("MaguroSettings"),
             ..Default::default()
         });
     });
@@ -718,7 +718,7 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
     }
     let color = if c.spec.live { crate::pal().text } else { crate::pal().sub };
     let title = if c.spec.ctl == Ctl::About {
-        format!("Panegrid v{}", env!("CARGO_PKG_VERSION"))
+        format!("Maguro v{}", env!("CARGO_PKG_VERSION"))
     } else {
         tx(c.spec.title).to_string()
     };
@@ -1199,7 +1199,7 @@ fn flip(id: u8) {
             unsafe {
                 if crate::folderapp::shown_on() != want {
                     let q = tx(crate::Key::CouldNotChangeDefaultFolderApp);
-                    let _ = MessageBoxW(Some(hwnd()), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+                    let _ = MessageBoxW(Some(hwnd()), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
                 }
                 redraw();
             }
@@ -1499,28 +1499,28 @@ unsafe fn export_settings(h: HWND) {
     crate::save_session();
     let text = crate::store::current_text();
     if crate::store::write_atomic(std::path::Path::new(&path), text.as_bytes()).is_err() {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotExportSettingsFile)), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotExportSettingsFile)), w!("Maguro"), MB_ICONWARNING);
     }
 }
 
 unsafe fn import_settings(h: HWND) {
     let Some(path) = crate::pick_settings(h, false) else { return };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotReadThatFile)), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::CouldNotReadThatFile)), w!("Maguro"), MB_ICONWARNING);
         return;
     };
     let q = tx(crate::Key::ReplaceCurrentSettingsWithThisFile);
-    if MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+    if MessageBoxW(Some(h), &HSTRING::from(q), w!("Maguro"), MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
     if !crate::import_settings(&text) {
-        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::ThatFileIsNotValidSettingsJson)), w!("Panegrid"), MB_ICONWARNING);
+        let _ = MessageBoxW(Some(h), &HSTRING::from(tx(crate::Key::ThatFileIsNotValidSettingsJson)), w!("Maguro"), MB_ICONWARNING);
     }
 }
 
 unsafe fn reset_ini(h: HWND) {
     let q = tx(crate::Key::ResetEveryPreferenceItsDefaultLayoutFold);
-    if MessageBoxW(Some(h), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+    if MessageBoxW(Some(h), &HSTRING::from(q), w!("Maguro"), MB_YESNO | MB_ICONQUESTION) != IDYES {
         return;
     }
     crate::reset_prefs();
@@ -1598,7 +1598,7 @@ pub(crate) unsafe fn confirm_swap(chord: &str, other: &str) -> bool {
 
 unsafe fn confirm_box(owner: HWND, q: &str) -> bool {
     crate::keys::set_modal(true);
-    let ans = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONWARNING);
+    let ans = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_YESNO | MB_ICONWARNING);
     crate::keys::set_modal(false);
     ans == IDYES
 }
@@ -2145,7 +2145,7 @@ pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<Stri
             lpfnWndProc: Some(ask_proc),
             hInstance: m.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            lpszClassName: w!("PanegridAsk"),
+            lpszClassName: w!("MaguroAsk"),
             ..Default::default()
         });
     });
@@ -2157,7 +2157,7 @@ pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<Stri
     let x = orc.left + (orc.right - orc.left - ww) / 2;
     let y = orc.top + (orc.bottom - orc.top - hh) / 2;
     // Shown only after the dark caption attributes are set, or the first frame stays light.
-    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("PanegridAsk"), &HSTRING::from(title), ask_style(), x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
+    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("MaguroAsk"), &HSTRING::from(title), ask_style(), x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
     if h.0.is_null() {
         return None;
     }

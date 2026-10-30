@@ -57,7 +57,7 @@ pub(crate) fn short_name(path: &str) -> String {
 
 // Title bar, taskbar and Alt+Tab follow the active pane's folder.
 pub(crate) fn window_title(disp: &str) -> String {
-    if disp.is_empty() { "Panegrid".into() } else { format!("{} - Panegrid", short_name(disp)) }
+    if disp.is_empty() { "Maguro".into() } else { format!("{} - Maguro", short_name(disp)) }
 }
 
 pub(crate) fn ago(t: std::time::SystemTime) -> String {
@@ -104,7 +104,7 @@ pub(crate) unsafe fn open_load() {
     app(|a| (a.cards, a.load_hot) = (cards, None));
     let style = WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN;
     let y = rc.bottom + 6 * dpi / 96;
-    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridLoad"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
+    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("MaguroLoad"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
         return;
     };
     let square = DWMWCP_DONOTROUND;

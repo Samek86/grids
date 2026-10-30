@@ -174,7 +174,7 @@ pub(crate) unsafe fn open_keys() {
     let prev = GetFocus();
     app(|a| (a.keys_prev, a.keys_scroll) = (prev, 0));
     let title = HSTRING::from(tr(crate::Key::KeyboardShortcuts2));
-    let Ok(p) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridKeys"), &title, WS_POPUP | WS_VISIBLE, x, y, w, h, Some(main), None, None, None) else {
+    let Ok(p) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("MaguroKeys"), &title, WS_POPUP | WS_VISIBLE, x, y, w, h, Some(main), None, None, None) else {
         return;
     };
     let square = DWMWCP_DONOTROUND;

@@ -1,5 +1,5 @@
-// Per-folder view memory, separate from panegrid.json and from any grids.ini.
-// The file is folder-views.json in the config folder (roaming Panegrid, or the exe folder when portable.txt is present).
+// Per-folder view memory, separate from maguro.json and from any grids.ini.
+// The file is folder-views.json in the config folder (roaming Maguro, or the exe folder when portable.txt is present).
 // A folder key is its shell parsing name, not the localized display name.
 
 use std::collections::HashMap;
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn a_broken_file_is_not_replaced() {
-        let dir = std::env::temp_dir().join(format!("panegrid-fv-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-fv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE_NAME);
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn atomic_save_roundtrips_and_leaves_no_grids_ini() {
-        let dir = std::env::temp_dir().join(format!("panegrid-fv-ok-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-fv-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE_NAME);
@@ -888,7 +888,7 @@ mod tests {
         assert_eq!(back.default_view().unwrap().mode, 4);
         assert!(!back.blocked);
         assert!(!dir.join("grids.ini").exists());
-        assert!(!dir.join("panegrid.json").exists());
+        assert!(!dir.join("maguro.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

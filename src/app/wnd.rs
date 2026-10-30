@@ -85,7 +85,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
                 return LRESULT(1);
             }
-            // A network drive or subst sends no device message. Look again when Panegrid comes forward.
+            // A network drive or subst sends no device message. Look again when Maguro comes forward.
             WM_ACTIVATEAPP => {
                 if wp.0 != 0 {
                     _ = PostMessageW(Some(h), WM_DRIVES, WPARAM(0), LPARAM(0));
@@ -294,7 +294,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 _ = ModifyMenuW(menu, ID_THEME as u32, MF_BYCOMMAND | MF_STRING, ID_THEME as usize, &HSTRING::from(theme_action_label()));
                 check(ID_HOTKEY, hot);
                 if let Some(i) = crate::keys::index("app.front") {
-                    let label = format!("{}\t{}", tr(crate::Key::BringPanegridFrontFromAnywhere), crate::keys::chord_text(i));
+                    let label = format!("{}\t{}", tr(crate::Key::BringMaguroFrontFromAnywhere), crate::keys::chord_text(i));
                     _ = ModifyMenuW(menu, ID_HOTKEY as u32, MF_BYCOMMAND | MF_STRING, ID_HOTKEY as usize, &HSTRING::from(label));
                 }
                 if let Some(i) = crate::keys::index("view.panel") {
@@ -816,6 +816,7 @@ fn pane_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 }
 
 // ---------- Win+Shift+E, or whatever chord the keymap now has ----------
+// Maguro's hotkey registration. The chord stays Win+Shift+E (`app.front`).
 
 pub(crate) const HOTKEY_ID: i32 = 1;
 
@@ -913,7 +914,7 @@ pub(crate) unsafe fn toggle_hotkey() {
     save_session();
 }
 
-/// Front, with the file list ready. Pressed again while Panegrid is in front: minimize.
+/// Front, with the file list ready. Pressed again while Maguro is in front: minimize.
 /// A dialog that has disabled its owner comes forward instead.
 pub(crate) unsafe fn hotkey_pressed() {
     let mains = app(|a| a.desks.iter().map(|d| d.main).filter(|h| !h.0.is_null()).collect::<Vec<_>>());
@@ -964,14 +965,29 @@ pub(crate) unsafe fn open_help() {
 
 pub(crate) unsafe fn about(owner: HWND) {
     let text = format!(
-        "Panegrid {}\n{}\n\n{}\n{}\n{HOME}\n\n{}",
+        "Maguro {}\n{}\n\n{}\n{}\n{HOME}\n\n{}",
         env!("CARGO_PKG_VERSION"),
         tr(crate::Key::FastMultiPaneFileManagerForWindows),
-        tr(crate::Key::PanegridIsForkOfEfwwGridsBy),
+        tr(crate::Key::MaguroIsForkOfEfwwGridsBy),
         tr(crate::Key::MitLicense2026Efww),
         tr(crate::Key::OpenProjectPage),
     );
-    if MessageBoxW(Some(owner), &HSTRING::from(text), &HSTRING::from(tr(crate::Key::AboutPanegrid)), MB_YESNO | MB_ICONINFORMATION) == IDYES {
+    let body = HSTRING::from(text);
+    let title = HSTRING::from(tr(crate::Key::AboutMaguro));
+    // Group 1 is the light-bg icon (also the exe). Group 2 is the dark-bg icon.
+    let icon_id = if crate::DARK_ON.load(Ordering::Relaxed) { 2usize } else { 1 };
+    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
+    let params = MSGBOXPARAMSW {
+        cbSize: std::mem::size_of::<MSGBOXPARAMSW>() as u32,
+        hwndOwner: owner,
+        hInstance: hinst,
+        lpszText: PCWSTR(body.as_ptr()),
+        lpszCaption: PCWSTR(title.as_ptr()),
+        dwStyle: MB_YESNO | MB_USERICON,
+        lpszIcon: PCWSTR(icon_id as _),
+        ..Default::default()
+    };
+    if MessageBoxIndirectW(&params) == IDYES {
         ShellExecuteW(None, w!("open"), &HSTRING::from(HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
     }
 }
@@ -1052,7 +1068,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     item(view, MF_STRING, ID_EXT, tr(crate::Key::ShowFileExtensions))?;
     item(view, MF_STRING, ID_FOLLOW, tr(crate::Key::FollowWindowsLightDark))?;
     item(view, MF_STRING, ID_THEME, theme_action_label())?;
-    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr(crate::Key::BringPanegridFrontFromAnywhere), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
+    item(view, MF_STRING, ID_HOTKEY, &format!("{}\t{}", tr(crate::Key::BringMaguroFrontFromAnywhere), crate::keys::chord_text(crate::keys::index("app.front").unwrap_or(0))))?;
     item(view, MF_STRING, ID_DBLUP, tr(crate::Key::DoubleClickEmptySpaceParentFolder))?;
     let colors = CreatePopupMenu()?;
     for k in 0..LIGHT.accents.len() {
@@ -1072,7 +1088,7 @@ pub(crate) unsafe fn make_menus() -> Result<HMENU> {
     AppendMenuW(view, MF_SEPARATOR, 0, PCWSTR::null())?;
     item(view, MF_STRING, ID_KEYS, tr(crate::Key::KeyboardShortcuts))?;
     item(view, MF_STRING, ID_HELP, tr(crate::Key::HelpOnlineF1))?;
-    item(view, MF_STRING, ID_ABOUT, tr(crate::Key::AboutPanegrid))?;
+    item(view, MF_STRING, ID_ABOUT, tr(crate::Key::AboutMaguro))?;
     crate::winmerge::sync_gear(view);
     Ok(view)
 }

@@ -65,7 +65,7 @@ impl Lang {
         }
     }
 
-    /// Value stored in panegrid.json. `auto`, `en`, `ko`, `ja`, or another ISO code.
+    /// Value stored in maguro.json. `auto`, `en`, `ko`, `ja`, or another ISO code.
     pub(crate) fn ini(self) -> Cow<'static, str> {
         match self {
             Lang::Auto => Cow::Borrowed("auto"),
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn missing_keys_use_english_and_user_files_win() {
-        let dir = std::env::temp_dir().join(format!("panegrid-lang-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-lang-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("lang.ko.ini"), "[meta]\nname = 테스트\n\n[text]\nclose = 디스크\n").unwrap();
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn install_overwrites_bundled_files_only_when_the_version_changes() {
-        let cfg = std::env::temp_dir().join(format!("panegrid-install-{}", std::process::id()));
+        let cfg = std::env::temp_dir().join(format!("maguro-install-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cfg);
         let lang = cfg.join("lang");
         std::fs::create_dir_all(&lang).unwrap();

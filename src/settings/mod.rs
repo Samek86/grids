@@ -120,7 +120,7 @@ fn on_chrome(c: u32) -> u32 {
     }
 }
 
-const TITLE: crate::Key = crate::Key::PanegridSettings;
+const TITLE: crate::Key = crate::Key::MaguroSettings;
 const FOOT: crate::Key = crate::Key::ChangesApplyRightAway;
 const CLOSE_L: crate::Key = crate::Key::Close;
 const FIND: crate::Key = crate::Key::FindSetting;
@@ -143,7 +143,7 @@ const PAGES: [crate::Key; PAGE_N] = [
     crate::Key::About,
 ];
 
-const CTX_NOTE: crate::Key = crate::Key::TheseItemsAppearInPanegridSRight;
+const CTX_NOTE: crate::Key = crate::Key::TheseItemsAppearInMaguroSRight;
 const CTX_RESET_L: crate::Key = crate::Key::ResetAllEnabled;
 const CTX_REFRESH_L: crate::Key = crate::Key::Refresh;
 const CTX_EMPTY: crate::Key = crate::Key::NoThirdPartyMenuItems;
@@ -240,12 +240,12 @@ const FILE: &[Spec] = &[
     Spec { title: crate::Key::DefaultDragAndDrop, desc: crate::Key::MenuDragInsidePaneStillFollowsExplorer, live: true, ctl: Ctl::Drop },
 ];
 const SESS: &[Spec] = &[
-    Spec { title: crate::Key::SessionFolder, desc: crate::Key::AppdataPanegridPanegridSessions, live: true, ctl: Ctl::Sess },
+    Spec { title: crate::Key::SessionFolder, desc: crate::Key::AppdataMaguroMaguroSessions, live: true, ctl: Ctl::Sess },
     Spec { title: crate::Key::SaveOnExit, desc: crate::Key::WritesEachTabThatAlreadyHasIts, live: true, ctl: Ctl::Toggle(TG_AUTOSAVE) },
     Spec { title: crate::Key::UnsavedChangesMarkGreenDot, desc: crate::Key::OnSaveButton, live: true, ctl: Ctl::Toggle(TG_DOT) },
 ];
 const ADV: &[Spec] = &[
-    Spec { title: crate::Key::CheckForUpdatesOnStartup, desc: crate::Key::AsksGithubForNewerPanegridReleaseAnd, live: true, ctl: Ctl::Toggle(TG_UPDATE) },
+    Spec { title: crate::Key::CheckForUpdatesOnStartup, desc: crate::Key::AsksGithubForNewerMaguroReleaseAnd, live: true, ctl: Ctl::Toggle(TG_UPDATE) },
     Spec { title: crate::Key::SettingsFile, desc: crate::Key::PortableTxtNextExeKeepsThisFile, live: true, ctl: Ctl::Adv },
     Spec { title: crate::Key::ResetAllSettings, desc: crate::Key::PreferencesReturnTheirDefaultsLayoutFolde, live: true, ctl: Ctl::AdvReset },
 ];
@@ -255,8 +255,8 @@ const LIST_H: crate::Key = crate::Key::ViewList;
 const SIDE_FAV: crate::Key = crate::Key::FavouritesOnTop;
 const SIDE_TREE: crate::Key = crate::Key::FolderTreeOnTop;
 const ABOUT: &[Spec] = &[Spec {
-    title: crate::Key::Panegrid,
-    desc: crate::Key::PanegridIsForkOfEfwwGridsBy2,
+    title: crate::Key::Maguro,
+    desc: crate::Key::MaguroIsForkOfEfwwGridsBy2,
     live: true,
     ctl: Ctl::About,
 }];
@@ -334,8 +334,9 @@ fn search_miss(q: &str) -> bool {
 /// `anchor` is the page the user had before this search auto-navigated (a nav click,
 /// or the page when the box was last empty). A query that matches nothing restores
 /// that page and does not stay on a page a shorter prefix opened. A prefix such as
-/// "Ag" matches only Shortcuts, because chord text includes PageUp / PageDown, and
-/// the next letter must not leave Shortcuts selected.
+/// "PageU" matches only Shortcuts, because chord text includes PageUp / PageDown.
+/// "Ag" also hits the Maguro sessions path, so it is not a unique Shortcuts prefix.
+/// The next letter of a unique prefix must not leave Shortcuts selected.
 fn pick_search(anchor: usize, page: usize, q: &str) -> usize {
     if q.is_empty() || page_match(q, page) {
         page
@@ -1095,9 +1096,11 @@ mod tests {
     fn typing_agy_does_not_open_shortcuts_or_lay_out_its_table() {
         let _lock = ui_lock();
         let _keep = lang(1);
-        // "Ag" matches only Shortcuts: chord text is "Ctrl+PageUp" / "Ctrl+PageDown".
+        // "Ag" still opens Shortcuts first (PageUp / PageDown). The sessions path
+        // "%APPDATA%\\Maguro\\maguro-sessions" also contains "ag", so "Ag" is not unique.
         // "Agy" matches nothing. Keeping the page a prefix opened is what showed the empty table.
         assert!(page_match("Ag", 5));
+        assert!(page_match("Ag", 6));
         assert_eq!((0..PAGES.len()).find(|&p| page_match("Ag", p)), Some(5));
         assert!(search_miss("Agy"));
         assert!((0..PAGES.len()).all(|p| !page_match("Agy", p)));
@@ -1287,11 +1290,13 @@ mod tests {
     fn a_miss_restores_the_page_from_before_search_moved() {
         let _lock = ui_lock();
         let _keep = lang(0);
-        assert!(!page_match("Ag", 6));
-        let (anchor, page) = commit_search(6, 6, "Ag");
+        // "PageU" hits Shortcuts only. "Ag" also matches this Sessions page via the Maguro path.
+        assert!(!page_match("PageU", 6));
+        assert!(page_match("PageU", 5));
+        let (anchor, page) = commit_search(6, 6, "PageU");
         assert_eq!(anchor, 6);
         assert_ne!(page, 6);
-        assert_eq!(commit_search(anchor, page, "Agy"), (6, 6));
+        assert_eq!(commit_search(anchor, page, "PageUx"), (6, 6));
         // Current page is kept when it still matches, even if an earlier page matches too.
         assert!(page_match("a", 3));
         assert_eq!(pick_search(0, 3, "a"), 3);
@@ -1342,7 +1347,7 @@ mod tests {
         crate::UI.store(2, Ordering::Relaxed);
         assert_eq!(tx(PAGES[CTX_PAGE]), "右クリックメニュー項目");
         assert_eq!(tx(CTX_RESET_L), "すべて有効に戻す");
-        assert_eq!(tx(CTX_NOTE), "Panegrid の右クリックメニューに出る項目です。開く、コピー、プロパティなどの Windows の項目はそのままです。新しい項目はオンで始まります。エクスプローラーは変わりません。");
+        assert_eq!(tx(CTX_NOTE), "Maguro の右クリックメニューに出る項目です。開く、コピー、プロパティなどの Windows の項目はそのままです。新しい項目はオンで始まります。エクスプローラーは変わりません。");
         let (_, page) = commit_search(0, 0, "右クリックメニュー");
         assert_eq!(page, CTX_PAGE);
         let g = geo(client(), &shot(page, "右クリック"));

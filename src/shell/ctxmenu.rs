@@ -1,6 +1,6 @@
-// Third-party context menu entries, and the Panegrid-only filter.
+// Third-party context menu entries, and the Maguro-only filter.
 //
-// The registry is read, never written. Enablement lives in panegrid.json (`ctx_menu`),
+// The registry is read, never written. Enablement lives in maguro.json (`ctx_menu`),
 // not in HKCR and not in a .grids file. Explorer is unchanged.
 //
 // The visible menu is always the shell view's own `IContextMenu` (the same object as
@@ -22,7 +22,7 @@
 // loaded every handler on the real menu, including ones that are off — that is the
 // cost of an identical item set. Disabled handlers are never given their own visible menu.
 //
-// Set `PANEGRID_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
+// Set `MAGURO_CTX_TIMING=1` to log each phase with OutputDebugString (DebugView).
 // `query` is the shell's own `QueryContextMenu`. The first call loads each handler DLL
 // and runs its class factory; COM later unloads unused ones (`CoFreeUnusedLibraries`,
 // about ten minutes idle) and the cost comes back. `warmup` does that load off the UI
@@ -30,7 +30,7 @@
 //
 // Settings shows a product name (VERSIONINFO, then a known-vendor name) and, under it,
 // the menu strings that handler adds. Static verbs contribute their registry text.
-// A real menu records the strings the user actually saw (`ctx_labels` in panegrid.json).
+// A real menu records the strings the user actually saw (`ctx_labels` in maguro.json).
 // Handlers that share a product title are one settings row; a toggle writes every
 // handler in that row. Recording never inserts, deletes, or reorders the menu.
 //
@@ -64,7 +64,7 @@ pub(crate) const FOLDER: u8 = 2;
 pub(crate) const BACKGROUND: u8 = 4;
 pub(crate) const DRIVE: u8 = 8;
 const TARGET_ALL: u8 = FILE | FOLDER | BACKGROUND | DRIVE;
-/// Panegrid's own WinMerge commands. The shell extension, when installed, shares this switch.
+/// Maguro's own WinMerge commands. The shell extension, when installed, shares this switch.
 pub(crate) const APP_WINMERGE: &str = "app:winmerge";
 /// WinMerge's Explorer context-menu handler. `GetCommandString` returns no verb; both items are the text it inserts.
 const WINMERGE_CLSID: &str = "clsid:4e716236-aa30-4c65-b225-d68bba81e9c2";
@@ -721,14 +721,14 @@ pub(crate) fn log_phase(phase: &str, t0: Instant) {
         return;
     }
     let ms = t0.elapsed().as_millis();
-    let text = format!("[panegrid] ctx {phase} {ms} ms\0");
+    let text = format!("[maguro] ctx {phase} {ms} ms\0");
     let w: Vec<u16> = text.encode_utf16().collect();
     unsafe { OutputDebugStringW(PCWSTR(w.as_ptr())) };
 }
 
 fn timing() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("PANEGRID_CTX_TIMING") {
+    *ON.get_or_init(|| match std::env::var("MAGURO_CTX_TIMING") {
         Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
         Err(_) => false,
     })
@@ -864,8 +864,8 @@ pub(crate) unsafe fn strip_disabled(menu: HMENU, cm: &IContextMenu, targets: u8)
             continue;
         }
         let id = GetMenuItemID(menu, i as i32);
-        // Panegrid's own commands (batch rename, favourites, WinMerge) use ids at 0x8000 and above.
-        if panegrid_menu_id(id) {
+        // Maguro's own commands (batch rename, favourites, WinMerge) use ids at 0x8000 and above.
+        if maguro_menu_id(id) {
             continue;
         }
         let raw = item_text(menu, i);
@@ -908,8 +908,8 @@ fn push_mark(names: &mut Vec<String>, text: &str) {
     names.push(key);
 }
 
-/// Panegrid appends its own commands at 0x8000 and above. The shell's range stops at 0x7FFF.
-fn panegrid_menu_id(id: u32) -> bool {
+/// Maguro appends its own commands at 0x8000 and above. The shell's range stops at 0x7FFF.
+fn maguro_menu_id(id: u32) -> bool {
     id != u32::MAX && id >= 0x8000
 }
 
@@ -1043,7 +1043,7 @@ unsafe fn probe_contract(row: &Row, guid: &GUID, folder_pidl: *const ITEMIDLIST,
     Some(items)
 }
 
-/// Read menu strings off the shell menu Panegrid just built.
+/// Read menu strings off the shell menu Maguro just built.
 /// The menu itself is left as the shell built it. Handlers we have not named yet are
 /// asked by `learn_pending` after the popup closes, so that probe is not part of the wait.
 pub(crate) unsafe fn observe_menu(menu: HMENU, cm: &IContextMenu, targets: u8) {
@@ -1335,19 +1335,19 @@ unsafe fn normalize_menu_into(menu: HMENU, seen: &mut Vec<isize>, depth: u8) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NewFolderSlot {
     Other,
-    /// Top-level "New folder". `panegrid` is a command id at `0x8000` or above.
-    NewFolder { panegrid: bool },
+    /// Top-level "New folder". `maguro` is a command id at `0x8000` or above.
+    NewFolder { maguro: bool },
 }
 
-/// Explorer's row wins. A second Explorer row, and Panegrid's own row beside one, go.
+/// Explorer's row wins. A second Explorer row, and Maguro's own row beside one, go.
 fn keep_new_folder(rows: &[NewFolderSlot]) -> Vec<bool> {
-    let explorer = rows.iter().any(|row| matches!(row, NewFolderSlot::NewFolder { panegrid: false }));
+    let explorer = rows.iter().any(|row| matches!(row, NewFolderSlot::NewFolder { maguro: false }));
     let mut seen_explorer = false;
     let mut seen_own = false;
     rows.iter()
         .map(|row| match row {
             NewFolderSlot::Other => true,
-            NewFolderSlot::NewFolder { panegrid: false } => {
+            NewFolderSlot::NewFolder { maguro: false } => {
                 if seen_explorer {
                     false
                 } else {
@@ -1355,7 +1355,7 @@ fn keep_new_folder(rows: &[NewFolderSlot]) -> Vec<bool> {
                     true
                 }
             }
-            NewFolderSlot::NewFolder { panegrid: true } => {
+            NewFolderSlot::NewFolder { maguro: true } => {
                 if explorer || seen_own {
                     false
                 } else {
@@ -1372,7 +1372,7 @@ fn is_new_folder_verb(verb: &str) -> bool {
     v == "newfolder" || v == "windows.newfolder"
 }
 
-/// Shell text (`새 폴더(&N)`, `新しいフォルダー(&F)`) and Panegrid's `tr()` strings.
+/// Shell text (`새 폴더(&N)`, `新しいフォルダー(&F)`) and Maguro's `tr()` strings.
 fn is_new_folder_label(text: &str) -> bool {
     matches!(
         menu_match_key(text).as_str(),
@@ -1389,11 +1389,11 @@ fn is_new_folder_item(verb: &str, text: &str) -> bool {
 /// Explorer can insert that command twice. `Position=Top` puts it first, and the
 /// same verb is merged again under Paste from `Directory\Background` and
 /// `Folder\Background`. Both rows share the shell string (`새 폴더(&N)` on a
-/// Korean UI, `新しいフォルダー(&F)` on a Japanese one). Panegrid does not add
+/// Korean UI, `新しいフォルダー(&F)` on a Japanese one). Maguro does not add
 /// a row of its own. A command id at `0x8000` or above with that label is removed
 /// when Explorer already has the verb, so the two are never stacked.
 ///
-/// Rows Panegrid does add (favourites, batch rename, WinMerge, the Properties
+/// Rows Maguro does add (favourites, batch rename, WinMerge, the Properties
 /// fallback) keep `tr()`, the app UI language. Explorer's rows stay in the
 /// Windows display language. This pass does not relabel either kind.
 pub(crate) unsafe fn dedupe_new_folder(menu: HMENU, cm: Option<&IContextMenu>) {
@@ -1405,14 +1405,14 @@ pub(crate) unsafe fn dedupe_new_folder(menu: HMENU, cm: Option<&IContextMenu>) {
             continue;
         }
         let id = GetMenuItemID(menu, i as i32);
-        let panegrid = panegrid_menu_id(id);
+        let maguro = maguro_menu_id(id);
         let verb = match cm {
             Some(cm) if id != u32::MAX && (1..0x8000).contains(&id) => super::cmd_verb(cm, (id - 1) as usize),
             _ => String::new(),
         };
         let text = item_text(menu, i);
         if is_new_folder_item(&verb, &text) {
-            rows.push(NewFolderSlot::NewFolder { panegrid });
+            rows.push(NewFolderSlot::NewFolder { maguro });
         } else {
             rows.push(NewFolderSlot::Other);
         }
@@ -2445,7 +2445,7 @@ fn mentions_winmerge(s: &str) -> bool {
     s.to_ascii_lowercase().contains("winmerge")
 }
 
-/// Shell handler and Panegrid's own commands. New handlers start on; this one starts off.
+/// Shell handler and Maguro's own commands. New handlers start on; this one starts off.
 fn row_defaults_off(r: &Row) -> bool {
     r.id == APP_WINMERGE || r.id.eq_ignore_ascii_case(WINMERGE_CLSID) || mentions_winmerge(&r.product) || mentions_winmerge(&r.raw) || mentions_winmerge(&r.name)
 }
@@ -3584,7 +3584,8 @@ mod tests {
         toggle_master(&mut m, "verb:7-zip", BACKGROUND);
         clear_off(&mut m);
         assert!(m.is_empty());
-        assert_eq!(names(FILE | DRIVE), vec!["drive".to_string(), "file".to_string()]);
+        // write_bits lists targets in bit order: file, folder, background, drive.
+        assert_eq!(names(FILE | DRIVE), vec!["file".to_string(), "drive".to_string()]);
     }
 
     #[test]
@@ -3697,7 +3698,9 @@ mod tests {
         assert_eq!(strip_accel("C&onfigure..."), "Configure...");
         assert_eq!(strip_accel("Fish && Chips"), "Fish & Chips");
         assert_eq!(fold_menu("C&onfigure..."), "configure...");
-        assert_eq!(fold_menu("Fish && Chips"), fold_menu("Fish & Chips"));
+        // `&&` is a literal ampersand. A single `&` is an accelerator and is dropped.
+        assert_eq!(fold_menu("Fish && Chips"), "fish & chips");
+        assert_eq!(fold_menu("Fish & Chips"), "fish  chips");
         assert!(identifier_like("AABdzCtx Class"));
         assert!(identifier_like("SynoFolderContextMenu Class"));
         assert!(identifier_like("FileSyncEx"));
@@ -4174,11 +4177,11 @@ mod tests {
         assert!(!item_dropped("", "SVN Checkout...", &[], &inserted));
         assert!(!item_dropped("properties", "プロパティ", &[], &inserted));
         assert!(!item_dropped("open", "開く(O)", &["open".into()], &inserted));
-        // Panegrid's own WinMerge commands sit at 0x8020 and are not shell rows.
-        assert!(panegrid_menu_id(0x8020));
-        assert!(panegrid_menu_id(0x8021));
-        assert!(!panegrid_menu_id(1));
-        assert!(!panegrid_menu_id(u32::MAX));
+        // Maguro's own WinMerge commands sit at 0x8020 and are not shell rows.
+        assert!(maguro_menu_id(0x8020));
+        assert!(maguro_menu_id(0x8021));
+        assert!(!maguro_menu_id(1));
+        assert!(!maguro_menu_id(u32::MAX));
     }
 
     fn kept_separators(items: &[SepMark]) -> Vec<SepMark> {
@@ -4212,8 +4215,8 @@ mod tests {
     #[test]
     fn one_new_folder_row_and_explorer_wins_when_both_exist() {
         use NewFolderSlot::*;
-        let shell = NewFolder { panegrid: false };
-        let own = NewFolder { panegrid: true };
+        let shell = NewFolder { maguro: false };
+        let own = NewFolder { maguro: true };
         let other = Other;
         assert_eq!(keep_new_folder(&[other, shell, other, shell]), vec![true, true, true, false]);
         assert_eq!(keep_new_folder(&[own, other, shell]), vec![false, true, true]);
@@ -4259,8 +4262,8 @@ mod tests {
         let folder: Vec<NewFolderSlot> = slots
             .iter()
             .map(|s| match s {
-                Slot::New => NewFolder { panegrid: false },
-                Slot::Own => NewFolder { panegrid: true },
+                Slot::New => NewFolder { maguro: false },
+                Slot::Own => NewFolder { maguro: true },
                 _ => Other,
             })
             .collect();
@@ -4270,13 +4273,13 @@ mod tests {
         let tidy: Vec<Slot> = left.into_iter().zip(keep).filter(|(_, k)| *k).map(|(s, _)| s).collect();
         assert_eq!(tidy, vec![Slot::New, Slot::Sep, Slot::Item, Slot::Sep, Slot::Item]);
 
-        // Explorer already has the command, so Panegrid's own row is the one that goes.
+        // Explorer already has the command, so Maguro's own row is the one that goes.
         let both = [Slot::Own, Slot::Sep, Slot::New, Slot::Sep];
         let folder: Vec<NewFolderSlot> = both
             .iter()
             .map(|s| match s {
-                Slot::New => NewFolder { panegrid: false },
-                Slot::Own => NewFolder { panegrid: true },
+                Slot::New => NewFolder { maguro: false },
+                Slot::Own => NewFolder { maguro: true },
                 _ => Other,
             })
             .collect();

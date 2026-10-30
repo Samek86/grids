@@ -1,22 +1,22 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/panegrid-lockup-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/panegrid-lockup-light.png">
-    <img alt="Panegrid" src="assets/panegrid-lockup-light.png" width="560">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/maguro-lockup-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/maguro-lockup-light.png">
+    <img alt="Maguro" src="assets/maguro-lockup-light.png" width="192">
   </picture>
 </p>
 
-<h1 align="center">Panegrid</h1>
+<h1 align="center">Maguro</h1>
 
 <p align="center">A fast, lightweight multi-pane file manager for Windows.</p>
 
-> **Panegrid is a fork of [efww/grids](https://github.com/efww/grids)** by efww. It uses its own exe name (`panegrid.exe`), window class, settings folder and hotkey (Win+Shift+E), so it can run next to the original Grids without touching its settings.
+> **Maguro is a fork of [efww/grids](https://github.com/efww/grids)** by efww. It uses its own exe name (`maguro.exe`), window class, settings folder and hotkey (Win+Shift+E), so it can run next to the original Grids without touching its settings.
 
 <p align="center">
-  <a href="https://github.com/Samek86/panegrid"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Samek86/maguro"><img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="https://github.com/Samek86/panegrid"><img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
-  <a href="https://github.com/Samek86/panegrid/commits"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/Samek86/panegrid"></a>
+  <a href="https://github.com/Samek86/maguro"><img alt="Language: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/Samek86/maguro/commits"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/Samek86/maguro"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.png">
-    <img alt="Panegrid" src="docs/images/hero_light.png">
+    <img alt="Maguro" src="docs/images/hero_light.png">
   </picture>
 </p>
 
@@ -56,7 +56,7 @@ The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-acce
 
 ### 🌐 Server connections
 
-Right-click the favourites panel background, or a group, and choose **Add server connection…**. SMB and WebDAV open as normal Windows folders (UNC, signed in with `WNetAddConnection2`). SFTP and FTP are mounted with rclone and WinFsp, then browse like any other folder — including preview, the context menu, and fast copy. Passwords stay in Windows Credential Manager and are never written to `panegrid.json`.
+Right-click the favourites panel background, or a group, and choose **Add server connection…**. SMB and WebDAV open as normal Windows folders (UNC, signed in with `WNetAddConnection2`). SFTP and FTP are mounted with rclone and WinFsp, then browse like any other folder — including preview, the context menu, and fast copy. Passwords stay in Windows Credential Manager and are never written to `maguro.json`.
 
 ### 👁️ Quick preview
 
@@ -74,7 +74,7 @@ Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Ev
 
 The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
 
-**Fast copy.** Paste and drag to or from a network folder can use robocopy (Settings → File operations, off by default). Right-click → Fast paste always uses it, with Panegrid's own progress and overwrite / skip / cancel. A move copies first and deletes the originals only after that copy succeeds.
+**Fast copy.** Paste and drag to or from a network folder can use robocopy (Settings → File operations, off by default). Right-click → Fast paste always uses it, with Maguro's own progress and overwrite / skip / cancel. A move copies first and deletes the originals only after that copy succeeds.
 
 <p align="center"><img width="760" alt="explorer" src="docs/images/explorer.png"></p>
 
@@ -85,8 +85,8 @@ The full Explorer context menu (shell extensions included, plus Properties on em
 - **Mouse side buttons everywhere.** Back and forward work in folder panes, also over Remote Desktop.
 - **Right-click menu without the first-click lag.** Shell context menus are warmed up in the background after launch and after a long idle.
 - **Theme switch keeps history.** Changing light / dark rebuilds the views without wiping back / forward or the folder you were in.
-- **Optional update check.** On startup Panegrid can check GitHub Releases for a newer `panegrid.exe` (SHA-256 verified) and offer to install it.
-- **Crash report on the next launch.** If a third-party shell extension takes Panegrid down, the report names it, and you can block that DLL inside Panegrid only (`blocked_shell_extensions` in `panegrid.json`).
+- **Optional update check.** On startup Maguro can check GitHub Releases for a newer `maguro.exe` (SHA-256 verified) and offer to install it.
+- **Crash report on the next launch.** If a third-party shell extension takes Maguro down, the report names it, and you can block that DLL inside Maguro only (`blocked_shell_extensions` in `maguro.json`).
 
 ### 🎨 Themes & accent
 
@@ -98,13 +98,13 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 ## Install
 
-Download the latest `panegrid.exe` from [Releases](https://github.com/Samek86/panegrid/releases/latest). Put it in any folder and run it. A small single exe — nothing to install. Releases ship that raw exe and a `panegrid.exe.sha256` checksum, not a zip.
+Download the latest `maguro.exe` from [Releases](https://github.com/Samek86/maguro/releases/latest). Put it in any folder and run it. A small single exe — nothing to install. Releases ship that raw exe and a `maguro.exe.sha256` checksum, not a zip.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
 **Requirements:** Windows 10 (1903 or later) or Windows 11, x64.
 
-Settings live in `%APPDATA%\Panegrid\panegrid.json`. Put a file named `portable.txt` next to `panegrid.exe` to keep `panegrid.json` beside the exe instead. Named sessions stay `.grids` files in the `panegrid-sessions` folder next to the exe (existing `sessions` `.grids` files are copied once).
+Settings live in `%APPDATA%\Maguro\maguro.json`. Put a file named `portable.txt` next to `maguro.exe` to keep `maguro.json` beside the exe instead. Named sessions stay `.grids` files in the `maguro-sessions` folder next to the exe (existing `sessions` `.grids` files are copied once).
 
 To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -154,24 +154,24 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+, | Settings |
 |  | F1 / Ctrl+/ | Shortcut help / list |
 |  | Ctrl+N | New window |
-|  | Win+Shift+E | Bring Panegrid to the front (global) |
+|  | Win+Shift+E | Bring Maguro to the front (global) |
 
 ## Known issues
 
-**Don't run Panegrid as administrator.** A user reported that PowerToys Mouse Crosshairs (and similar tools) stopped following the cursor and froze where they clicked over Panegrid. It happens only when Panegrid runs as administrator: Windows doesn't let a program without administrator rights receive mouse input over a window that has them (UIPI), so a normal PowerToys gets no mouse movement over an elevated Panegrid. Give both the same rights, either way:
+**Don't run Maguro as administrator.** A user reported that PowerToys Mouse Crosshairs (and similar tools) stopped following the cursor and froze where they clicked over Maguro. It happens only when Maguro runs as administrator: Windows doesn't let a program without administrator rights receive mouse input over a window that has them (UIPI), so a normal PowerToys gets no mouse movement over an elevated Maguro. Give both the same rights, either way:
 
-1. **Recommended**: run Panegrid normally. Don't open `panegrid.exe` with right-click → **Run as administrator**, and in the shortcut's or `panegrid.exe`'s **Properties → Compatibility**, clear **Run this program as an administrator**.
-2. If you need Panegrid as administrator, run PowerToys as administrator too: **PowerToys Settings → General → Always run as administrator**, then restart PowerToys.
+1. **Recommended**: run Maguro normally. Don't open `maguro.exe` with right-click → **Run as administrator**, and in the shortcut's or `maguro.exe`'s **Properties → Compatibility**, clear **Run this program as an administrator**.
+2. If you need Maguro as administrator, run PowerToys as administrator too: **PowerToys Settings → General → Always run as administrator**, then restart PowerToys.
 
 ## Settings
 
 The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
 
-Language (Auto, English, and every language file), font, light / dark theme, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `panegrid.json` key table are in [docs/settings.md](docs/settings.md).
+Language (Auto, English, and every language file), font, light / dark theme, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `maguro.json` key table are in [docs/settings.md](docs/settings.md).
 
 ## Language files
 
-English is compiled into the program and is the fallback. Korean, Japanese, French, and German ship as `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, and `lang/lang.de.ini`. On first run, and again whenever the version changes, Panegrid writes those four files into the `lang` folder next to the settings file (`%APPDATA%\Panegrid\lang`, or beside `panegrid.exe` when `portable.txt` is there). It always overwrites those four. It never writes, overwrites, or deletes a `lang.xx.user.ini`, or any other `lang.xx.ini` you add.
+English is compiled into the program and is the fallback. Korean, Japanese, French, and German ship as `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, and `lang/lang.de.ini`. On first run, and again whenever the version changes, Maguro writes those four files into the `lang` folder next to the settings file (`%APPDATA%\Maguro\lang`, or beside `maguro.exe` when `portable.txt` is there). It always overwrites those four. It never writes, overwrites, or deletes a `lang.xx.user.ini`, or any other `lang.xx.ini` you add.
 
 A file is UTF-8 (a leading BOM is ignored). Lines are `key = text`. One space after `=` is the separator. `\\` is a backslash and `\n` is a newline. A line that starts with `#` or `;` is a comment. `[meta]` `name` is the label in the language list. `[meta]` `font` is an optional UI font (Korean and Japanese default to Malgun Gothic and Yu Gothic UI; other languages use Segoe UI). A missing key uses the English text.
 
@@ -179,14 +179,14 @@ A file is UTF-8 (a leading BOM is ignored). Lines are `key = text`. One space af
 
 ## Roadmap
 
-- [ ] Code-signed builds, so SmartScreen does not warn the first time you run `panegrid.exe`
+- [ ] Code-signed builds, so SmartScreen does not warn the first time you run `maguro.exe`
 - [x] Interface languages beyond English, 한국어, and 日本語
 
 ## Credits
 
-Panegrid is a fork of [efww/grids](https://github.com/efww/grids) by efww.
+Maguro is a fork of [efww/grids](https://github.com/efww/grids) by efww.
 
-Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidtools Everything](https://www.voidtools.com/). Panegrid is an independent project, not affiliated with Q-Dir or its author.
+Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidtools Everything](https://www.voidtools.com/). Maguro is an independent project, not affiliated with Q-Dir or its author.
 
 ## License
 

@@ -64,23 +64,23 @@ pub(crate) fn files_section_label() -> &'static str {
     tr(crate::Key::ExplorerFavouriteFiles)
 }
 
-/// Rename, delete, and drag apply to Panegrid favourites. Explorer rows are display and navigate.
+/// Rename, delete, and drag apply to Maguro favourites. Explorer rows are display and navigate.
 pub(crate) fn fav_row_editable(row: &FavRow) -> bool {
     row.in_tree()
 }
 
-/// Indices of Panegrid-favourite rows, in list order. Explorer rows are left out.
+/// Indices of Maguro-favourite rows, in list order. Explorer rows are left out.
 pub(crate) fn fav_editable_indices(rows: &[FavRow]) -> Vec<usize> {
     rows.iter().enumerate().filter(|(_, r)| fav_row_editable(r)).map(|(i, _)| i).collect()
 }
 
-/// A Panegrid favourite may land on another Panegrid favourite. Explorer rows are neither source nor target.
+/// A Maguro favourite may land on another Maguro favourite. Explorer rows are neither source nor target.
 /// `src_id` is the tree id being dragged. A node cannot be dropped onto itself or into its own subtree.
 pub(crate) fn fav_popup_can_drop(src_in_tree: bool, src_id: &[usize], dst: &FavRow) -> bool {
     src_in_tree && dst.in_tree() && !src_id.is_empty() && src_id != dst.id.as_slice() && !dst.id.starts_with(src_id)
 }
 
-/// Favourites window rows: Explorer pins, then favourite files, then Panegrid favourites.
+/// Favourites window rows: Explorer pins, then favourite files, then Maguro favourites.
 /// An empty query follows collapsed sections. A query searches every list, including a collapsed
 /// section, and keeps the section header (or the tree ancestors and descendants) of each hit.
 pub(crate) fn popup_rows(
@@ -463,7 +463,7 @@ mod tests {
         assert!(work.in_tree() && work.group && !work.open && work.id == vec![0] && work.depth == 0);
         let home = open.iter().find(|r| r.name == "Home").unwrap();
         assert!(home.in_tree() && !home.group && home.id == vec![1] && home.path == r"C:\home");
-        assert!(open.iter().all(|r| r.name != "notes"), "a collapsed Panegrid group hides its child");
+        assert!(open.iter().all(|r| r.name != "notes"), "a collapsed Maguro group hides its child");
 
         let closed = listed(&tree, &pins, &files, false, false, "");
         assert_eq!(names(&closed), vec!["Explorer pins", "Explorer favourite files", "Work", "Home"]);
@@ -512,11 +512,11 @@ mod tests {
         assert_eq!(names(&ko), vec!["Explorer pins", "사진"]);
         assert!(listed(&tree, &pins, &files, true, true, "없는").is_empty());
 
-        // The section title is a group hit: every pin stays, Panegrid favourites stay out.
+        // The section title is a group hit: every pin stays, Maguro favourites stay out.
         let section = listed(&tree, &pins, &files, false, true, "explorer pins");
         assert_eq!(names(&section), vec!["Explorer pins", "Zed", "Cee", "사진"]);
 
-        // A collapsed Panegrid child is found, with its group, and a matching pin path does not pull the tree.
+        // A collapsed Maguro child is found, with its group, and a matching pin path does not pull the tree.
         let notes = listed(&tree, &pins, &files, true, true, "notes.txt");
         assert_eq!(names(&notes), vec!["Work", "notes"]);
         assert!(notes[0].group && !notes[0].open && notes[1].file && notes[1].in_tree());

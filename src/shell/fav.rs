@@ -100,13 +100,13 @@ pub(crate) unsafe fn launch_server(owner: HWND, link: crate::session::ServerLink
                 app(|a| a.s.remote_asked = true);
                 save_session();
                 let q = tr(crate::Key::InstallRcloneAndWinfspToConnectToSftp);
-                if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
+                if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_YESNO | MB_ICONQUESTION) == IDYES {
                     crate::remote::install_then_connect(owner.0 as isize, link, open);
                 }
                 return;
             }
             let q = tr(crate::Key::RcloneOrWinfspIsNotInstalled);
-            let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+            let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
             return;
         }
     }
@@ -130,18 +130,18 @@ pub(crate) unsafe fn remote_arrived() {
             crate::remote::Done::Quiet => {}
             crate::remote::Done::NeedTools => {
                 let q = tr(crate::Key::RcloneOrWinfspIsNotInstalled);
-                let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+                let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
             }
             crate::remote::Done::Fail(detail) => {
                 let base = tr(crate::Key::CouldNotConnectToTheServer);
                 let text = if detail.trim().is_empty() { base.to_string() } else { format!("{base}\n\n{detail}") };
-                let _ = MessageBoxW(Some(owner), &HSTRING::from(text), w!("Panegrid"), MB_ICONWARNING);
+                let _ = MessageBoxW(Some(owner), &HSTRING::from(text), w!("Maguro"), MB_ICONWARNING);
             }
             crate::remote::Done::Open(path) => {
                 let i = active_pane();
                 if !navigate(i, &path) {
                     let q = tr(crate::Key::CouldNotConnectToTheServer);
-                    let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+                    let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_ICONWARNING);
                 } else if !net_failed(i) {
                     focus_view(i);
                 }
@@ -248,7 +248,7 @@ unsafe fn open_present(path: &str, file: bool) {
     }
 }
 
-/// Open / Explore / our verb on one folder browses this pane while Panegrid is the
+/// Open / Explore / our verb on one folder browses this pane while Maguro is the
 /// folder handler. A file shortcut is not taken, so the verb still opens it.
 /// Returns true when the command must not reach the shell (that launch is a new tab).
 unsafe fn claim_folder_open(pane: usize, verb: &str, items: &[(String, bool)], default_item: bool) -> bool {
@@ -313,13 +313,13 @@ pub(crate) fn fav_menu_label(paths: &[String]) -> &'static str {
     fav_action_label(fav_removes(&refs, |p| app(|a| a.s.is_fav(p))))
 }
 
-/// Panegrid's own row on the shell menu. Explorer already shows its Home favourite
-/// (`お気に入りに追加`), so this label names Panegrid in every UI language.
+/// Maguro's own row on the shell menu. Explorer already shows its Home favourite
+/// (`お気に入りに追加`), so this label names Maguro in every UI language.
 pub(crate) fn fav_action_label(remove: bool) -> &'static str {
     if remove {
-        tr(crate::Key::RemoveFromPanegridFavorites)
+        tr(crate::Key::RemoveFromMaguroFavorites)
     } else {
-        tr(crate::Key::AddPanegridFavorites)
+        tr(crate::Key::AddMaguroFavorites)
     }
 }
 
@@ -1163,7 +1163,7 @@ pub(crate) unsafe fn open_favs() {
     app(|a| (a.fav_hot, a.fav_prev) = (None, prev));
     let style = WS_POPUP | WS_VISIBLE;
     let y = rc.bottom + 6 * dpi / 96;
-    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridFav"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
+    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("MaguroFav"), w!(""), style, rc.left, y, g.w, g.h, Some(main), None, None, None) else {
         return;
     };
     let square = DWMWCP_DONOTROUND;
@@ -1417,17 +1417,17 @@ mod tests {
     }
 
     #[test]
-    fn panegrid_favourite_row_names_the_app_in_every_language() {
+    fn maguro_favourite_row_names_the_app_in_every_language() {
         let prev = UI.load(Ordering::Relaxed);
         UI.store(0, Ordering::Relaxed);
-        assert_eq!(fav_action_label(false), "Add to Panegrid favorites");
-        assert_eq!(fav_action_label(true), "Remove from Panegrid favorites");
+        assert_eq!(fav_action_label(false), "Add to Maguro favorites");
+        assert_eq!(fav_action_label(true), "Remove from Maguro favorites");
         UI.store(1, Ordering::Relaxed);
-        assert_eq!(fav_action_label(false), "Panegrid 즐겨찾기에 추가");
-        assert_eq!(fav_action_label(true), "Panegrid 즐겨찾기에서 제거");
+        assert_eq!(fav_action_label(false), "Maguro 즐겨찾기에 추가");
+        assert_eq!(fav_action_label(true), "Maguro 즐겨찾기에서 제거");
         UI.store(2, Ordering::Relaxed);
-        assert_eq!(fav_action_label(false), "Panegrid のお気に入りに追加");
-        assert_eq!(fav_action_label(true), "Panegrid のお気に入りから削除");
+        assert_eq!(fav_action_label(false), "Maguro のお気に入りに追加");
+        assert_eq!(fav_action_label(true), "Maguro のお気に入りから削除");
         UI.store(prev, Ordering::Relaxed);
     }
 }

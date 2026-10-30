@@ -41,7 +41,7 @@ pub(crate) const WM_THEME_SCROLL: u32 = WM_APP + 64; // scroll and select-all, a
 pub(crate) const WM_THEME_RELAUNCH: u32 = WM_APP + 65; // DirectUIHWND birth theme: save+relaunch after theme flip
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;
-pub(crate) const HOME: &str = "https://github.com/Samek86/panegrid";
+pub(crate) const HOME: &str = "https://github.com/Samek86/maguro";
 pub(crate) const ID_ACCENT: usize = 1400; // + preset index
 pub(crate) const ID_ACCENT_PICK: usize = 1410;
 pub(crate) const EM_SETSEL: u32 = 0xB1;
@@ -49,7 +49,7 @@ pub(crate) const TIMER_STATUS: usize = 1;
 pub(crate) const TIMER_FILTER: usize = 2;
 pub(crate) const TIMER_REVEAL: usize = 3;
 pub(crate) const TIMER_SETTLE: usize = 4; // one width pass after a folder change. Does not call SetColumns or SetViewMode.
-pub(crate) const TIMER_SAVE: usize = 5; // debounced panegrid.json write
+pub(crate) const TIMER_SAVE: usize = 5; // debounced maguro.json write
 pub(crate) const SAVE_SOON_MS: u32 = 1500;
 pub(crate) const SAVE_LATEST_MS: u128 = 30_000;
 /// Hidden tabs that still hold Explorer windows. Older hidden tabs keep only their saved grid.

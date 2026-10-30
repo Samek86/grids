@@ -658,13 +658,13 @@ unsafe fn ensure_net_fail(pane: HWND) -> HWND {
             lpfnWndProc: Some(net_fail_proc),
             hInstance: hinst.into(),
             hCursor: arrow,
-            lpszClassName: w!("PanegridNetFail"),
+            lpszClassName: w!("MaguroNetFail"),
             ..Default::default()
         });
     });
     CreateWindowExW(
         WINDOW_EX_STYLE(0),
-        w!("PanegridNetFail"),
+        w!("MaguroNetFail"),
         w!(""),
         WS_CHILD | WS_CLIPSIBLINGS,
         0,
@@ -902,7 +902,7 @@ fn spawn_share(hwnd: isize, id: usize, path: String) -> bool {
         NET_BUSY.fetch_sub(1, Ordering::Relaxed);
         return false;
     }
-    let spawned = std::thread::Builder::new().name("panegrid-net".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("maguro-net".into()).spawn(move || {
         unsafe { resolve_share(hwnd, id, &path) };
         NET_BUSY.fetch_sub(1, Ordering::Relaxed);
     });
@@ -3673,7 +3673,7 @@ unsafe fn open_file_item(item: &IShellItem) {
 /// Double-click / Enter on the file list, including the filter.
 ///
 /// Plain activation of a folder browses this pane. These are the cases that used to
-/// return `S_FALSE` and let DefView run the default verb (Panegrid, so a new tab):
+/// return `S_FALSE` and let DefView run the default verb (Maguro, so a new tab):
 /// focus not assigned yet while the view is enumerating; `GetAttributes` pending or
 /// failed so the flags came back empty; a junction or directory symlink with no
 /// `SFGAO_FOLDER` bit; a file symlink to a directory; a `.lnk` whose pidl existed but

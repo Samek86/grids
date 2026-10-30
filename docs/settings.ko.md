@@ -1,10 +1,10 @@
-# Panegrid 설정
+# Maguro 설정
 
 설정 파일 위치는 [README의 설치](../README.ko.md#설치)를 보세요.
 
 ## 이전 설정 가져오기
 
-처음 실행할 때 `panegrid.json`이 없으면 이전 Panegrid 또는 Samek86 Grids의 파일(`%APPDATA%\grids\grids.json`, 또는 exe 옆 `grids.json`)을 복사합니다. 그것도 없으면 `grids.ini` 또는 `qdir.ini`를 읽기 전용으로 가져옵니다. 원본 파일은 이름을 바꾸거나 수정하거나 지우지 않습니다(`.bak` 없음). 예전 `grids.ini`의 `lang=ko`도 한국어로 읽힙니다.
+처음 실행할 때 `maguro.json`이 없으면 `%APPDATA%\grids` 또는 exe 옆의 `grids.json`을 복사합니다. 그것도 없으면 `grids.ini` 또는 `qdir.ini`를 읽기 전용으로 가져옵니다. 원본 파일은 이름을 바꾸거나 수정하거나 지우지 않습니다(`.bak` 없음). `panegrid.json`과 `%APPDATA%\Panegrid`는 읽지 않습니다. 예전 `grids.ini`의 `lang=ko`도 한국어로 읽힙니다.
 
 ## 저장 방식, 언어, 보기
 
@@ -25,15 +25,15 @@
 | `ev_asked` | Everything 설치를 한 번만 물은 답을 기억합니다. Everything이 없을 때 처음 하위 폴더 검색을 하면 설치할지 묻습니다. |
 | `drive_buttons` | 키가 없으면 켜짐. 설정 → 모양 → 드라이브 버튼 표시를 끄면 버튼이 숨고 그 자리를 탭이 씁니다. 창이 좁으면 뒤쪽 글자부터 숨깁니다. |
 | `layout_new` | 첫 실행과 새 창의 기본 레이아웃. 좌우 2개, 위아래 2개, 2×2, 1개 중 하나입니다. 다른 실행에서 넘겨받은 경로는 1패널 탭으로 열립니다. 창 탭을 새로 만들면(+ 또는 Ctrl+T) 기본 레이아웃 대신 지금 탭의 배치를 가져옵니다. |
-| `hotkey` | 줄이 없으면 켜짐. Win+Shift+E로 Panegrid를 앞으로 가져오고, 다시 누르면 최소화합니다. Panegrid 대화 상자가 열려 있으면 그 창이 앞으로 옵니다. 보기 메뉴의 체크는 키가 실제로 등록됐을 때만 켜지므로, 시작에 실패해도 한 번 누르면 다시 시도합니다. 단축키는 설정에서 바꿀 수 있습니다. |
+| `hotkey` | 줄이 없으면 켜짐. Win+Shift+E로 Maguro를 앞으로 가져오고, 다시 누르면 최소화합니다. Maguro 대화 상자가 열려 있으면 그 창이 앞으로 옵니다. 보기 메뉴의 체크는 키가 실제로 등록됐을 때만 켜지므로, 시작에 실패해도 한 번 누르면 다시 시도합니다. 단축키는 설정에서 바꿀 수 있습니다. |
 | `space_preview` | 키가 없으면 켜짐. 설정 → 패널·보기 → 스페이스로 미리보기를 끄면 스페이스로는 열리지 않습니다. 글자를 입력한 뒤 1초 안의 스페이스나, 한글·일본어를 조합하는 중의 스페이스는 이름의 일부로 들어갑니다. Ctrl+Space와 Shift+Space는 그대로 둡니다. |
 | `folders` | 패널 안의 탭으로 연 폴더. 패널마다 저장되고, 이름 붙인 세션에도 들어갑니다. 예전 `pane_tabs` 값은 무시됩니다. |
 | `favorites_tree` | 즐겨찾기 트리. 예전 목록은 맨 위로 옮겨집니다. |
 | `one_window` | 창 하나만 쓰기. 줄이 없으면 꺼져 있습니다. 켜면 다시 실행할 때 최소화된 창을 되돌리고, 경로 인자는 그 창의 탭으로 엽니다. Ctrl+N, 탭을 밖으로 끌기, 새 창으로 이동, 이미 앞에 있을 때의 Win+Shift+E는 새 창 대신 이 창의 탭을 엽니다. |
 | `lang` | `"auto"`, `"en"`, 또는 `"ko"`, `"ja"`, `"fr"`, `"de"` 같은 언어 파일 코드. 키가 없거나 `"auto"`이면 맞는 파일이 있을 때 Windows 표시 언어를 따르고, 없으면 영어입니다. |
 | `font_face` | 창 전체의 글꼴. 글꼴 크기는 저장하지 않습니다. 예전 `font` 값은 무시됩니다. |
-| `blocked_shell_extensions` | Panegrid가 불러오지 않을 DLL 파일 이름. 예: `"codec.dll"`. 비어 있으면 막지 않으며 키는 빠집니다. Panegrid 안에서만 적용됩니다. 레지스트리에는 쓰지 않고, 탐색기는 그대로이며, `grids.ini`에도 들어가지 않습니다. System32, SysWOW64, WinSxS 아래의 Windows DLL(`shell32.dll`, `explorerframe.dll` 포함)은 막지 않습니다. 목록을 고친 뒤에는 Panegrid를 다시 시작합니다. CLSID 없이 경로로만 불러오는 핸들러는 이 설정으로 막을 수 없고, 그 DLL 이름은 충돌 보고서에 남습니다. |
+| `blocked_shell_extensions` | Maguro가 불러오지 않을 DLL 파일 이름. 예: `"codec.dll"`. 비어 있으면 막지 않으며 키는 빠집니다. Maguro 안에서만 적용됩니다. 레지스트리에는 쓰지 않고, 탐색기는 그대로이며, `grids.ini`에도 들어가지 않습니다. System32, SysWOW64, WinSxS 아래의 Windows DLL(`shell32.dll`, `explorerframe.dll` 포함)은 막지 않습니다. 목록을 고친 뒤에는 Maguro를 다시 시작합니다. CLSID 없이 경로로만 불러오는 핸들러는 이 설정으로 막을 수 없고, 그 DLL 이름은 충돌 보고서에 남습니다. |
 
 ## 충돌 보고서
 
-Panegrid가 패닉, 접근 위반, 또는 셸 확장 안의 fail-fast로 끝나면, 다음 실행에서 “Panegrid closed unexpectedly last time”(한국어 화면에서는 번역된 문장), 보고서 경로, 폴더 열기가 나옵니다. 보고서는 설정 폴더의 `crashes` 안에 있는 텍스트 파일입니다(`%APPDATA%\Panegrid\crashes`, `portable.txt`가 있으면 exe 옆). grids 폴더에는 쓰지 않습니다. 보고서에는 버전, 스레드, 패닉 또는 예외 코드와 주소, 오류가 난 모듈 이름과 오프셋, 마지막으로 연 폴더, 불러온 타사 모듈, 불러온 셸 확장 DLL이 들어갑니다. 폴더 열기는 그 `crashes` 폴더를 엽니다.
+Maguro가 패닉, 접근 위반, 또는 셸 확장 안의 fail-fast로 끝나면, 다음 실행에서 “Maguro closed unexpectedly last time”(한국어 화면에서는 번역된 문장), 보고서 경로, 폴더 열기가 나옵니다. 보고서는 설정 폴더의 `crashes` 안에 있는 텍스트 파일입니다(`%APPDATA%\Maguro\crashes`, `portable.txt`가 있으면 exe 옆). grids 폴더에는 쓰지 않습니다. 보고서에는 버전, 스레드, 패닉 또는 예외 코드와 주소, 오류가 난 모듈 이름과 오프셋, 마지막으로 연 폴더, 불러온 타사 모듈, 불러온 셸 확장 DLL이 들어갑니다. 폴더 열기는 그 `crashes` 폴더를 엽니다.

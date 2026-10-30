@@ -57,7 +57,7 @@ pub(crate) unsafe fn request_icon(h: HWND, ticket: u32, pidl: *const ITEMIDLIST)
     let ev = *ICON_WORKER.get_or_init(|| {
         let Ok(ev) = CreateEventW(None, false, false, PCWSTR::null()) else { return None };
         let raw = ev.0 as isize;
-        match std::thread::Builder::new().name("panegrid-icon".into()).spawn(move || icon_worker(raw)) {
+        match std::thread::Builder::new().name("maguro-icon".into()).spawn(move || icon_worker(raw)) {
             Ok(_) => Some(raw),
             Err(_) => {
                 _ = CloseHandle(ev);

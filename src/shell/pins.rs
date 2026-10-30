@@ -314,7 +314,7 @@ pub(crate) fn shell_home_verb(path: &str, pin: bool) -> bool {
 /// the item's writable property store and committed. That is the write Explorer's command
 /// uses to update Home. The jump list `f01b4d95cf55d32a.automaticDestinations-ms` is the
 /// on-disk favorites store; it is not edited from here because Explorer keeps it mapped.
-/// Verbs, ids, and HRESULTs are appended to `favorite-remove.log` next to panegrid.json.
+/// Verbs, ids, and HRESULTs are appended to `favorite-remove.log` next to maguro.json.
 pub(crate) fn shell_unfavorite_file(path: &str) {
     let path = tidy_path(path);
     if path.is_empty() {
@@ -1578,14 +1578,14 @@ mod tests {
     }
 
     #[test]
-    fn the_diagnostic_log_is_beside_panegrid_settings_and_rotates() {
-        let settings = std::path::PathBuf::from(r"C:\Users\Jun\AppData\Roaming\Panegrid");
+    fn the_diagnostic_log_is_beside_maguro_settings_and_rotates() {
+        let settings = std::path::PathBuf::from(r"C:\Users\Jun\AppData\Roaming\Maguro");
         let log = super::favorite_log_file(&settings);
         assert_eq!(log.file_name().and_then(|s| s.to_str()), Some("favorite-remove.log"));
         let low = log.to_string_lossy().to_ascii_lowercase();
-        assert!(low.contains("panegrid"));
+        assert!(low.contains("maguro"));
         assert!(!low.contains("\\grids\\") && !low.contains("/grids/"));
-        let dir = std::env::temp_dir().join(format!("panegrid-favlog-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-favlog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = super::favorite_log_file(&dir);

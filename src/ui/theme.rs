@@ -126,4 +126,13 @@ mod tests {
     fn side_ground_of(dark: bool) -> u32 {
         side_divider_colors(dark, 0).0
     }
+
+    #[test]
+    fn mint_fill_keeps_dark_text() {
+        // Default accent is mint. It is brighter than the pane-label swatches, so it stays
+        // out of the menu list: a dark-theme #2EC4A6 label fails the quiet-fill contrast rule.
+        assert_eq!(on_color(0x2EC4A6), INK);
+        assert_eq!(LIGHT.accents.len(), 6);
+        assert_eq!(LIGHT.accents[1].1, 0xC5C5C5);
+    }
 }

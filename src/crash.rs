@@ -164,22 +164,22 @@ fn show_panic_dialog(detail: &str) {
     }
     let text = format!(
         "{}\n\n{detail}",
-        crate::tr(crate::Key::PanegridHitErrorAndKeptThisWindow)
+        crate::tr(crate::Key::MaguroHitErrorAndKeptThisWindow)
     );
     unsafe {
-        let _ = MessageBoxW(None, &HSTRING::from(text), w!("Panegrid"), MB_OK | MB_ICONWARNING);
+        let _ = MessageBoxW(None, &HSTRING::from(text), w!("Maguro"), MB_OK | MB_ICONWARNING);
     }
     SHOWING_PANIC.store(false, Ordering::SeqCst);
 }
 
-/// `--crash-watch` and `--panegrid-image` never install hooks or spawn another watcher.
+/// `--crash-watch` and `--maguro-image` never install hooks or spawn another watcher.
 pub(crate) fn helper(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("--crash-watch") => {
             watch_main(args);
             true
         }
-        Some("--panegrid-image") => {
+        Some("--maguro-image") => {
             let code = crate::pane::image_main(args);
             std::process::exit(code);
         }
@@ -209,7 +209,7 @@ pub(crate) fn install() {
             SetUnhandledExceptionFilter(Some(filter));
         }
         write_trace();
-        let _ = std::thread::Builder::new().name("panegrid-trace".into()).spawn(|| {
+        let _ = std::thread::Builder::new().name("maguro-trace".into()).spawn(|| {
             let names = guard(|| crate::shell::blockext::registered_names()).unwrap_or_default();
             set_shell_dlls(names);
             loop {
@@ -281,13 +281,13 @@ fn watch_main(args: &[String]) {
         }
         let trace = std::fs::read_to_string(dir.join("last-trace.txt")).unwrap_or_default();
         let mut text = format!(
-            "Panegrid {}\nkind: fast-fail\nexit: 0x{code:08X}\n\
+            "Maguro {}\nkind: fast-fail\nexit: 0x{code:08X}\n\
              note: fail-fast skips the vectored handler, so the faulting address was not available.\n\
              Modules below are the last snapshot taken before exit.\n\n{trace}",
             env!("CARGO_PKG_VERSION")
         );
         if !text.contains("blocked_shell_extensions") {
-            text.push_str("\nhint: add the DLL file name to blocked_shell_extensions in panegrid.json and restart. This blocks it inside Panegrid only. Explorer is unchanged. Windows system DLLs are not blocked.\n");
+            text.push_str("\nhint: add the DLL file name to blocked_shell_extensions in maguro.json and restart. This blocks it inside Maguro only. Explorer is unchanged. Windows system DLLs are not blocked.\n");
         }
         let _ = DIR.set(dir);
         let _ = save_report(&text);
@@ -525,7 +525,7 @@ pub(crate) fn is_system_module(path: &str) -> bool {
 }
 
 fn is_self(path: &str) -> bool {
-    file_name(path).eq_ignore_ascii_case("panegrid.exe")
+    file_name(path).eq_ignore_ascii_case("maguro.exe")
 }
 
 pub(crate) fn third_party_modules(paths: &[String]) -> Vec<String> {
@@ -577,7 +577,7 @@ fn push_line(s: &mut String, line: &str) {
 
 pub(crate) fn format_report(r: &Report) -> String {
     let mut s = String::new();
-    push_line(&mut s, &format!("Panegrid {}", r.version));
+    push_line(&mut s, &format!("Maguro {}", r.version));
     push_line(&mut s, &format!("thread: {}", r.thread));
     push_line(&mut s, &format!("kind: {}", r.kind));
     if !r.detail.is_empty() {
@@ -622,7 +622,7 @@ pub(crate) fn format_report(r: &Report) -> String {
     }
     push_line(
         &mut s,
-        "hint: add the DLL file name to blocked_shell_extensions in panegrid.json and restart. This blocks it inside Panegrid only. Explorer is unchanged. Windows system DLLs are not blocked.",
+        "hint: add the DLL file name to blocked_shell_extensions in maguro.json and restart. This blocks it inside Maguro only. Explorer is unchanged. Windows system DLLs are not blocked.",
     );
     s
 }
@@ -652,8 +652,8 @@ unsafe fn task_dialog(report: &str) -> Option<bool> {
     use windows::Win32::UI::Controls::{
         TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1, TASKDIALOG_BUTTON, TDCBF_CLOSE_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
     };
-    let title = HSTRING::from("Panegrid");
-    let head = HSTRING::from(crate::tr(crate::Key::PanegridClosedUnexpectedlyLastTime));
+    let title = HSTRING::from("Maguro");
+    let head = HSTRING::from(crate::tr(crate::Key::MaguroClosedUnexpectedlyLastTime));
     let body = HSTRING::from(format!(
         "{report}\n\n{}",
         crate::tr(crate::Key::ReportIsInFolderAboveAddDll)
@@ -696,10 +696,10 @@ unsafe fn task_dialog(report: &str) -> Option<bool> {
 fn message_fallback(_folder: &Path, report: &str) -> bool {
     let text = HSTRING::from(format!(
         "{}\n\n{report}\n\n{}",
-        crate::tr(crate::Key::PanegridClosedUnexpectedlyLastTime),
+        crate::tr(crate::Key::MaguroClosedUnexpectedlyLastTime),
         crate::tr(crate::Key::OpenFolder2),
     ));
-    unsafe { MessageBoxW(None, &text, w!("Panegrid"), MB_YESNO | MB_ICONWARNING) == IDYES }
+    unsafe { MessageBoxW(None, &text, w!("Maguro"), MB_YESNO | MB_ICONWARNING) == IDYES }
 }
 
 fn open_folder(folder: &Path) {
@@ -741,7 +741,7 @@ mod tests {
             third_party: vec![r"C:\Program Files\Codec\bad.dll".into(), r"C:\Program Files\Codec\codec.dll".into()],
             recent: vec!["nav F:\\CAC\\サンプル".into()],
         });
-        assert!(text.contains("Panegrid 0.1.25"), "{text}");
+        assert!(text.contains("Maguro 0.1.25"), "{text}");
         assert!(text.contains("exception: 0xC0000005"), "{text}");
         assert!(text.contains(r"bad.dll+0x1A2B"), "{text}");
         assert!(text.contains(r"F:\CAC\サンプル"), "{text}");
@@ -755,7 +755,7 @@ mod tests {
         let paths = vec![
             r"C:\Windows\System32\shell32.dll".into(),
             r"C:\Windows\SysWOW64\propsys.dll".into(),
-            r"C:\Program Files\Panegrid\panegrid.exe".into(),
+            r"C:\Program Files\Maguro\maguro.exe".into(),
             r"C:\Program Files\Codec\codec.dll".into(),
         ];
         assert!(is_system_module(r"C:\Windows\System32\shell32.dll"));
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn panic_report_is_written_in_the_crashes_folder() {
-        let dir = std::env::temp_dir().join(format!("panegrid-crash-{}-{}", std::process::id(), stamp()));
+        let dir = std::env::temp_dir().join(format!("maguro-crash-{}-{}", std::process::id(), stamp()));
         let _ = std::fs::remove_dir_all(&dir);
         let text = format_report(&Report {
             version: "0.1.45".into(),

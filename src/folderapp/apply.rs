@@ -40,7 +40,7 @@ pub(crate) fn set_registered(on: bool) -> bool {
     ok
 }
 
-/// Startup: if both classes already point at Panegrid, point the command at this exe.
+/// Startup: if both classes already point at Maguro, point the command at this exe.
 pub(crate) fn repair_moved_exe() {
     let exe = current_exe();
     if exe.is_empty() {

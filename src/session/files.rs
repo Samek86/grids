@@ -31,7 +31,7 @@ pub(crate) unsafe fn save_session() {
             a.save_after = None;
         });
     } else {
-        // The old panegrid.json stays. Try again in 5 seconds, unless a drag or resize is in progress.
+        // The old maguro.json stays. Try again in 5 seconds, unless a drag or resize is in progress.
         app(|a| a.save_after = Some(Instant::now() + std::time::Duration::from_secs(5)));
     }
 }
@@ -294,12 +294,12 @@ pub(crate) unsafe fn load_session_files(paths: &[PathBuf]) {
     open_tabs_beside(incoming);
 }
 
-// Window of a running copy of this same exe. A portable.txt copy keeps its own panegrid.json.
+// Window of a running copy of this same exe. A portable.txt copy keeps its own maguro.json.
 pub(crate) unsafe fn running_instance() -> Option<HWND> {
     let me = std::env::current_exe().ok()?.to_string_lossy().to_lowercase();
     let mut h = None;
     loop {
-        let w = FindWindowExW(None, h, w!("PanegridMain"), PCWSTR::null()).ok()?;
+        let w = FindWindowExW(None, h, w!("MaguroMain"), PCWSTR::null()).ok()?;
         h = Some(w);
         let mut pid = 0;
         GetWindowThreadProcessId(w, Some(&mut pid));

@@ -1,6 +1,6 @@
 //! Startup update check against the latest GitHub release, and the self-replace that installs it.
 //! No token and no Actions: one unauthenticated GET to the public releases API, then the raw
-//! `panegrid.exe` asset and its `panegrid.exe.sha256`. The exe is replaced only when the
+//! `maguro.exe` asset and its `maguro.exe.sha256`. The exe is replaced only when the
 //! SHA-256 matches. A missing checksum, a mismatch, or a zip-only release is reported and not installed.
 
 use crate::*;
@@ -10,33 +10,33 @@ use std::sync::Mutex;
 use windows::Win32::Networking::WinHttp::*;
 
 /// Test builds can point at a local mock or pretend to be older; release builds use the real values.
-const API: &str = match option_env!("PANEGRID_UPDATE_API") {
+const API: &str = match option_env!("MAGURO_UPDATE_API") {
     Some(u) => u,
-    None => "https://api.github.com/repos/Samek86/panegrid/releases/latest",
+    None => "https://api.github.com/repos/Samek86/maguro/releases/latest",
 };
-pub(crate) const APP_VERSION: &str = match option_env!("PANEGRID_FAKE_VERSION") {
+pub(crate) const APP_VERSION: &str = match option_env!("MAGURO_FAKE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
-/// Largest panegrid.exe the updater will download.
+/// Largest maguro.exe the updater will download.
 const EXE_MAX: usize = 64 << 20;
-/// Largest panegrid.exe.sha256 the updater will read. A sha256sum line is under 100 bytes.
+/// Largest maguro.exe.sha256 the updater will read. A sha256sum line is under 100 bytes.
 const SHA_MAX: usize = 4096;
 /// GitHub release asset the updater downloads. Releases upload this raw exe, not a zip.
-const EXE_ASSET: &str = "panegrid.exe";
-/// sha256sum checksum published next to the exe. `<64 hex>  panegrid.exe`.
-const SHA_ASSET: &str = "panegrid.exe.sha256";
+const EXE_ASSET: &str = "maguro.exe";
+/// sha256sum checksum published next to the exe. `<64 hex>  maguro.exe`.
+const SHA_ASSET: &str = "maguro.exe.sha256";
 /// Downloaded build, next to the running exe, until the swap moves it into place.
-const NEW_EXE: &str = "panegrid.new.exe";
-const OLD_EXE: &str = "panegrid.old.exe";
+const NEW_EXE: &str = "maguro.new.exe";
+const OLD_EXE: &str = "maguro.old.exe";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Release {
-    /// Raw `panegrid.exe` plus a usable `panegrid.exe.sha256`.
+    /// Raw `maguro.exe` plus a usable `maguro.exe.sha256`.
     Exe { tag: String, url: String, size: u64, sha_url: String, sha_size: u64 },
-    /// `panegrid.exe` was published without a usable checksum file. Shown, never installed.
+    /// `maguro.exe` was published without a usable checksum file. Shown, never installed.
     MissingSha { tag: String },
-    /// Newer release that published a zip and no `panegrid.exe`. Shown, never extracted.
+    /// Newer release that published a zip and no `maguro.exe`. Shown, never extracted.
     ZipOnly { tag: String },
 }
 
@@ -52,7 +52,7 @@ impl Release {
 enum InstallFail {
     /// Checksum asset missing, or the checksum body could not be downloaded.
     MissingSha,
-    /// Checksum text was not a sha256sum line for panegrid.exe, or the digest differed.
+    /// Checksum text was not a sha256sum line for maguro.exe, or the digest differed.
     Mismatch,
     Other,
 }
@@ -82,7 +82,7 @@ fn asset_file_name(asset: &serde_json::Value) -> Option<&str> {
     Some(name.rsplit(['/', '\\']).next().unwrap_or(name))
 }
 
-/// The tag plus the `panegrid.exe` and `panegrid.exe.sha256` assets.
+/// The tag plus the `maguro.exe` and `maguro.exe.sha256` assets.
 /// The exe wins over a zip. An exe with no usable checksum is `MissingSha`, never a download.
 /// A zip is never returned as something to download.
 pub(crate) fn parse_release(json: &str) -> Option<Release> {
@@ -101,7 +101,7 @@ pub(crate) fn parse_release(json: &str) -> Option<Release> {
     zip_only.then_some(Release::ZipOnly { tag })
 }
 
-/// `panegrid.exe.sha256` download URL and size, when the asset is small enough to be a sha256sum file.
+/// `maguro.exe.sha256` download URL and size, when the asset is small enough to be a sha256sum file.
 fn sha_asset(assets: &[serde_json::Value]) -> Option<(String, u64)> {
     let sha = assets.iter().find(|a| asset_file_name(a).is_some_and(|n| n.eq_ignore_ascii_case(SHA_ASSET)))?;
     let sha_url = sha.get("browser_download_url")?.as_str()?.to_string();
@@ -109,10 +109,10 @@ fn sha_asset(assets: &[serde_json::Value]) -> Option<(String, u64)> {
     (1..=SHA_MAX as u64).contains(&sha_size).then_some((sha_url, sha_size))
 }
 
-/// First sha256sum line naming `panegrid.exe`: `<64 hex>  panegrid.exe`.
-/// Binary mode (`hash *panegrid.exe`) and a directory prefix on the name are accepted.
+/// First sha256sum line naming `maguro.exe`: `<64 hex>  maguro.exe`.
+/// Binary mode (`hash *maguro.exe`) and a directory prefix on the name are accepted.
 /// A bare 64-hex line (no filename) is also accepted so a mis-uploaded checksum asset still verifies;
-/// a named `panegrid.exe` line wins when both appear.
+/// a named `maguro.exe` line wins when both appear.
 /// The hex is returned as published so the compare can be case-insensitive.
 pub(crate) fn parse_sha256sum(text: &str) -> Option<String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -223,7 +223,7 @@ fn http_get(url: &str, max: usize) -> Option<Vec<u8>> {
         object.push(0);
         host[uc.dwHostNameLength as usize] = 0;
         let secure = uc.nScheme == WINHTTP_INTERNET_SCHEME_HTTPS;
-        let ua = HSTRING::from(format!("Panegrid/{APP_VERSION}"));
+        let ua = HSTRING::from(format!("Maguro/{APP_VERSION}"));
         let ses = Hnd(WinHttpOpen(&ua, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0));
         if ses.0.is_null() {
             return None;
@@ -284,7 +284,7 @@ fn exe_path() -> Option<PathBuf> {
 /// Startup: remove the exe a previous update left behind, then ask GitHub when the setting is on.
 pub(crate) fn startup(main: HWND, check: bool) {
     let h = main.0 as isize;
-    _ = std::thread::Builder::new().name("panegrid-update".into()).spawn(move || {
+    _ = std::thread::Builder::new().name("maguro-update".into()).spawn(move || {
         if let Some(old) = exe_path().and_then(|e| e.parent().map(|d| d.join(OLD_EXE))) {
             // The previous process may still be closing for a moment.
             for _ in 0..20 {
@@ -312,7 +312,7 @@ pub(crate) fn startup(main: HWND, check: bool) {
 }
 
 /// Download the raw exe and its checksum, then swap only when the SHA-256 matches.
-/// On a missing checksum or a mismatch, `panegrid.new.exe` is deleted and the running exe stays.
+/// On a missing checksum or a mismatch, `maguro.new.exe` is deleted and the running exe stays.
 fn install(rel: &Release) -> std::result::Result<(), InstallFail> {
     let Release::Exe { url, size, sha_url, sha_size, .. } = rel else { return Err(InstallFail::MissingSha) };
     let exe = exe_path().ok_or(InstallFail::Other)?;
@@ -352,7 +352,7 @@ fn install(rel: &Release) -> std::result::Result<(), InstallFail> {
     res
 }
 
-/// Running exe -> panegrid.old.exe, new -> exe. Puts the old one back if the second move fails.
+/// Running exe -> maguro.old.exe, new -> exe. Puts the old one back if the second move fails.
 fn swap(exe: &Path, new: &Path, old: &Path) -> std::result::Result<(), &'static str> {
     if old.exists() && std::fs::remove_file(old).is_err() {
         return Err("old exe busy");
@@ -379,10 +379,10 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
         0 => {
             let Some(rel) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
             let Release::Exe { tag, .. } = &rel else { return };
-            let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur)
+            let text = tr(crate::Key::MaguroNewIsAvailableYouHaveCur)
             .replace("{new}", tag)
             .replace("{cur}", &format!("v{APP_VERSION}"));
-            let title = tr(crate::Key::PanegridUpdate);
+            let title = tr(crate::Key::MaguroUpdate);
             if MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDYES {
                 return;
             }
@@ -390,7 +390,7 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
                 return;
             }
             let hv = h.0 as isize;
-            let spawned = std::thread::Builder::new().name("panegrid-update-install".into()).spawn(move || {
+            let spawned = std::thread::Builder::new().name("maguro-update-install".into()).spawn(move || {
                 let stage = match install(&rel) {
                     Ok(()) => 1,
                     Err(InstallFail::MissingSha) => 4,
@@ -443,37 +443,37 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
 /// A newer release published only a zip. Tell the user; do not download or extract it.
 unsafe fn zip_only(h: HWND, tag: &str) {
     let url = format!("{HOME}/releases/latest");
-    let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur2)
+    let text = tr(crate::Key::MaguroNewIsAvailableYouHaveCur2)
     .replace("{new}", tag)
     .replace("{cur}", &format!("v{APP_VERSION}"))
     .replace("{url}", &url);
-    let title = tr(crate::Key::PanegridUpdate);
+    let title = tr(crate::Key::MaguroUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONINFORMATION);
 }
 
-/// The release has no `panegrid.exe.sha256`, or that file could not be downloaded. Nothing was installed.
+/// The release has no `maguro.exe.sha256`, or that file could not be downloaded. Nothing was installed.
 unsafe fn sha_missing(h: HWND, tag: &str) {
-    let text = tr(crate::Key::PanegridNewIsAvailableYouHaveCur3)
+    let text = tr(crate::Key::MaguroNewIsAvailableYouHaveCur3)
     .replace("{new}", tag)
     .replace("{cur}", &format!("v{APP_VERSION}"));
-    let title = tr(crate::Key::PanegridUpdate);
+    let title = tr(crate::Key::MaguroUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
-/// The downloaded exe does not match `panegrid.exe.sha256`. The temp file is already deleted.
+/// The downloaded exe does not match `maguro.exe.sha256`. The temp file is already deleted.
 unsafe fn sha_mismatch(h: HWND) {
-    let text = tr(crate::Key::DownloadedPanegridExeDoesNotMatchPanegri);
-    let title = tr(crate::Key::PanegridUpdate);
+    let text = tr(crate::Key::DownloadedMaguroExeDoesNotMatchPanegri);
+    let title = tr(crate::Key::MaguroUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
 unsafe fn failed(h: HWND) {
-    let text = tr(crate::Key::UpdateCouldNotBeInstalledPanegridWas);
-    let title = tr(crate::Key::PanegridUpdate);
+    let text = tr(crate::Key::UpdateCouldNotBeInstalledMaguroWas);
+    let title = tr(crate::Key::MaguroUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONWARNING);
 }
 
-/// Every Panegrid main window of this process gets WM_CLOSE, so each saves as on a normal exit.
+/// Every Maguro main window of this process gets WM_CLOSE, so each saves as on a normal exit.
 unsafe fn close_all_windows() {
     unsafe extern "system" fn each(h: HWND, _a1: LPARAM) -> BOOL {
         crate::crash::catch_bool(std::panic::AssertUnwindSafe(|| unsafe { each_inner(h, _a1) }))
@@ -483,7 +483,7 @@ unsafe fn close_all_windows() {
         GetWindowThreadProcessId(h, Some(&mut pid));
         let mut cls = [0u16; 32];
         let n = GetClassNameW(h, &mut cls) as usize;
-        if pid == std::process::id() && String::from_utf16_lossy(&cls[..n]) == "PanegridMain" {
+        if pid == std::process::id() && String::from_utf16_lossy(&cls[..n]) == "MaguroMain" {
             _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
         TRUE
@@ -561,16 +561,16 @@ mod tests {
     #[test]
     fn release_json_picks_exe_and_sha_assets() {
         let j = r#"{"tag_name":"v0.2.0","assets":[{"name":"notes.txt","size":3,"browser_download_url":"x"},
-            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"},
-            {"name":"panegrid.exe.SHA256","size":80,"browser_download_url":"https://e/panegrid.exe.sha256"},
-            {"name":"Panegrid.EXE","size":1234,"browser_download_url":"https://e/panegrid.exe"}]}"#;
+            {"name":"maguro-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"},
+            {"name":"maguro.exe.SHA256","size":80,"browser_download_url":"https://e/maguro.exe.sha256"},
+            {"name":"Maguro.EXE","size":1234,"browser_download_url":"https://e/maguro.exe"}]}"#;
         assert_eq!(
             parse_release(j),
             Some(Release::Exe {
                 tag: "v0.2.0".into(),
-                url: "https://e/panegrid.exe".into(),
+                url: "https://e/maguro.exe".into(),
                 size: 1234,
-                sha_url: "https://e/panegrid.exe.sha256".into(),
+                sha_url: "https://e/maguro.exe.sha256".into(),
                 sha_size: 80,
             })
         );
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(parse_release("not json"), None);
         // A checksum with no exe is not an update.
         assert_eq!(
-            parse_release(r#"{"tag_name":"v9","assets":[{"name":"panegrid.exe.sha256","size":80,"browser_download_url":"https://e/s"}]}"#),
+            parse_release(r#"{"tag_name":"v9","assets":[{"name":"maguro.exe.sha256","size":80,"browser_download_url":"https://e/s"}]}"#),
             None
         );
     }
@@ -586,46 +586,46 @@ mod tests {
     #[test]
     fn release_json_exe_without_sha_is_not_installed() {
         let j = r#"{"tag_name":"v0.2.0","assets":[
-            {"name":"panegrid.exe","size":1234,"browser_download_url":"https://e/panegrid.exe"},
-            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
+            {"name":"maguro.exe","size":1234,"browser_download_url":"https://e/maguro.exe"},
+            {"name":"maguro-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
         assert_eq!(parse_release(j), Some(Release::MissingSha { tag: "v0.2.0".into() }));
         // An empty or oversized checksum file cannot be used.
         let empty = r#"{"tag_name":"v0.2.0","assets":[
-            {"name":"panegrid.exe","size":10,"browser_download_url":"https://e/panegrid.exe"},
-            {"name":"panegrid.exe.sha256","size":0,"browser_download_url":"https://e/s"}]}"#;
+            {"name":"maguro.exe","size":10,"browser_download_url":"https://e/maguro.exe"},
+            {"name":"maguro.exe.sha256","size":0,"browser_download_url":"https://e/s"}]}"#;
         assert_eq!(parse_release(empty), Some(Release::MissingSha { tag: "v0.2.0".into() }));
         let big = r#"{"tag_name":"v0.2.0","assets":[
-            {"name":"panegrid.exe","size":10,"browser_download_url":"https://e/panegrid.exe"},
-            {"name":"panegrid.exe.sha256","size":4097,"browser_download_url":"https://e/s"}]}"#;
+            {"name":"maguro.exe","size":10,"browser_download_url":"https://e/maguro.exe"},
+            {"name":"maguro.exe.sha256","size":4097,"browser_download_url":"https://e/s"}]}"#;
         assert_eq!(parse_release(big), Some(Release::MissingSha { tag: "v0.2.0".into() }));
     }
 
     #[test]
     fn sha256sum_parses_and_compares_case_insensitively() {
         let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        // sha256sum text mode: 64 hex, two spaces, panegrid.exe.
-        assert_eq!(parse_sha256sum(&format!("{hash}  panegrid.exe\n")).as_deref(), Some(hash));
-        assert_eq!(parse_sha256sum(&format!("{hash}  panegrid.exe\r\n")).as_deref(), Some(hash));
+        // sha256sum text mode: 64 hex, two spaces, maguro.exe.
+        assert_eq!(parse_sha256sum(&format!("{hash}  maguro.exe\n")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  maguro.exe\r\n")).as_deref(), Some(hash));
         let upper = hash.to_ascii_uppercase();
-        let parsed = parse_sha256sum(&format!("\u{feff}{upper}  panegrid.exe")).unwrap();
+        let parsed = parse_sha256sum(&format!("\u{feff}{upper}  maguro.exe")).unwrap();
         assert!(hashes_match(&parsed, hash));
         assert!(hashes_match(hash, &upper));
         assert!(!hashes_match(&parsed, &hash.replace('b', "c")));
         // Binary mode, a directory prefix, and a case-different file name.
-        assert_eq!(parse_sha256sum(&format!("{hash} *panegrid.exe")).as_deref(), Some(hash));
-        assert_eq!(parse_sha256sum(&format!("{hash}  build/panegrid.exe")).as_deref(), Some(hash));
-        assert_eq!(parse_sha256sum(&format!("{hash}  PANEGRID.EXE")).as_deref(), Some(hash));
-        assert_eq!(parse_sha256sum(&format!("# comment\n\n{hash}  panegrid.exe")).as_deref(), Some(hash));
-        assert!(parse_sha256sum("deadbeef  panegrid.exe").is_none());
+        assert_eq!(parse_sha256sum(&format!("{hash} *maguro.exe")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  build/maguro.exe")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("{hash}  MAGURO.EXE")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("# comment\n\n{hash}  maguro.exe")).as_deref(), Some(hash));
+        assert!(parse_sha256sum("deadbeef  maguro.exe").is_none());
         assert!(parse_sha256sum(&format!("{hash}  other.exe")).is_none());
-        assert!(parse_sha256sum(&format!("{hash}  panegrid.exe extra")).is_none());
+        assert!(parse_sha256sum(&format!("{hash}  maguro.exe extra")).is_none());
         // Bare hash (no filename) — tolerant of a mis-uploaded sha256 asset.
         assert_eq!(parse_sha256sum(&format!("{hash}")).as_deref(), Some(hash));
         assert_eq!(parse_sha256sum(&format!("{hash}\n")).as_deref(), Some(hash));
         // Named line wins over a bare hash earlier in the file.
-        assert_eq!(parse_sha256sum(&format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n{hash}  panegrid.exe")).as_deref(), Some(hash));
+        assert_eq!(parse_sha256sum(&format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n{hash}  maguro.exe")).as_deref(), Some(hash));
         assert!(parse_sha256sum("").is_none());
-        assert!(parse_sha256sum("SHA256 (panegrid.exe) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").is_none());
+        assert!(parse_sha256sum("SHA256 (maguro.exe) = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").is_none());
         assert!(!hashes_match("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", hash));
         assert!(!hashes_match(hash, &hash[..63]));
         assert!(!hashes_match("", ""));
@@ -636,7 +636,7 @@ mod tests {
         // echo -n abc | sha256sum
         let digest = sha256_bytes(b"abc");
         assert_eq!(digest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        let line = format!("{}  panegrid.exe", digest.to_ascii_uppercase());
+        let line = format!("{}  maguro.exe", digest.to_ascii_uppercase());
         assert!(hashes_match(parse_sha256sum(&line).as_deref().unwrap(), &digest));
         let path = std::env::temp_dir().join(format!("pg-sha-{}", std::process::id()));
         std::fs::write(&path, b"abc").unwrap();
@@ -647,12 +647,12 @@ mod tests {
     #[test]
     fn release_json_zip_only_is_not_an_exe() {
         let j = r#"{"tag_name":"v0.1.4","assets":[
-            {"name":"panegrid-v0.1.4-x64.zip","size":1252190,"browser_download_url":"https://e/p.zip"}]}"#;
+            {"name":"maguro-v0.1.4-x64.zip","size":1252190,"browser_download_url":"https://e/p.zip"}]}"#;
         assert_eq!(parse_release(j), Some(Release::ZipOnly { tag: "v0.1.4".into() }));
         // Some other exe is not the update asset. A zip beside it is still zip-only.
         let other = r#"{"tag_name":"v0.2.0","assets":[
             {"name":"setup.exe","size":10,"browser_download_url":"https://e/setup.exe"},
-            {"name":"panegrid-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
+            {"name":"maguro-v0.2.0-x64.zip","size":99,"browser_download_url":"https://e/p.zip"}]}"#;
         assert_eq!(parse_release(other), Some(Release::ZipOnly { tag: "v0.2.0".into() }));
         assert_eq!(
             parse_release(r#"{"tag_name":"v9","assets":[{"name":"readme.txt","size":1,"browser_download_url":"x"}]}"#),
@@ -665,7 +665,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("pg-swap-{}", std::process::id()));
         _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let (exe, new, old) = (d.join("panegrid.exe"), d.join("panegrid.new.exe"), d.join(OLD_EXE));
+        let (exe, new, old) = (d.join("maguro.exe"), d.join("maguro.new.exe"), d.join(OLD_EXE));
         std::fs::write(&exe, "old").unwrap();
         std::fs::write(&new, "new").unwrap();
         assert!(swap(&exe, &new, &old).is_ok());

@@ -142,7 +142,7 @@ fn reply_window() -> Option<HWND> {
         _ = RegisterClassW(&WNDCLASSW {
             lpfnWndProc: Some(ipc_proc),
             hInstance: hinst.into(),
-            lpszClassName: w!("PanegridEvIpc"),
+            lpszClassName: w!("MaguroEvIpc"),
             ..Default::default()
         });
     });
@@ -152,7 +152,7 @@ fn reply_window() -> Option<HWND> {
             return Some(cur);
         }
         let created = unsafe {
-            CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridEvIpc"), w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None).ok()?
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroEvIpc"), w!(""), WINDOW_STYLE(0), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None).ok()?
         };
         unsafe { _ = ChangeWindowMessageFilterEx(created, WM_COPYDATA, MSGFLT_ALLOW, None); }
         slot.set(created.0 as isize);
