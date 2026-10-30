@@ -67,6 +67,7 @@ pub(crate) enum Key {
     CheckForUpdatesOnStartup,
     Checking,
     ChooseFolder,
+    ClassicMenu,
     ClearAll,
     ClearAllRememberedViews,
     ClearFilter,
@@ -114,6 +115,7 @@ pub(crate) enum Key {
     CouldNotSavePreset,
     CouldNotStartPictureDecoder,
     Created,
+    CtxWin11Empty,
     Current,
     Custom,
     Custom2,
@@ -623,6 +625,7 @@ pub(crate) enum Key {
     WinEAndSpecialFoldersStayWith,
     Window,
     WindowHasChangedFolderListsUseNew,
+    Windows11Menu,
     WindowsProgressWindowRunsOnItsOwn,
     WindowsRulesSameDriveMove,
     WindowsScriptHost,
@@ -633,7 +636,7 @@ pub(crate) enum Key {
     ZipListHead,
 }
 
-pub(crate) const KEY_COUNT: usize = 628;
+pub(crate) const KEY_COUNT: usize = 631;
 
 pub(crate) const EN: [&str; KEY_COUNT] = [
     "About",
@@ -700,6 +703,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Check for updates on startup",
     "Checking…",
     "Choose a folder…",
+    "Classic menu",
     "Clear all",
     "Clear all remembered views",
     "Clear filter",
@@ -747,6 +751,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Could not save the preset: ",
     "Could not start the picture decoder",
     "Created",
+    "No Windows 11 packaged context-menu apps found on this PC.",
     "Current",
     "Custom...",
     "Custom…",
@@ -1256,6 +1261,7 @@ pub(crate) const EN: [&str; KEY_COUNT] = [
     "Win+E and special folders stay with Explorer.",
     "Window",
     "The window has changed. Folder lists use the new colours the next time Panegrid starts.",
+    "Windows 11 menu",
     "The Windows progress window runs on its own thread (always on).",
     "Windows rules (same drive = move)",
     "Windows Script Host",
@@ -1331,6 +1337,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "check_for_updates_on_startup",
     "checking",
     "choose_folder",
+    "classic_menu",
     "clear_all",
     "clear_all_remembered_views",
     "clear_filter",
@@ -1378,6 +1385,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "could_not_save_preset",
     "could_not_start_picture_decoder",
     "created",
+    "ctx_win11_empty",
     "current",
     "custom",
     "custom_2",
@@ -1887,6 +1895,7 @@ pub(crate) const KEY_ID: [&str; KEY_COUNT] = [
     "win_e_and_special_folders_stay_with",
     "window",
     "window_has_changed_folder_lists_use_new",
+    "windows_11_menu",
     "windows_progress_window_runs_on_its_own",
     "windows_rules_same_drive_move",
     "windows_script_host",

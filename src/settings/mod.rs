@@ -146,6 +146,9 @@ const CTX_NOTE: crate::Key = crate::Key::TheseItemsAppearInPanegridSRight;
 const CTX_RESET_L: crate::Key = crate::Key::ResetAllEnabled;
 const CTX_REFRESH_L: crate::Key = crate::Key::Refresh;
 const CTX_EMPTY: crate::Key = crate::Key::NoThirdPartyMenuItems;
+const CTX_CLASSIC: crate::Key = crate::Key::ClassicMenu;
+const CTX_WIN11: crate::Key = crate::Key::Windows11Menu;
+const CTX_WIN11_EMPTY: crate::Key = crate::Key::CtxWin11Empty;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ctl {
@@ -297,7 +300,15 @@ fn page_match(q: &str, page: usize) -> bool {
         return (0..crate::keys::len()).any(|i| key_hit_i(i, q)) || has(tx(KEY_NOTE), q);
     }
     if page == CTX_PAGE {
-        return has(tx(CTX_NOTE), q) || has(tx(CTX_RESET_L), q) || has(tx(CTX_REFRESH_L), q) || has(tx(CTX_EMPTY), q) || crate::shell::ctxmenu::name_hit(q);
+        return has(tx(CTX_NOTE), q)
+            || has(tx(CTX_RESET_L), q)
+            || has(tx(CTX_REFRESH_L), q)
+            || has(tx(CTX_EMPTY), q)
+            || has(tx(CTX_CLASSIC), q)
+            || has(tx(CTX_WIN11), q)
+            || has(tx(CTX_WIN11_EMPTY), q)
+            || crate::shell::ctxmenu::name_hit(q)
+            || crate::shell::ctxpack::name_hit(q);
     }
     false
 }
@@ -457,6 +468,8 @@ enum Item {
     FavRow { i: usize, rect: RECT, rename: RECT, btn: RECT },
     Note(RECT, crate::Key),
     CtxNote(RECT),
+    /// Classic | Windows 11. One list is visible. The active pill is filled in paint.
+    CtxSeg { classic: RECT, win11: RECT },
     CtxBar { reset: RECT, refresh: RECT },
     CtxRow {
         id: String,
@@ -470,9 +483,11 @@ enum Item {
         raw: String,
         tick: crate::shell::ctxmenu::Tick,
         chips: Vec<(u8, RECT)>,
+        /// Packaged row: one on/off for the CLSID. No chevron, no per-target expand.
+        packaged: bool,
     },
     CtxSub { ids: Vec<String>, scopes: Vec<u8>, bit: u8, rect: RECT, mark: RECT, tick: crate::shell::ctxmenu::Tick },
-    CtxEmpty(RECT),
+    CtxEmpty(RECT, crate::Key),
     KeyBar { edit: RECT, reset: RECT },
     KeyHead(RECT),
     KeyRow { i: usize, rect: RECT, change: RECT, reset: RECT },
@@ -651,6 +666,15 @@ fn fill_items(g: &mut Geo, sn: &Snap, bar: bool) -> i32 {
     (y + sn.scroll) - start + sc(dpi, 16)
 }
 
+/// ASCII is one cell. Hangul and kana are two, same rule as the target chips.
+fn seg_w(label: &str, dpi: i32) -> i32 {
+    let mut text_w = 0i32;
+    for ch in label.chars() {
+        text_w += if ch.is_ascii() { sc(dpi, 7) } else { sc(dpi, 14) };
+    }
+    text_w + sc(dpi, 32)
+}
+
 fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str) -> i32 {
     let dpi = sn.dpi.max(96);
     if rq.is_empty() || has(tx(CTX_NOTE), rq) {
@@ -658,12 +682,27 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
         g.items.push(Item::CtxNote(RECT { left, top: y, right, bottom: y + h }));
         y += h + sc(dpi, 8);
     }
-    let (off, on, seen, quiet) = app(|a| (a.s.ctx_off.clone(), a.s.ctx_on.clone(), a.s.ctx_labels.clone(), a.s.ctx_quiet.clone()));
-    let rows = crate::shell::ctxmenu::ui_rows(&off, &on, &seen, &quiet, rq);
+    let sh = sc(dpi, 32);
+    let gap = sc(dpi, 8);
+    let classic = RECT { left, top: y, right: left + seg_w(tx(CTX_CLASSIC), dpi), bottom: y + sh };
+    let win11 = RECT { left: classic.right + gap, top: y, right: classic.right + gap + seg_w(tx(CTX_WIN11), dpi), bottom: y + sh };
+    g.items.push(Item::CtxSeg { classic, win11 });
+    y += sh + gap;
+    let (win11_view, pack_off, off, on, seen, quiet) = app(|a| {
+        (
+            a.s.ctx_win11_view,
+            a.s.ctx_packaged_off.clone(),
+            a.s.ctx_off.clone(),
+            a.s.ctx_on.clone(),
+            a.s.ctx_labels.clone(),
+            a.s.ctx_quiet.clone(),
+        )
+    });
+    let rows = if win11_view { Vec::new() } else { crate::shell::ctxmenu::ui_rows(&off, &on, &seen, &quiet, rq) };
+    let pack_rows = if win11_view { crate::shell::ctxpack::ui_rows(&pack_off, rq) } else { Vec::new() };
     let reset_w = sc(dpi, 220);
     let refresh_w = sc(dpi, 140);
     let bh = sc(dpi, 32);
-    let gap = sc(dpi, 8);
     let reset = RECT { left: (right - reset_w).max(left), top: y, right, bottom: y + bh };
     let refresh = RECT {
         left: (reset.left - gap - refresh_w).max(left),
@@ -673,8 +712,39 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
     };
     g.items.push(Item::CtxBar { reset, refresh });
     y += bh + sc(dpi, 12);
+    if win11_view {
+        if pack_rows.is_empty() {
+            g.items.push(Item::CtxEmpty(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }, CTX_WIN11_EMPTY));
+            return y + sc(dpi, 44);
+        }
+        for row in pack_rows {
+            let sub = !row.detail.is_empty();
+            let h = sc(dpi, if sub { 64 } else { 48 });
+            let rect = RECT { left, top: y, right, bottom: y + h };
+            let tick_px = sc(dpi, 16);
+            let mid = if sub { y + sc(dpi, 8) + sc(dpi, 11) } else { y + h / 2 };
+            let mark = RECT { left: left + sc(dpi, 14), top: mid - tick_px / 2, right: left + sc(dpi, 30), bottom: mid + tick_px / 2 };
+            let chips = ctx_chips(row.targets, rect, dpi);
+            g.items.push(Item::CtxRow {
+                id: row.id,
+                ids: Vec::new(),
+                scopes: Vec::new(),
+                rect,
+                mark,
+                chev: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                name: row.name,
+                detail: row.detail,
+                raw: String::new(),
+                tick: if row.on { crate::shell::ctxmenu::Tick::On } else { crate::shell::ctxmenu::Tick::Off },
+                chips,
+                packaged: true,
+            });
+            y += h + sc(dpi, 6);
+        }
+        return y;
+    }
     if rows.is_empty() {
-        g.items.push(Item::CtxEmpty(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }));
+        g.items.push(Item::CtxEmpty(RECT { left, top: y, right, bottom: y + sc(dpi, 36) }, CTX_EMPTY));
         return y + sc(dpi, 44);
     }
     for row in rows {
@@ -699,6 +769,7 @@ fn ctx_items(g: &mut Geo, sn: &Snap, left: i32, right: i32, mut y: i32, rq: &str
             raw: row.raw,
             tick: row.tick,
             chips,
+            packaged: false,
         });
         y += h;
         if open {
@@ -1245,6 +1316,74 @@ mod tests {
         assert_eq!(page, CTX_PAGE);
         let g = geo(client(), &shot(page, "右クリック"));
         assert!(g.show[CTX_PAGE]);
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
+    }
+
+    struct View(bool);
+    impl Drop for View {
+        fn drop(&mut self) {
+            app(|a| a.s.ctx_win11_view = self.0);
+            crate::shell::ctxpack::set_test_rows(None);
+        }
+    }
+
+    fn pin_view(win11: bool) -> View {
+        let prev = app(|a| a.s.ctx_win11_view);
+        app(|a| a.s.ctx_win11_view = win11);
+        View(prev)
+    }
+
+    #[test]
+    fn ctx_segment_sits_above_refresh_with_an_8_dip_gap() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let _view = pin_view(false);
+        assert!(page_match("Classic menu", CTX_PAGE));
+        assert!(page_match("Windows 11 menu", CTX_PAGE));
+        assert_eq!(tx(CTX_CLASSIC), "Classic menu");
+        assert_eq!(tx(CTX_WIN11), "Windows 11 menu");
+        let g = geo(client(), &shot(CTX_PAGE, "Right-click menu"));
+        let note = g.items.iter().find_map(|it| match it {
+            Item::CtxNote(r) => Some(*r),
+            _ => None,
+        }).expect("note");
+        let (classic, win11) = g.items.iter().find_map(|it| match it {
+            Item::CtxSeg { classic, win11 } => Some((*classic, *win11)),
+            _ => None,
+        }).expect("segment");
+        let (reset, refresh) = g.items.iter().find_map(|it| match it {
+            Item::CtxBar { reset, refresh } => Some((*reset, *refresh)),
+            _ => None,
+        }).expect("ctx bar");
+        assert_eq!(classic.bottom - classic.top, 32);
+        assert_eq!(win11.bottom - win11.top, 32);
+        assert_eq!(classic.top, win11.top);
+        assert_eq!(win11.left - classic.right, 8);
+        assert_eq!(classic.left, note.left);
+        assert_eq!(classic.right - classic.left, 116);
+        assert_eq!(win11.right - win11.left, 137);
+        assert_eq!(refresh.top - classic.bottom, 8);
+        assert_eq!(refresh.top, reset.top);
+        assert_eq!(refresh.right - refresh.left, 140);
+        assert_eq!(reset.right - reset.left, 220);
+        assert_eq!(reset.left - refresh.right, 8);
+    }
+
+    #[test]
+    fn win11_view_uses_the_empty_state_key() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let _view = pin_view(true);
+        crate::shell::ctxpack::set_test_rows(Some(Vec::new()));
+        assert_eq!(tx(CTX_WIN11_EMPTY), "No Windows 11 packaged context-menu apps found on this PC.");
+        let g = geo(client(), &shot(CTX_PAGE, "Right-click menu"));
+        let key = g.items.iter().find_map(|it| match it {
+            Item::CtxEmpty(_, k) => Some(*k),
+            _ => None,
+        }).expect("empty state");
+        assert_eq!(key, crate::Key::CtxWin11Empty);
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxSeg { .. })));
+        assert!(g.items.iter().any(|it| matches!(it, Item::CtxBar { .. })));
         assert!(g.items.iter().any(|it| matches!(it, Item::CtxNote(_))));
     }
 

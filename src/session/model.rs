@@ -313,6 +313,11 @@ pub(crate) struct Session {
     /// Handler ids that were asked and added no visible menu item. They leave the settings list.
     /// The shell menu is unchanged. panegrid.json only.
     pub(crate) ctx_quiet: std::collections::BTreeSet<String>,
+    /// Packaged Windows 11 context-menu commands turned off. Empty means every one is on.
+    /// The id is `packaged:{clsid}`. panegrid.json only; a .grids file does not carry this.
+    pub(crate) ctx_packaged_off: std::collections::BTreeSet<String>,
+    /// Settings → Right-click menu is showing the Windows 11 list. panegrid.json only.
+    pub(crate) ctx_win11_view: bool,
     /// DLL file names that must not load inside this process. Empty means nothing extra is blocked.
     /// panegrid.json only. The registry is not written, and a .grids file does not carry this.
     pub(crate) blocked_shell_extensions: Vec<String>,
@@ -443,6 +448,8 @@ impl Default for Session {
             ctx_labels: std::collections::BTreeMap::new(),
             ctx_on: std::collections::BTreeMap::new(),
             ctx_quiet: std::collections::BTreeSet::new(),
+            ctx_packaged_off: std::collections::BTreeSet::new(),
+            ctx_win11_view: false,
             blocked_shell_extensions: Vec::new(),
         };
         // A first-ever start: layout_new 0 is two panes, left and right.
@@ -518,6 +525,8 @@ impl PartialEq for Session {
             && self.ctx_labels == o.ctx_labels
             && self.ctx_on == o.ctx_on
             && self.ctx_quiet == o.ctx_quiet
+            && self.ctx_packaged_off == o.ctx_packaged_off
+            && self.ctx_win11_view == o.ctx_win11_view
             && self.blocked_shell_extensions == o.blocked_shell_extensions
     }
 }

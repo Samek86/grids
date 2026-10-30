@@ -623,6 +623,9 @@ pub(crate) fn invalidate() {
     if let Ok(mut g) = CACHE.lock() {
         *g = None;
     }
+    // Refresh and the right-click page both call this. The packaged catalogue
+    // is a separate cache and must drop with it, or the Windows 11 view stays stale.
+    super::ctxpack::invalidate();
 }
 
 thread_local! {
