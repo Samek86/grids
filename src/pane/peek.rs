@@ -437,6 +437,8 @@ pub(crate) fn fit_source(body: &Body) -> FitSource {
             _ => FitSource::Lines { lines: 40, code: false },
         },
         Body::Text { text, kind, .. } => FitSource::Lines { lines: text.lines().count() as i32, code: *kind == TextKind::Code },
+        // Same line-count fit as plain text. The preview image is added to scrollable content while painting.
+        Body::Document { text, .. } => FitSource::Lines { lines: text.lines().count() as i32, code: false },
         Body::Table { rows, .. } => FitSource::Lines { lines: rows.len() as i32, code: false },
         Body::List { rows, .. } => FitSource::Lines { lines: rows.len() as i32, code: false },
         Body::Card { rows, .. } => FitSource::Lines { lines: (rows.len() as i32).max(12), code: false },
@@ -1272,6 +1274,7 @@ pub(crate) struct Line {
     pub(crate) y: i32,
     pub(crate) h: i32,
     pub(crate) no: usize, // source line number, for the code gutter
+    table: Option<(Vec<Vec<String>>, Vec<i32>)>,
 }
 
 /// Markdown lines with their look: headings, bullets, quotes, fenced code. Inline marks are dropped.
@@ -1351,10 +1354,39 @@ unsafe fn layout(dc: HDC, gen: usize, width: i32, text: &str, kind: TextKind, fo
         TextKind::Markdown => md_lines(text),
         TextKind::Code => text.lines().map(|l| (l.to_string(), Style::Mono)).collect(),
         TextKind::Plain => text.lines().map(|l| (l.to_string(), Style::Plain)).collect(),
+        TextKind::Document => text.lines().map(|l| (l.to_string(), Style::Plain)).collect(),
     };
     let mut y = 0;
     let mut lines = Vec::with_capacity(src.len().min(40_000));
-    for (no, (t, st)) in src.into_iter().take(40_000).enumerate() {
+    let mut source = src.into_iter().take(40_000).enumerate().peekable();
+    while let Some((no, (t, st))) = source.next() {
+        if kind == TextKind::Document && t.starts_with("| ") {
+            let mut rows = Vec::new();
+            let parse = |line: &str| -> Vec<String> {
+                line.strip_prefix("| ").unwrap_or(line).strip_suffix('|').unwrap_or(line).split(" | ").map(|cell| cell.trim().to_string()).collect()
+            };
+            rows.push(parse(&t));
+            while source.peek().is_some_and(|(_, (line, _))| line.starts_with("| ")) {
+                if let Some((_, (line, _))) = source.next() {
+                    rows.push(parse(&line));
+                }
+            }
+            let mut widths = Vec::<i32>::new();
+            let scale = |v: i32| v * dpi / 96;
+            for row in &rows {
+                for (col, cell) in row.iter().enumerate() {
+                    if widths.len() <= col {
+                        widths.push(scale(36));
+                    }
+                    widths[col] = widths[col].max((text_w(dc, cell, font) + scale(14)).min(scale(260)));
+                }
+            }
+            let rh = app(|a| a.fh) + scale(8);
+            let h = rh * rows.len() as i32;
+            lines.push(Line { text: String::new(), style: st, y, h, no: no + 1, table: Some((rows, widths)) });
+            y += h;
+            continue;
+        }
         let old = SelectObject(dc, style_font(st, font, f).into());
         let mut tm = TEXTMETRICW::default();
         _ = GetTextMetricsW(dc, &mut tm);
@@ -1373,7 +1405,7 @@ unsafe fn layout(dc: HDC, gen: usize, width: i32, text: &str, kind: TextKind, fo
             Style::H3 => lh / 3,
             _ => 0,
         };
-        lines.push(Line { text: t, style: st, y, h, no: no + 1 });
+        lines.push(Line { text: t, style: st, y, h, no: no + 1, table: None });
         y += h + if matches!(st, Style::H1 | Style::H2) { dpi / 24 } else { 0 };
     }
     view(|v| v.layout = Some((gen, width, lines, y)));
@@ -2127,20 +2159,64 @@ unsafe fn clip(dc: HDC, r: RECT, draw: impl FnOnce()) {
     _ = DeleteObject(rgn.into());
 }
 
-unsafe fn paint_text(dc: HDC, area: RECT, gen: usize, text: &str, kind: TextKind, cut: bool, font: HFONT, dpi: i32) {
+unsafe fn paint_text(dc: HDC, area: RECT, gen: usize, text: &str, kind: TextKind, cut: bool, font: HFONT, dpi: i32, pic: Option<&Pix>) {
     let s = |v: i32| v * dpi / 96;
     let f = fonts(dpi, font);
     let gutter = if kind == TextKind::Code { s(44) } else { 0 };
     let width = area.right - area.left - gutter - s(8);
-    let total = layout(dc, gen, width, text, kind, font, &f, dpi) + if cut { s(28) } else { 0 };
+    let pic_size = pic.map(|p| {
+        let k = ((area.right - area.left) as f32 / p.w as f32).min((area.bottom - area.top) as f32 / p.h as f32);
+        ((p.w as f32 * k) as i32, (p.h as f32 * k) as i32)
+    });
+    let offset = pic_size.map_or(0, |(_, h)| h + s(20));
+    let total = offset + layout(dc, gen, width, text, kind, font, &f, dpi) + if cut { s(28) } else { 0 };
     clamp_scroll(total, area.bottom - area.top);
+    if kind == TextKind::Document {
+        view(|v| {
+            let full = v
+                .layout
+                .as_ref()
+                .map(|(_, _, lines, _)| lines.iter().filter_map(|l| l.table.as_ref()).map(|(_, widths)| widths.iter().sum::<i32>()).max().unwrap_or(0))
+                .unwrap_or(0);
+            v.x = v.x.clamp(0, (full - (area.right - area.left)).max(0));
+        });
+    }
     let (sy, sx) = view(|v| (v.y, v.x));
     clip(dc, area, || {
+        if let (Some(p), Some((w, h))) = (pic, pic_size) {
+            let x = (area.left + area.right - w) / 2;
+            let y = area.top - sy;
+            blit_bgra(dc, RECT { left: x, top: y, right: x + w, bottom: y + h }, p.w, p.h, &p.bgra);
+        }
+        let sy = sy - offset;
         view(|v| {
             let Some((_, _, lines, _)) = v.layout.as_ref() else { return };
             let first = lines.partition_point(|l| l.y + l.h < sy);
             for l in lines[first..].iter().take_while(|l| l.y - sy < area.bottom - area.top) {
                 let top = area.top + l.y - sy;
+                if let Some((rows, widths)) = &l.table {
+                    let rh = app(|a| a.fh) + s(8);
+                    let first = ((area.top - top).max(0) / rh) as usize;
+                    let shown = ((area.bottom - area.top) / rh + 2) as usize;
+                    for (row_no, row) in rows.iter().enumerate().skip(first).take(shown) {
+                        let row_top = top + row_no as i32 * rh;
+                        let mut x = area.left - sx;
+                        for (col, w) in widths.iter().enumerate() {
+                            if x + w > area.left && x < area.right {
+                                let cell = row.get(col).map(String::as_str).unwrap_or("");
+                                let rect = RECT { left: x + s(7), top: row_top, right: x + w - s(7), bottom: row_top + rh };
+                                crate::text(dc, rect, cell, font, pal().text, DT_LEFT);
+                                fill(dc, RECT { left: x + w - 1, top: row_top, right: x + w, bottom: row_top + rh }, pal().line);
+                                fill(dc, RECT { left: x, top: row_top + rh - 1, right: x + w, bottom: row_top + rh }, pal().line);
+                            }
+                            x += w;
+                        }
+                        fill(dc, RECT { left: area.left - sx, top: row_top, right: area.left - sx + 1, bottom: row_top + rh }, pal().line);
+                    }
+                    let table_width: i32 = widths.iter().sum();
+                    fill(dc, RECT { left: area.left - sx, top, right: area.left - sx + table_width, bottom: top + 1 }, pal().line);
+                    continue;
+                }
                 if gutter > 0 {
                     let g = RECT { left: area.left, top, right: area.left + gutter - s(10), bottom: top + l.h };
                     text_flags(dc, g, &l.no.to_string(), f[0], pal().sub, DT_RIGHT | DT_SINGLELINE);
@@ -2157,7 +2233,7 @@ unsafe fn paint_text(dc: HDC, area: RECT, gen: usize, text: &str, kind: TextKind
             }
         });
         if cut {
-            let y = area.top + total - s(24) - sy;
+            let y = area.top + total - offset - s(24) - sy;
             let r = RECT { left: area.left, top: y, right: area.right, bottom: y + s(24) };
             text_flags(dc, r, tr(crate::Key::OnlyFirst512KbIsShown), font, pal().sub, DT_SINGLELINE);
         }
@@ -2374,7 +2450,11 @@ pub(crate) unsafe fn paint_peek(h: HWND) {
             Some(Body::Pages { pages, total }) => paint_pages(dc, g.stage, pages, *total, font, dpi),
             Some(Body::Text { text: t, kind, cut }) => {
                 plate();
-                paint_text(dc, g.inner, gen, t, *kind, *cut, font, dpi);
+                paint_text(dc, g.inner, gen, t, *kind, *cut, font, dpi, None);
+            }
+            Some(Body::Document { pic, text: t, cut }) => {
+                plate();
+                paint_text(dc, g.inner, gen, t, TextKind::Document, *cut, font, dpi, pic.as_ref());
             }
             Some(Body::Table { rows, cut }) => {
                 plate();
