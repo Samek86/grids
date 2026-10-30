@@ -104,6 +104,10 @@ pub(crate) struct Pane {
     /// Set only while this pane is re-browsing the same folder to pick up a new theme.
     pub(crate) theme_keep: Option<ThemeKeep>,
     pub(crate) theme_scroll: Option<ThemeScroll>,
+    /// True between OnNavigationPending and Complete/Failed. Rapid folder activates queue here.
+    pub(crate) nav_busy: bool,
+    /// At most one folder path waiting to browse when `nav_busy` clears.
+    pub(crate) nav_pending: Option<String>,
 }
 
 pub(crate) struct Desk {

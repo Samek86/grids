@@ -71,7 +71,7 @@ pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let pending = Some(app(|a| a.s.cols[i].clone())); // the session's, for the first folder
     // Born under the theme that is current now, so a later switch is the only reason to rebuild.
     let themed = THEME_EPOCH.load(Ordering::Relaxed);
-    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_writes: 0, user_width: false, view_watch: None, recover: None, icon: -1, ticket: 0, net: None, slot, themed, theme_keep: None, theme_scroll: None })
+    Ok(Pane { hwnd: h, eb, cookie, disp: String::new(), pending, settle: None, view_writes: 0, user_width: false, view_watch: None, recover: None, icon: -1, ticket: 0, net: None, slot, themed, theme_keep: None, theme_scroll: None, nav_busy: false, nav_pending: None })
 }
 
 const EM_GETMARGINS: u32 = 0xD4;
@@ -1380,15 +1380,14 @@ unsafe fn select_named(i: usize, name: &str) -> bool {
 
 // Double-click on a details cell the shell did not activate: open the row that owns the text or icon.
 pub(crate) unsafe fn open_row_cell(i: usize, pt: POINT) {
+    // Do not accDoDefaultAction: on DirectUI that can open a real Explorer window and skip
+    // OnDefaultCommand / take_default. Select the row and go through take_default instead.
     let Some((item, mut child)) = list_item_at(pt) else { return };
-    let acted = item.accDoDefaultAction(&child).is_ok();
-    if !acted {
-        let name = acc_label(&item, &child).or_else(|| acc_label(&item, &VARIANT::from(0i32)));
-        if let Some(name) = name {
-            if select_named(i, &name) {
-                let sv = view_of::<IShellView>(i);
-                take_default(i, sv.as_ref());
-            }
+    let name = acc_label(&item, &child).or_else(|| acc_label(&item, &VARIANT::from(0i32)));
+    if let Some(name) = name {
+        if select_named(i, &name) {
+            let sv = view_of::<IShellView>(i);
+            take_default(i, sv.as_ref());
         }
     }
     _ = VariantClear(&mut child);

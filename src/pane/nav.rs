@@ -3095,6 +3095,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         if refreshing {
             return Ok(());
         }
+        set_nav_busy(i, true);
         pane_left(i);
         unsafe {
             // The shell is browsing. A share resolve still out for this pane is stale.
@@ -3144,6 +3145,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         unsafe {
             on_nav(i, pidl);
             schedule_pane_drop(i);
+            flush_nav_pending(i);
         }
         Ok(())
     }
@@ -3155,6 +3157,7 @@ impl IExplorerBrowserEvents_Impl for Events_Impl {
         let i = self.0.load(Ordering::SeqCst);
         clear_theme_keep(i);
         unsafe {
+            flush_nav_pending(i);
             rec_event(i, Nav::Failed, pidl);
             let cur = app(|a| a.s.paths.get(i).cloned().unwrap_or_default());
             pane_here(i, &cur, classify_ui(&cur));
@@ -3680,15 +3683,19 @@ pub(crate) unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
     let middle = GetKeyState(VK_MBUTTON.0 as i32) < 0;
     crate::folderapp::note_activate(app(|a| a.main.0 as isize), i, ctrl || middle);
-    if !crate::folderapp::shown_on() || ctrl || middle {
+    // Ctrl / middle: S_FALSE so the view can open a new tab / run the verb. Folder-app off no
+    // longer falls through — that S_FALSE path is what leaked real Explorer windows on races.
+    if ctrl || middle {
         return false;
     }
-    let Some(sv) = sv else { return false };
-    let Ok(fv) = sv.cast::<IFolderView2>() else { return false };
+    let Some(sv) = sv else { return true }; // consume: do not let DefView invent a new window
+    let Ok(fv) = sv.cast::<IFolderView2>() else { return true };
     let rows = activation_rows(i, &fv);
     let kinds: Vec<_> = rows.iter().map(row_kind).collect();
-    match crate::folderapp::list_activation(true, false, false, &kinds) {
+    let registered = crate::folderapp::shown_on();
+    match crate::folderapp::list_activation(registered, false, false, &kinds) {
         crate::folderapp::ListAct::Shell => false,
+        crate::folderapp::ListAct::Consume => true,
         crate::folderapp::ListAct::FilesOnly => {
             for row in &rows {
                 if let ActRow::File(it) = row {
@@ -3703,24 +3710,62 @@ pub(crate) unsafe fn take_default(i: usize, sv: Option<&IShellView>) -> bool {
                     open_file_item(it);
                 }
             }
-            let browsed = match rows.get(at) {
-                Some(ActRow::FolderPath(p)) => navigate(i, p),
-                Some(ActRow::FolderItem(it)) => {
-                    browse_item(i, it);
-                    true
-                }
-                _ => false,
+            let target = match rows.get(at) {
+                Some(ActRow::FolderPath(p)) => Some(p.clone()),
+                Some(ActRow::FolderItem(it)) => Some(unsafe { item_path(it) }),
+                _ => None,
             };
-            if browsed && !net_failed(i) {
-                focus_view(i);
+            if let Some(path) = target {
+                if pane_nav_busy(i) {
+                    queue_nav_pending(i, path);
+                } else {
+                    let browsed = navigate(i, &path);
+                    if browsed && !net_failed(i) {
+                        focus_view(i);
+                    }
+                }
             }
             true
         }
     }
 }
 
+fn pane_nav_busy(i: usize) -> bool {
+    app(|a| a.panes.get(i).and_then(|p| p.as_ref()).is_some_and(|p| p.nav_busy))
+}
+
+fn queue_nav_pending(i: usize, path: String) {
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.nav_pending = Some(path);
+        }
+    });
+}
+
+fn set_nav_busy(i: usize, busy: bool) {
+    app(|a| {
+        if let Some(p) = a.panes.get_mut(i).and_then(|p| p.as_mut()) {
+            p.nav_busy = busy;
+        }
+    });
+}
+
+fn take_nav_pending(i: usize) -> Option<String> {
+    app(|a| a.panes.get_mut(i).and_then(|p| p.as_mut()).and_then(|p| p.nav_pending.take()))
+}
+
+unsafe fn flush_nav_pending(i: usize) {
+    set_nav_busy(i, false);
+    if let Some(path) = take_nav_pending(i) {
+        if navigate(i, &path) && !net_failed(i) {
+            focus_view(i);
+        }
+    }
+}
+
+
 // Site of each Explorer control. It asks the site for ICommDlgBrowser, whose IncludeObject is the name filter.
-#[implement(IServiceProvider, ICommDlgBrowser)]
+#[implement(IServiceProvider, ICommDlgBrowser, INewWindowManager)]
 pub(crate) struct Host(pub(crate) Arc<AtomicUsize>);
 
 impl IServiceProvider_Impl for Host_Impl {
@@ -3731,8 +3776,28 @@ impl IServiceProvider_Impl for Host_Impl {
             if *service == ICommDlgBrowser::IID {
                 return self.to_interface::<ICommDlgBrowser>().query(riid, ppv).ok();
             }
+            // Cancel shell "open in new Explorer window" attempts from the embedded view.
+            // Ctrl/middle new-tab still goes through the folder-app verb + handoff, not NEWBROWSER.
+            if *service == INewWindowManager::IID {
+                return self.to_interface::<INewWindowManager>().query(riid, ppv).ok();
+            }
         }
         Err(E_NOINTERFACE.into())
+    }
+}
+
+impl INewWindowManager_Impl for Host_Impl {
+    fn EvaluateNewWindow(
+        &self,
+        _pszurl: &PCWSTR,
+        _pszname: &PCWSTR,
+        _pszurlcontext: &PCWSTR,
+        _pszfeatures: &PCWSTR,
+        _freplace: BOOL,
+        _dwflags: u32,
+        _dwuseractiontime: u32,
+    ) -> Result<()> {
+        Err(E_FAIL.into())
     }
 }
 
