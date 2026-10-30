@@ -201,12 +201,13 @@ unsafe fn build_children(h: HWND) {
     btn(S_FV_RESET, tx(crate::Key::Reset2), true);
     btn(S_FV_CLEAR, tx(crate::Key::ClearAll), true);
     btn(S_CTX_RESET, tx(CTX_RESET_L), true);
+    btn(S_CTX_REFRESH, tx(CTX_REFRESH_L), true);
     child_at(h, w!("EDIT"), "", 0x80 | tab, S_WM, font);
     btn(S_WM_BROWSE, tx(crate::Key::Browse), true);
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -270,6 +271,7 @@ unsafe fn fill_strings(h: HWND) {
         (S_FV_RESET, tx(crate::Key::Reset2)),
         (S_FV_CLEAR, tx(crate::Key::ClearAll)),
         (S_CTX_RESET, tx(CTX_RESET_L)),
+        (S_CTX_REFRESH, tx(CTX_REFRESH_L)),
         (S_WM_BROWSE, tx(crate::Key::Browse)),
     ];
     BUSY.with(|b| b.set(true));
@@ -390,7 +392,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_WM, S_WM_BROWSE] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -443,7 +445,8 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
                     crate::place_edit(ctl(h, S_WM), inset(c.ctl, sc(sn.dpi, FIELD_INSET_DIP)), intersects(c.ctl, content));
                 }
             }
-            Item::CtxBar { reset } => {
+            Item::CtxBar { reset, refresh } => {
+                move_to(ctl(h, S_CTX_REFRESH), *refresh, intersects(*refresh, content));
                 move_to(ctl(h, S_CTX_RESET), *reset, intersects(*reset, content));
             }
             Item::KeyBar { edit, reset } => {
@@ -1281,6 +1284,11 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
                 crate::shell::ctxmenu::reset_menu(&mut s.ctx_off, &mut s.ctx_on);
             });
             crate::save_session();
+            layout(h);
+            let _ = InvalidateRect(Some(h), None, false);
+        }
+        S_CTX_REFRESH => {
+            crate::shell::ctxmenu::invalidate();
             layout(h);
             let _ = InvalidateRect(Some(h), None, false);
         }
