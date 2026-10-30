@@ -70,6 +70,8 @@
 
 셸 확장까지 포함한 탐색기 우클릭 메뉴 전체(빈 곳에는 속성도), 그리고 Windows 표준 IFileOperation 창으로 다른 패널에 복사·이동(최대 10,000개).
 
+**고속 복사.** 네트워크 폴더로 붙여넣거나 끌어다 놓을 때 robocopy를 쓸 수 있습니다(설정 → 파일 작업, 기본 꺼짐). 우클릭 → 고속 붙여넣기는 항상 robocopy를 쓰며, Panegrid 진행 창에서 덮어쓰기·건너뛰기·취소를 고릅니다. 이동은 복사가 성공한 뒤에만 원본을 지웁니다.
+
 <p align="center"><img width="760" alt="explorer" src="docs/images/explorer.ko.png"></p>
 
 ### ⚡ 작은 편의 기능

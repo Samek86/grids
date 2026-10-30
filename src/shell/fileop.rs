@@ -158,7 +158,26 @@ pub(crate) unsafe fn copy_paths(a: usize) {
 // Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Panegrid stays usable.
 // Cut, links, virtual items and anything else stay with the shell.
 pub(crate) unsafe fn try_paste(a: usize) -> bool {
-    let (dst, main) = app(|x| (x.s.paths[a].clone(), x.main));
+    paste_clipboard(a, None, false)
+}
+
+/// Context-menu Fast paste. Robocopy even when the fast-copy setting is off, and for a local folder.
+pub(crate) unsafe fn try_fast_paste(a: usize, dest: Option<String>) -> bool {
+    let ok = paste_clipboard(a, dest, true);
+    if !ok {
+        let _ = MessageBeep(MB_ICONWARNING);
+    }
+    ok
+}
+
+unsafe fn paste_clipboard(a: usize, dest: Option<String>, force: bool) -> bool {
+    let (dst, main) = app(|x| {
+        let folder = match &dest {
+            Some(d) => d.clone(),
+            None => x.s.paths[a].clone(),
+        };
+        (folder, x.main)
+    });
     if !is_fs(&dst) || OpenClipboard(Some(main)).is_err() {
         return false;
     }
@@ -190,9 +209,21 @@ pub(crate) unsafe fn try_paste(a: usize) -> bool {
     .flatten();
     _ = CloseClipboard();
     if let Some(pic) = pic {
+        if force {
+            return false;
+        }
         return start_picture(pic, dst);
     }
     let copy = effect.is_none_or(|e| e & DROPEFFECT_MOVE.0 == 0 && e & DROPEFFECT_COPY.0 != 0);
+    if force {
+        let mv = effect.is_some_and(|e| e & DROPEFFECT_MOVE.0 != 0 && e & DROPEFFECT_COPY.0 == 0);
+        if mv {
+            let Some(_) = send_mode(&srcs, &dst, true) else { return false };
+            return start_transfer(srcs, dst, false, true, false, true);
+        }
+        let Some(rename) = paste_mode(&srcs, &dst).filter(|_| copy) else { return false };
+        return start_transfer(srcs, dst, rename, false, false, true);
+    }
     let Some(rename) = paste_mode(&srcs, &dst).filter(|_| copy) else { return false };
     start_copy(srcs, dst, rename, false)
 }
@@ -386,16 +417,21 @@ fn keep_job(job: std::thread::JoinHandle<()>) {
 
 // Copies (or, with `mv`, moves) `srcs` into `dst` on a worker thread. False = the thread didn't start.
 pub(crate) unsafe fn start_copy(srcs: Vec<String>, dst: String, rename: bool, mv: bool) -> bool {
-    start_transfer(srcs, dst, rename, mv, false)
+    start_transfer(srcs, dst, rename, mv, false, false)
 }
 
 /// Move started from a drop. `MoveItem` runs only after the drag source can release the
 /// file. Doing it inside `Drop` reports the item missing and leaves it in place.
 pub(crate) unsafe fn start_drop_move(srcs: Vec<String>, dst: String) -> bool {
-    start_transfer(srcs, dst, false, true, true)
+    start_transfer(srcs, dst, false, true, true, false)
 }
 
-unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool, after_drop: bool) -> bool {
+unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool, after_drop: bool, force: bool) -> bool {
+    let (owner, accent, face, setting) = app(|a| {
+        let custom = a.s.font_face.trim();
+        let face = if custom.is_empty() { crate::ui_face().to_string() } else { custom.to_string() };
+        (a.main.0 as isize, a.s.accent_now(), face, a.s.fast_copy)
+    });
     let busy = Busy::new();
     let job = std::thread::Builder::new().spawn(move || {
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
@@ -403,6 +439,15 @@ unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool,
         let _busy = busy;
         if after_drop {
             settle_drop_move(&srcs);
+        }
+        // Network is only asked when the setting is on and this is not Fast paste.
+        // `share_path` can call GetDriveTypeW, which must stay off the UI thread.
+        let network = !force && setting && super::fastcopy::network_transfer(&srcs, &dst);
+        if super::fastcopy::decide_fast(force, setting, network) {
+            let srcs: Vec<String> = srcs.iter().map(|s| final_dos(s)).collect();
+            let dst = final_dos(&dst);
+            super::fastcopy::run_fast(super::fastcopy::FastJob { owner, accent, face, srcs, dst, rename, mv });
+            return;
         }
         let first = run_copy(&srcs, &dst, rename, mv);
         let result = if first.is_err() && after_drop && mv {
@@ -709,6 +754,7 @@ pub(crate) unsafe fn reset_prefs() {
         a.s.del = fresh.del;
         a.s.new_name.clear();
         a.s.dropm = fresh.dropm;
+        a.s.fast_copy = fresh.fast_copy;
         a.s.layout_new = fresh.layout_new;
         a.s.boot = fresh.boot;
         a.s.boot_file.clear();

@@ -70,6 +70,8 @@ Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Ev
 
 The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
 
+**Fast copy.** Paste and drag to or from a network folder can use robocopy (Settings → File operations, off by default). Right-click → Fast paste always uses it, with Panegrid's own progress and overwrite / skip / cancel. A move copies first and deletes the originals only after that copy succeeds.
+
 <p align="center"><img width="760" alt="explorer" src="docs/images/explorer.png"></p>
 
 ### ⚡ Small details

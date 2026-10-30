@@ -293,6 +293,9 @@ pub(crate) struct Session {
     pub(crate) del: u8,                // 0 recycle bin, 1 permanent
     pub(crate) new_name: String,       // empty = the name for the display language
     pub(crate) dropm: u8,              // 0 Windows rules, 1 always copy, 2 always ask (the ⇄ menu)
+    /// Paste and drag use robocopy when a path is on the network. Missing means off.
+    /// Fast paste on the menu uses robocopy either way.
+    pub(crate) fast_copy: bool,
     pub(crate) layout_new: u8,         // 0 side by side, 1 top/bottom, 2 is 2×2, 3 one pane (missing = 0)
     pub(crate) boot: u8,               // 0 restore last layout, 1 open boot_file, 2 the default layout
     pub(crate) boot_file: String,
@@ -436,6 +439,7 @@ impl Default for Session {
             del: 0,
             new_name: String::new(),
             dropm: 0,
+            fast_copy: false,
             layout_new: 0,
             boot: 0,
             boot_file: String::new(),
@@ -513,6 +517,7 @@ impl PartialEq for Session {
             && self.del == o.del
             && self.new_name == o.new_name
             && self.dropm == o.dropm
+            && self.fast_copy == o.fast_copy
             && self.layout_new == o.layout_new
             && self.boot == o.boot
             && self.boot_file == o.boot_file
@@ -770,6 +775,7 @@ impl Session {
                 "del" => s.del = if v.trim() == "1" { 1 } else { 0 },
                 "newname" => s.new_name = v.trim().to_string(),
                 "drop" => s.dropm = v.trim().parse::<u8>().unwrap_or(0).min(2),
+                "fastcopy" => s.fast_copy = v.trim() == "1",
                 "layout" => s.layout_new = v.trim().parse::<u8>().unwrap_or(0).min(3),
                 "boot" => s.boot = v.trim().parse::<u8>().unwrap_or(0).min(2),
                 "bootf" => s.boot_file = v.trim().to_string(),
@@ -883,6 +889,9 @@ impl Session {
             o += &format!("newname={}\n", self.new_name);
         }
         o += &format!("drop={}\nlayout={}\nboot={}\n", self.dropm, self.layout_new, self.boot);
+        if self.fast_copy {
+            o += "fastcopy=1\n";
+        }
         if !self.boot_file.is_empty() {
             o += &format!("bootf={}\n", self.boot_file);
         }

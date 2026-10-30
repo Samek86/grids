@@ -66,6 +66,7 @@ const TG_REMEMBER: u8 = 20;
 const TG_FOLDER: u8 = 21;
 const TG_FSIZE: u8 = 22;
 const TG_FSIZE_NET: u8 = 23;
+const TG_FAST: u8 = 24;
 
 const CB_SETMINVISIBLE: u32 = 0x1701;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -232,6 +233,7 @@ const VIEW: &[Spec] = &[
 ];
 const FILE: &[Spec] = &[
     Spec { title: crate::Key::CopyMoveProgress, desc: crate::Key::WindowsProgressWindowRunsOnItsOwn, live: true, ctl: Ctl::CopyEng },
+    Spec { title: crate::Key::FastCopyForNetworkFolders, desc: crate::Key::PasteAndDragUseRobocopyWhenANetwork, live: true, ctl: Ctl::Toggle(TG_FAST) },
     Spec { title: crate::Key::ConfirmDelete, desc: crate::Key::DelInPaneShiftDelIsAlways, live: true, ctl: Ctl::Toggle(TG_CONFIRM) },
     Spec { title: crate::Key::DefaultDelete, desc: crate::Key::Blank, live: true, ctl: Ctl::DelMode },
     Spec { title: crate::Key::NewFileName, desc: crate::Key::UsedByCtrlAltNEmptyFollows, live: true, ctl: Ctl::NewName },
@@ -995,6 +997,7 @@ fn toggle_on(id: u8) -> bool {
         TG_REMEMBER => app(|a| a.s.remember_views),
         TG_FSIZE => app(|a| a.s.folder_sizes),
         TG_FSIZE_NET => app(|a| a.s.folder_sizes_network),
+        TG_FAST => app(|a| a.s.fast_copy),
         TG_FOLDER => crate::folderapp::shown_on(),
         _ => false,
     }
@@ -1216,6 +1219,27 @@ mod tests {
         let (_, page) = commit_search(0, 0, "ネットワーク フォルダーのサイズ");
         assert_eq!(page, 2);
         assert!(hit(&geo(client(), &shot(page, "ネットワーク フォルダーのサイズ")), TG_FSIZE_NET));
+    }
+
+    #[test]
+    fn fast_copy_toggle_is_on_the_file_operations_page_in_each_language() {
+        let _lock = ui_lock();
+        let _keep = lang(0);
+        let hit = |g: &Geo, id: u8| g.items.iter().any(|it| matches!(it, Item::Card(c) if c.spec.ctl == Ctl::Toggle(id)));
+        let (anchor, page) = commit_search(0, 0, "Fast copy for network");
+        assert_eq!((anchor, page), (0, 3));
+        assert!(hit(&geo(client(), &shot(page, "Fast copy for network")), TG_FAST));
+        assert!(hit(&geo(client(), &shot(3, "Paste and drag use robocopy")), TG_FAST));
+
+        crate::UI.store(1, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "네트워크 폴더 고속");
+        assert_eq!(page, 3);
+        assert!(hit(&geo(client(), &shot(page, "네트워크 폴더 고속")), TG_FAST));
+
+        crate::UI.store(2, Ordering::Relaxed);
+        let (_, page) = commit_search(0, 0, "ネットワーク フォルダーの高速");
+        assert_eq!(page, 3);
+        assert!(hit(&geo(client(), &shot(page, "ネットワーク フォルダーの高速")), TG_FAST));
     }
 
     #[test]

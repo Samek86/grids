@@ -1079,7 +1079,7 @@ unsafe fn aa_blit(dc: HDC, r: RECT, ground: u32, paint: impl FnOnce(HDC, i32, i3
     copied.as_bool()
 }
 
-unsafe fn aa_rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>, ground: u32) {
+pub(crate) unsafe fn aa_rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>, ground: u32) {
     let painted = aa_blit(dc, r, ground, |mem, scale, ox, oy| unsafe {
         paint_round(mem, scaled_from(r, r, scale, ox, oy), rad.max(1) * scale, fill, border, scale);
     });
@@ -1276,6 +1276,7 @@ fn flip(id: u8) {
         }
         TG_EDGE => app(|a| a.s.edge ^= true),
         TG_CONFIRM => app(|a| a.s.confirm ^= true),
+        TG_FAST => app(|a| a.s.fast_copy ^= true),
         TG_AUTOSAVE => app(|a| a.s.autosave ^= true),
         TG_UPDATE => app(|a| a.s.update_check ^= true),
         TG_EV => {

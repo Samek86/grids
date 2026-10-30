@@ -184,6 +184,7 @@ unsafe fn shell_paths(d: &Ref<IDataObject>) -> Vec<String> {
 }
 
 /// Start the file operation and the effect the source should see.
+/// Copy and move both go through `start_transfer`, which calls `decide_fast`.
 pub(crate) unsafe fn run_asked(obj: &IDataObject, srcs: Vec<String>, dst: String, mv: bool) -> u32 {
     let _ = obj; // deferred move must not stamp Performed DropEffect from Drop
     let started = if mv {
