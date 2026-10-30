@@ -1046,6 +1046,9 @@ unsafe fn theme_tree(tree: HWND, dark: bool) {
 }
 
 /// Follow Windows when that mode is on and the setting differs from the panes.
+/// Chrome updates immediately. DefView/DirectUI lists that were built under the old theme
+/// are rebuilt one pane at a time via ThemeKeep (path, selection, scroll, view snap restored;
+/// back/forward history and filter boxes kept).
 pub(crate) unsafe fn theme_sync() {
     let (auto, cur) = app(|a| (a.s.theme == 0, a.s.dark));
     if let Some(d) = theme_target(auto, system_dark(), cur) {
@@ -1055,13 +1058,15 @@ pub(crate) unsafe fn theme_sync() {
         note_theme_epoch();
         across_windows(|| apply_theme_desk());
         note_save();
-        prompt_theme_restart();
+        // Each window rebuilds its own panes. A single post would leave the other windows stale,
+        // because publish_shared already made their dark bit match and a later sync is a no-op.
+        across_windows(|| schedule_theme_panes());
     }
 }
 
-/// Applies the current theme. Chrome, the tree, headers and scrollbars update at once.
-/// A DefView list keeps the colours it was created with, so a real dark-bit change asks
-/// to restart. The new process is born in the new mode and opens the same tabs.
+/// Applies the current theme. Chrome updates immediately. DefView/DirectUI lists that were
+/// built under the old theme are rebuilt one pane at a time via ThemeKeep (path, selection,
+/// scroll, view snap restored; back/forward history and filter boxes kept).
 pub(crate) unsafe fn apply_theme() {
     let dark = resolve_dark(app(|a| a.s.theme));
     let changed = app(|a| {
@@ -1079,83 +1084,8 @@ pub(crate) unsafe fn apply_theme() {
     crate::rename::refresh();
     refresh_fav_manager();
     if changed {
-        prompt_theme_restart();
+        across_windows(|| schedule_theme_panes());
     }
-}
-
-/// Folder lists do not pick up a theme that changed after they were created.
-/// Restart now saves and starts Panegrid again with the same tabs. Later leaves this process running.
-unsafe fn prompt_theme_restart() {
-    let owner = {
-        let fg = GetForegroundWindow();
-        if !fg.0.is_null() && IsWindow(Some(fg)).as_bool() { fg } else { app(|a| a.main) }
-    };
-    if !ask_theme_restart(owner) {
-        return;
-    }
-    save_session();
-    if app(|a| a.save_after.is_some()) {
-        _ = MessageBeep(MB_ICONWARNING);
-        return;
-    }
-    if !relaunch_same_session() {
-        _ = MessageBeep(MB_ICONWARNING);
-    }
-}
-
-fn ask_theme_restart(owner: HWND) -> bool {
-    match unsafe { theme_restart_dialog(owner) } {
-        Some(restart) => restart,
-        None => {
-            let text = HSTRING::from(tr(crate::Key::ThemeFullyAppliesAfterRestartYesRestart));
-            let title = HSTRING::from(tr(crate::Key::Theme));
-            unsafe { MessageBoxW(Some(owner), &text, &title, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES }
-        }
-    }
-}
-
-unsafe fn theme_restart_dialog(owner: HWND) -> Option<bool> {
-    use windows::Win32::UI::Controls::{TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOGCONFIG_1, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION};
-    let title = HSTRING::from(tr(crate::Key::Theme));
-    let head = HSTRING::from(tr(crate::Key::ThemeFullyAppliesAfterRestart));
-    let body = HSTRING::from(tr(crate::Key::WindowHasChangedFolderListsUseNew));
-    let now = HSTRING::from(tr(crate::Key::RestartNow));
-    let later = HSTRING::from(tr(crate::Key::Later));
-    let buttons = [
-        TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(now.as_ptr()) },
-        TASKDIALOG_BUTTON { nButtonID: 101, pszButtonText: PCWSTR(later.as_ptr()) },
-    ];
-    let cfg = TASKDIALOGCONFIG {
-        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
-        hwndParent: owner,
-        hInstance: HINSTANCE::default(),
-        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
-        dwCommonButtons: Default::default(),
-        pszWindowTitle: PCWSTR(title.as_ptr()),
-        Anonymous1: TASKDIALOGCONFIG_0 { pszMainIcon: PCWSTR::null() },
-        pszMainInstruction: PCWSTR(head.as_ptr()),
-        pszContent: PCWSTR(body.as_ptr()),
-        cButtons: buttons.len() as u32,
-        pButtons: buttons.as_ptr(),
-        nDefaultButton: 101,
-        cRadioButtons: 0,
-        pRadioButtons: std::ptr::null(),
-        nDefaultRadioButton: 0,
-        pszVerificationText: PCWSTR::null(),
-        pszExpandedInformation: PCWSTR::null(),
-        pszExpandedControlText: PCWSTR::null(),
-        pszCollapsedControlText: PCWSTR::null(),
-        Anonymous2: TASKDIALOGCONFIG_1 { hFooterIcon: HICON::default() },
-        pszFooter: PCWSTR::null(),
-        pfCallback: None,
-        lpCallbackData: 0,
-        cxWidth: 0,
-    };
-    let mut pressed = 0i32;
-    if TaskDialogIndirect(&cfg, Some(&mut pressed), None, None).is_err() {
-        return None;
-    }
-    Some(pressed == 100)
 }
 
 pub(crate) unsafe fn pick_accent() {
