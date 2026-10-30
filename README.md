@@ -144,6 +144,13 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | F1 / Ctrl+/ | Shortcut help / list |
 |  | Ctrl+N | New window |
 
+## Known issues
+
+**Don't run Panegrid as administrator.** A user reported that PowerToys Mouse Crosshairs (and similar tools) stopped following the cursor and froze where they clicked over Panegrid. It happens only when Panegrid runs as administrator: Windows doesn't let a program without administrator rights receive mouse input over a window that has them (UIPI), so a normal PowerToys gets no mouse movement over an elevated Panegrid. Give both the same rights, either way:
+
+1. **Recommended**: run Panegrid normally. Don't open `panegrid.exe` with right-click → **Run as administrator**, and in the shortcut's or `panegrid.exe`'s **Properties → Compatibility**, clear **Run this program as an administrator**.
+2. If you need Panegrid as administrator, run PowerToys as administrator too: **PowerToys Settings → General → Always run as administrator**, then restart PowerToys.
+
 ## Settings
 
 The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
