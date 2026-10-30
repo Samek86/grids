@@ -22,10 +22,12 @@ pub(crate) enum TextKind {
     Plain,    // wrapped
     Code,     // fixed-width, not wrapped
     Markdown, // headings, bullets and code blocks styled
+    Document, // wrapped body with table rows
 }
 
 pub(crate) enum Body {
     Pic(Pix),
+    Document { pic: Option<Pix>, text: String, cut: bool },
     Pages { pages: Vec<Pix>, total: u32 }, // PDF pages as pictures, the rest added while they render
     Text { text: String, kind: TextKind, cut: bool },
     Table { rows: Vec<Vec<String>>, cut: bool },
@@ -366,7 +368,7 @@ pub(crate) unsafe fn meta(path: &str, body: &Body) -> (i32, Vec<String>) {
         }
         Body::Pic(_) => out.extend(ps.as_ref().and_then(|ps| prop(ps, &PKEY_Image_Dimensions)).map(|d| d.replace(" x ", " × "))),
         Body::Pages { total, .. } => out.push(tf(crate::Key::PagesN, &[("total", &total.to_string())])),
-        Body::Text { text, .. } => out.push(tf(crate::Key::LinesN, &[("n", &text.lines().count().to_string())])),
+        Body::Text { text, .. } | Body::Document { text, .. } => out.push(tf(crate::Key::LinesN, &[("n", &text.lines().count().to_string())])),
         Body::Table { rows, .. } => out.push(tf(crate::Key::RowsN, &[("n", &rows.len().to_string())])),
         Body::List { head, .. } => out.push(head.clone()),
         _ => {}
@@ -455,27 +457,64 @@ fn office_text(path: &str, ext: &str) -> Option<Body> {
     Some(Body::Text { text: body.trim().to_string(), kind: TextKind::Plain, cut: false })
 }
 
-// HWPX (zip): the picture and text Hancom stores for previews, else the body text.
+// HWPX: retain the preview image, followed by the body of every section.
 unsafe fn hwpx_preview(path: &str, req: &PeekReq) -> Option<Body> {
     let mut f = std::fs::File::open(path).ok()?;
     let es = zip_entries(&mut f)?;
-    if let Some(p) = zip_find(&es, "Preview/PrvImage.png").and_then(|e| zip_read(&mut f, e, 16 << 20)).and_then(|b| decode_pic(&b, req.w, req.h)) {
-        return Some(Body::Pic(p));
-    }
-    if let Some(t) = zip_find(&es, "Preview/PrvText.txt").and_then(|e| zip_read(&mut f, e, 4 << 20)) {
-        return Some(Body::Text { text: decode_text(&t), kind: TextKind::Plain, cut: false });
-    }
-    let mut sections: Vec<&ZipEntry> = es.iter().filter(|e| e.name.starts_with("Contents/section") && e.name.ends_with(".xml")).collect();
-    sections.sort_by_key(|e| e.name.clone());
+    let pic = zip_find(&es, "Preview/PrvImage.png")
+        .and_then(|e| zip_read(&mut f, e, 16 << 20))
+        .and_then(|b| decode_pic(&b, req.w, req.h));
+    let mut sections: Vec<&ZipEntry> = es
+        .iter()
+        .filter(|e| e.name.starts_with("Contents/section") && e.name.ends_with(".xml"))
+        .collect();
+    sections.sort_by_key(|e| {
+        e.name
+            .trim_start_matches("Contents/section")
+            .trim_end_matches(".xml")
+            .parse::<u32>()
+            .unwrap_or(u32::MAX)
+    });
     let mut out = String::new();
+    let mut cut = false;
     for e in sections {
-        let xml = decode_text(&zip_read(&mut f, e, 32 << 20)?);
-        out += &xml_text(&xml, &["hp:t"], &["hp:p"], &["hp:tab"], &["hp:lineBreak"]);
+        if out.len() >= TEXT_MAX {
+            cut = true;
+            break;
+        }
+        if e.size > 32 << 20 {
+            cut = true;
+        }
+        if let Some(b) = zip_read(&mut f, e, 32 << 20) {
+            out.push_str(&hwpx_body(&decode_text(&b)));
+        }
     }
-    Some(Body::Text { text: out.trim().to_string(), kind: TextKind::Plain, cut: false })
+    if out.trim().is_empty() {
+        out = zip_find(&es, "Preview/PrvText.txt")
+            .and_then(|e| zip_read(&mut f, e, TEXT_MAX))
+            .map(|b| decode_text(&b))
+            .unwrap_or_default();
+    }
+    limit_document(&mut out, &mut cut);
+    if pic.is_none() && out.is_empty() {
+        None
+    } else {
+        Some(Body::Document { pic, text: out, cut })
+    }
 }
 
-// HWP 5 (OLE compound file): the PrvImage / PrvText streams Hancom writes for this very purpose.
+fn limit_document(out: &mut String, cut: &mut bool) {
+    if out.len() > TEXT_MAX {
+        let mut n = TEXT_MAX;
+        while !out.is_char_boundary(n) {
+            n -= 1;
+        }
+        out.truncate(n);
+        *cut = true;
+    }
+}
+
+// HWP5: OLE streams are read through the existing Windows structured storage API.
 unsafe fn hwp_preview(path: &str, req: &PeekReq) -> Option<Body> {
     let name = HSTRING::from(path);
     let mut stg: Option<IStorage> = None;
@@ -487,23 +526,66 @@ unsafe fn hwp_preview(path: &str, req: &PeekReq) -> Option<Body> {
         }
     }
     let stg = stg?;
-    let read = |s: &str| -> Option<Vec<u8>> {
-        let st = stg.OpenStream(&HSTRING::from(s), None, STGM_READ | STGM_SHARE_EXCLUSIVE, 0).ok()?;
+    let read = |storage: &IStorage, s: &str| -> Option<Vec<u8>> {
+        let st = storage.OpenStream(&HSTRING::from(s), None, STGM_READ | STGM_SHARE_EXCLUSIVE, 0).ok()?;
         let mut out = Vec::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             let mut n = 0u32;
-            if st.Read(buf.as_mut_ptr() as _, buf.len() as u32, Some(&mut n)).is_err() || n == 0 || out.len() > 16 << 20 {
+            if st.Read(buf.as_mut_ptr() as _, buf.len() as u32, Some(&mut n)).is_err() || n == 0 || out.len() >= 16 << 20 {
                 break;
             }
             out.extend_from_slice(&buf[..n as usize]);
         }
         (!out.is_empty()).then_some(out)
     };
-    if let Some(p) = read("PrvImage").and_then(|b| decode_pic(&b, req.w, req.h)) {
-        return Some(Body::Pic(p));
+    let pic = read(&stg, "PrvImage").and_then(|b| decode_pic(&b, req.w, req.h));
+    let flags = read(&stg, "FileHeader").filter(|b| b.len() >= 40).map(|b| u32::from_le_bytes(b[36..40].try_into().unwrap()));
+    if flags.is_none_or(|f| f & 6 != 0) {
+        if let Some(p) = pic {
+            return Some(Body::Pic(p));
+        }
+        return read(&stg, "PrvText").map(|b| Body::Text {
+            text: utf16(&b, false).trim_end_matches('\0').to_string(),
+            kind: TextKind::Plain,
+            cut: false,
+        });
     }
-    read("PrvText").map(|b| Body::Text { text: utf16(&b, false).trim_end_matches('\0').to_string(), kind: TextKind::Plain, cut: false })
+    let mut out = String::new();
+    let mut cut = false;
+    if let Some(flags) = flags {
+        if let Ok(body) = stg.OpenStorage(&HSTRING::from("BodyText"), None, STGM_READ | STGM_SHARE_EXCLUSIVE, std::ptr::null(), 0) {
+            for n in 0..1000 {
+                if out.len() >= TEXT_MAX {
+                    cut = true;
+                    break;
+                }
+                let Some(data) = read(&body, &format!("Section{n}")) else { break };
+                let data = if flags & 1 != 0 {
+                    match miniz_oxide::inflate::decompress_to_vec_with_limit(&data, 32 << 20) {
+                        Ok(v) => v,
+                        Err(e) if !e.output.is_empty() => {
+                            cut = true;
+                            e.output
+                        }
+                        Err(_) => break,
+                    }
+                } else {
+                    data
+                };
+                out.push_str(&hwp5_body(&data));
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        out = read(&stg, "PrvText").map(|b| utf16(&b, false).trim_end_matches('\0').to_string()).unwrap_or_default();
+    }
+    limit_document(&mut out, &mut cut);
+    if pic.is_none() && out.is_empty() {
+        None
+    } else {
+        Some(Body::Document { pic, text: out, cut })
+    }
 }
 
 // ---------- cards: the facts, with the big icon ----------
