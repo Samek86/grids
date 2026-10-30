@@ -1,6 +1,6 @@
 [package]
 name = "grids"
-version = "0.1.75"
+version = "0.1.76"
 edition = "2021"
 description = "Fast multi-pane file manager for Windows"
 license = "MIT"
@@ -53,6 +53,9 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
+    "Win32_NetworkManagement_WNet",
+    "Win32_Security_Credentials",
+    "Win32_System_JobObjects",
     "Win32_UI_WindowsAndMessaging",
 ]
 
@@ -67,6 +70,10 @@ regex = "1.11.1"
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 # SHA-256 of a downloaded update. Pure Rust, no C. Used only by the in-app updater.
 sha2 = { version = "0.10.8", default-features = false }
+# rclone's password obscuring is AES-256-CTR. Pure Rust, so a password never reaches `rclone obscure`.
+aes = { version = "0.8.4", default-features = false }
+ctr = "0.9.2"
+base64 = "0.22.1"
 
 [profile.release]
 opt-level = "z"

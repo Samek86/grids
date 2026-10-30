@@ -8,6 +8,17 @@ use serde_json::{json, Value};
 
 use super::{fav_path, short_name, Session};
 
+/// A saved server. The password is never a field: it lives in Credential Manager.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServerLink {
+    pub(crate) kind: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) remote: String,
+    pub(crate) user: String,
+    pub(crate) tls: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FavNode {
     pub(crate) name: String,
@@ -15,15 +26,21 @@ pub(crate) struct FavNode {
     pub(crate) file: bool,
     pub(crate) open: bool,
     pub(crate) children: Vec<FavNode>,
+    /// Set on a server favourite. Absent on every older leaf.
+    pub(crate) server: Option<ServerLink>,
 }
 
 impl FavNode {
     pub(crate) fn group(name: &str) -> Self {
-        FavNode { name: name.to_string(), path: String::new(), file: false, open: true, children: Vec::new() }
+        FavNode { name: name.to_string(), path: String::new(), file: false, open: true, children: Vec::new(), server: None }
     }
 
     pub(crate) fn leaf(path: &str, name: &str, file: bool) -> Self {
-        FavNode { name: name.to_string(), path: path.to_string(), file, open: false, children: Vec::new() }
+        FavNode { name: name.to_string(), path: path.to_string(), file, open: false, children: Vec::new(), server: None }
+    }
+
+    pub(crate) fn server_leaf(name: &str, path: &str, link: ServerLink) -> Self {
+        FavNode { name: name.to_string(), path: path.to_string(), file: false, open: false, children: Vec::new(), server: Some(link) }
     }
 
     pub(crate) fn is_group(&self) -> bool {
@@ -709,6 +726,86 @@ pub(crate) fn delete_at(tree: &mut Vec<FavNode>, id: &[usize]) -> bool {
     take_node(tree, id).is_some()
 }
 
+pub(crate) fn node_ref<'a>(tree: &'a [FavNode], id: &[usize]) -> Option<&'a FavNode> {
+    let (&i, rest) = id.split_first()?;
+    let n = tree.get(i)?;
+    if rest.is_empty() {
+        Some(n)
+    } else {
+        node_ref(&n.children, rest)
+    }
+}
+
+/// Every server on this node and, when it is a group, inside it.
+pub(crate) fn servers_in(n: &FavNode) -> Vec<ServerLink> {
+    let mut out = Vec::new();
+    fn walk(n: &FavNode, out: &mut Vec<ServerLink>) {
+        if let Some(s) = &n.server {
+            out.push(s.clone());
+        }
+        for c in &n.children {
+            walk(c, out);
+        }
+    }
+    walk(n, &mut out);
+    out
+}
+
+pub(crate) fn server_by_path(tree: &[FavNode], path: &str) -> Option<ServerLink> {
+    fn walk(nodes: &[FavNode], path: &str) -> Option<ServerLink> {
+        for n in nodes {
+            if !n.path.is_empty() && n.path.eq_ignore_ascii_case(path) {
+                return n.server.clone();
+            }
+            if n.is_group() {
+                if let Some(s) = walk(&n.children, path) {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+    if path.is_empty() {
+        None
+    } else {
+        walk(tree, path)
+    }
+}
+
+/// True when another leaf already uses `path`. An empty `skip` checks the whole tree.
+pub(crate) fn path_clash(tree: &[FavNode], skip: &[usize], path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if skip.is_empty() {
+        contains_path(tree, path)
+    } else {
+        other_has_path(tree, skip, path)
+    }
+}
+
+pub(crate) fn append_node(tree: &mut Vec<FavNode>, parent: &[usize], node: FavNode) -> bool {
+    if node.path.is_empty() || contains_path(tree, &node.path) {
+        return false;
+    }
+    insert_child(tree, parent, usize::MAX, node).is_some()
+}
+
+pub(crate) fn write_server(tree: &mut [FavNode], id: &[usize], name: String, path: String, link: ServerLink) -> bool {
+    if path.is_empty() || id.is_empty() || path_clash(tree, id, &path) {
+        return false;
+    }
+    let Some(n) = node_mut(tree, id) else { return false };
+    if n.is_group() {
+        return false;
+    }
+    n.name = name;
+    n.path = path;
+    n.file = false;
+    n.server = Some(link);
+    true
+}
+
 pub(crate) fn set_open(tree: &mut Vec<FavNode>, id: &[usize], open: bool) {
     if let Some(n) = node_mut(tree, id) {
         if n.is_group() {
@@ -913,7 +1010,46 @@ fn node_value(n: &FavNode) -> Value {
     if !n.children.is_empty() {
         m.insert("children".into(), json!(tree_to_values(&n.children)));
     }
+    if let Some(s) = &n.server {
+        m.insert("server".into(), server_value(s));
+    }
     Value::Object(m)
+}
+
+fn server_value(s: &ServerLink) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("kind".into(), json!(s.kind));
+    m.insert("host".into(), json!(s.host));
+    if s.port != 0 {
+        m.insert("port".into(), json!(s.port));
+    }
+    if !s.remote.is_empty() {
+        m.insert("remote".into(), json!(s.remote));
+    }
+    if !s.user.is_empty() {
+        m.insert("user".into(), json!(s.user));
+    }
+    if s.tls {
+        m.insert("tls".into(), json!(true));
+    }
+    Value::Object(m)
+}
+
+fn server_from(v: &Value) -> Option<ServerLink> {
+    let o = v.as_object()?;
+    let kind = o.get("kind").and_then(|x| x.as_str()).unwrap_or("").trim().to_ascii_lowercase();
+    if !matches!(kind.as_str(), "smb" | "webdav" | "sftp" | "ftp") {
+        return None;
+    }
+    let host = o.get("host").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    if host.is_empty() {
+        return None;
+    }
+    let port = o.get("port").and_then(|x| x.as_u64()).unwrap_or(0).min(65535) as u16;
+    let remote = o.get("remote").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let user = o.get("user").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let tls = kind == "webdav" && o.get("tls").and_then(|x| x.as_bool()).unwrap_or(false);
+    Some(ServerLink { kind, host, port, remote, user, tls })
 }
 
 pub(crate) fn tree_from_values(v: &[Value]) -> Vec<FavNode> {
@@ -930,7 +1066,9 @@ fn node_from_value(v: &Value) -> Option<FavNode> {
         return None;
     }
     let open = if path.is_empty() { o.get("open").and_then(|x| x.as_bool()).unwrap_or(true) } else { false };
-    Some(FavNode { name, path: path.clone(), file: file && !path.is_empty(), open, children })
+    // A password key in an old or hand-edited file is ignored and not written back.
+    let server = o.get("server").and_then(server_from);
+    Some(FavNode { name, path: path.clone(), file: file && !path.is_empty(), open, children, server })
 }
 
 impl Session {
@@ -1167,6 +1305,30 @@ mod tests {
         assert!(parsed[0].children[0].file);
     }
 
+    #[test]
+    fn old_leaf_loads_and_a_server_password_is_never_stored() {
+        let old = tree_from_values(&[json!({"name": "Desk", "path": r"C:\WORK\pgtest\data"})]);
+        assert_eq!(old.len(), 1);
+        assert!(old[0].server.is_none());
+        assert!(!node_value(&old[0]).to_string().contains("server"));
+        let leaked = json!({
+            "name": "files",
+            "path": "sftp://ada@localhost/data",
+            "server": {"kind": "sftp", "host": "localhost", "user": "ada", "remote": "/data", "password": "s3cret-pl4in"}
+        });
+        let node = node_from_value(&leaked).unwrap();
+        let link = node.server.clone().unwrap();
+        assert_eq!(link.kind, "sftp");
+        assert_eq!(link.user, "ada");
+        assert!(!link.tls);
+        let stored = node_value(&node).to_string();
+        assert!(stored.contains("\"server\""));
+        assert!(!stored.contains("password"));
+        assert!(!stored.contains("s3cret-pl4in"));
+        let again = node_from_value(&node_value(&node)).unwrap();
+        assert_eq!(again.server, node.server);
+    }
+
     fn jobs_and_desk() -> Vec<FavNode> {
         vec![
             FavNode {
@@ -1175,6 +1337,7 @@ mod tests {
                 file: false,
                 open: true,
                 children: vec![FavNode::leaf(r"C:\a", "a", false), FavNode::leaf(r"C:\b", "b", false)],
+                server: None,
             },
             FavNode {
                 name: "Desk".into(),
@@ -1182,6 +1345,7 @@ mod tests {
                 file: false,
                 open: true,
                 children: vec![FavNode::leaf(r"C:\c", "c", false), FavNode::leaf(r"C:\d", "d", true)],
+                server: None,
             },
         ]
     }

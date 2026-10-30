@@ -402,6 +402,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             }
             // Restart or sign-out does not send WM_CLOSE. Saving here keeps the last folders.
             WM_ENDSESSION if wp.0 != 0 => {
+                crate::remote::unmount_all();
                 flush_folder_views();
                 save_session();
             }
@@ -419,6 +420,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             WM_THEME_PANE => theme_pane_step(),
             WM_THEME_RELAUNCH => theme_relaunch(),
             WM_UPDATE => on_update(h, wp.0),
+            crate::remote::WM_REMOTE => remote_arrived(),
             WM_HOTKEY if wp.0 == HOTKEY_ID as usize => hotkey_pressed(),
             WM_CLOSE => {
                 _ = KillTimer(Some(h), TIMER_SAVE);
@@ -433,6 +435,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let last = window_count() <= 1;
                 if last {
                     // The last window stays in the file, so the next launch restores every window that was open.
+                    crate::remote::unmount_all();
                     save_session();
                     _ = DestroyWindow(h);
                 } else {

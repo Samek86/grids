@@ -1217,12 +1217,14 @@ fn flip(id: u8) {
 
 unsafe fn delete_fav(k: usize) {
     let Some(id) = fav_node(k).map(|r| r.id) else { return };
+    let links = crate::servers_at(&id);
     app(|a| {
         a.s.ensure_fav_tree();
         crate::delete_at(&mut a.s.tree, &id);
         a.s.sync_favs();
         a.fav_hot = None;
     });
+    crate::release_servers(links);
     crate::commit_favs();
 }
 

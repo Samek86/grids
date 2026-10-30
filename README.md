@@ -54,6 +54,10 @@ The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-acce
 
 <p align="center"><img width="760" alt="favorites" src="docs/images/favorites.png"></p>
 
+### 🌐 Server connections
+
+Right-click the favourites panel background, or a group, and choose **Add server connection…**. SMB and WebDAV open as normal Windows folders (UNC, signed in with `WNetAddConnection2`). SFTP and FTP are mounted with rclone and WinFsp, then browse like any other folder — including preview, the context menu, and fast copy. Passwords stay in Windows Credential Manager and are never written to `panegrid.json`.
+
 ### 👁️ Quick preview
 
 Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP, HWP/HWPX (Hancom) and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files. Resizable, and it remembers its size.

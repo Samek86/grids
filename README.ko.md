@@ -54,6 +54,10 @@
 
 <p align="center"><img width="760" alt="favorites" src="docs/images/favorites.ko.png"></p>
 
+### 🌐 서버 연결
+
+즐겨찾기 패널의 빈 곳이나 그룹을 오른쪽 클릭하고 **서버 연결 추가…**를 고릅니다. SMB와 WebDAV는 Windows 폴더로 열립니다(UNC, `WNetAddConnection2`로 로그인). SFTP와 FTP는 rclone과 WinFsp로 마운트한 뒤 다른 폴더처럼 탐색합니다. 미리보기, 상황에 맞는 메뉴, 빠른 복사도 그대로입니다. 암호는 Windows 자격 증명 관리자에만 있고 `panegrid.json`에는 기록되지 않습니다.
+
 ### 👁️ 빠른 미리보기
 
 스페이스나 F3으로 사진, PDF, Office, HTML, 마크다운, 코드, CSV, ZIP, HWP/HWPX(한글과컴퓨터) 등을 봅니다. Ctrl+휠 확대(10–800%), 끌어서 이동, 휠 스크롤, ←/→ 다음 파일. 창 크기를 바꾸면 기억합니다.
