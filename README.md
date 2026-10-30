@@ -36,7 +36,7 @@ Every pane is a real Windows Explorer view: the full right-click menu, drag and 
 
 ### 🧩 Multi-pane layouts & sessions
 
-Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and save the current tab — layout, folders, columns, and colour labels — as a named session. Opening one adds a new tab beside the current one.
+Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and drag a pane number to rearrange panes (Ctrl+drag copies a pane tab into another cell). Save the current tab — layout, folders, columns, and colour labels — as a named session. Opening one adds a new tab beside the current one.
 
 With a single pane, the ⇄ button splits the tab: the selected folder (or the current one, if nothing or only files are selected) opens in a new right pane with the same columns and view. With two or more panes, ⇄ keeps its menu.
 
@@ -56,7 +56,7 @@ The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-acce
 
 ### 👁️ Quick preview
 
-Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files. Resizable, and it remembers its size.
+Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP, HWP/HWPX (Hancom) and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files. Resizable, and it remembers its size.
 
 <p align="center"><img width="760" alt="preview" src="docs/images/preview.png"></p>
 
@@ -74,10 +74,12 @@ The full Explorer context menu (shell extensions included, plus Properties on em
 
 ### ⚡ Small details
 
-- **Full path on hover.** When a pane's address bar is too narrow and shows `…`, hover it to see the whole path.
+- **Full path on hover.** When a pane's address bar is too narrow and shows `…`, hover it to see the whole path. Favourites rows and locked tabs have hover tooltips too.
+- **Per-folder view memory.** Sort, columns, view mode, icon size and grouping come back when you open that folder again (saved in `folder-views.json` next to the settings; on by default).
 - **Mouse side buttons everywhere.** Back and forward work in folder panes, also over Remote Desktop.
 - **Right-click menu without the first-click lag.** Shell context menus are warmed up in the background after launch and after a long idle.
-- **Column widths are remembered** when you come back to a folder.
+- **Theme switch keeps history.** Changing light / dark rebuilds the views without wiping back / forward or the folder you were in.
+- **Optional update check.** On startup Panegrid can check GitHub Releases for a newer `panegrid.exe` (SHA-256 verified) and offer to install it.
 - **Crash report on the next launch.** If a third-party shell extension takes Panegrid down, the report names it, and you can block that DLL inside Panegrid only (`blocked_shell_extensions` in `panegrid.json`).
 
 ### 🎨 Themes & accent
@@ -86,11 +88,11 @@ Light and dark that follow Windows, six accent colours per theme, per-pane colou
 
 <p align="center"><img width="760" alt="settings" src="docs/images/settings.png"></p>
 
-📦 **One portable exe, about 1.2 MB.** Nothing to install.
+📦 **A small single exe.** Nothing to install.
 
 ## Install
 
-Download the latest `panegrid.exe` from [Releases](https://github.com/Samek86/panegrid/releases/latest). Put it in any folder and run it. One portable exe, about 1.2 MB. Nothing to install. Releases ship that raw exe and a `panegrid.exe.sha256` checksum, not a zip.
+Download the latest `panegrid.exe` from [Releases](https://github.com/Samek86/panegrid/releases/latest). Put it in any folder and run it. A small single exe — nothing to install. Releases ship that raw exe and a `panegrid.exe.sha256` checksum, not a zip.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
@@ -125,7 +127,9 @@ Defaults; every one can be changed in Settings → Shortcuts.
 | **View** | Ctrl+F | Search this folder (Subfolders → Everything) |
 |  | Space / F3 | Quick preview |
 |  | F6 / Shift+F6 | Next / previous focus |
+|  | Ctrl+H | Show hidden files |
 |  | Ctrl+Shift+E | Left panel |
+|  | Ctrl+Shift+O | Open folders from Explorer windows |
 | **Preview** | Ctrl+wheel | Zoom 10–800% |
 |  | Ctrl+0 | Reset zoom |
 |  | Drag | Pan a zoomed picture |
@@ -133,6 +137,7 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | ← / → | Previous / next file |
 |  | Esc / Space / F3 | Close |
 | **File** | Ctrl+Shift+C | Copy full path |
+|  | Ctrl+Shift+R | Batch rename |
 |  | Num+ or Ctrl+Shift+A / Num− / Num* | Select / deselect / invert by pattern |
 |  | Ctrl+Alt+N | New text file |
 |  | Ctrl+Shift+N, F7 | New folder |
@@ -143,6 +148,7 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+, | Settings |
 |  | F1 / Ctrl+/ | Shortcut help / list |
 |  | Ctrl+N | New window |
+|  | Win+Shift+E | Bring Panegrid to the front (global) |
 
 ## Known issues
 
