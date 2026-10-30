@@ -561,13 +561,18 @@ unsafe fn draw(dc: HDC, rc: RECT, g: &Geo, sn: &Snap) {
             Item::CtxNote(r) => {
                 let _ = crate::wrap_text(dc, *r, tx(CTX_NOTE), sn.small, crate::pal().sub, false);
             }
+            Item::CtxSeg { classic, win11 } => {
+                let on_win = app(|a| a.s.ctx_win11_view);
+                draw_seg(dc, *classic, tx(CTX_CLASSIC), !on_win, sn, accent);
+                draw_seg(dc, *win11, tx(CTX_WIN11), on_win, sn, accent);
+            }
             Item::CtxBar { .. } => {}
-            Item::CtxRow { id, rect, mark, chev, name, detail, raw, tick, chips, .. } => {
-                let open = sn.ctx_open.iter().any(|x| x == id);
-                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *tick, chips, open, sn, accent);
+            Item::CtxRow { id, rect, mark, chev, name, detail, raw, tick, chips, packaged, .. } => {
+                let open = !*packaged && sn.ctx_open.iter().any(|x| x == id);
+                draw_ctx_row(dc, *rect, *mark, *chev, name, detail, raw, *tick, chips, open, *packaged, sn, accent);
             }
             Item::CtxSub { rect, mark, bit, tick, .. } => draw_ctx_sub(dc, *rect, *mark, *bit, *tick, sn, accent),
-            Item::CtxEmpty(r) => crate::text(dc, *r, tx(CTX_EMPTY), sn.small, crate::pal().sub, DT_LEFT),
+            Item::CtxEmpty(r, key) => crate::text(dc, *r, tx(*key), sn.small, crate::pal().sub, DT_LEFT),
             Item::KeyBar { edit, .. } => draw_field(dc, *edit, dpi),
             Item::KeyHead(r) => {
                 let (a, b) = key_cols(*r);
@@ -786,14 +791,30 @@ unsafe fn draw_tick(dc: HDC, r: RECT, tick: crate::shell::ctxmenu::Tick, accent:
     }
 }
 
-unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, sn: &Snap, accent: u32) {
+unsafe fn draw_seg(dc: HDC, r: RECT, label: &str, on: bool, sn: &Snap, accent: u32) {
+    let h = (r.bottom - r.top).max(1);
+    if on {
+        rfill(dc, r, h / 2, accent, None);
+        crate::text(dc, r, label, sn.font, on_chrome(accent), DT_CENTER);
+    } else {
+        rfill(dc, r, h / 2, crate::pal().card, Some(crate::pal().line));
+        crate::text(dc, r, label, sn.font, crate::pal().text, DT_CENTER);
+    }
+}
+
+unsafe fn draw_ctx_row(dc: HDC, rect: RECT, mark: RECT, chev: RECT, name: &str, detail: &str, raw: &str, tick: crate::shell::ctxmenu::Tick, chips: &[(u8, RECT)], open: bool, packaged: bool, sn: &Snap, accent: u32) {
     let dpi = sn.dpi.max(96);
     rfill(dc, rect, sc(dpi, 6), crate::pal().card, Some(crate::pal().line));
     draw_tick(dc, mark, tick, accent, dpi, sn.icon);
-    let chev_box = RECT { top: mark.top, bottom: mark.bottom, ..chev };
-    crate::text(dc, chev_box, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
+    let text_left = if packaged {
+        mark.right + sc(dpi, 8)
+    } else {
+        let chev_box = RECT { top: mark.top, bottom: mark.bottom, ..chev };
+        crate::text(dc, chev_box, if open { "\u{E70D}" } else { "\u{E76C}" }, sn.icon, crate::pal().sub, DT_CENTER);
+        chev.right
+    };
     let name_right = chips.first().map(|(_, r)| r.left - sc(dpi, 8)).unwrap_or(rect.right - sc(dpi, 12));
-    let text_r = RECT { left: chev.right, right: name_right, ..rect };
+    let text_r = RECT { left: text_left, right: name_right, ..rect };
     let line = detail;
     if line.is_empty() && raw.is_empty() {
         crate::text(dc, text_r, name, sn.bold, crate::pal().text, DT_LEFT);
@@ -1282,6 +1303,7 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
             app(|a| {
                 let s = &mut a.s;
                 crate::shell::ctxmenu::reset_menu(&mut s.ctx_off, &mut s.ctx_on);
+                s.ctx_packaged_off.clear();
             });
             crate::save_session();
             layout(h);
@@ -1608,8 +1630,42 @@ unsafe fn on_click(h: HWND, x: i32, y: i32) {
                 return;
             }
         }
-        if let Item::CtxRow { id, ids, scopes, rect, mark, .. } = item {
+        if let Item::CtxSeg { classic, win11 } = item {
+            let next = if inside(*classic, x, y) {
+                Some(false)
+            } else if inside(*win11, x, y) {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(win) = next {
+                let changed = app(|a| {
+                    if a.s.ctx_win11_view == win {
+                        false
+                    } else {
+                        a.s.ctx_win11_view = win;
+                        true
+                    }
+                });
+                if changed {
+                    crate::save_session();
+                    ST.with(|s| s.borrow_mut().scroll = 0);
+                    layout(h);
+                    let _ = InvalidateRect(Some(h), None, false);
+                }
+                return;
+            }
+        }
+        if let Item::CtxRow { id, ids, scopes, rect, mark, packaged, .. } = item {
             if inside(*rect, x, y) {
+                if *packaged {
+                    let id = id.clone();
+                    app(|a| crate::shell::ctxpack::toggle(&mut a.s.ctx_packaged_off, &id));
+                    crate::save_session();
+                    layout(h);
+                    let _ = InvalidateRect(Some(h), None, false);
+                    return;
+                }
                 if inside(*mark, x, y) {
                     let ids = ids.clone();
                     let scopes = scopes.clone();

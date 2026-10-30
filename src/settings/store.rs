@@ -324,6 +324,13 @@ struct SettingsFile {
     /// They leave the settings list only. A .grids file does not store this.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     ctx_quiet: BTreeSet<String>,
+    /// Packaged Windows 11 commands turned off (`packaged:{clsid}`). Empty means all on.
+    /// Not written into grids.ini.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    ctx_packaged_off: BTreeSet<String>,
+    /// Settings right-click page is on the Windows 11 list. Omitted while classic.
+    #[serde(default, skip_serializing_if = "is_off")]
+    ctx_win11_view: bool,
     /// DLL file names blocked inside Panegrid only. Omitted when empty.
     /// Not written to the registry and not written into grids.ini.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -403,6 +410,8 @@ impl SettingsFile {
             ctx_labels: BTreeMap::new(),
             ctx_on: BTreeMap::new(),
             ctx_quiet: BTreeSet::new(),
+            ctx_packaged_off: BTreeSet::new(),
+            ctx_win11_view: false,
             blocked_shell_extensions: Vec::new(),
             extra: Map::new(),
         }
@@ -500,6 +509,8 @@ impl SettingsFile {
             ctx_labels: clean_labels(&s.ctx_labels),
             ctx_on: clean_ctx(&s.ctx_on),
             ctx_quiet: clean_quiet(&s.ctx_quiet),
+            ctx_packaged_off: clean_packaged(&s.ctx_packaged_off),
+            ctx_win11_view: s.ctx_win11_view,
             blocked_shell_extensions: clean_blocked(&s.blocked_shell_extensions),
             extra: Map::new(),
         }
@@ -544,6 +555,8 @@ impl SettingsFile {
         self.extra.remove("ctx_labels");
         self.extra.remove("ctx_on");
         self.extra.remove("ctx_quiet");
+        self.extra.remove("ctx_packaged_off");
+        self.extra.remove("ctx_win11_view");
         self.extra.remove("blocked_shell_extensions");
         // Older builds stored a pane-tab on/off switch. Tabs are always on; the key is dropped.
         self.extra.remove("pane_tabs");
@@ -645,6 +658,8 @@ impl SettingsFile {
         s.ctx_labels = clean_labels(&self.ctx_labels);
         s.ctx_on = clean_ctx(&self.ctx_on);
         s.ctx_quiet = clean_quiet(&self.ctx_quiet);
+        s.ctx_packaged_off = clean_packaged(&self.ctx_packaged_off);
+        s.ctx_win11_view = self.ctx_win11_view;
         s.blocked_shell_extensions = clean_blocked(&self.blocked_shell_extensions);
         crate::shell::ctxmenu::reconcile_winmerge(&mut s.ctx_off, &mut s.ctx_on);
         s.file = self.session.clone();
@@ -732,6 +747,18 @@ fn clean_blocked(names: &[String]) -> Vec<String> {
         out.push(base.to_string());
     }
     out
+}
+
+fn clean_packaged(ids: &BTreeSet<String>) -> BTreeSet<String> {
+    ids.iter().filter_map(|id| {
+        let id = id.trim().to_ascii_lowercase();
+        let Some(rest) = id.strip_prefix("packaged:") else { return None };
+        if id.len() > 80 || rest.chars().any(|c| c.is_whitespace()) {
+            None
+        } else {
+            Some(id)
+        }
+    }).collect()
 }
 
 fn clean_quiet(ids: &BTreeSet<String>) -> BTreeSet<String> {
@@ -1140,6 +1167,32 @@ mod tests {
         let kept = adopt(r#"{"ctx_on":{"app:winmerge":["file"]},"ctx_menu":{"clsid:4e716236-aa30-4c65-b225-d68bba81e9c2":["drive"]}}"#).unwrap();
         assert!(kept.ctx_off.is_empty());
         assert_eq!(kept.ctx_on.get("app:winmerge").map(Vec::as_slice), Some(["file".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn ctx_packaged_off_round_trips_in_json_and_stays_out_of_grids_ini() {
+        let id = "packaged:{9f156763-7844-4dc4-b2b1-901f640f5155}";
+        let mut s = Session::default();
+        s.ctx_packaged_off.insert(id.into());
+        s.ctx_packaged_off.insert("  ".into());
+        s.ctx_packaged_off.insert("clsid:nope".into());
+        s.ctx_win11_view = true;
+        let text = sync_text(&s);
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["ctx_packaged_off"], serde_json::json!([id]));
+        assert_eq!(saved["ctx_win11_view"], true);
+        assert!(!s.to_ini().contains("ctx_packaged_off"));
+        assert!(!s.to_ini().contains("ctx_win11_view"));
+        assert!(!s.to_ini().contains("packaged:"));
+        let back = adopt(&text).unwrap();
+        assert!(back.ctx_packaged_off.contains(id));
+        assert!(!back.ctx_packaged_off.contains("clsid:nope"));
+        assert!(back.ctx_win11_view);
+        let fresh = serde_json::from_str::<Value>(&sync_text(&Session::default())).unwrap();
+        assert!(fresh.get("ctx_packaged_off").is_none());
+        assert!(fresh.get("ctx_win11_view").is_none());
+        assert!(!adopt("{}").unwrap().ctx_win11_view);
+        assert!(adopt("{}").unwrap().ctx_packaged_off.is_empty());
     }
 
     #[test]

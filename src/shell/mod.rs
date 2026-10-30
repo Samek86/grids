@@ -1,4 +1,5 @@
 pub(crate) mod ctxmenu;
+pub(crate) mod ctxpack;
 pub(crate) mod blockext;
 pub(crate) mod warmup;
 mod askdrop;

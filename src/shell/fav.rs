@@ -623,7 +623,15 @@ unsafe fn finish_shell_menu(menu: HMENU, cm: Option<&IContextMenu>, background: 
     super::ctxmenu::normalize_menu(menu);
 }
 
+struct ClearPackIds;
+impl Drop for ClearPackIds {
+    fn drop(&mut self) {
+        super::ctxpack::clear_ids();
+    }
+}
+
 unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(String, bool)], background: bool, pane_selection: bool, props_folder: &str, pt: POINT, pane: usize) -> bool {
+    let _pack_ids = ClearPackIds;
     CTX_BACKGROUND.with(|c| c.set(background));
     let Ok(menu) = CreatePopupMenu() else { return false };
     let mut flags = CMF_EXPLORE | CMF_CANRENAME;
@@ -691,6 +699,8 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
         let at = fav_anchor_pos(menu, &cm, 1, ID_CTX_FAV, 0);
         crate::winmerge::insert_ctx(menu, at, pane, items);
     }
+    // After strip. Packaged commands are not in this shell menu; inject_menu appends them.
+    super::ctxpack::inject_menu(menu, paths, items, background, props_folder);
     // After every removal and insertion. The shell can still add a row when the menu opens.
     finish_shell_menu(menu, Some(&cm), background);
     tidy_fav_item(menu, ID_CTX_FAV as usize);
@@ -715,6 +725,7 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
             _ = SHObjectProperties(Some(owner), SHOP_FILEPATH, &HSTRING::from(props_folder), None);
         }
     } else if crate::winmerge::ctx_command(owner, cmd, pane, items) {
+    } else if super::ctxpack::invoke_menu_command(cmd as u32, paths, background, props_folder) {
     } else if cmd > 0 {
         let verb = cmd_verb(&cm, (cmd as u32 - 1) as usize);
         let default_item = GetMenuDefaultItem(menu, 0, GET_MENU_DEFAULT_ITEM_FLAGS(0)) as i32 == cmd;
