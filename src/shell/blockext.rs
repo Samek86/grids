@@ -1,4 +1,4 @@
-//! Stop a named shell extension from loading inside Panegrid.
+//! Stop a named shell extension from loading inside Maguro.
 //!
 //! COM looks up a registered class object before it loads `InprocServer32`. A stub
 //! factory whose `CreateInstance` fails makes that CLSID unavailable in this process

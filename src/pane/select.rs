@@ -77,7 +77,7 @@ pub(crate) unsafe fn open_match(i: usize, desel: bool) {
     let work = mi.rcWork;
     let x = rc.left.min(work.right - g.w).max(work.left);
     let y = rc.top.min(work.bottom - g.h).max(work.top);
-    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("PanegridMatch"), w!(""), WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, x, y, g.w, g.h, Some(main), None, None, None) else {
+    let Ok(h) = CreateWindowExW(WS_EX_TOOLWINDOW, w!("MaguroMatch"), w!(""), WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, x, y, g.w, g.h, Some(main), None, None, None) else {
         return;
     };
     let square = DWMWCP_DONOTROUND;

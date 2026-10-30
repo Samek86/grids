@@ -1,8 +1,8 @@
-//! Which registry values make Panegrid the default for filesystem folders, and
+//! Which registry values make Maguro the default for filesystem folders, and
 //! which arguments are not filesystem paths. Nothing here touches the registry.
 
 /// Verb name under `Directory\shell` and `Drive\shell`. Not the Folder class.
-pub(crate) const VERB: &str = "Panegrid";
+pub(crate) const VERB: &str = "Maguro";
 pub(crate) const DIRECTORY: &str = "Directory";
 pub(crate) const DRIVE: &str = "Drive";
 /// Previous `(Default)` of the shell key. Empty when that value was absent.
@@ -37,7 +37,7 @@ pub(crate) struct ClassState {
     pub(crate) prev_set: Option<u32>,
     pub(crate) shell_created: Option<u32>,
     pub(crate) class_created: Option<u32>,
-    /// `(Default)` of `shell\Panegrid\command`. `None` when that value is absent.
+    /// `(Default)` of `shell\Maguro\command`. `None` when that value is absent.
     pub(crate) command: Option<String>,
 }
 
@@ -105,11 +105,11 @@ pub(crate) fn command_key(class: &str) -> String {
 pub(crate) fn value_keys() -> [&'static str; 6] {
     [
         r"Software\Classes\Directory\shell",
-        r"Software\Classes\Directory\shell\Panegrid",
-        r"Software\Classes\Directory\shell\Panegrid\command",
+        r"Software\Classes\Directory\shell\Maguro",
+        r"Software\Classes\Directory\shell\Maguro\command",
         r"Software\Classes\Drive\shell",
-        r"Software\Classes\Drive\shell\Panegrid",
-        r"Software\Classes\Drive\shell\Panegrid\command",
+        r"Software\Classes\Drive\shell\Maguro",
+        r"Software\Classes\Drive\shell\Maguro\command",
     ]
 }
 
@@ -317,7 +317,7 @@ fn looks_like_clsid(s: &str) -> bool {
     parts.iter().all(|r| b[r.clone()].iter().copied().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// Where an activation inside Panegrid goes.
+/// Where an activation inside Maguro goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OpenWhere {
     /// Browse the current pane. The shell verb must not run.
@@ -331,7 +331,7 @@ pub(crate) enum OpenWhere {
 /// as the target (`folder` / `stream` / `browsable`), not as the `.lnk` file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpenIn {
-    /// Settings > General, "use Panegrid as the default folder app".
+    /// Settings > General, "use Maguro as the default folder app".
     pub registered: bool,
     pub ctrl: bool,
     pub middle: bool,
@@ -435,7 +435,7 @@ pub(crate) fn menu_open(registered: bool, ctrl: bool, middle: bool, verb: &str, 
 /// Verbs that open a folder in this browser. `opennew` still launches, so
 /// "Open in new window" becomes a tab through the single-instance handoff.
 pub(crate) fn open_verb(verb: &str) -> bool {
-    matches!(verb.trim().to_ascii_lowercase().as_str(), "open" | "explore" | "panegrid")
+    matches!(verb.trim().to_ascii_lowercase().as_str(), "open" | "explore" | "maguro")
 }
 
 /// Folder tree: double-click and Enter browse this pane while we are registered.
@@ -454,7 +454,7 @@ pub(crate) fn link_file(path: &str) -> bool {
 /// After it, a launch whose parent is this process is the double-click that slipped through.
 pub(crate) const NEW_TAB_INTENT_MS: u64 = 2_000;
 
-/// What the running instance does with a second `panegrid.exe`.
+/// What the running instance does with a second `maguro.exe`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Handoff {
     /// Explorer, Win+E, another app, or a Ctrl/middle-click from this process.
@@ -463,7 +463,7 @@ pub(crate) enum Handoff {
     InPlace,
 }
 
-/// `parent_pid` is the parent of the `panegrid.exe` that forwarded the launch.
+/// `parent_pid` is the parent of the `maguro.exe` that forwarded the launch.
 /// `self_pid` is the running instance. `intent_elapsed_ms` is how long ago a
 /// Ctrl or middle-click asked for a new tab, or `None` when it never did.
 /// `0` is not a process id: a parent that could not be read stays a new tab.
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn register_writes_directory_and_drive_and_never_folder() {
-        let exe = r"C:\Program Files\Panegrid\panegrid.exe";
+        let exe = r"C:\Program Files\Maguro\maguro.exe";
         let ops = register_ops(exe, &fresh());
         assert_classes_only(&ops);
         let keys: Vec<&str> = ops.iter().map(Op::key).collect();
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn commands_quote_the_exe_and_drives_keep_the_backslash_inside_the_quotes() {
-        let exe = r"C:\Program Files\Panegrid\panegrid.exe";
+        let exe = r"C:\Program Files\Maguro\maguro.exe";
         let dir = command_line(exe, DIRECTORY);
         let drive = command_line(exe, DRIVE);
         assert_eq!(dir, format!("\"{exe}\" \"%1\""));
@@ -606,7 +606,7 @@ mod tests {
         let mut drive = ClassState::absent(DRIVE);
         drive.class_exists = true;
         drive.class_other_subkeys = vec!["shellex".into()];
-        let ops = register_ops(r"D:\panegrid.exe", &[dir, drive]);
+        let ops = register_ops(r"D:\maguro.exe", &[dir, drive]);
         assert_eq!(sz(&ops, &shell_key(DIRECTORY), ""), Some(VERB));
         assert_eq!(sz(&ops, &verb_key(DIRECTORY), ""), Some(VERB));
         assert_eq!(sz(&ops, &verb_key(DIRECTORY), PREV_DEFAULT), Some("open"));
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn a_fresh_hive_records_that_we_created_the_parents() {
-        let ops = register_ops(r"C:\panegrid.exe", &fresh());
+        let ops = register_ops(r"C:\maguro.exe", &fresh());
         for class in [DIRECTORY, DRIVE] {
             assert_eq!(dword(&ops, &verb_key(class), PREV_SET), Some(0));
             assert_eq!(sz(&ops, &verb_key(class), PREV_DEFAULT), Some(""));
@@ -632,12 +632,12 @@ mod tests {
 
     #[test]
     fn registering_again_does_not_store_our_own_verb_as_the_previous_default() {
-        let cmd = command_line(r"C:\panegrid.exe", DIRECTORY);
+        let cmd = command_line(r"C:\maguro.exe", DIRECTORY);
         let states = vec![
             ours(DIRECTORY, Some("open"), 0, 0, &cmd),
-            ours(DRIVE, None, 1, 1, &command_line(r"C:\panegrid.exe", DRIVE)),
+            ours(DRIVE, None, 1, 1, &command_line(r"C:\maguro.exe", DRIVE)),
         ];
-        let ops = register_ops(r"C:\moved\panegrid.exe", &states);
+        let ops = register_ops(r"C:\moved\maguro.exe", &states);
         assert_eq!(sz(&ops, &verb_key(DIRECTORY), PREV_DEFAULT), Some("open"));
         assert_eq!(dword(&ops, &verb_key(DIRECTORY), PREV_SET), Some(1));
         assert_eq!(dword(&ops, &verb_key(DIRECTORY), SHELL_CREATED), Some(0));
@@ -651,12 +651,12 @@ mod tests {
     fn restore_puts_the_previous_verb_back_and_deletes_only_our_key() {
         let states = vec![
             {
-                let mut s = ours(DIRECTORY, Some("open"), 0, 0, &command_line(r"C:\panegrid.exe", DIRECTORY));
+                let mut s = ours(DIRECTORY, Some("open"), 0, 0, &command_line(r"C:\maguro.exe", DIRECTORY));
                 s.shell_other_subkeys = vec!["open".into()];
                 s
             },
             {
-                let mut s = ours(DRIVE, Some("open"), 0, 0, &command_line(r"C:\panegrid.exe", DRIVE));
+                let mut s = ours(DRIVE, Some("open"), 0, 0, &command_line(r"C:\maguro.exe", DRIVE));
                 s.shell_values = vec!["SomeOther".into()];
                 s
             },
@@ -674,8 +674,8 @@ mod tests {
     #[test]
     fn restore_of_parents_we_created_removes_them_when_they_are_empty() {
         let states = vec![
-            ours(DIRECTORY, None, 1, 1, &command_line(r"C:\panegrid.exe", DIRECTORY)),
-            ours(DRIVE, None, 1, 1, &command_line(r"C:\panegrid.exe", DRIVE)),
+            ours(DIRECTORY, None, 1, 1, &command_line(r"C:\maguro.exe", DIRECTORY)),
+            ours(DRIVE, None, 1, 1, &command_line(r"C:\maguro.exe", DRIVE)),
         ];
         let ops = restore_ops(&states);
         for class in [DIRECTORY, DRIVE] {
@@ -687,7 +687,7 @@ mod tests {
         // The verb tree goes before the parents, so the shell key is empty when it is removed.
         let dir: Vec<&Op> = ops.iter().filter(|op| op.key().contains("Directory")).collect();
         let at = |pred: fn(&Op) -> bool| dir.iter().position(|op| pred(op)).unwrap();
-        let verb_at = at(|op| matches!(op, Op::DeleteTree { key } if key.ends_with(r"\Panegrid")));
+        let verb_at = at(|op| matches!(op, Op::DeleteTree { key } if key.ends_with(r"\Maguro")));
         let shell_at = at(|op| matches!(op, Op::DeleteKey { key } if key.ends_with(r"\shell")));
         let class_at = at(|op| matches!(op, Op::DeleteKey { key } if key == r"Software\Classes\Directory"));
         assert!(verb_at < shell_at && shell_at < class_at);
@@ -728,8 +728,8 @@ mod tests {
 
     #[test]
     fn moving_the_exe_rewrites_only_the_command() {
-        let old = r"C:\Old\panegrid.exe";
-        let new = r"D:\New\panegrid.exe";
+        let old = r"C:\Old\maguro.exe";
+        let new = r"D:\New\maguro.exe";
         let states = vec![ours(DIRECTORY, Some("open"), 0, 0, &command_line(old, DIRECTORY)), ours(DRIVE, Some("open"), 0, 0, &command_line(old, DRIVE))];
         let ops = path_fix_ops(new, &states);
         assert_eq!(ops.len(), 2);
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn the_same_exe_in_another_case_is_not_rewritten() {
-        let exe = r"C:\Panegrid\panegrid.exe";
+        let exe = r"C:\Maguro\maguro.exe";
         let states = vec![ours(DIRECTORY, None, 1, 1, &command_line(exe, DIRECTORY)), ours(DRIVE, None, 1, 1, &command_line(exe, DRIVE))];
         assert!(is_registered(&states));
         assert!(path_fix_ops(&exe.to_ascii_lowercase(), &states).is_empty());
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn an_unregistered_hive_is_not_rewritten_on_startup() {
         assert!(!is_registered(&fresh()));
-        assert!(path_fix_ops(r"C:\panegrid.exe", &fresh()).is_empty());
+        assert!(path_fix_ops(r"C:\maguro.exe", &fresh()).is_empty());
         let mut only_dir = fresh();
         only_dir[0] = ours(DIRECTORY, None, 1, 1, &command_line(r"C:\old.exe", DIRECTORY));
         assert!(!is_registered(&only_dir));
@@ -824,8 +824,8 @@ mod tests {
         assert_eq!(menu_open(true, false, false, "open", 1, false, false), OpenWhere::Pane);
         assert_eq!(menu_open(true, false, false, "Open", 1, false, false), OpenWhere::Pane);
         assert_eq!(menu_open(true, false, false, "explore", 1, false, false), OpenWhere::Pane);
-        assert_eq!(menu_open(true, false, false, "Panegrid", 1, false, false), OpenWhere::Pane);
-        assert_eq!(menu_open(true, false, false, "  panegrid  ", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "Maguro", 1, false, false), OpenWhere::Pane);
+        assert_eq!(menu_open(true, false, false, "  maguro  ", 1, false, false), OpenWhere::Pane);
         // "Open in new window" still launches, which the running window turns into a tab.
         assert_eq!(menu_open(true, false, false, "opennew", 1, false, false), OpenWhere::Shell);
         assert_eq!(menu_open(true, false, false, "opennewwindow", 1, false, false), OpenWhere::Shell);

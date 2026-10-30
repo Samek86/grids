@@ -528,7 +528,7 @@ unsafe fn refresh_find_in(i: usize, force: bool) {
         *slot = Some(job);
     }
     static WORKER: Once = Once::new();
-    WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-find".into()).spawn(find_worker));
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("maguro-find".into()).spawn(find_worker));
     WAKE.notify_one();
 }
 
@@ -753,11 +753,11 @@ unsafe fn ensure_list(pane: HWND) -> HWND {
             lpfnWndProc: Some(find_proc),
             hInstance: hinst.into(),
             hCursor: arrow,
-            lpszClassName: w!("PanegridFind"),
+            lpszClassName: w!("MaguroFind"),
             ..Default::default()
         });
     });
-    CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridFind"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(pane), None, None, None).unwrap_or_default()
+    CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroFind"), w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(pane), None, None, None).unwrap_or_default()
 }
 
 /// Enter. A folder is browsed to in this pane. A file is launched and the pane moves to its folder.
@@ -1464,7 +1464,7 @@ unsafe fn ask_install_everything_once(owner: HWND) {
     app(|a| a.s.ev_asked = true);
     crate::save_session();
     let q = tr(crate::Key::InstallEverythingMakeSubfolderSearchMuch);
-    if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
+    if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Maguro"), MB_YESNO | MB_ICONQUESTION) == IDYES {
         everything::install_async();
     }
 }

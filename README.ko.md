@@ -1,22 +1,22 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/panegrid-lockup-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/panegrid-lockup-light.png">
-    <img alt="Panegrid" src="assets/panegrid-lockup-light.png" width="560">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/maguro-lockup-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/maguro-lockup-light.png">
+    <img alt="Maguro" src="assets/maguro-lockup-light.png" width="192">
   </picture>
 </p>
 
-<h1 align="center">Panegrid</h1>
+<h1 align="center">Maguro</h1>
 
 <p align="center">Windows용 빠르고 가벼운 다중 패널 파일 관리자.</p>
 
-> **Panegrid는 efww의 [efww/grids](https://github.com/efww/grids) 포크입니다.** 실행 파일 이름(`panegrid.exe`), 창 클래스, 설정 폴더, 단축키(Win+Shift+E)를 따로 쓰므로, 원래 Grids의 설정을 건드리지 않고 나란히 실행할 수 있습니다.
+> **Maguro는 efww의 [efww/grids](https://github.com/efww/grids) 포크입니다.** 실행 파일 이름(`maguro.exe`), 창 클래스, 설정 폴더, 단축키(Win+Shift+E)를 따로 쓰므로, 원래 Grids의 설정을 건드리지 않고 나란히 실행할 수 있습니다.
 
 <p align="center">
-  <a href="https://github.com/Samek86/panegrid"><img alt="플랫폼: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
+  <a href="https://github.com/Samek86/maguro"><img alt="플랫폼: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white"></a>
   <a href="LICENSE"><img alt="라이선스: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="https://github.com/Samek86/panegrid"><img alt="언어: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
-  <a href="https://github.com/Samek86/panegrid/commits"><img alt="최근 커밋" src="https://img.shields.io/github/last-commit/Samek86/panegrid"></a>
+  <a href="https://github.com/Samek86/maguro"><img alt="언어: Rust" src="https://img.shields.io/badge/language-Rust-000000?logo=rust&logoColor=white"></a>
+  <a href="https://github.com/Samek86/maguro/commits"><img alt="최근 커밋" src="https://img.shields.io/github/last-commit/Samek86/maguro"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.ko.png">
-    <img alt="Panegrid" src="docs/images/hero_light.ko.png">
+    <img alt="Maguro" src="docs/images/hero_light.ko.png">
   </picture>
 </p>
 
@@ -56,7 +56,7 @@
 
 ### 🌐 서버 연결
 
-즐겨찾기 패널의 빈 곳이나 그룹을 오른쪽 클릭하고 **서버 연결 추가…**를 고릅니다. SMB와 WebDAV는 Windows 폴더로 열립니다(UNC, `WNetAddConnection2`로 로그인). SFTP와 FTP는 rclone과 WinFsp로 마운트한 뒤 다른 폴더처럼 탐색합니다. 미리보기, 상황에 맞는 메뉴, 빠른 복사도 그대로입니다. 암호는 Windows 자격 증명 관리자에만 있고 `panegrid.json`에는 기록되지 않습니다.
+즐겨찾기 패널의 빈 곳이나 그룹을 오른쪽 클릭하고 **서버 연결 추가…**를 고릅니다. SMB와 WebDAV는 Windows 폴더로 열립니다(UNC, `WNetAddConnection2`로 로그인). SFTP와 FTP는 rclone과 WinFsp로 마운트한 뒤 다른 폴더처럼 탐색합니다. 미리보기, 상황에 맞는 메뉴, 빠른 복사도 그대로입니다. 암호는 Windows 자격 증명 관리자에만 있고 `maguro.json`에는 기록되지 않습니다.
 
 ### 👁️ 빠른 미리보기
 
@@ -74,7 +74,7 @@
 
 셸 확장까지 포함한 탐색기 우클릭 메뉴 전체(빈 곳에는 속성도), 그리고 Windows 표준 IFileOperation 창으로 다른 패널에 복사·이동(최대 10,000개).
 
-**고속 복사.** 네트워크 폴더로 붙여넣거나 끌어다 놓을 때 robocopy를 쓸 수 있습니다(설정 → 파일 작업, 기본 꺼짐). 우클릭 → 고속 붙여넣기는 항상 robocopy를 쓰며, Panegrid 진행 창에서 덮어쓰기·건너뛰기·취소를 고릅니다. 이동은 복사가 성공한 뒤에만 원본을 지웁니다.
+**고속 복사.** 네트워크 폴더로 붙여넣거나 끌어다 놓을 때 robocopy를 쓸 수 있습니다(설정 → 파일 작업, 기본 꺼짐). 우클릭 → 고속 붙여넣기는 항상 robocopy를 쓰며, Maguro 진행 창에서 덮어쓰기·건너뛰기·취소를 고릅니다. 이동은 복사가 성공한 뒤에만 원본을 지웁니다.
 
 <p align="center"><img width="760" alt="explorer" src="docs/images/explorer.ko.png"></p>
 
@@ -85,8 +85,8 @@
 - **마우스 옆 버튼.** 폴더 패널에서 뒤로·앞으로가 동작하며, 원격 데스크톱(RDP)에서도 됩니다.
 - **우클릭 메뉴의 첫 지연 감소.** 실행 직후와 오래 쉰 뒤에 셸 컨텍스트 메뉴를 백그라운드에서 미리 준비합니다.
 - **테마 전환 시 기록 유지.** 라이트/다크를 바꿔도 뒤로·앞으로와 보고 있던 폴더는 그대로입니다.
-- **선택적 업데이트 확인.** 시작 시 GitHub Releases에서 새 `panegrid.exe`를 확인할 수 있고(SHA-256 검증), 설치를 제안합니다.
-- **다음 실행 때 충돌 보고.** 서드파티 셸 확장 때문에 Panegrid가 종료되면 보고서가 원인을 알려 주며, `panegrid.json`의 `blocked_shell_extensions`에 DLL 이름을 넣어 Panegrid 안에서만 막을 수 있습니다.
+- **선택적 업데이트 확인.** 시작 시 GitHub Releases에서 새 `maguro.exe`를 확인할 수 있고(SHA-256 검증), 설치를 제안합니다.
+- **다음 실행 때 충돌 보고.** 서드파티 셸 확장 때문에 Maguro가 종료되면 보고서가 원인을 알려 주며, `maguro.json`의 `blocked_shell_extensions`에 DLL 이름을 넣어 Maguro 안에서만 막을 수 있습니다.
 
 ### 🎨 테마와 강조색
 
@@ -98,13 +98,13 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 ## 설치
 
-[Releases](https://github.com/Samek86/panegrid/releases/latest)에서 최신 `panegrid.exe`를 받습니다. 아무 폴더에 두고 실행합니다. 작은 단일 exe — 설치할 것이 없습니다. 릴리스는 zip이 아니라 이 exe와 SHA-256 확인 파일 `panegrid.exe.sha256`을 올립니다.
+[Releases](https://github.com/Samek86/maguro/releases/latest)에서 최신 `maguro.exe`를 받습니다. 아무 폴더에 두고 실행합니다. 작은 단일 exe — 설치할 것이 없습니다. 릴리스는 zip이 아니라 이 exe와 SHA-256 확인 파일 `maguro.exe.sha256`을 올립니다.
 
 코드 서명이 없는 exe라 처음 실행할 때 Windows SmartScreen 경고가 뜰 수 있습니다. **추가 정보 → 실행**을 누르세요.
 
 **요구 사항:** Windows 10(1903 이상) 또는 Windows 11, x64.
 
-설정은 `%APPDATA%\Panegrid\panegrid.json`에 있습니다. `panegrid.exe` 옆에 `portable.txt`라는 파일을 두면 `panegrid.json`을 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `panegrid-sessions` 폴더의 `.grids` 파일로 남고, 있던 `sessions` 폴더의 `.grids` 파일은 한 번 복사됩니다.
+설정은 `%APPDATA%\Maguro\maguro.json`에 있습니다. `maguro.exe` 옆에 `portable.txt`라는 파일을 두면 `maguro.json`을 exe 옆에 둡니다. 이름 붙인 세션은 exe 옆 `maguro-sessions` 폴더의 `.grids` 파일로 남고, 있던 `sessions` 폴더의 `.grids` 파일은 한 번 복사됩니다.
 
 소스에서 빌드하는 방법은 [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md)에 있습니다.
 
@@ -154,24 +154,24 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 |  | Ctrl+, | 설정 |
 |  | F1 / Ctrl+/ | 단축키 도움말 / 목록 |
 |  | Ctrl+N | 새 창 |
-|  | Win+Shift+E | Panegrid를 앞으로 (전역) |
+|  | Win+Shift+E | Maguro를 앞으로 (전역) |
 
 ## 알려진 문제
 
-**Panegrid를 관리자 권한으로 실행하지 않는 것을 권합니다.** PowerToys 마우스 십자선 같은 도구가 Panegrid 위에서 커서를 따라오지 않고 클릭한 자리에 멈춘다는 제보가 있었습니다. Panegrid를 관리자 권한으로 실행했을 때만 생깁니다. Windows는 보안상 권한이 낮은 프로그램이 권한이 높은 창의 마우스 움직임을 받지 못하게 막기 때문에(UIPI), 일반 권한으로 도는 PowerToys가 관리자 권한으로 도는 Panegrid 창 위에서는 마우스 움직임을 받지 못합니다. 두 프로그램의 권한을 맞추면 되고, 방법은 둘 중 하나입니다.
+**Maguro를 관리자 권한으로 실행하지 않는 것을 권합니다.** PowerToys 마우스 십자선 같은 도구가 Maguro 위에서 커서를 따라오지 않고 클릭한 자리에 멈춘다는 제보가 있었습니다. Maguro를 관리자 권한으로 실행했을 때만 생깁니다. Windows는 보안상 권한이 낮은 프로그램이 권한이 높은 창의 마우스 움직임을 받지 못하게 막기 때문에(UIPI), 일반 권한으로 도는 PowerToys가 관리자 권한으로 도는 Maguro 창 위에서는 마우스 움직임을 받지 못합니다. 두 프로그램의 권한을 맞추면 되고, 방법은 둘 중 하나입니다.
 
-1. **권장**: Panegrid를 관리자 권한 없이 실행. `panegrid.exe`를 우클릭 → **관리자 권한으로 실행**으로 열지 말고, 바로 가기나 `panegrid.exe`의 **속성 → 호환성**에서 **관리자 권한으로 이 프로그램 실행** 체크를 해제합니다.
-2. Panegrid를 꼭 관리자로 써야 한다면 PowerToys도 관리자로: **PowerToys 설정 → 일반 → 항상 관리자 권한으로 실행**을 켜고 PowerToys를 다시 시작합니다.
+1. **권장**: Maguro를 관리자 권한 없이 실행. `maguro.exe`를 우클릭 → **관리자 권한으로 실행**으로 열지 말고, 바로 가기나 `maguro.exe`의 **속성 → 호환성**에서 **관리자 권한으로 이 프로그램 실행** 체크를 해제합니다.
+2. Maguro를 꼭 관리자로 써야 한다면 PowerToys도 관리자로: **PowerToys 설정 → 일반 → 항상 관리자 권한으로 실행**을 켜고 PowerToys를 다시 시작합니다.
 
 ## 설정
 
 탭 줄의 톱니가 보기 메뉴를 엽니다. 설정은 그 메뉴에 있습니다(`Ctrl+,`).
 
-언어(자동, English, 그리고 언어 파일마다), 글꼴, 라이트/다크 테마, 단축키는 설정에서 바꿉니다. 이전 Grids 설정 이전, 파일 저장 방식, `panegrid.json` 키 전체 표는 [docs/settings.ko.md](docs/settings.ko.md)에 있습니다.
+언어(자동, English, 그리고 언어 파일마다), 글꼴, 라이트/다크 테마, 단축키는 설정에서 바꿉니다. 이전 Grids 설정 이전, 파일 저장 방식, `maguro.json` 키 전체 표는 [docs/settings.ko.md](docs/settings.ko.md)에 있습니다.
 
 ## 언어 파일
 
-영어는 프로그램에 들어 있고, 번역이 없으면 영어로 나옵니다. 한국어, 일본어, 프랑스어, 독일어는 `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, `lang/lang.de.ini`로 들어 있습니다. 처음 실행할 때, 그리고 버전이 바뀔 때마다, 이 네 파일을 설정 파일 옆 `lang` 폴더에 씁니다(`%APPDATA%\Panegrid\lang`, `portable.txt`가 있으면 `panegrid.exe` 옆). 이 네 파일은 항상 덮어씁니다. `lang.xx.user.ini`와, 직접 넣은 다른 `lang.xx.ini`는 쓰거나 덮거나 지우지 않습니다.
+영어는 프로그램에 들어 있고, 번역이 없으면 영어로 나옵니다. 한국어, 일본어, 프랑스어, 독일어는 `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, `lang/lang.de.ini`로 들어 있습니다. 처음 실행할 때, 그리고 버전이 바뀔 때마다, 이 네 파일을 설정 파일 옆 `lang` 폴더에 씁니다(`%APPDATA%\Maguro\lang`, `portable.txt`가 있으면 `maguro.exe` 옆). 이 네 파일은 항상 덮어씁니다. `lang.xx.user.ini`와, 직접 넣은 다른 `lang.xx.ini`는 쓰거나 덮거나 지우지 않습니다.
 
 파일은 UTF-8입니다(앞의 BOM은 무시). 한 줄은 `key = text`입니다. `=` 뒤의 공백 하나가 구분자입니다. `\\`는 역슬래시, `\n`은 줄바꿈입니다. `#`이나 `;`로 시작하는 줄은 주석입니다. `[meta]`의 `name`은 언어 목록에 보이는 이름입니다. `[meta]`의 `font`는 선택 글꼴입니다(한국어·일본어 기본은 맑은 고딕, Yu Gothic UI이고, 그 외는 Segoe UI). 없는 키는 영어를 씁니다.
 
@@ -179,14 +179,14 @@ Windows를 따르는 라이트·다크, 테마마다 강조색 6가지, 패널�
 
 ## 로드맵
 
-- [ ] `panegrid.exe`에 코드 서명을 넣어, 처음 실행할 때 SmartScreen 경고가 나오지 않게 합니다
+- [ ] `maguro.exe`에 코드 서명을 넣어, 처음 실행할 때 SmartScreen 경고가 나오지 않게 합니다
 - [x] English, 한국어, 日本語 이외의 표시 언어
 
 ## 감사
 
-Panegrid는 efww의 [grids](https://github.com/efww/grids)를 포크한 프로그램입니다.
+Maguro는 efww의 [grids](https://github.com/efww/grids)를 포크한 프로그램입니다.
 
-[Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)와 [voidtools Everything](https://www.voidtools.com/)에서 영감을 받았습니다. Panegrid는 Q-Dir 및 그 제작자와 관계없는 독립 프로젝트입니다.
+[Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)와 [voidtools Everything](https://www.voidtools.com/)에서 영감을 받았습니다. Maguro는 Q-Dir 및 그 제작자와 관계없는 독립 프로젝트입니다.
 
 ## 라이선스
 

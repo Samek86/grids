@@ -1,10 +1,10 @@
-# Panegrid settings
+# Maguro settings
 
 Where the file lives is described under [Install](../README.md#install).
 
 ## Migration
 
-On first run, if `panegrid.json` is missing, it is copied from a previous Panegrid or Samek86 Grids file (`%APPDATA%\grids\grids.json`, or `grids.json` next to the exe). Otherwise `grids.ini` or `qdir.ini` is imported read-only. Source files are never renamed, modified, or deleted (no `.bak`). An older `lang=ko` in `grids.ini` still loads as Korean.
+On first run, if `maguro.json` is missing, `grids.json` from `%APPDATA%\grids` or beside the exe is copied. Otherwise `grids.ini` or `qdir.ini` is imported read-only. Those source files are never renamed, modified, or deleted (no `.bak`). Maguro does not read `panegrid.json` or `%APPDATA%\Panegrid`. An older `lang=ko` in `grids.ini` still loads as Korean.
 
 ## Writing, language, and view
 
@@ -25,15 +25,15 @@ View → Show file extensions is Windows' own setting, the same one Explorer use
 | `ev_asked` | Remembers the answer to the one-time install prompt. The first subfolder search without Everything installed asks once. |
 | `drive_buttons` | On when the key is missing. Settings → Appearance → Show drive buttons hides them and gives that space to the tabs. A narrow window hides the last letters first. |
 | `layout_new` | Default layout for a first start and a new window: two panes side by side, top and bottom, 2×2, or one pane. A path handed over by another launch opens as a one-pane tab. A new window tab (+ or Ctrl+T) copies the current tab's layout instead. |
-| `hotkey` | On when the line is missing. Win+Shift+E brings Panegrid forward; press again to minimize. If a Panegrid dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. |
+| `hotkey` | On when the line is missing. Win+Shift+E brings Maguro forward; press again to minimize. If a Maguro dialog is open, that dialog comes forward. View shows a check only while the key is really registered, so one click retries after a failed start. The shortcut can be changed in Settings. |
 | `space_preview` | On when the key is missing. Settings → Panes & view → Preview with Space turns this off. A space within a second of typing a name, or while Korean or Japanese IME text is being composed, stays part of that name. Ctrl+Space and Shift+Space are left alone. |
 | `folders` | Folders open as pane tabs, stored on each pane, and in named sessions. An older `pane_tabs` value is ignored. |
 | `favorites_tree` | The favourites tree. An older flat list is moved into the root. |
-| `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Shift+E while Panegrid is already in front open a tab here instead of a window. |
+| `one_window` | Single-window mode. Off when the line is missing. Another launch restores a minimized window and opens path arguments as tabs in that window. Ctrl+N, dragging a tab off the strip, Move to new window, and Win+Shift+E while Maguro is already in front open a tab here instead of a window. |
 | `lang` | `"auto"`, `"en"`, or a language-file code such as `"ko"`, `"ja"`, `"fr"`, `"de"`. A missing key, like `"auto"`, follows the Windows display language when a matching file exists; otherwise English. |
 | `font_face` | Font for the whole window. No font size is stored. An older `font` value is ignored. |
-| `blocked_shell_extensions` | DLL file names Panegrid should not load, for example `"codec.dll"`. Empty means nothing is blocked, and the key is omitted. This applies only inside Panegrid. The registry is not written, Explorer is unchanged, and `grids.ini` does not carry the list. A Windows system DLL (anything under System32, SysWOW64, or WinSxS, including `shell32.dll` and `explorerframe.dll`) is never blocked. Restart Panegrid after editing the list. A handler the shell loads by path, with no CLSID, cannot be blocked this way; a crash report still names that DLL. |
+| `blocked_shell_extensions` | DLL file names Maguro should not load, for example `"codec.dll"`. Empty means nothing is blocked, and the key is omitted. This applies only inside Maguro. The registry is not written, Explorer is unchanged, and `grids.ini` does not carry the list. A Windows system DLL (anything under System32, SysWOW64, or WinSxS, including `shell32.dll` and `explorerframe.dll`) is never blocked. Restart Maguro after editing the list. A handler the shell loads by path, with no CLSID, cannot be blocked this way; a crash report still names that DLL. |
 
 ## Crash reports
 
-If Panegrid exits from a panic, an access violation, or a fail-fast inside a shell extension, the next launch shows “Panegrid closed unexpectedly last time”, the report path, and Open folder. Reports are text files in the settings folder’s `crashes` directory (`%APPDATA%\Panegrid\crashes`, or next to the exe when `portable.txt` is present). They are never written into a grids folder. A report includes the version, the thread, the panic or the exception code and address, the faulting module name and offset, the last folder, loaded third-party modules, and loaded shell-extension DLLs. Open folder opens that `crashes` directory.
+If Maguro exits from a panic, an access violation, or a fail-fast inside a shell extension, the next launch shows “Maguro closed unexpectedly last time”, the report path, and Open folder. Reports are text files in the settings folder’s `crashes` directory (`%APPDATA%\Maguro\crashes`, or next to the exe when `portable.txt` is present). They are never written into a grids folder. A report includes the version, the thread, the panic or the exception code and address, the faulting module name and offset, the last folder, loaded third-party modules, and loaded shell-extension DLLs. Open folder opens that `crashes` directory.

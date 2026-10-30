@@ -938,7 +938,7 @@ pub(crate) fn focus_at(addr: bool, filt: bool, in_tree: bool, in_fav: bool, fav_
     0
 }
 
-/// A key Panegrid handled (Ctrl+Tab, F6, …) must not count as input in the tree.
+/// A key Maguro handled (Ctrl+Tab, F6, …) must not count as input in the tree.
 /// An unhandled key in the tree still does, so the arrows navigate the pane.
 pub(crate) fn tree_input_after(prev: bool, in_tree: bool, used: bool) -> bool {
     !used && (prev || in_tree)

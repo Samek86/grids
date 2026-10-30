@@ -1,9 +1,9 @@
 // Packaged Explorer context menus (`windows.fileExplorerContextMenus` + PackagedCom).
 //
 // These registrations are not under `shellex\ContextMenuHandlers`. The classic
-// scanner never sees them, and the shell menu Panegrid strips never contains
+// scanner never sees them, and the shell menu Maguro strips never contains
 // them either. Settings lists them on the Windows 11 view. The popup injects an
-// enabled command itself (`inject_menu`), in Panegrid's own id range.
+// enabled command itself (`inject_menu`), in Maguro's own id range.
 //
 // The catalogue is built only when that view is laid out, Refresh runs while it
 // is showing, or a popup needs to inject. It is not read at process start.
@@ -658,7 +658,7 @@ pub(crate) fn clear_ids() {
 /// Append enabled packaged commands that match this click.
 ///
 /// Pure packaged `IExplorerCommand` registrations are not in the shell menu, so
-/// `strip_disabled` never reveals them. Panegrid inserts the title itself with
+/// `strip_disabled` never reveals them. Maguro inserts the title itself with
 /// an id at `0x8100` or above and CoCreates the CLSID only when that item is
 /// built or chosen. A failed CoCreate, GetTitle, or Invoke skips that one item.
 pub(crate) unsafe fn inject_menu(menu: HMENU, paths: &[String], items: &[(String, bool)], background: bool, folder: &str) {
@@ -799,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn item_types_map_onto_panegrid_bits() {
+    fn item_types_map_onto_maguro_bits() {
         assert_eq!(type_bits("*"), (FILE, true));
         assert_eq!(type_bits(".py"), (FILE, true));
         assert_eq!(type_bits("Directory"), (FOLDER, true));

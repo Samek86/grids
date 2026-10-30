@@ -8,12 +8,12 @@ use super::model::*;
 
 // Named sessions used to store every window tab in one file. A session is now one tab.
 // Files that still hold two or more tabs are split once into `Name (1)`, `Name (2)`, …
-// The original file is renamed to a backup beside those files. panegrid.json (the open
+// The original file is renamed to a backup beside those files. maguro.json (the open
 // window) is not rewritten here: startup restore keeps every tab it already stored.
 // A path map records old file → the tab that was active, so a later launch can retarget
 // a session link without touching grids.ini or the old grids settings folder.
 
-const MAP_FILE: &str = "panegrid-split-map.txt";
+const MAP_FILE: &str = "maguro-split-map.txt";
 
 /// One renamed session file and the single-tab file its active tab moved to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub(crate) fn retarget_session_links(s: &mut Session, maps: &[PathMap]) {
     settle_sessions(s);
 }
 
-/// Same retarget for a saved window in panegrid.json. Pane folders are left as they are.
+/// Same retarget for a saved window in maguro.json. Pane folders are left as they are.
 pub(crate) fn retarget_window_value(v: &mut Value, maps: &[PathMap]) {
     if maps.is_empty() {
         return;
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn migration_does_not_touch_grids_ini_or_the_old_settings_folder() {
         let root = scratch("away");
-        let sessions = root.join("panegrid-sessions");
+        let sessions = root.join("maguro-sessions");
         let old = root.join("grids");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::create_dir_all(&old).unwrap();

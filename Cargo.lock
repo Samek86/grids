@@ -108,22 +108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grids"
-version = "0.1.76"
-dependencies = [
- "aes",
- "base64",
- "ctr",
- "miniz_oxide",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "windows",
- "windows-core",
-]
-
-[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -143,6 +127,22 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "maguro"
+version = "0.1.77"
+dependencies = [
+ "aes",
+ "base64",
+ "ctr",
+ "miniz_oxide",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows",
+ "windows-core",
+]
 
 [[package]]
 name = "memchr"

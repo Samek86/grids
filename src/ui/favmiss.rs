@@ -127,7 +127,7 @@ pub(crate) unsafe fn show_fav_missing(row: &FavRow) {
     }
     let Ok(hwnd) = CreateWindowExW(
         WS_EX_TOOLWINDOW,
-        w!("PanegridFavMiss"),
+        w!("MaguroFavMiss"),
         w!(""),
         WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
         x,
@@ -174,7 +174,7 @@ unsafe fn ensure_class() {
             lpfnWndProc: Some(miss_proc),
             hInstance: hinst.into(),
             hCursor: arrow,
-            lpszClassName: w!("PanegridFavMiss"),
+            lpszClassName: w!("MaguroFavMiss"),
             ..Default::default()
         });
     });

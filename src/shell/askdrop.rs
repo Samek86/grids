@@ -48,7 +48,7 @@ pub(crate) fn fav_into_folder(dropm: u8, group: bool, file: bool, path: &str, y:
 
 /// Some(true) is Move, Some(false) is Copy, None is Cancel.
 pub(crate) unsafe fn ask_copy_or_move(owner: HWND) -> Option<bool> {
-    let title = HSTRING::from("Panegrid");
+    let title = HSTRING::from("Maguro");
     let head = HSTRING::from(tr(crate::Key::CopyOrMoveTheseItems));
     let copy = HSTRING::from(tr(crate::Key::Copy));
     let mv = HSTRING::from(tr(crate::Key::Move));
@@ -234,7 +234,7 @@ unsafe fn class_name(hwnd: HWND) -> String {
 /// The pointer is only compared, never called.
 unsafe fn already_ours(hwnd: HWND) -> bool {
     let cur = GetPropW(hwnd, w!("OleDropTargetInterface")).0;
-    !cur.is_null() && cur == GetPropW(hwnd, w!("PanegridAskDrop")).0
+    !cur.is_null() && cur == GetPropW(hwnd, w!("MaguroAskDrop")).0
 }
 
 unsafe fn wrap_window(hwnd: HWND, fallback: &IDropTarget, where_: AskWhere) {
@@ -251,7 +251,7 @@ unsafe fn wrap_window(hwnd: HWND, fallback: &IDropTarget, where_: AskWhere) {
     }
     let now = GetPropW(hwnd, w!("OleDropTargetInterface"));
     if !now.0.is_null() {
-        let _ = SetPropW(hwnd, w!("PanegridAskDrop"), Some(now));
+        let _ = SetPropW(hwnd, w!("MaguroAskDrop"), Some(now));
     }
 }
 
@@ -397,21 +397,21 @@ pub(crate) unsafe fn install_pane_drop(i: usize) {
 pub(crate) unsafe fn schedule_pane_drop(i: usize) {
     install_pane_drop(i);
     let Some(h) = app(|a| a.panes.get(i).and_then(|p| p.as_ref()).map(|p| p.hwnd)).filter(|h| !h.0.is_null()) else { return };
-    let _ = SetPropW(h, w!("PanegridDropTries"), Some(HANDLE(4 as *mut core::ffi::c_void)));
+    let _ = SetPropW(h, w!("MaguroDropTries"), Some(HANDLE(4 as *mut core::ffi::c_void)));
     let _ = SetTimer(Some(h), TIMER_DROP, 50, None);
 }
 
 pub(crate) unsafe fn on_pane_drop_timer(h: HWND) {
-    let left = GetPropW(h, w!("PanegridDropTries")).0 as usize;
+    let left = GetPropW(h, w!("MaguroDropTries")).0 as usize;
     if let Some(i) = pane_of(h) {
         install_pane_drop(i);
     }
     let next = left.saturating_sub(1);
     if next == 0 {
         let _ = KillTimer(Some(h), TIMER_DROP);
-        let _ = RemovePropW(h, w!("PanegridDropTries"));
+        let _ = RemovePropW(h, w!("MaguroDropTries"));
     } else {
-        let _ = SetPropW(h, w!("PanegridDropTries"), Some(HANDLE(next as *mut core::ffi::c_void)));
+        let _ = SetPropW(h, w!("MaguroDropTries"), Some(HANDLE(next as *mut core::ffi::c_void)));
         let _ = SetTimer(Some(h), TIMER_DROP, 200, None);
     }
 }
@@ -455,12 +455,12 @@ pub(crate) unsafe fn schedule_tree_drop() {
         return;
     }
     install_tree_drop(&tree, hwnd);
-    let _ = SetPropW(main, w!("PanegridTreeDrop"), Some(HANDLE(4 as *mut core::ffi::c_void)));
+    let _ = SetPropW(main, w!("MaguroTreeDrop"), Some(HANDLE(4 as *mut core::ffi::c_void)));
     let _ = SetTimer(Some(main), TIMER_DROP, 50, None);
 }
 
 pub(crate) unsafe fn on_tree_drop_timer(h: HWND) {
-    let left = GetPropW(h, w!("PanegridTreeDrop")).0 as usize;
+    let left = GetPropW(h, w!("MaguroTreeDrop")).0 as usize;
     if let Some((tree, hwnd)) = app(|a| Some((a.tree.clone()?, a.tree_hwnd))) {
         if !hwnd.0.is_null() {
             install_tree_drop(&tree, hwnd);
@@ -469,9 +469,9 @@ pub(crate) unsafe fn on_tree_drop_timer(h: HWND) {
     let next = left.saturating_sub(1);
     if next == 0 {
         let _ = KillTimer(Some(h), TIMER_DROP);
-        let _ = RemovePropW(h, w!("PanegridTreeDrop"));
+        let _ = RemovePropW(h, w!("MaguroTreeDrop"));
     } else {
-        let _ = SetPropW(h, w!("PanegridTreeDrop"), Some(HANDLE(next as *mut core::ffi::c_void)));
+        let _ = SetPropW(h, w!("MaguroTreeDrop"), Some(HANDLE(next as *mut core::ffi::c_void)));
         let _ = SetTimer(Some(h), TIMER_DROP, 200, None);
     }
 }
@@ -572,7 +572,7 @@ mod tests {
         assert!(shell_drop_class("SHELLDLL_DefView"));
         assert!(shell_drop_class("SysTreeView32"));
         assert!(!shell_drop_class("SysHeader32"));
-        assert!(!shell_drop_class("PanegridPane"));
+        assert!(!shell_drop_class("MaguroPane"));
     }
 
     #[test]

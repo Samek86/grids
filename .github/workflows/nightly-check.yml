@@ -23,7 +23,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: grids-exe
-          path: target/x86_64-pc-windows-gnu/release/grids.exe
+          path: target/x86_64-pc-windows-gnu/release/maguro.exe
           retention-days: 3
       # the test exe cargo just built (not an older one left in the cached deps folder)
       - name: Build unit tests
@@ -56,11 +56,11 @@ jobs:
       - name: Launch with two folders and check it stays up with a window
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath .\grids.exe -ArgumentList 'C:\Windows','C:\Users' -PassThru
+          $p = Start-Process -FilePath .\maguro.exe -ArgumentList 'C:\Windows','C:\Users' -PassThru
           Start-Sleep -Seconds 12
           $p.Refresh()
-          if ($p.HasExited) { throw "grids.exe exited early (code $($p.ExitCode))" }
-          if ($p.MainWindowHandle -eq 0) { throw "grids.exe has no main window" }
+          if ($p.HasExited) { throw "maguro.exe exited early (code $($p.ExitCode))" }
+          if ($p.MainWindowHandle -eq 0) { throw "maguro.exe has no main window" }
           "alive: pid $($p.Id), title '$($p.MainWindowTitle)', ws $([math]::Round($p.WorkingSet64/1MB)) MB"
       - name: Screenshot
         continue-on-error: true
@@ -74,7 +74,7 @@ jobs:
       - name: Close
         if: always()
         shell: pwsh
-        run: Get-Process grids -ErrorAction SilentlyContinue | Stop-Process -Force
+        run: Get-Process maguro -ErrorAction SilentlyContinue | Stop-Process -Force
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -107,7 +107,7 @@ jobs:
           }
           "@
           function Click { [U]::mouse_event(2, 0, 0, 0, [IntPtr]::Zero); [U]::mouse_event(4, 0, 0, 0, [IntPtr]::Zero) }
-          $p = Start-Process -FilePath .\grids.exe -ArgumentList 'C:\Users\Public','C:\Windows' -PassThru
+          $p = Start-Process -FilePath .\maguro.exe -ArgumentList 'C:\Users\Public','C:\Windows' -PassThru
           Start-Sleep -Seconds 10
           $p.Refresh(); $h = $p.MainWindowHandle
           [void][U]::ShowWindow($h, 3); [void][U]::SetForegroundWindow($h); Start-Sleep -Seconds 2
@@ -145,7 +145,7 @@ jobs:
             [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
             public static List<IntPtr> Panes(IntPtr main) {
               var l = new List<IntPtr>(); var c = IntPtr.Zero;
-              while ((c = FindWindowEx(main, c, "GridsPane", null)) != IntPtr.Zero) if (IsWindowVisible(c)) l.Add(c);
+              while ((c = FindWindowEx(main, c, "MaguroPane", null)) != IntPtr.Zero) if (IsWindowVisible(c)) l.Add(c);
               return l;
             }
           }
@@ -156,10 +156,10 @@ jobs:
             'C:\Windows\Temp','C:\ProgramData','C:\Program Files (x86)','C:\Windows\Web','C:\Windows\Help','C:\Windows\Logs',
             'C:\Windows\Media','C:\Windows\INF','C:\Windows\Cursors','C:\Windows\Boot'
           function Launch($cols, $colr, $n) {
-            Get-Process grids -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
+            Get-Process maguro -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 1
             $ini = "side=120`ncols=$cols`ncolr=$colr`n" + ((0..($n - 1) | ForEach-Object { "p$_=$($dirs[$_])`n" }) -join '')
             Set-Content -Path .\grids.ini -Value $ini -Encoding ascii -NoNewline
-            $p = Start-Process -FilePath .\grids.exe -PassThru
+            $p = Start-Process -FilePath .\maguro.exe -PassThru
             Start-Sleep -Seconds 10
             $p.Refresh(); $h = $p.MainWindowHandle
             [void][W]::SetForegroundWindow($h); $h
@@ -204,7 +204,7 @@ jobs:
           $h = Launch '4,4,4,4' '0.15,0.15,0.35,0.35' 16
           [void][W]::ShowWindow($h, 3)
           Check '4x4' $h
-          Get-Process grids -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process maguro -ErrorAction SilentlyContinue | Stop-Process -Force
       - uses: actions/upload-artifact@v4
         if: always()
         with:

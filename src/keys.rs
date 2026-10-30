@@ -111,7 +111,7 @@ const CMDS: &[Cmd] = &[
     cmd("app.settings", HELP, crate::Key::Settings2, 0xBC, true, false, false, false, false),
     cmd("app.help", HELP, crate::Key::ShortcutHelp, 0x70, false, false, false, false, false),
     cmd("app.keys", HELP, crate::Key::ShortcutList, 0xBF, true, false, false, false, false),
-    cmd("app.front", WIN, crate::Key::BringPanegridFront, 0x45, false, true, false, true, false),
+    cmd("app.front", WIN, crate::Key::BringMaguroFront, 0x45, false, true, false, true, false),
     cmd("win.new", WIN, crate::Key::NewWindow, 0x4E, true, false, false, false, false),
 ];
 

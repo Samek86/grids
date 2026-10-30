@@ -1206,7 +1206,7 @@ fn ensure_class() {
             hInstance: hinst,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
-            lpszClassName: w!("PanegridSessionList"),
+            lpszClassName: w!("MaguroSessionList"),
             ..Default::default()
         });
     });
@@ -1246,7 +1246,7 @@ unsafe fn pick_session_ex(owner: HWND, title: &str, with_save: bool) -> Option<V
     let _ = GetWindowRect(owner, &mut orc);
     let (x, y) = (orc.left + (orc.right - orc.left - ww) / 2, orc.top + (orc.bottom - orc.top - hh) / 2);
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridSessionList"), &HSTRING::from(title), style, x, y, ww, hh, Some(owner), None, None, None).ok()?;
+    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroSessionList"), &HSTRING::from(title), style, x, y, ww, hh, Some(owner), None, None, None).ok()?;
     style_window(h);
     let _ = ShowWindow(h, SW_SHOW);
     crate::keys::set_modal(true);

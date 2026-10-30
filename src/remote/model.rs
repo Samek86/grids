@@ -94,7 +94,7 @@ pub(crate) fn mount_key(link: &ServerLink) -> String {
 /// Credential Manager target. The password is not part of the name.
 pub(crate) fn cred_target(link: &ServerLink) -> String {
     format!(
-        "Panegrid:{}:{}@{}:{}",
+        "Maguro:{}:{}@{}:{}",
         link.kind.to_ascii_lowercase(),
         link.user.trim(),
         link.host.trim().to_ascii_lowercase(),
@@ -460,7 +460,7 @@ pub(crate) fn mount_args(config: &str, link: &ServerLink, letter: char) -> Vec<S
         config.to_string(),
         "--network-mode".into(),
         "--volname".into(),
-        "Panegrid".into(),
+        "Maguro".into(),
         "--vfs-cache-mode".into(),
         "writes".into(),
         "--dir-cache-time".into(),
@@ -537,7 +537,7 @@ mod tests {
         assert!(args.iter().any(|a| a == "--network-mode"));
         assert!(!args_leak(&args, "s3cret-pl4in"));
         assert!(!args_leak(&args, "obscured-token"));
-        assert_eq!(cred_target(&built.link), "Panegrid:sftp:alice@example.com:22");
+        assert_eq!(cred_target(&built.link), "Maguro:sftp:alice@example.com:22");
         assert!(!cred_target(&built.link).contains("s3cret"));
     }
 

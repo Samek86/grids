@@ -15,7 +15,7 @@ thread_local! {
     static PENDING: RefCell<Vec<Value>> = RefCell::new(Vec::new());
 }
 
-/// What a second `panegrid.exe` does. Single-window mode hands off even when single-instance is off,
+/// What a second `maguro.exe` does. Single-window mode hands off even when single-instance is off,
 /// so a second process cannot open a second window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchPlan {
@@ -265,8 +265,8 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
     let hinst: HINSTANCE = GetModuleHandleW(None)?.into();
     let main = match CreateWindowExW(
         WINDOW_EX_STYLE(0),
-        w!("PanegridMain"),
-        w!("Panegrid"),
+        w!("MaguroMain"),
+        w!("Maguro"),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -324,14 +324,14 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         let seeded = app(|a| crate::store::sync_text(&a.s));
         LAST_SAVED.with(|l| *l.borrow_mut() = seeded);
     }
-    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).map_err(fail)?;
+    let tabs_hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroTabs"), w!(""), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 0, 0, Some(main), None, Some(hinst), None).map_err(fail)?;
     let tab_edit = child(tabs_hwnd, w!("EDIT"), w!(""), ES_AUTOHSCROLL as u32, WINDOW_EX_STYLE(0), ID_TAB_EDIT, HFONT::default());
     _ = ShowWindow(tab_edit, SW_HIDE);
     app(|a| (a.tabs_hwnd, a.tab_edit) = (tabs_hwnd, tab_edit));
     let bar_ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     let mut bars = [HWND::default(); 2];
     for b in &mut bars {
-        *b = CreateWindowExW(bar_ex, w!("PanegridBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None).map_err(fail)?;
+        *b = CreateWindowExW(bar_ex, w!("MaguroBar"), w!(""), WS_POPUP, 0, 0, 0, 0, Some(main), None, None, None).map_err(fail)?;
         _ = SetLayeredWindowAttributes(*b, COLORREF(0), 170, LWA_ALPHA);
     }
     app(|a| a.bars = bars);
@@ -343,7 +343,7 @@ pub(crate) unsafe fn open_window(mut s: Session) -> Result<HWND> {
         // The tree view can register its target after Initialize returns.
         crate::schedule_tree_drop();
     }
-    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
+    let side = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroSide"), w!(""), WS_CHILD | WS_CLIPSIBLINGS | WS_VSCROLL, 0, 0, 0, 0, Some(main), None, Some(hinst), None).unwrap_or_default();
     app(|a| a.side_hwnd = side);
     register_side_drop(side);
     prime_theme(app(|a| a.s.dark));
@@ -467,7 +467,7 @@ pub(crate) unsafe fn open_args_as_tabs(args: Vec<String>) {
     note_save();
 }
 
-/// A second `panegrid.exe`. When that process was started by this one, and the user
+/// A second `maguro.exe`. When that process was started by this one, and the user
 /// did not ask for a new tab, the folder opens in the pane that was activated.
 pub(crate) unsafe fn open_forwarded(parent: u32, args: Vec<String>) -> HWND {
     let place = crate::folderapp::handoff_action(parent, std::process::id(), crate::folderapp::intent_elapsed_ms());

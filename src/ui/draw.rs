@@ -778,7 +778,7 @@ pub(crate) fn want_kids(h: HWND, dir: &str, hidden: bool) -> usize {
     let net = unsafe { share_path(dir) };
     let id = kids_job().ask(h.0 as isize, dir, hidden, net);
     static WORKER: Once = Once::new();
-    WORKER.call_once(|| _ = std::thread::Builder::new().name("panegrid-kids".into()).spawn(kids_worker));
+    WORKER.call_once(|| _ = std::thread::Builder::new().name("maguro-kids".into()).spawn(kids_worker));
     KIDS_WAKE.notify_one();
     id
 }
@@ -800,7 +800,7 @@ fn spawn_kids_net(id: usize, hwnd: isize, dir: String, hidden: bool) -> bool {
         KIDS_NET.fetch_sub(1, Ordering::Relaxed);
         return false;
     }
-    let spawned = std::thread::Builder::new().name("panegrid-kids-net".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("maguro-kids-net".into()).spawn(move || {
         let current = kids_job().id == id;
         let r = if current { read_kids(&dir, hidden) } else { Err(()) };
         if current && kids_job().publish(id, r) {
@@ -886,7 +886,7 @@ pub(crate) unsafe fn kids_cancel() {
 }
 
 /// `WM_KIDS`: the list is in. Shown only while it is still this request, the pane still shows
-/// the same folder, nothing is being resized, Panegrid is in front, and the `›` is still laid out
+/// the same folder, nothing is being resized, Maguro is in front, and the `›` is still laid out
 /// where it is now.
 pub(crate) unsafe fn kids_show(h: HWND, id: usize) {
     _ = KillTimer(Some(h), TIMER_KIDS);

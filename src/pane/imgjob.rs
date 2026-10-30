@@ -2,7 +2,7 @@
 //!
 //! A property handler or codec that faults while the hosted Details view reads a JPEG
 //! takes down this process; that path is Windows. Our own preview must not do the same.
-//! The child is killed if it runs too long. Its death does not kill Panegrid.
+//! The child is killed if it runs too long. Its death does not kill Maguro.
 
 use std::io::Write;
 use std::path::Path;
@@ -115,10 +115,10 @@ pub(crate) fn isolated_pic(path: &str, w: i32, h: i32, flags: u32) -> Result<Pix
         return Err(msg_spawn());
     };
     let id = SEQ.fetch_add(1, Ordering::Relaxed);
-    let out = std::env::temp_dir().join(format!("panegrid-img-{}-{id}.pgim", std::process::id()));
+    let out = std::env::temp_dir().join(format!("maguro-img-{}-{id}.pgim", std::process::id()));
     let _tmp = Tmp(out.clone());
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--panegrid-image").arg(w.to_string()).arg(h.to_string()).arg(flags.to_string()).arg(&out).arg(path);
+    cmd.arg("--maguro-image").arg(w.to_string()).arg(h.to_string()).arg(flags.to_string()).arg(&out).arg(path);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {

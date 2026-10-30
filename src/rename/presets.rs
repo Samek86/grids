@@ -1,4 +1,4 @@
-// Saved rule stacks. Files live in `%AppData%\Panegrid\rename-presets`, never in panegrid.json.
+// Saved rule stacks. Files live in `%AppData%\Maguro\rename-presets`, never in maguro.json.
 
 use std::path::{Path, PathBuf};
 
@@ -80,7 +80,7 @@ mod tests {
     use crate::rename::engine::{self, CaseMode, DatePos, DateSrc, NumPos, TrimEdge};
 
     fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("panegrid-presets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-presets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

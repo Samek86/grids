@@ -28,7 +28,7 @@ pub(crate) unsafe fn child(parent: HWND, class: PCWSTR, text: PCWSTR, style: u32
 pub(crate) unsafe fn create_pane(i: usize) -> Result<Pane> {
     let (main, font) = app(|a| (a.main, a.font));
     let style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN;
-    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("PanegridPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
+    let h = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MaguroPane"), w!(""), style, 0, 0, 0, 0, Some(main), None, None, None)?;
     let (btn, plain) = (BS_OWNERDRAW as u32, WINDOW_EX_STYLE(0));
     let buttons = [
         (ID_BACK, tr(crate::Key::Back), tr(crate::Key::BackAltRightClickRecentFolders)),
@@ -994,12 +994,25 @@ pub(crate) unsafe fn prime_theme(dark: bool) {
     }
 }
 
+/// Title-bar icon follows the theme. Group 1 is the light-bg exe icon. Group 2 is the dark-bg logo.
+pub(crate) unsafe fn apply_window_icon(hwnd: HWND) {
+    if hwnd.0.is_null() {
+        return;
+    }
+    let id = if DARK_ON.load(Ordering::Relaxed) { 2usize } else { 1 };
+    let Ok(module) = GetModuleHandleW(None) else { return };
+    let Ok(icon) = LoadIconW(Some(module.into()), PCWSTR(id as _)) else { return };
+    _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(1)), Some(LPARAM(icon.0 as isize)));
+    _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(0)), Some(LPARAM(icon.0 as isize)));
+}
+
 /// One window: title bar, tree, and that window's Explorer panes.
 pub(crate) unsafe fn apply_theme_desk() {
     let (main, dark, tree, accent, tip, side) = app(|a| (a.main, a.s.dark, a.tree_hwnd, a.s.accent_now(), a.tip, a.side_hwnd));
     if main.0.is_null() {
         return;
     }
+    apply_window_icon(main);
     // tooltips: dark on dark, back to the default on light (these windows outlive the theme switch).
     // The address-bar path tip and the favourites location tip are tracking tools on this same window.
     theme_tip(tip, dark);
@@ -2055,7 +2068,7 @@ mod tests {
     #[test]
     fn narrow_address_edit_shows_the_start_of_the_path() {
         const EM_POSFROMCHAR: u32 = 0x00D6;
-        let path = r"C:\Users\Jun\Documents\VeryLongFolderName\Projects\Panegrid\src\pane";
+        let path = r"C:\Users\Jun\Documents\VeryLongFolderName\Projects\Maguro\src\pane";
         let x_of = |edit: HWND, index: usize| {
             let r = unsafe { SendMessageW(edit, EM_POSFROMCHAR, Some(WPARAM(index)), Some(LPARAM(0))) };
             (r.0 as u16) as i16 as i32

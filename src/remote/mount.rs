@@ -84,7 +84,7 @@ fn post(owner: isize) {
 }
 
 pub(crate) fn begin_connect(owner: isize, link: ServerLink, open: Option<String>) {
-    let _ = std::thread::Builder::new().name("panegrid-remote".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("maguro-remote".into()).spawn(move || {
         let done = connect_one(&link, open.as_deref());
         push(done);
         post(owner);
@@ -95,7 +95,7 @@ pub(crate) fn install_then_connect(owner: isize, link: ServerLink, open: Option<
     if INSTALLING.swap(true, Ordering::Relaxed) {
         return;
     }
-    let _ = std::thread::Builder::new().name("panegrid-remote-setup".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("maguro-remote-setup".into()).spawn(move || {
         let ok = install_missing();
         INSTALLING.store(false, Ordering::Relaxed);
         let done = if ok { connect_one(&link, open.as_deref()) } else { Done::NeedTools };
@@ -356,7 +356,7 @@ fn config_path(key: &str) -> PathBuf {
         h ^= *b as u32;
         h = h.wrapping_mul(16777619);
     }
-    let dir = std::env::temp_dir().join("panegrid-remote");
+    let dir = std::env::temp_dir().join("maguro-remote");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("{h:08x}.conf"))
 }

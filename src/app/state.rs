@@ -273,7 +273,7 @@ pub(crate) struct App {
     /// Standing desk when `desks` is empty (last window torn down; quit messages still drain).
     /// Deref hits this instead of panicking on `desks[cur]`.
     fallback: Desk,
-    /// A failed panegrid.json write is tried again after this instant. Not mid-drag.
+    /// A failed maguro.json write is tried again after this instant. Not mid-drag.
     pub(crate) save_after: Option<Instant>,
     pub(crate) hot_on: bool,    // the global hotkey is really registered (s.hotkey is only the wish)
     pub(crate) hot_hwnd: HWND,  // the window that owns that registration

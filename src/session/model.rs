@@ -4,7 +4,7 @@ use crate::app::*;
 use crate::i18n::*;
 use crate::store;
 
-// ---------- session (settings live in panegrid.json; named sessions stay .grids files in the ini shape) ----------
+// ---------- session (settings live in maguro.json; named sessions stay .grids files in the ini shape) ----------
 
 /// One tab: a whole pane grid (layout, folders, view, columns, filter). The active tab's grid
 /// also lives on the session fields the rest of the window already reads.
@@ -251,7 +251,7 @@ pub(crate) struct Session {
     /// A pane tab is one folder inside one pane, not a window tab (`tabs` / `tab`). The strip shows from the second folder on.
     pub(crate) pane_folders: Vec<Vec<String>>,
     pub(crate) pane_cur: Vec<usize>,
-    pub(crate) hotkey: bool,           // global hotkey brings Panegrid forward; the chord is in the keymap
+    pub(crate) hotkey: bool,           // global hotkey brings Maguro forward; the chord is in the keymap
     /// Session file of the tab on screen. Mirrors `tabs[tab].session`.
     /// Older files stored only this, for the whole window; it is adopted onto the active tab.
     pub(crate) file: String,
@@ -307,24 +307,24 @@ pub(crate) struct Session {
     pub(crate) tabs: Vec<Tab>,         // every tab's grid; the active one's grid is also the fields above
     pub(crate) tab: usize,             // which tab is on screen
     /// Third-party context-menu handlers turned off, by id. Values are target names
-    /// (`file`, `folder`, `background`, `drive`). A missing id stays on. panegrid.json only:
+    /// (`file`, `folder`, `background`, `drive`). A missing id stays on. maguro.json only:
     /// a .grids file never carries this, and the system registry is never written.
     pub(crate) ctx_off: std::collections::BTreeMap<String, Vec<String>>,
-    /// Menu item labels seen for a handler id. panegrid.json only; the registry is never written.
+    /// Menu item labels seen for a handler id. maguro.json only; the registry is never written.
     pub(crate) ctx_labels: std::collections::BTreeMap<String, Vec<String>>,
     /// Targets explicitly turned on for handlers that start off. WinMerge is the only one:
-    /// a missing id stays hidden. panegrid.json only.
+    /// a missing id stays hidden. maguro.json only.
     pub(crate) ctx_on: std::collections::BTreeMap<String, Vec<String>>,
     /// Handler ids that were asked and added no visible menu item. They leave the settings list.
-    /// The shell menu is unchanged. panegrid.json only.
+    /// The shell menu is unchanged. maguro.json only.
     pub(crate) ctx_quiet: std::collections::BTreeSet<String>,
     /// Packaged Windows 11 context-menu commands turned off. Empty means every one is on.
-    /// The id is `packaged:{clsid}`. panegrid.json only; a .grids file does not carry this.
+    /// The id is `packaged:{clsid}`. maguro.json only; a .grids file does not carry this.
     pub(crate) ctx_packaged_off: std::collections::BTreeSet<String>,
-    /// Settings → Right-click menu is showing the Windows 11 list. panegrid.json only.
+    /// Settings → Right-click menu is showing the Windows 11 list. maguro.json only.
     pub(crate) ctx_win11_view: bool,
     /// DLL file names that must not load inside this process. Empty means nothing extra is blocked.
-    /// panegrid.json only. The registry is not written, and a .grids file does not carry this.
+    /// maguro.json only. The registry is not written, and a .grids file does not carry this.
     pub(crate) blocked_shell_extensions: Vec<String>,
 }
 
@@ -394,8 +394,8 @@ impl Default for Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
-            accent: 0xA99BE0, // 3rd swatch (lavender); a chosen swatch replaces it
-            accent_dark: 0x6A5AA8,
+            accent: 0x2EC4A6, // mint; a chosen swatch replaces it
+            accent_dark: 0x2EC4A6,
             dark: false,
             dblup: true,
             space_preview: true,
@@ -2069,13 +2069,13 @@ pub(crate) fn apply_args(s: &mut Session, args: Vec<String>) {
     s.anchor();
 }
 
-/// %APPDATA%\\Panegrid\\panegrid-sessions (next to the exe in portable mode). Created when missing.
+/// %APPDATA%\\Maguro\\maguro-sessions (next to the exe in portable mode). Created when missing.
 /// The first time, sessions from the old folders next to the exe are copied in; the old files stay.
 pub(crate) fn sessions_dir() -> PathBuf {
-    let dir = store::config_dir().join("panegrid-sessions");
+    let dir = store::config_dir().join("maguro-sessions");
     if !dir.exists() && std::fs::create_dir_all(&dir).is_ok() {
         let exe = store::exe_dir();
-        for old in [exe.join("panegrid-sessions"), exe.join("sessions")] {
+        for old in [exe.join("maguro-sessions"), exe.join("sessions")] {
             if old != dir && old.is_dir() {
                 copy_old_sessions(&old, &dir);
             }
@@ -2608,10 +2608,10 @@ mod session_copy_tests {
 
     #[test]
     fn copy_old_sessions_leaves_the_source_files() {
-        let root = std::env::temp_dir().join(format!("panegrid-sessions-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("maguro-sessions-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let old = root.join("sessions");
-        let new = root.join("panegrid-sessions");
+        let new = root.join("maguro-sessions");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(old.join("work.grids"), b"one").unwrap();
@@ -2881,7 +2881,7 @@ mod session_assoc_tests {
 
     #[test]
     fn baseline_comes_from_that_tabs_file() {
-        let dir = std::env::temp_dir().join(format!("panegrid-tab-base-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-tab-base-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut saved = Session::default();

@@ -1,8 +1,10 @@
-// Embeds app.manifest (common controls v6 + per-monitor DPI) and app.ico (the Panegrid icon kit's Panegrid.ico).
+// Embeds app.manifest (common controls v6 + per-monitor DPI), app.ico (light background, group 1),
+// and assets/maguro-dark-bg.ico (dark background, group 2).
 // Writes a binary .res by hand and lets windres only convert it to COFF, so no C preprocessor is needed.
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
     println!("cargo:rerun-if-changed=app.ico");
+    println!("cargo:rerun-if-changed=assets/maguro-dark-bg.ico");
     println!("cargo:rerun-if-changed=build.rs");
     let out = std::env::var("OUT_DIR").unwrap();
     let entry = |size: usize, typ: u16, id: u16, lang: u16| {
@@ -25,20 +27,9 @@ fn main() {
     let manifest = std::fs::read_to_string("app.manifest").unwrap().replace("@VERSION@", &format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3]));
     add(24, 1, manifest.as_bytes()); // RT_MANIFEST, assembly version follows Cargo.toml
 
-    // app.ico -> one RT_ICON per image + an RT_GROUP_ICON (id 1) that lists them
-    let ico = std::fs::read("app.ico").unwrap();
-    let count = u16::from_le_bytes([ico[4], ico[5]]);
-    let mut group = vec![0, 0, 1, 0];
-    group.extend(count.to_le_bytes());
-    for k in 0..count as usize {
-        let e = &ico[6 + 16 * k..22 + 16 * k];
-        let size = u32::from_le_bytes(e[8..12].try_into().unwrap()) as usize;
-        let offset = u32::from_le_bytes(e[12..16].try_into().unwrap()) as usize;
-        add(3, k as u16 + 1, &ico[offset..offset + size]); // RT_ICON
-        group.extend(&e[..12]); // width, height, colours, reserved, planes, bit count, bytes
-        group.extend((k as u16 + 1).to_le_bytes());
-    }
-    add(14, 1, &group); // RT_GROUP_ICON
+    // Group 1: light-bg app.ico (exe and window class). Group 2: dark-bg logo for the themed title bar and About.
+    let next = embed_group(&mut add, &std::fs::read("app.ico").unwrap(), 1, 1);
+    embed_group(&mut add, &std::fs::read("assets/maguro-dark-bg.ico").unwrap(), 2, next);
     add(16, 1, &version_info()); // RT_VERSION
     std::fs::write(format!("{out}/app.res"), res).unwrap();
 
@@ -50,6 +41,24 @@ fn main() {
         .is_ok_and(|s| s.success());
     assert!(ok, "windres failed: set WINDRES to msys2's windres.exe");
     println!("cargo:rustc-link-arg-bins={obj}");
+}
+
+/// One RT_ICON per image, then an RT_GROUP_ICON. Returns the next free RT_ICON id.
+fn embed_group(add: &mut impl FnMut(u16, u16, &[u8]), ico: &[u8], group_id: u16, mut icon_id: u16) -> u16 {
+    let count = u16::from_le_bytes([ico[4], ico[5]]);
+    let mut group = vec![0u8, 0, 1, 0];
+    group.extend(count.to_le_bytes());
+    for k in 0..count as usize {
+        let e = &ico[6 + 16 * k..22 + 16 * k];
+        let size = u32::from_le_bytes(e[8..12].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(e[12..16].try_into().unwrap()) as usize;
+        add(3, icon_id, &ico[offset..offset + size]); // RT_ICON
+        group.extend(&e[..12]); // width, height, colours, reserved, planes, bit count, bytes
+        group.extend(icon_id.to_le_bytes());
+        icon_id += 1;
+    }
+    add(14, group_id, &group); // RT_GROUP_ICON
+    icon_id
 }
 
 // VS_VERSIONINFO. wLength is the node size in bytes and includes the zero bytes
@@ -132,13 +141,13 @@ fn version_info() -> Vec<u8> {
     let ver_text = env!("CARGO_PKG_VERSION");
     let strings = [
         version_string("CompanyName", "Samek86"),
-        version_string("FileDescription", "Panegrid"),
-        version_string("ProductName", "Panegrid"),
-        version_string("InternalName", "panegrid"),
-        version_string("OriginalFilename", "panegrid.exe"),
+        version_string("FileDescription", "Maguro"),
+        version_string("ProductName", "Maguro"),
+        version_string("InternalName", "maguro"),
+        version_string("OriginalFilename", "maguro.exe"),
         version_string("FileVersion", ver_text),
         version_string("ProductVersion", ver_text),
-        version_string("Comments", "https://github.com/Samek86/panegrid"),
+        version_string("Comments", "https://github.com/Samek86/maguro"),
         version_string("LegalCopyright", "Copyright (c) 2026 Samek86. Based on efww/grids, Copyright (c) 2026 efww. MIT License."),
     ];
     let table = version_node("040904B0", &[], 0, true, &strings);

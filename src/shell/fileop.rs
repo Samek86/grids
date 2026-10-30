@@ -36,7 +36,7 @@ impl Drop for Busy {
 }
 
 thread_local! {
-    // joined after the message loop so closing Panegrid doesn't cut a copy short
+    // joined after the message loop so closing Maguro doesn't cut a copy short
     pub(crate) static JOBS: RefCell<Vec<std::thread::JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -155,7 +155,7 @@ pub(crate) unsafe fn copy_paths(a: usize) {
     update_status();
 }
 
-// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Panegrid stays usable.
+// Plain file copies (Ctrl+C, then Ctrl+V into a folder) run on their own thread, so Maguro stays usable.
 // Cut, links, virtual items and anything else stay with the shell.
 pub(crate) unsafe fn try_paste(a: usize) -> bool {
     paste_clipboard(a, None, false)
@@ -321,7 +321,7 @@ pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
     let unreadable = tr(Key::UnreadablePicture).to_string();
     let saved = tr(Key::SavedName).to_string();
     let fail = tr(Key::ClipboardSaveFail).to_string();
-    let job = std::thread::Builder::new().name("panegrid-image".into()).spawn(move || {
+    let job = std::thread::Builder::new().name("maguro-image".into()).spawn(move || {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         let _ = crate::crash::guard(std::panic::AssertUnwindSafe(|| unsafe {
         let png = match pic {
@@ -335,7 +335,7 @@ pub(crate) unsafe fn start_picture(pic: Pic, dst: String) -> bool {
                 *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
             }
             Err(e) => {
-                MessageBoxW(None, &HSTRING::from(format!("{fail}{e}")), w!("Panegrid"), MB_ICONWARNING);
+                MessageBoxW(None, &HSTRING::from(format!("{fail}{e}")), w!("Maguro"), MB_ICONWARNING);
             }
         }
         }));
@@ -461,7 +461,7 @@ unsafe fn start_transfer(srcs: Vec<String>, dst: String, rename: bool, mv: bool,
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let what = if mv { tr(crate::Key::MovingFailed) } else { tr(crate::Key::CopyingFailed) };
                 let text = HSTRING::from(format!("{what}{}", e.message()));
-                MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
+                MessageBoxW(None, &text, w!("Maguro"), MB_ICONWARNING);
             }
         }
         }));
@@ -602,7 +602,7 @@ pub(crate) unsafe fn delete_selection(i: usize, shift: bool) {
         };
         let text = HSTRING::from(format!("{verb} ({n})"));
         let owner = app(|a| a.main);
-        if MessageBoxW(Some(owner), &text, w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) != IDYES {
+        if MessageBoxW(Some(owner), &text, w!("Maguro"), MB_YESNO | MB_ICONQUESTION) != IDYES {
             return;
         }
     }
@@ -619,7 +619,7 @@ pub(crate) unsafe fn start_delete(srcs: Vec<String>, permanent: bool, ask_owner:
         if let Err(e) = run_delete(&srcs, permanent, ask_owner) {
             if e.code() != COPYENGINE_E_USER_CANCELLED && e.code() != ERROR_CANCELLED.to_hresult() {
                 let text = HSTRING::from(format!("{}{}", tr(crate::Key::DeleteFailed), e.message()));
-                _ = MessageBoxW(None, &text, w!("Panegrid"), MB_ICONWARNING);
+                _ = MessageBoxW(None, &text, w!("Maguro"), MB_ICONWARNING);
             }
         }
         if com {
@@ -706,12 +706,12 @@ pub(crate) fn settings_filter() -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-/// Export / import picker. Save defaults to panegrid.json. Open accepts JSON and a legacy ini.
+/// Export / import picker. Save defaults to maguro.json. Open accepts JSON and a legacy ini.
 pub(crate) unsafe fn pick_settings(owner: HWND, save: bool) -> Option<String> {
     use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
     let mut buf = [0u16; 520];
     if save {
-        for (d, c) in buf.iter_mut().zip("panegrid.json".encode_utf16()) {
+        for (d, c) in buf.iter_mut().zip("maguro.json".encode_utf16()) {
             *d = c;
         }
     }
@@ -838,7 +838,7 @@ pub(crate) fn apply_boot(s: &mut Session) {
                 link_loaded_window(s, &file);
             }
         }
-        // 0, the default: every tab loaded from panegrid.json stays. Only the active one is shown.
+        // 0, the default: every tab loaded from maguro.json stays. Only the active one is shown.
         _ => {
             if s.tabs.is_empty() {
                 s.anchor();

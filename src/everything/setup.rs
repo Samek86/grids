@@ -92,7 +92,7 @@ pub(crate) fn probe_async() {
         return;
     }
     set_activity(Activity::Checking);
-    let _ = std::thread::Builder::new().name("panegrid-ev".into()).spawn(|| {
+    let _ = std::thread::Builder::new().name("maguro-ev".into()).spawn(|| {
         let (shown, exe) = detect();
         {
             let mut c = cache();
@@ -111,7 +111,7 @@ pub(crate) fn start_async() {
         return;
     }
     set_activity(Activity::Starting);
-    let _ = std::thread::Builder::new().name("panegrid-ev-start".into()).spawn(|| {
+    let _ = std::thread::Builder::new().name("maguro-ev-start".into()).spawn(|| {
         let exe = cache().exe.clone().or_else(find_exe);
         let Some(exe) = exe else {
             set_activity(Activity::StartFailed);
@@ -152,7 +152,7 @@ pub(crate) fn install_async() {
         }
         std::mem::replace(&mut c.activity, Activity::Checking)
     };
-    let spawned = std::thread::Builder::new().name("panegrid-ev-install".into()).spawn(|| {
+    let spawned = std::thread::Builder::new().name("maguro-ev-install".into()).spawn(|| {
         if install_plan(winget_available()) == InstallPlan::Browser {
             open_downloads();
             set_activity(Activity::OpenedPage);

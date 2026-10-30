@@ -191,7 +191,7 @@ pub(crate) fn take_done() -> Option<Finished> {
 pub(crate) unsafe fn start(notify: HWND, waves: Vec<Vec<Step>>) {
     // HWND is a raw pointer. Pass the address as an integer so the worker can post back.
     let notify = notify.0 as isize;
-    let job = std::thread::Builder::new().name("panegrid-rename".into()).spawn(move || {
+    let job = std::thread::Builder::new().name("maguro-rename".into()).spawn(move || {
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let outcome = run_waves(&waves);
         if com {
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(hist.len(), 20);
         assert_eq!(hist[0].entries[0].now, "n5");
         assert_eq!(hist[19].entries[0].now, "n24");
-        let folder = std::env::temp_dir().join(format!("panegrid-undo-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("maguro-undo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         let path = folder.join("rename-undo.json");
         save_history(&path, &hist);
@@ -327,7 +327,7 @@ mod tests {
         assert!(!still_there(Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))));
         assert!(still_there(Ok(())));
         assert!(still_there(Err(std::io::Error::other("denied"))));
-        let dir = std::env::temp_dir().join(format!("panegrid-undo-exists-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maguro-undo-exists-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let folder = dir.to_string_lossy().into_owned();

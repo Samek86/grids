@@ -1,4 +1,4 @@
-//! Filesystem folders and drives can open in Panegrid. Win+E, the taskbar and
+//! Filesystem folders and drives can open in Maguro. Win+E, the taskbar and
 //! virtual folders stay with Explorer: only the Directory and Drive classes are
 //! registered, under HKCU\Software\Classes, and a shell: or CLSID path that still
 //! arrives is handed back to explorer.exe.

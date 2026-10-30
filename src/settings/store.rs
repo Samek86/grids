@@ -1,5 +1,5 @@
-// Settings file: %APPDATA%\Panegrid\panegrid.json, or next to the exe when portable.txt is there.
-// Named .grids sessions stay in the ini shape. Missing panegrid.json is copied from grids.json, else read once from grids.ini or qdir.ini; the source file is left untouched.
+// Settings file: %APPDATA%\Maguro\maguro.json, or next to the exe when portable.txt is there.
+// Named .grids sessions stay in the ini shape. Missing maguro.json is copied from grids.json, else read once from grids.ini or qdir.ini; the source file is left untouched.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,10 +62,10 @@ fn is_half_split(v: &f64) -> bool {
     (v - 0.5).abs() < 1e-6
 }
 fn accent_light() -> String {
-    "A99BE0".into()
+    "2EC4A6".into()
 }
 fn accent_dark() -> String {
-    "6A5AA8".into()
+    "2EC4A6".into()
 }
 fn theme_auto() -> String {
     "auto".into()
@@ -316,7 +316,7 @@ struct SettingsFile {
     keybindings: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     favorites_tree: Vec<Value>,
-    /// Third-party context-menu targets turned off in Panegrid. Omitted when every handler is on.
+    /// Third-party context-menu targets turned off in Maguro. Omitted when every handler is on.
     /// A .grids file does not store this.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     ctx_menu: BTreeMap<String, Vec<String>>,
@@ -338,7 +338,7 @@ struct SettingsFile {
     /// Settings right-click page is on the Windows 11 list. Omitted while classic.
     #[serde(default, skip_serializing_if = "is_off")]
     ctx_win11_view: bool,
-    /// DLL file names blocked inside Panegrid only. Omitted when empty.
+    /// DLL file names blocked inside Maguro only. Omitted when empty.
     /// Not written to the registry and not written into grids.ini.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     blocked_shell_extensions: Vec<String>,
@@ -549,7 +549,7 @@ impl SettingsFile {
         }
         self.extra = previous.extra.clone();
         self.extra.remove("panel");
-        // Retired UI scale. An older panegrid.json still loads; the key is not written back.
+        // Retired UI scale. An older maguro.json still loads; the key is not written back.
         self.extra.remove("font");
         self.extra.remove("one_window");
         self.extra.remove("drive_buttons");
@@ -879,10 +879,10 @@ fn roaming_appdata() -> Option<PathBuf> {
     }
 }
 
-pub(crate) const SETTINGS_FILE: &str = "panegrid.json";
+pub(crate) const SETTINGS_FILE: &str = "maguro.json";
 
 fn appdata_dir(base: &Path) -> PathBuf {
-    base.join("Panegrid")
+    base.join("Maguro")
 }
 
 pub(crate) fn config_dir() -> PathBuf {
@@ -902,7 +902,7 @@ pub(crate) fn settings_path() -> PathBuf {
     config_dir().join(SETTINGS_FILE)
 }
 
-/// panegrid.json bytes. Missing is `Ok(None)`. A locked or unreadable file is an error, never defaults.
+/// maguro.json bytes. Missing is `Ok(None)`. A locked or unreadable file is an error, never defaults.
 pub(crate) fn read_settings_file(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read(path) {
         Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
@@ -911,7 +911,7 @@ pub(crate) fn read_settings_file(path: &Path) -> Result<Option<String>, String> 
     }
 }
 
-/// Load panegrid.json, copy a fork grids.json, or import a legacy ini. An existing file that cannot be read or parsed is an error,
+/// Load maguro.json, copy a fork grids.json, or import a legacy ini. An existing file that cannot be read or parsed is an error,
 /// so a later save does not replace it with defaults.
 pub(crate) fn try_load_at(exe: &Path, cfg: &Path, old_cfg: &Path) -> Result<Session, String> {
     let _ = std::fs::create_dir_all(cfg);
@@ -920,7 +920,7 @@ pub(crate) fn try_load_at(exe: &Path, cfg: &Path, old_cfg: &Path) -> Result<Sess
         Some(raw) => {
             let text = strip_bom(&raw);
             let Some(mut s) = adopt(text) else {
-                return Err("panegrid.json is not valid settings".into());
+                return Err("maguro.json is not valid settings".into());
             };
             // A name that is not installed falls back to the language default. Empty skips the lookup.
             forget_missing_face(&mut s);
@@ -1367,7 +1367,7 @@ mod tests {
     fn ini_imports_to_json_and_the_source_stays() {
         let root = scratch("migrate");
         let exe = root.join("exe");
-        let cfg = root.join("appdata").join("Panegrid");
+        let cfg = root.join("appdata").join("Maguro");
         let old = root.join("old");
         std::fs::create_dir_all(&exe).unwrap();
         std::fs::create_dir_all(&old).unwrap();
@@ -1388,7 +1388,7 @@ mod tests {
         assert_eq!(adopt(&json).unwrap(), parsed);
         assert_eq!(std::fs::read_to_string(exe.join("sessions").join("work.grids")).unwrap(), parsed.snapshot());
 
-        // A second launch reads panegrid.json and leaves the ini alone.
+        // A second launch reads maguro.json and leaves the ini alone.
         let again = load_at(&exe, &cfg, &old);
         assert_eq!(again, parsed);
         assert_eq!(std::fs::read_to_string(&ini).unwrap(), ini_body);
@@ -1409,7 +1409,7 @@ mod tests {
         assert!(ini2.is_file());
         assert!(!old2.join("grids.ini.bak").exists());
 
-        // An existing panegrid.json is not replaced.
+        // An existing maguro.json is not replaced.
         let root3 = scratch("keep-json");
         let exe3 = root3.join("exe");
         let cfg3 = root3.join("cfg");
@@ -1517,7 +1517,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ini).unwrap(), body);
         assert!(ini.is_file());
         assert!(!dir.join("grids.ini.bak").exists());
-        assert!(!dir.join(format!("panegrid.json.{}.tmp", std::process::id())).exists());
+        assert!(!dir.join(format!("maguro.json.{}.tmp", std::process::id())).exists());
         assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "no tmp file is left");
     }
 
@@ -1553,7 +1553,7 @@ mod tests {
         write_atomic(&path, b"{\"version\":1}\n").unwrap();
         write_atomic(&path, b"{\"version\":1,\"lang\":\"ja\"}\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"version\":1,\"lang\":\"ja\"}\n");
-        assert!(!dir.join("panegrid.json.tmp").exists());
+        assert!(!dir.join("maguro.json.tmp").exists());
         let blocked = dir.join("blocked.json");
         std::fs::create_dir(&blocked).unwrap();
         assert!(write_atomic(&blocked, b"{\"version\":1}\n").is_err());
@@ -2069,12 +2069,12 @@ mod tests {
     }
 
     #[test]
-    fn config_paths_use_panegrid_names() {
-        assert_eq!(SETTINGS_FILE, "panegrid.json");
-        assert_eq!(settings_path().file_name().and_then(|s| s.to_str()), Some("panegrid.json"));
+    fn config_paths_use_maguro_names() {
+        assert_eq!(SETTINGS_FILE, "maguro.json");
+        assert_eq!(settings_path().file_name().and_then(|s| s.to_str()), Some("maguro.json"));
         let base = Path::new(r"C:\Users\me\AppData\Roaming");
-        assert_eq!(appdata_dir(base), base.join("Panegrid"));
-        assert!(appdata_dir(base).ends_with("Panegrid"));
+        assert_eq!(appdata_dir(base), base.join("Maguro"));
+        assert!(appdata_dir(base).ends_with("Maguro"));
     }
 
     #[test]
