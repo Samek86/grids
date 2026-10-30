@@ -10,8 +10,8 @@ use crate::i18n::*;
 use crate::settings;
 use windows::Win32::UI::Accessibility::{IAccPropServices, CLSID_AccPropServices, PROPID_ACC_NAME};
 use windows::Win32::UI::Controls::{
-    CDIS_FOCUS, LIST_VIEW_GROUP_STATE_FLAGS, LVCDI_GROUP, LVGA_HEADER_CENTER, LVGA_HEADER_RIGHT, LVGF_ALIGN, LVGF_DESCRIPTIONBOTTOM, LVGF_DESCRIPTIONTOP, LVGF_EXTENDEDIMAGE, LVGF_FOOTER, LVGF_HEADER,
-    LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_TITLEIMAGE, LVGGR_HEADER, LVGROUP, LVGROUP_MASK, LVGS_COLLAPSED, LVGS_COLLAPSIBLE, LVGS_FOCUSED, LVGS_SELECTED, LVGS_SUBSETED, LVM_GETGROUPINFO,
+    CDIS_FOCUS, LIST_VIEW_GROUP_STATE_FLAGS, LVCDI_GROUP, LVGA_HEADER_CENTER, LVGA_HEADER_RIGHT, LVGF_ALIGN, LVGF_EXTENDEDIMAGE, LVGF_HEADER,
+    LVGF_STATE, LVGF_TITLEIMAGE, LVGGR_HEADER, LVGROUP, LVGROUP_MASK, LVGS_COLLAPSED, LVGS_COLLAPSIBLE, LVGS_FOCUSED, LVGS_SELECTED, LVGS_SUBSETED, LVM_GETGROUPINFO,
     LVM_GETGROUPRECT, LVM_GETIMAGELIST, LVSIL_GROUPHEADER,
 };
 
@@ -834,13 +834,13 @@ unsafe fn dark_view_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _a1: u
 }
 
 /// Dark-theme group title ("Devices and drives" on This PC): flat card, light text, a hairline.
-/// A subtitle, task, image, or a failed lookup returns false and the list draws it.
+/// Images, "show more", or a failed lookup returns false and the list draws it. Only the title is
+/// read: asking a shell view's list for a subtitle, task, description or footer faults inside
+/// comctl32 (6.10.26100), which ends this paint or the app; shell groups have none.
 pub(crate) unsafe fn draw_group_header(cd: &NMLVCUSTOMDRAW) -> bool {
     let (dc, lv, id) = (cd.nmcd.hdc, cd.nmcd.hdr.hwndFrom, cd.nmcd.dwItemSpec);
     let mut head = [0u16; 260];
-    let mut more = [[0u16; 64]; 5];
-    let [sub, task, top, bottom, foot] = more.each_mut().map(|b| PWSTR(b.as_mut_ptr()));
-    let mask = [LVGF_HEADER, LVGF_ALIGN, LVGF_STATE, LVGF_SUBTITLE, LVGF_TASK, LVGF_DESCRIPTIONTOP, LVGF_DESCRIPTIONBOTTOM, LVGF_FOOTER, LVGF_TITLEIMAGE, LVGF_EXTENDEDIMAGE];
+    let mask = [LVGF_HEADER, LVGF_ALIGN, LVGF_STATE, LVGF_TITLEIMAGE, LVGF_EXTENDEDIMAGE];
     let states = LVGS_COLLAPSIBLE.0 | LVGS_COLLAPSED.0 | LVGS_SELECTED.0 | LVGS_FOCUSED.0 | LVGS_SUBSETED.0;
     let mut g = LVGROUP {
         cbSize: size_of::<LVGROUP>() as u32,
@@ -848,16 +848,6 @@ pub(crate) unsafe fn draw_group_header(cd: &NMLVCUSTOMDRAW) -> bool {
         stateMask: LIST_VIEW_GROUP_STATE_FLAGS(states),
         pszHeader: PWSTR(head.as_mut_ptr()),
         cchHeader: head.len() as i32,
-        pszSubtitle: sub,
-        cchSubtitle: 64,
-        pszTask: task,
-        cchTask: 64,
-        pszDescriptionTop: top,
-        cchDescriptionTop: 64,
-        pszDescriptionBottom: bottom,
-        cchDescriptionBottom: 64,
-        pszFooter: foot,
-        cchFooter: 64,
         ..Default::default()
     };
     if SendMessageW(lv, LVM_GETGROUPINFO, Some(WPARAM(id)), Some(LPARAM(&mut g as *mut _ as isize))).0 == -1 {
@@ -865,7 +855,7 @@ pub(crate) unsafe fn draw_group_header(cd: &NMLVCUSTOMDRAW) -> bool {
     }
     let st = g.state.0;
     let n = head.iter().position(|&c| c == 0).unwrap_or(0);
-    if n == 0 || more.iter().any(|b| b[0] != 0) || st & LVGS_SUBSETED.0 != 0 {
+    if n == 0 || st & LVGS_SUBSETED.0 != 0 {
         return false;
     }
     let images = SendMessageW(lv, LVM_GETIMAGELIST, Some(WPARAM(LVSIL_GROUPHEADER as usize)), None).0 != 0;
