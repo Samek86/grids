@@ -338,6 +338,8 @@ struct Listed {
 struct PickUi {
     dpi: i32,
     font: HFONT,
+    /// Same 14px face as `font`, weight 700. Accent Open only.
+    bold: HFONT,
     small: HFONT,
     semi: HFONT,
     search: HWND,
@@ -358,6 +360,7 @@ impl PickUi {
         Self {
             dpi: 96,
             font: HFONT(std::ptr::null_mut()),
+            bold: HFONT(std::ptr::null_mut()),
             small: HFONT(std::ptr::null_mut()),
             semi: HFONT(std::ptr::null_mut()),
             search: HWND(std::ptr::null_mut()),
@@ -510,15 +513,20 @@ fn face_pair() -> (String, i32, &'static str) {
 unsafe fn rebuild_fonts(dpi: i32) {
     let (body, title_w, title_face) = face_pair();
     let title = if title_face.is_empty() { body.as_str() } else { title_face };
-    let new = (make_font(&body, 14, 400, dpi), make_font(&body, 12, 400, dpi), make_font(title, 16, title_w, dpi));
+    let new = (
+        make_font(&body, 14, 400, dpi),
+        make_font(&body, 14, 700, dpi),
+        make_font(&body, 12, 400, dpi),
+        make_font(title, 16, title_w, dpi),
+    );
     let old = UI.with(|u| {
         let mut ui = u.borrow_mut();
-        let old = (ui.font, ui.small, ui.semi);
-        (ui.font, ui.small, ui.semi) = new;
+        let old = (ui.font, ui.bold, ui.small, ui.semi);
+        (ui.font, ui.bold, ui.small, ui.semi) = new;
         ui.dpi = dpi;
         old
     });
-    for f in [old.0, old.1, old.2] {
+    for f in [old.0, old.1, old.2, old.3] {
         if !f.is_invalid() {
             let _ = DeleteObject(f.into());
         }
@@ -802,26 +810,6 @@ unsafe fn move_sel(h: HWND, d: i32, extend: bool) {
     layout_window(h);
 }
 
-unsafe fn rfill(dc: HDC, r: RECT, rad: i32, fill: u32, border: Option<u32>) {
-    if r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let brush = CreateSolidBrush(crate::cref(fill));
-    let pen = match border {
-        Some(c) => CreatePen(PS_SOLID, 1, crate::cref(c)),
-        None => HPEN(GetStockObject(NULL_PEN).0),
-    };
-    let op = SelectObject(dc, pen.into());
-    let ob = SelectObject(dc, brush.into());
-    let _ = RoundRect(dc, r.left, r.top, r.right, r.bottom, rad.max(1), rad.max(1));
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    let _ = DeleteObject(brush.into());
-    if border.is_some() {
-        let _ = DeleteObject(pen.into());
-    }
-}
-
 unsafe fn draw_schematic(dc: HDC, r: RECT, columns: &[usize], accent: u32, dpi: i32) {
     if columns.is_empty() || r.right <= r.left || r.bottom <= r.top {
         return;
@@ -841,7 +829,7 @@ unsafe fn draw_schematic(dc: HDC, r: RECT, columns: &[usize], accent: u32, dpi: 
         let mut y = r.top;
         for _ in 0..rows {
             let cell = RECT { left: x, top: y, right: x + cw, bottom: y + rh.max(1) };
-            rfill(dc, cell, dip(dpi, 3), crate::blend(crate::pal().card, accent, 0.20), Some(crate::pal().line));
+            crate::aa_rfill(dc, cell, dip(dpi, 3), crate::blend(crate::pal().card, accent, 0.20), Some(crate::pal().line), crate::pal().card);
             if cw >= dip(dpi, 16) && rh >= dip(dpi, 14) {
                 crate::text(dc, cell, &n.to_string(), font, crate::pal().sub, DT_CENTER);
             }
@@ -866,9 +854,9 @@ unsafe fn paint(h: HWND) {
     let query_empty = UI.with(|u| ui_query(&u.borrow()).trim().is_empty());
     crate::buffered(h, |dc, rc| {
         crate::fill(dc, rc, crate::pal().bg);
-        rfill(dc, lay.search.rect(), dip(dpi, crate::settings::FIELD_RADIUS_DIP), crate::pal().card, Some(crate::pal().line));
-        rfill(dc, lay.list.rect(), dip(dpi, 6), crate::pal().card, Some(crate::pal().line));
-        rfill(dc, lay.detail.rect(), dip(dpi, 6), crate::pal().card, Some(crate::pal().line));
+        crate::aa_rfill(dc, lay.search.rect(), dip(dpi, crate::settings::FIELD_RADIUS_DIP), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
+        crate::aa_rfill(dc, lay.list.rect(), dip(dpi, 6), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
+        crate::aa_rfill(dc, lay.detail.rect(), dip(dpi, 6), crate::pal().card, Some(crate::pal().line), crate::pal().bg);
         if shown.is_empty() {
             let msg = if when_bad && query_empty {
                 tr(crate::Key::NoSavedSessionsYet)
@@ -891,10 +879,10 @@ unsafe fn paint(h: HWND) {
             let over = hot == Some(i);
             if on || marked {
                 let mix = if on { 0.16 } else { 0.10 };
-                rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, mix), None);
+                crate::aa_rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, mix), None, crate::pal().card);
                 crate::fill(dc, RECT { left: b.left, top: b.top + dip(dpi, 8), right: b.left + dip(dpi, 3), bottom: b.bottom - dip(dpi, 8) }, accent);
             } else if over {
-                rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, 0.08), None);
+                crate::aa_rfill(dc, b.rect(), dip(dpi, 4), crate::blend(crate::pal().card, accent, 0.08), None, crate::pal().card);
             }
             let name_r = RECT { left: b.left + dip(dpi, 12), top: b.top + dip(dpi, 6), right: b.right - dip(dpi, 8), bottom: b.top + dip(dpi, 28) };
             crate::text(dc, name_r, &row.name, font, crate::pal().text, DT_LEFT);
@@ -970,11 +958,15 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     let pressed = d.itemState.0 & 1 != 0;
     let hot = app(|a| a.hover) == d.hwndItem;
     let dpi = UI.with(|u| u.borrow().dpi.max(96));
-    let font = UI.with(|u| u.borrow().font);
+    let (font, bold) = UI.with(|u| {
+        let ui = u.borrow();
+        (ui.font, ui.bold)
+    });
     let accent = crate::settings::chrome_color();
     let ground = crate::pal().bg;
     crate::fill(d.hDC, d.rcItem, ground);
-    let (fill, border, ink) = if id == ID_OPEN && !dis {
+    let accent_btn = id == ID_OPEN && !dis;
+    let (fill, border, ink) = if accent_btn {
         (accent, accent, crate::on_color(accent))
     } else if dis {
         (crate::blend(ground, crate::pal().sub, 0.12), crate::pal().line, crate::pal().sub)
@@ -987,8 +979,9 @@ unsafe fn draw_btn(d: &DRAWITEMSTRUCT) {
     } else {
         (ground, crate::pal().line, crate::pal().text)
     };
-    rfill(d.hDC, d.rcItem, dip(dpi, 4), fill, Some(border));
-    crate::text(d.hDC, d.rcItem, &crate::text_of(d.hwndItem), font, ink, DT_CENTER);
+    crate::aa_rfill(d.hDC, d.rcItem, dip(dpi, 4), fill, Some(border), ground);
+    let label_font = if accent_btn && !bold.is_invalid() { bold } else { font };
+    crate::text(d.hDC, d.rcItem, &crate::text_of(d.hwndItem), label_font, ink, DT_CENTER);
 }
 
 unsafe fn on_click(h: HWND, x: i32, y: i32, dbl: bool, ctrl: bool, shift: bool) {
@@ -1187,11 +1180,11 @@ unsafe fn pick_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT 
         WM_DESTROY => {
             let old = UI.with(|u| {
                 let mut ui = u.borrow_mut();
-                let old = (ui.font, ui.small, ui.semi);
+                let old = (ui.font, ui.bold, ui.small, ui.semi);
                 *ui = PickUi::empty();
                 old
             });
-            for f in [old.0, old.1, old.2] {
+            for f in [old.0, old.1, old.2, old.3] {
                 if !f.is_invalid() {
                     let _ = DeleteObject(f.into());
                 }
