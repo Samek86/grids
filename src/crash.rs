@@ -3,7 +3,8 @@
 //! An access violation in a shell extension reaches the vectored handler and the unhandled
 //! filter; the report records the faulting module and offset while that DLL is loaded.
 //! Fail-fast (`0xC0000409`, `0xC0000602`) skips both, so a detached watcher reads the exit
-//! code and the last flushed trace. Reports live in the settings folder (`crashes\`),
+//! code and the last flushed trace. A killed process (`0xFFFFFFFF`, `0xC000013A`) is not
+//! a fail-fast. Reports live in the settings folder (`crashes\`),
 //! never in a grids folder and never in `grids.ini`.
 
 use std::cell::Cell;
@@ -272,7 +273,7 @@ fn watch_main(args: &[String]) {
         let mut code = 0u32;
         let ok = GetExitCodeProcess(h, &mut code).is_ok();
         let _ = CloseHandle(h);
-        if !ok || code < 0xC000_0000 || code == 0xC000_013A {
+        if !ok || !watch_is_fatal(code) {
             return;
         }
         if dir.join("crash-pending.txt").is_file() {
@@ -302,6 +303,15 @@ unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
     capture(info as *mut EXCEPTION_POINTERS, true);
     write_exception_report();
     EXCEPTION_EXECUTE_HANDLER
+}
+
+/// Exit codes the detached watcher records. `0xFFFFFFFF` is `Stop-Process -Force`.
+/// `0xC000013A` is CTRL+C. Anything else must be on the `is_fatal` allowlist.
+fn watch_is_fatal(code: u32) -> bool {
+    if code == 0xFFFF_FFFF || code == 0xC000_013A {
+        return false;
+    }
+    is_fatal(code)
 }
 
 fn is_fatal(code: u32) -> bool {
@@ -705,6 +715,15 @@ fn open_folder(folder: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn force_kill_exit_is_not_fatal_and_fail_fast_still_is() {
+        assert!(!is_fatal(0xFFFF_FFFF), "Stop-Process -Force");
+        assert!(is_fatal(0xC000_0409), "STATUS_STACK_BUFFER_OVERRUN");
+        assert!(!watch_is_fatal(0xFFFF_FFFF), "Stop-Process -Force");
+        assert!(!watch_is_fatal(0xC000_013A), "CTRL+C");
+        assert!(watch_is_fatal(0xC000_0409), "fail-fast");
+    }
 
     #[test]
     fn report_names_the_module_and_the_shell_dll() {

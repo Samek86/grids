@@ -1169,12 +1169,12 @@ unsafe fn paint_progress(h: HWND) {
         crate::text(dc, stats_r, &v.stats, v.small, crate::pal().sub, DT_LEFT);
         y += sc(dpi, 16) + sc(dpi, 8);
         let bar = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 8) };
-        crate::settings::aa_rfill(dc, bar, sc(dpi, 4), crate::pal().pill, None, crate::pal().bg);
+        crate::aa_rfill(dc, bar, sc(dpi, 4), crate::pal().pill, None, crate::pal().bg);
         let span = (bar.right - bar.left).max(1);
         let fill_w = ((span as f32) * v.frac).round() as i32;
         if fill_w > 0 {
             let fill = RECT { right: (bar.left + fill_w.max(sc(dpi, 8))).min(bar.right), ..bar };
-            crate::settings::aa_rfill(dc, fill, sc(dpi, 4), v.accent, None, crate::pal().pill);
+            crate::aa_rfill(dc, fill, sc(dpi, 4), v.accent, None, crate::pal().pill);
         }
         y += sc(dpi, 8) + sc(dpi, 8);
         v.file_rect = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 16) };
@@ -1187,7 +1187,7 @@ unsafe fn paint_progress(h: HWND) {
         let bh = sc(dpi, 32);
         v.cancel_rect = RECT { left: rc.right - pad - bw, top: rc.bottom - pad - bh, right: rc.right - pad, bottom: rc.bottom - pad };
         let fill = if v.down && v.hot { crate::blend(crate::pal().card, crate::pal().text, 0.08) } else if v.hot { crate::blend(crate::pal().card, v.accent, 0.12) } else { crate::pal().card };
-        crate::settings::aa_rfill(dc, v.cancel_rect, sc(dpi, 8), fill, Some(crate::pal().line), crate::pal().bg);
+        crate::aa_rfill(dc, v.cancel_rect, sc(dpi, 8), fill, Some(crate::pal().line), crate::pal().bg);
         crate::text(dc, v.cancel_rect, tr(Key::Cancel), v.small, crate::pal().text, DT_CENTER);
     });
 }
@@ -1292,7 +1292,7 @@ unsafe fn paint_ask(h: HWND) {
         v.rects[3] = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + tick };
         let mark = RECT { left: pad, top: y, right: pad + tick, bottom: y + tick };
         let fill = if v.all { v.accent } else { crate::pal().card };
-        crate::settings::aa_rfill(dc, mark, sc(dpi, 4), fill, Some(if v.all { v.accent } else { crate::pal().line }), crate::pal().bg);
+        crate::aa_rfill(dc, mark, sc(dpi, 4), fill, Some(if v.all { v.accent } else { crate::pal().line }), crate::pal().bg);
         if v.all {
             crate::text(dc, mark, "✓", v.small, 0xFFFFFF, DT_CENTER);
         }
@@ -1307,7 +1307,7 @@ unsafe fn paint_ask(h: HWND) {
             let on = v.hot == i as i32;
             let fill = if i == 0 { v.accent } else if on { crate::blend(crate::pal().card, crate::pal().text, 0.06) } else { crate::pal().card };
             let border = if i == 0 { None } else { Some(crate::pal().line) };
-            crate::settings::aa_rfill(dc, v.rects[i], sc(dpi, 8), fill, border, crate::pal().bg);
+            crate::aa_rfill(dc, v.rects[i], sc(dpi, 8), fill, border, crate::pal().bg);
             let ink = if i == 0 { crate::on_color(v.accent) } else { crate::pal().text };
             crate::text(dc, v.rects[i], labels[i], v.small, ink, DT_CENTER);
         }

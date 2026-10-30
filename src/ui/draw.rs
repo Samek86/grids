@@ -163,7 +163,8 @@ unsafe fn draw_session_icon(dc: HDC, rc: RECT, kind: SessionIcon, rgb: u32, dpi:
 }
 
 // A chubby five-point star (inner radius 0.56 of the outer one) with softly rounded tips, as 0..=255
-// coverage per pixel of an n×n box. Font stars are too sharp, so it's computed: 4×4 samples per pixel.
+// coverage per pixel of an n×n box. The mask is sampled at AA_SCALE, then box-filtered, so the tips
+// match the toggle corners. Font stars are too sharp, so the shape stays computed.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Star {
     Outline, // tab-row favourites button; Plus is this shape with a +
@@ -171,7 +172,24 @@ pub(crate) enum Star {
     Plus, // outline with a + in its exact centre (add to favourites)
 }
 
+/// `n`×`n` coverage. Sampled on the shared 3× grid and box-filtered down to `n`.
 pub(crate) fn star_coverage(n: i32, kind: Star) -> Vec<u8> {
+    let n = n.max(0);
+    if n == 0 {
+        return Vec::new();
+    }
+    let scale = super::aa::AA_SCALE.max(1);
+    if scale <= 1 || n > 160 {
+        return star_mask(n, kind);
+    }
+    let hi = n * scale;
+    let src = star_mask(hi, kind);
+    let mut dst = vec![0u8; (n as usize) * (n as usize)];
+    super::aa::box_down_cov(&src, hi as usize, &mut dst, n as usize, n as usize, scale as usize);
+    dst
+}
+
+fn star_mask(n: i32, kind: Star) -> Vec<u8> {
     let filled = kind == Star::Filled;
     let (c, r_out) = (n as f32 / 2.0, n as f32 / 2.0 - 0.5);
     let pt = |k: i32, r: f32| {
@@ -275,6 +293,24 @@ pub(crate) unsafe fn draw_star(dc: HDC, rc: RECT, rgb: u32, kind: Star, dpi: i32
     SelectObject(mem, old);
     _ = DeleteDC(mem);
     _ = DeleteObject(bmp.into());
+}
+
+#[cfg(test)]
+mod star_aa_tests {
+    use super::*;
+
+    fn sixteen_level(a: u8) -> bool {
+        (0..=16).any(|h| a == (h * 255 / 16) as u8)
+    }
+
+    #[test]
+    fn outline_edge_is_finer_than_a_4_by_4_sample_grid() {
+        let ring = star_coverage(15, Star::Outline);
+        assert!(
+            ring.iter().any(|&a| a > 0 && a < 255 && !sixteen_level(a)),
+            "expected box-filtered coverage between the 16 sample steps"
+        );
+    }
 }
 
 /// Premultiplied top-down BGRA (`w`×`h`) drawn into `to` through a throwaway DIB.
