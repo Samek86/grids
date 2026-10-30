@@ -592,12 +592,14 @@ unsafe fn toggle_home(kind: RowKind) {
 }
 
 unsafe fn delete_id(id: &[usize]) {
+    let links = crate::servers_at(id);
     app(|a| {
         a.s.ensure_fav_tree();
         delete_at(&mut a.s.tree, id);
         a.s.sync_favs();
         a.fav_hot = None;
     });
+    crate::release_servers(links);
     ST.with(|s| {
         let mut st = s.borrow_mut();
         if st.sel.as_ref().is_some_and(|s| s.kind == RowKind::Tree && s.id.starts_with(id)) {

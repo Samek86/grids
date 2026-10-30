@@ -27,8 +27,17 @@ pub(crate) fn decide_fast(force: bool, setting: bool, network: bool) -> bool {
     force || (setting && network)
 }
 
-/// UNC, or a caller-supplied drive type (`Some(4)` is `DRIVE_REMOTE`). A UNC path does not use the drive type.
+/// UNC, a live rclone mount, or a caller-supplied drive type (`Some(4)` is `DRIVE_REMOTE`).
+/// A UNC path does not use the drive type.
 pub(crate) fn classify_network(path: &str, drive_type: Option<u32>) -> bool {
+    classify_network_roots(path, drive_type, &crate::remote::mount_roots())
+}
+
+/// Same rule as [`classify_network`], with mount roots supplied by the caller so a test can cover a drive letter that is not `DRIVE_REMOTE`.
+pub(crate) fn classify_network_roots(path: &str, drive_type: Option<u32>, roots: &[String]) -> bool {
+    if crate::remote::covered_by_mount(path, roots) {
+        return true;
+    }
     let unc = crate::unc_path(path);
     crate::share_kind(unc, if unc { None } else { drive_type })
 }
@@ -1604,6 +1613,9 @@ mod tests {
         assert!(classify_network(r"Z:\docs", Some(4)));
         assert!(!classify_network(r"\\?\C:\work", Some(3)));
         assert!(network_transfer(&[r"\\server\share\a".into()], r"C:\dst"));
+        assert!(classify_network_roots(r"Z:\pgtest\marker.txt", Some(3), &[r"Z:\".into()]));
+        assert!(classify_network_roots(r"\\localhost\C$\WORK\pgtest\data\a.txt", None, &[]));
+        assert!(!classify_network_roots(r"C:\WORK\pgtest\data\a.txt", Some(3), &[r"Z:\".into()]));
     }
 
     #[test]

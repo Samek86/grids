@@ -66,6 +66,90 @@ pub(crate) unsafe fn favs_changed() {
     note_save();
 }
 
+fn server_of(row: &FavRow) -> Option<crate::session::ServerLink> {
+    if row.in_tree() && !row.id.is_empty() {
+        if let Some(link) = app(|a| node_ref(&a.s.tree, &row.id).and_then(|n| n.server.clone())) {
+            return Some(link);
+        }
+    }
+    app(|a| server_by_path(&a.s.tree, &row.path))
+}
+
+/// Servers on this node, including every server inside a group, before it is deleted.
+pub(crate) fn servers_at(id: &[usize]) -> Vec<crate::session::ServerLink> {
+    app(|a| node_ref(&a.s.tree, id).map(servers_in).unwrap_or_default())
+}
+
+/// Unmount after the node is gone, when no remaining favourite uses the same mount.
+pub(crate) fn release_servers(links: Vec<crate::session::ServerLink>) {
+    for link in links {
+        if !app(|a| crate::remote::still_used(&a.s.tree, &link)) {
+            crate::remote::unmount_link(&link);
+        }
+    }
+}
+
+/// Connect, mounting first when the favourite is a server. SFTP/FTP ask once for rclone and WinFsp.
+pub(crate) unsafe fn launch_server(owner: HWND, link: crate::session::ServerLink, open: Option<String>) {
+    if crate::remote::needs_rclone(&link.kind) {
+        let rclone = crate::remote::rclone_ok();
+        let winfsp = crate::remote::winfsp_ok();
+        if !rclone || !winfsp {
+            let asked = app(|a| a.s.remote_asked);
+            if crate::remote::should_ask_tools(asked, rclone, winfsp) {
+                app(|a| a.s.remote_asked = true);
+                save_session();
+                let q = tr(crate::Key::InstallRcloneAndWinfspToConnectToSftp);
+                if MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_YESNO | MB_ICONQUESTION) == IDYES {
+                    crate::remote::install_then_connect(owner.0 as isize, link, open);
+                }
+                return;
+            }
+            let q = tr(crate::Key::RcloneOrWinfspIsNotInstalled);
+            let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+            return;
+        }
+    }
+    crate::remote::begin_connect(owner.0 as isize, link, open);
+}
+
+pub(crate) unsafe fn open_typed_remote(parsed: crate::remote::Parsed) {
+    let owner = app(|a| a.main);
+    let matched = app(|a| crate::remote::best_match(&a.s.tree, &parsed));
+    if let Some(link) = matched {
+        launch_server(owner, link, None);
+        return;
+    }
+    open_server_dialog(owner, &[], None, Some(parsed));
+}
+
+pub(crate) unsafe fn remote_arrived() {
+    let owner = app(|a| a.main);
+    for done in crate::remote::take_done() {
+        match done {
+            crate::remote::Done::Quiet => {}
+            crate::remote::Done::NeedTools => {
+                let q = tr(crate::Key::RcloneOrWinfspIsNotInstalled);
+                let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+            }
+            crate::remote::Done::Fail(detail) => {
+                let base = tr(crate::Key::CouldNotConnectToTheServer);
+                let text = if detail.trim().is_empty() { base.to_string() } else { format!("{base}\n\n{detail}") };
+                let _ = MessageBoxW(Some(owner), &HSTRING::from(text), w!("Panegrid"), MB_ICONWARNING);
+            }
+            crate::remote::Done::Open(path) => {
+                let i = active_pane();
+                if !navigate(i, &path) {
+                    let q = tr(crate::Key::CouldNotConnectToTheServer);
+                    let _ = MessageBoxW(Some(owner), &HSTRING::from(q), w!("Panegrid"), MB_ICONWARNING);
+                } else if !net_failed(i) {
+                    focus_view(i);
+                }
+            }
+        }
+    }
+}
+
 /// The settings editor and the favourites window both write through here.
 pub(crate) unsafe fn commit_favs() {
     favs_changed();
@@ -92,6 +176,10 @@ pub(crate) unsafe fn open_fav_target(path: &str, file: bool) {
 /// the network error view. The favourite is not removed.
 pub(crate) unsafe fn open_fav_row(row: &FavRow) {
     if row.group || row.path.is_empty() {
+        return;
+    }
+    if let Some(link) = server_of(row) {
+        launch_server(app(|a| a.main), link, None);
         return;
     }
     let unc = unc_path(&row.path);
@@ -1147,11 +1235,13 @@ fn fav_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 let remove = |k: usize| {
                     let id = fav_rows().get(k).map(|r| r.id.clone());
                     if let Some(id) = id {
+                        let links = servers_at(&id);
                         app(|a| {
                             delete_at(&mut a.s.tree, &id);
                             a.s.sync_favs();
                             a.fav_hot = None;
                         });
+                        release_servers(links);
                         favs_changed();
                     }
                 };

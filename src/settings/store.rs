@@ -296,6 +296,9 @@ struct SettingsFile {
     /// The one-time Everything install question was shown. Missing means not yet.
     #[serde(default, skip_serializing_if = "is_off")]
     ev_asked: bool,
+    /// The one-time rclone and WinFsp install question was shown. Missing means not yet.
+    #[serde(default, skip_serializing_if = "is_off")]
+    remote_asked: bool,
     /// WinMergeU.exe, or a folder that contains it. Empty means auto-detect. Omitted while empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     winmerge_path: String,
@@ -403,6 +406,7 @@ impl SettingsFile {
             folder_sizes_network: false,
             peek: None,
             ev_asked: false,
+            remote_asked: false,
             winmerge_path: String::new(),
             session: String::new(),
             favorites: Vec::new(),
@@ -503,6 +507,7 @@ impl SettingsFile {
             folder_sizes_network: s.folder_sizes_network,
             peek: peek_json(s),
             ev_asked: s.ev_asked,
+            remote_asked: s.remote_asked,
             winmerge_path: s.winmerge_path.trim().to_string(),
             session: s.file.clone(),
             favorites,
@@ -550,6 +555,7 @@ impl SettingsFile {
         self.extra.remove("drive_buttons");
         self.extra.remove("use_everything");
         self.extra.remove("ev_asked");
+        self.extra.remove("remote_asked");
         self.extra.remove("winmerge_path");
         self.extra.remove("space_preview");
         self.extra.remove("peek_wheel_nav");
@@ -661,6 +667,7 @@ impl SettingsFile {
         s.peek_image = self.peek.as_ref().and_then(|p| peek_pair(p.image));
         s.peek_doc = self.peek.as_ref().and_then(|p| peek_pair(p.doc));
         s.ev_asked = self.ev_asked;
+        s.remote_asked = self.remote_asked;
         s.winmerge_path = self.winmerge_path.trim().to_string();
         s.ctx_off = clean_ctx(&self.ctx_menu);
         s.ctx_labels = clean_labels(&self.ctx_labels);
@@ -1742,6 +1749,18 @@ mod tests {
         assert!(text.contains("\"ev_asked\": true"), "{text}");
         assert!(adopt(&text).unwrap().ev_asked);
         assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("ev_asked"));
+    }
+
+    #[test]
+    fn remote_tools_question_is_remembered() {
+        assert!(!Session::default().remote_asked);
+        let mut s = Session::default();
+        s.remote_asked = true;
+        assert!(Session::parse(&s.to_ini()).remote_asked);
+        let text = pretty(&SettingsFile::from_session(&s));
+        assert!(text.contains("\"remote_asked\": true"), "{text}");
+        assert!(adopt(&text).unwrap().remote_asked);
+        assert!(!pretty(&SettingsFile::from_session(&Session::default())).contains("remote_asked"));
     }
 
     #[test]

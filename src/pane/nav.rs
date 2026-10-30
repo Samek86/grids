@@ -135,6 +135,9 @@ pub(crate) fn pidl_browse_ok(pidl_null: bool, flags: u32) -> bool {
 /// UNC, or a mapped network drive. `GetDriveTypeW` is only asked about a drive root:
 /// calling it on `\\server\share` itself can sit on the redirector.
 pub(crate) unsafe fn share_path(path: &str) -> bool {
+    if crate::remote::path_on_live_mount(path) {
+        return true;
+    }
     if unc_path(path) {
         return true;
     }
@@ -1362,6 +1365,10 @@ pub(crate) unsafe fn addr_reset(i: usize, e: HWND) {
 pub(crate) unsafe fn go_edit(i: usize) {
     let Some(e) = pane_ctl(i, ID_EDIT) else { return };
     let raw = text_of(e);
+    if let Some(parsed) = crate::remote::parse_remote_url(raw.trim()) {
+        open_typed_remote(parsed);
+        return;
+    }
     let Some((path, cmd)) = addr_parts(raw.trim()) else {
         _ = MessageBeep(MB_ICONWARNING);
         return;
@@ -1401,6 +1408,10 @@ pub(crate) unsafe fn go_edit(i: usize) {
                 }
             }
             if share_path(&target) {
+                if let Some(link) = app(|a| crate::remote::server_for_unc(&a.s.tree, &target)) {
+                    launch_server(app(|a| a.main), link, Some(target));
+                    return;
+                }
                 // A bare `cmd` while this pane is on a share still runs if the name is not a file there.
                 let bare = is_rel(p) && !p.contains(['\\', '/']);
                 let run = cmd.filter(|_| bare).map(|(prog, args)| {

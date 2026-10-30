@@ -20,6 +20,7 @@ mod winmerge;
 mod folderapp;
 mod crash;
 mod winpath;
+mod remote;
 
 use imports::*;
 

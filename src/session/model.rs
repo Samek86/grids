@@ -267,6 +267,8 @@ pub(crate) struct Session {
     pub(crate) winmerge_path: String,
     /// The one-time "install Everything?" question was already shown. Never asked again.
     pub(crate) ev_asked: bool,
+    /// The one-time "install rclone and WinFsp?" question was already shown. Never asked again.
+    pub(crate) remote_asked: bool,
     pub(crate) cols: Vec<String>,      // per pane: columns and sort of its view (cols_text)
     pub(crate) tints: Vec<u8>,         // per pane: colour label, 0 = none, 1..=6 = selection colour preset
     /// Slot i shows what slot `order[i]` held when the session was last saved. Empty means as saved.
@@ -416,6 +418,7 @@ impl Default for Session {
             use_everything: true,
             winmerge_path: String::new(),
             ev_asked: false,
+            remote_asked: false,
             cols: vec![String::new(); MAXP],
             tints: vec![0; MAXP],
             order: Vec::new(),
@@ -495,6 +498,7 @@ impl PartialEq for Session {
             && self.use_everything == o.use_everything
             && self.winmerge_path == o.winmerge_path
             && self.ev_asked == o.ev_asked
+            && self.remote_asked == o.remote_asked
             && self.cols == o.cols
             && self.tints == o.tints
             && self.theme == o.theme
@@ -796,6 +800,7 @@ impl Session {
                 "everything" => s.use_everything = v.trim() != "0",
                 "winmerge" => s.winmerge_path = v.trim().to_string(),
                 "evasked" => s.ev_asked = v.trim() == "1",
+                "remoteasked" => s.remote_asked = v.trim() == "1",
                 "session" => s.file = v.trim().to_string(),
                 "tabs" => {
                     if let Some((tabs, active)) = tabs_from_json(v) {
@@ -896,7 +901,7 @@ impl Session {
             o += &format!("bootf={}\n", self.boot_file);
         }
         o += &format!("autosave={}\ndot={}\nupcheck={}\n", self.autosave as u8, self.dot as u8, self.update_check as u8);
-        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nspacepreview={}\npeekwheelnav={}\nfolderview={}\nfoldersize={}\nfoldersizenet={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.space_preview as u8, self.peek_wheel_nav as u8, self.remember_views as u8, self.folder_sizes as u8, self.folder_sizes_network as u8);
+        o += &format!("dblup={}\nhotkey={}\nlang={}\nsingle={}\nonewindow={}\neverything={}\nevasked={}\nremoteasked={}\nspacepreview={}\npeekwheelnav={}\nfolderview={}\nfoldersize={}\nfoldersizenet={}\n", self.dblup as u8, self.hotkey as u8, self.lang.ini(), self.single as u8, self.one_window as u8, self.use_everything as u8, self.ev_asked as u8, self.remote_asked as u8, self.space_preview as u8, self.peek_wheel_nav as u8, self.remember_views as u8, self.folder_sizes as u8, self.folder_sizes_network as u8);
         if !self.winmerge_path.trim().is_empty() {
             o += &format!("winmerge={}\n", self.winmerge_path.trim());
         }
