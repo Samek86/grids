@@ -663,15 +663,116 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
+/// `{n} second` / `{m} minutes {s} seconds`, then wrapped by AboutTimeLeft.
+fn remain_time(secs: u64) -> String {
+    let secs = secs.max(1);
+    let n = |k: u64| k.to_string();
+    if secs < 60 {
+        let key = if secs == 1 { Key::TimeSecond } else { Key::TimeSeconds };
+        return tf(key, &[("n", &n(secs))]);
+    }
+    let mins = secs / 60;
+    let rem = secs % 60;
+    if rem == 0 {
+        let key = if mins == 1 { Key::TimeMinute } else { Key::TimeMinutes };
+        return tf(key, &[("n", &n(mins))]);
+    }
+    let key = match (mins == 1, rem == 1) {
+        (true, true) => Key::TimeMinuteSecond,
+        (true, false) => Key::TimeMinuteSeconds,
+        (false, true) => Key::TimeMinutesSecond,
+        (false, false) => Key::TimeMinutesSeconds,
+    };
+    tf(key, &[("m", &n(mins)), ("s", &n(rem))])
+}
+
 fn eta_text(done: u64, total: u64, started: Instant) -> String {
     if done == 0 || total <= done {
         return String::new();
     }
     let elapsed = started.elapsed().as_millis().max(1);
     let remain = elapsed.saturating_mul((total - done) as u128) / done as u128;
-    let secs = (remain / 1000).max(1);
-    let time = if secs < 60 { format!("{secs}s") } else { format!("{}m", (secs + 59) / 60) };
-    tf(Key::AboutTimeLeft, &[("time", &time)])
+    let secs = u64::try_from(remain / 1000).unwrap_or(u64::MAX).max(1);
+    tf(Key::AboutTimeLeft, &[("time", &remain_time(secs))])
+}
+
+/// Groove plus a darker 1px edge. Both stay off the window ground so a 0% bar is still visible.
+fn track_colors(bg: u32, sub: u32) -> (u32, u32) {
+    (crate::blend(bg, sub, 0.35), crate::blend(bg, sub, 0.55))
+}
+
+/// Keep the head and tail of `text` and fold the middle into `…` until `measure` fits `width`.
+fn middle_ellipsis(text: &str, width: i32, measure: impl Fn(&str) -> i32) -> String {
+    if text.is_empty() || width <= 0 {
+        return String::new();
+    }
+    if measure(text) <= width {
+        return text.to_string();
+    }
+    if measure("…") > width {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut best = "…".to_string();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo <= hi {
+        let keep = (lo + hi) / 2;
+        let left_n = keep / 2;
+        let right_n = keep - left_n;
+        if left_n + right_n >= chars.len() {
+            if keep == 0 {
+                break;
+            }
+            hi = keep - 1;
+            continue;
+        }
+        let mut s = String::new();
+        s.extend(chars.iter().take(left_n));
+        s.push('…');
+        s.extend(chars.iter().skip(chars.len() - right_n));
+        if measure(&s) <= width {
+            best = s;
+            lo = keep + 1;
+        } else if keep == 0 {
+            break;
+        } else {
+            hi = keep - 1;
+        }
+    }
+    best
+}
+
+/// DIP layout. Cancel shares the ETA row, so the window ends one pad under that row.
+struct ProgGeom {
+    w: i32,
+    h: i32,
+    pad: i32,
+    title_y: i32,
+    stats_y: i32,
+    bar_y: i32,
+    file_y: i32,
+    row_y: i32,
+    line: i32,
+    bar_h: i32,
+    btn_w: i32,
+    btn_h: i32,
+}
+
+fn progress_geom(dpi: i32) -> ProgGeom {
+    let pad = sc(dpi, 16);
+    let gap = sc(dpi, 8);
+    let line = sc(dpi, 16);
+    let bar_h = sc(dpi, 8);
+    let btn_w = sc(dpi, 96);
+    let btn_h = sc(dpi, 32);
+    let title_y = pad;
+    let stats_y = title_y + line + gap;
+    let bar_y = stats_y + line + gap;
+    let file_y = bar_y + bar_h + gap;
+    let row_y = file_y + line + gap;
+    let h = row_y + btn_h + pad;
+    ProgGeom { w: sc(dpi, 480), h, pad, title_y, stats_y, bar_y, file_y, row_y, line, bar_h, btn_w, btn_h }
 }
 
 fn sc(dpi: i32, v: i32) -> i32 {
@@ -888,7 +989,8 @@ fn view(hwnd: HWND) -> Option<*mut View> {
 fn open_progress(owner: HWND, accent: u32, face: &str, mv: bool, cancel: Arc<AtomicBool>) -> HWND {
     ensure_class(w!("PanegridFastCopy"), Some(progress_proc));
     let dpi = dpi_of(owner);
-    let (w, h) = (sc(dpi, 480), sc(dpi, 184));
+    let geom = progress_geom(dpi);
+    let (w, h) = (geom.w, geom.h);
     let (x, y) = center_on(owner, w, h);
     let title = if mv { tr(Key::FastMove) } else { tr(Key::FastCopy) };
     let view = Box::new(View {
@@ -1159,33 +1261,34 @@ unsafe fn paint_progress(h: HWND) {
     let v = &mut *v;
     crate::buffered(h, |dc, rc| {
         let dpi = v.dpi;
+        let g = progress_geom(dpi);
         crate::fill(dc, rc, crate::pal().bg);
-        let pad = sc(dpi, 16);
-        let mut y = pad;
-        let title_r = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 16) };
+        let pad = g.pad;
+        let title_r = RECT { left: pad, top: g.title_y, right: rc.right - pad, bottom: g.title_y + g.line };
         crate::text(dc, title_r, &v.title, v.font, crate::pal().text, DT_LEFT);
-        y += sc(dpi, 16) + sc(dpi, 8);
-        let stats_r = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 16) };
+        let stats_r = RECT { left: pad, top: g.stats_y, right: rc.right - pad, bottom: g.stats_y + g.line };
         crate::text(dc, stats_r, &v.stats, v.small, crate::pal().sub, DT_LEFT);
-        y += sc(dpi, 16) + sc(dpi, 8);
-        let bar = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 8) };
-        crate::aa_rfill(dc, bar, sc(dpi, 4), crate::pal().pill, None, crate::pal().bg);
+        let bar = RECT { left: pad, top: g.bar_y, right: rc.right - pad, bottom: g.bar_y + g.bar_h };
+        let (track, edge) = track_colors(crate::pal().bg, crate::pal().sub);
+        crate::aa_rfill(dc, bar, sc(dpi, 4), track, Some(edge), crate::pal().bg);
         let span = (bar.right - bar.left).max(1);
         let fill_w = ((span as f32) * v.frac).round() as i32;
         if fill_w > 0 {
             let fill = RECT { right: (bar.left + fill_w.max(sc(dpi, 8))).min(bar.right), ..bar };
-            crate::aa_rfill(dc, fill, sc(dpi, 4), v.accent, None, crate::pal().pill);
+            crate::aa_rfill(dc, fill, sc(dpi, 4), v.accent, None, track);
         }
-        y += sc(dpi, 8) + sc(dpi, 8);
-        v.file_rect = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + sc(dpi, 16) };
-        let shown = file_name(&v.current);
-        crate::text(dc, v.file_rect, shown, v.small, crate::pal().text, DT_LEFT);
-        y += sc(dpi, 16) + sc(dpi, 8);
-        let eta_r = RECT { left: pad, top: y, right: rc.right - pad - sc(dpi, 96), bottom: y + sc(dpi, 16) };
+        v.file_rect = RECT { left: pad, top: g.file_y, right: rc.right - pad, bottom: g.file_y + g.line };
+        let avail = (v.file_rect.right - v.file_rect.left).saturating_sub(2).max(0);
+        let shown = middle_ellipsis(&v.current, avail, |s| unsafe { measure_dc(dc, v.small, s) });
+        crate::text(dc, v.file_rect, &shown, v.small, crate::pal().text, DT_LEFT);
+        v.cancel_rect = RECT {
+            left: rc.right - pad - g.btn_w,
+            top: g.row_y,
+            right: rc.right - pad,
+            bottom: g.row_y + g.btn_h,
+        };
+        let eta_r = RECT { left: pad, top: g.row_y, right: v.cancel_rect.left - sc(dpi, 8), bottom: g.row_y + g.btn_h };
         crate::text(dc, eta_r, &v.eta, v.small, crate::pal().sub, DT_LEFT);
-        let bw = sc(dpi, 96);
-        let bh = sc(dpi, 32);
-        v.cancel_rect = RECT { left: rc.right - pad - bw, top: rc.bottom - pad - bh, right: rc.right - pad, bottom: rc.bottom - pad };
         let fill = if v.down && v.hot { crate::blend(crate::pal().card, crate::pal().text, 0.08) } else if v.hot { crate::blend(crate::pal().card, v.accent, 0.12) } else { crate::pal().card };
         crate::aa_rfill(dc, v.cancel_rect, sc(dpi, 8), fill, Some(crate::pal().line), crate::pal().bg);
         crate::text(dc, v.cancel_rect, tr(Key::Cancel), v.small, crate::pal().text, DT_CENTER);
@@ -1462,13 +1565,21 @@ unsafe fn measure(owner: HWND, text: &str, font: HFONT) -> i32 {
     if dc.is_invalid() {
         return i32::MAX;
     }
+    let w = measure_dc(dc, font, text);
+    let _ = ReleaseDC(Some(owner), dc);
+    w
+}
+
+unsafe fn measure_dc(dc: HDC, font: HFONT, text: &str) -> i32 {
+    if text.is_empty() || dc.is_invalid() {
+        return 0;
+    }
     let mut r = RECT { left: 0, top: 0, right: 1, bottom: 1 };
     let mut w: Vec<u16> = text.encode_utf16().collect();
     let old = SelectObject(dc, font.into());
     DrawTextW(dc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, old);
-    let _ = ReleaseDC(Some(owner), dc);
-    r.right - r.left
+    (r.right - r.left).max(0)
 }
 
 #[cfg(test)]
@@ -1530,6 +1641,69 @@ mod tests {
         assert_eq!(copy_name("notes.txt", 2), "notes - Copy (2).txt");
         assert_eq!(copy_name("folder", 1), "folder - Copy");
         assert_eq!(copy_name("a.tar.gz", 1), "a.tar - Copy.gz");
+    }
+
+    #[test]
+    fn remain_time_uses_localized_units() {
+        assert_eq!(remain_time(1), "1 second");
+        assert_eq!(remain_time(2), "2 seconds");
+        assert_eq!(remain_time(60), "1 minute");
+        assert_eq!(remain_time(90), "1 minute 30 seconds");
+        assert_eq!(remain_time(61), "1 minute 1 second");
+        assert_eq!(remain_time(121), "2 minutes 1 second");
+        assert_eq!(remain_time(150), "2 minutes 30 seconds");
+        assert_eq!(tf(Key::AboutTimeLeft, &[("time", &remain_time(1))]), "About 1 second left");
+
+        crate::UI.store(1, Ordering::Relaxed);
+        assert_eq!(remain_time(1), "1초");
+        assert_eq!(remain_time(150), "2분 30초");
+        assert_eq!(tf(Key::AboutTimeLeft, &[("time", &remain_time(1))]), "약 1초 남음");
+
+        crate::UI.store(2, Ordering::Relaxed);
+        assert_eq!(remain_time(1), "1秒");
+        assert_eq!(remain_time(150), "2分30秒");
+        assert_eq!(tf(Key::AboutTimeLeft, &[("time", &remain_time(150))]), "残り約 2分30秒");
+        crate::UI.store(0, Ordering::Relaxed);
+
+        let fr = include_str!("../../lang/lang.fr.ini");
+        let de = include_str!("../../lang/lang.de.ini");
+        assert!(fr.contains("time_second = {n} seconde"));
+        assert!(fr.contains("time_seconds = {n} secondes"));
+        assert!(fr.contains("time_minutes_seconds = {m} minutes {s} secondes"));
+        assert!(de.contains("time_second = {n} Sekunde"));
+        assert!(de.contains("time_minutes_seconds = {m} Minuten {s} Sekunden"));
+    }
+
+    #[test]
+    fn middle_ellipsis_keeps_both_ends() {
+        let text = r"\\localhost\C$\WORK\pgtest\data\fastcopy\very-long-folder-name\file.txt";
+        let width = |s: &str| s.chars().count() as i32;
+        let out = middle_ellipsis(text, 24, width);
+        assert!(out.contains('…'), "{out}");
+        assert!(out.starts_with(r"\\local"), "{out}");
+        assert!(out.ends_with("file.txt"), "{out}");
+        assert!(width(&out) <= 24, "{out}");
+        assert_eq!(middle_ellipsis("short", 24, width), "short");
+        assert_eq!(middle_ellipsis("abc", 0, width), "");
+    }
+
+    #[test]
+    fn progress_window_packs_cancel_on_the_eta_row() {
+        let g = progress_geom(96);
+        assert_eq!((g.w, g.h), (480, 152));
+        assert!(g.h < 184);
+        assert_eq!(g.row_y + g.btn_h + g.pad, g.h);
+        assert_eq!(g.file_y + g.line + 8, g.row_y);
+        let (fill, edge) = track_colors(0xF3F1EC, 0x7C776F);
+        let dist = |a: u32, b: u32| {
+            let ch = |s: u32| (a >> s & 0xFF).abs_diff(b >> s & 0xFF) as u32;
+            ch(16) + ch(8) + ch(0)
+        };
+        assert!(dist(fill, 0xF3F1EC) > 60, "{fill:06X}");
+        assert_ne!(fill, edge);
+        let (dark, dark_edge) = track_colors(0x1C1D20, 0x9AA0A8);
+        assert!(dist(dark, 0x1C1D20) > 40, "{dark:06X}");
+        assert_ne!(dark, dark_edge);
     }
 
     #[test]
