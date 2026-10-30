@@ -130,21 +130,47 @@ pub(crate) fn keys_close(width: i32, dpi: i32) -> RECT {
     RECT { left: width - s(44), top: s(6), right: width - s(12), bottom: s(38) }
 }
 
+/// Shortcut list stays within this percent of the owner client, not the monitor.
+const KEYS_OWNER_PCT: i32 = 85;
+
+/// Popup size in px. `content_h(width)` is the header plus the list at that width.
+/// The 760-dip design width and the content height win when they sit under the cap.
+fn keys_fit_size(owner_w: i32, owner_h: i32, dpi: i32, content_h: impl FnOnce(i32) -> i32) -> (i32, i32) {
+    let px = |dip: i32| dip * dpi / 96;
+    let cap = |span: i32| span.max(0) * KEYS_OWNER_PCT / 100;
+    let w = px(760).min(cap(owner_w)).max(px(320));
+    let h = content_h(w).min(cap(owner_h)).max(px(200));
+    (w, h)
+}
+
+/// Top-left that centers `w`×`h` on `owner`. A real work rect then keeps it on that monitor.
+fn keys_fit_origin(owner: RECT, w: i32, h: i32, work: RECT) -> (i32, i32) {
+    let x = (owner.left + owner.right - w) / 2;
+    let y = (owner.top + owner.bottom - h) / 2;
+    if work.right <= work.left || work.bottom <= work.top {
+        return (x, y);
+    }
+    (x.clamp(work.left, (work.right - w).max(work.left)), y.clamp(work.top, (work.bottom - h).max(work.top)))
+}
+
 pub(crate) unsafe fn open_keys() {
     let (main, dpi, open) = app(|a| (a.main, a.dpi, a.keys_popup));
     if !open.0.is_null() {
         _ = SetFocus(Some(open));
         return;
     }
+    let mut client = RECT::default();
+    _ = GetClientRect(main, &mut client);
+    let mut tl = POINT { x: client.left, y: client.top };
+    let mut br = POINT { x: client.right, y: client.bottom };
+    _ = ClientToScreen(main, &mut tl);
+    _ = ClientToScreen(main, &mut br);
+    let mut frame = RECT::default();
+    _ = GetWindowRect(main, &mut frame);
+    let (w, h) = keys_fit_size(br.x - tl.x, br.y - tl.y, dpi, |w| keys_head(dpi) + keys_geo(w, dpi).h);
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-    _ = GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi);
-    let work = mi.rcWork;
-    let w = (760 * dpi / 96).min((work.right - work.left) * 9 / 10).max(320);
-    let h = (keys_head(dpi) + keys_geo(w, dpi).h).min((work.bottom - work.top) * 9 / 10).max(200);
-    let mut rc = RECT::default();
-    _ = GetWindowRect(main, &mut rc);
-    let x = ((rc.left + rc.right - w) / 2).clamp(work.left, (work.right - w).max(work.left));
-    let y = ((rc.top + rc.bottom - h) / 2).clamp(work.top, (work.bottom - h).max(work.top));
+    let work = if GetMonitorInfoW(MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() { mi.rcWork } else { RECT::default() };
+    let (x, y) = keys_fit_origin(frame, w, h, work);
     let prev = GetFocus();
     app(|a| (a.keys_prev, a.keys_scroll) = (prev, 0));
     let title = HSTRING::from(tr(crate::Key::KeyboardShortcuts2));
@@ -358,5 +384,25 @@ already running, they open here.\n"
                 assert!(prev <= g.h && g.titles[1].top > g.titles[0].bottom);
             }
         }
+    }
+
+    #[test]
+    fn shortcut_list_fits_owner_client() {
+        let pct = |v: i32| v * KEYS_OWNER_PCT / 100;
+        // Taller than the owner: height stops at the cap, so the body still scrolls.
+        let (w, h) = keys_fit_size(1200, 780, 96, |_| 1254);
+        assert_eq!((w, h), (760, pct(780)));
+        assert!(h < 1254);
+        // Content under the cap stays at content size. Width stays at the 760 dip design.
+        assert_eq!(keys_fit_size(2000, 1600, 96, |_| 400), (760, 400));
+        // A narrow owner pulls both sides down to the cap, above the floor.
+        assert_eq!(keys_fit_size(400, 300, 96, |_| 900), (pct(400), pct(300)));
+        // Floor is 320×200 dip, scaled with dpi.
+        assert_eq!(keys_fit_size(100, 80, 96, |_| 50), (320, 200));
+        assert_eq!(keys_fit_size(100, 80, 192, |_| 50), (640, 400));
+        let owner = RECT { left: 100, top: 80, right: 1300, bottom: 860 };
+        assert_eq!(keys_fit_origin(owner, 760, 663, RECT::default()), (320, 138));
+        let work = RECT { left: 0, top: 0, right: 800, bottom: 600 };
+        assert_eq!(keys_fit_origin(owner, 760, 663, work), (40, 0));
     }
 }
