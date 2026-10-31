@@ -62,10 +62,10 @@ fn is_half_split(v: &f64) -> bool {
     (v - 0.5).abs() < 1e-6
 }
 fn accent_light() -> String {
-    "2EC4A6".into()
+    "0A9BD6".into()
 }
 fn accent_dark() -> String {
-    "2EC4A6".into()
+    "0A9BD6".into()
 }
 fn theme_auto() -> String {
     "auto".into()
