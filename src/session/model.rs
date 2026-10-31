@@ -540,9 +540,18 @@ impl PartialEq for Session {
     }
 }
 
-/// Folder tree's share of the side plate. Out of range or NaN becomes an even split.
+/// Folder tree's share of the side plate. Clamps to [0, 1]; NaN becomes an even split.
+/// Layout uses this while dragging so a raw 0/1 still resolves through `side_min`.
 pub(crate) fn sane_split(v: f64) -> f64 {
     if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 }
+}
+
+/// Share read from a saved config or session file.
+/// A real splitter drag never persists exact 0 or 1 (each half keeps at least `side_min`),
+/// so those extremes — and any out-of-range value — mean "even split".
+pub(crate) fn persist_split(v: f64) -> f64 {
+    let v = sane_split(v);
+    if v <= 0.0 || v >= 1.0 { 0.5 } else { v }
 }
 
 /// Favourite entries are `path` or `path<tab>display name`. The path is what gets opened.
@@ -723,7 +732,7 @@ impl Session {
                 "win" => s.win = nums(v).try_into().ok(),
                 "side" => s.side = v.parse().unwrap_or(0),
                 "sidedpi" => s.side_dpi = v.parse().unwrap_or(0),
-                "split" => s.side_split = sane_split(v.parse().unwrap_or(0.5)),
+                "split" => s.side_split = persist_split(v.parse().unwrap_or(0.5)),
                 "cols" => {
                     let h: Vec<usize> = nums::<usize>(v).into_iter().take(4).map(|n| n.clamp(1, 4)).collect();
                     if !h.is_empty() {

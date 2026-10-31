@@ -162,7 +162,7 @@ pub(crate) fn session_from_window(v: &Value, base: &Session) -> Session {
         s.side_dpi = d as i32;
     }
     if let Some(split) = obj.get("side_split").and_then(|n| n.as_f64()) {
-        s.side_split = sane_split(split);
+        s.side_split = persist_split(split);
     }
     if let Some(file) = obj.get("session").and_then(|x| x.as_str()) {
         s.file = file.to_string();
