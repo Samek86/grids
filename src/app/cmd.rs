@@ -559,7 +559,7 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
         }
         "file.rename" => {
             focus_view(a);
-            crate::rename::open_active();
+            crate::rename::open_pane(a);
         }
         "file.new" => new_file(a),
         "file.dir" => new_folder(a),

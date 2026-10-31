@@ -149,7 +149,11 @@ fn hwnd() -> HWND {
 }
 
 pub(crate) unsafe fn open_active() {
-    let i = crate::active_pane();
+    open_pane(crate::active_pane());
+}
+
+/// Open batch rename for the selection in pane `i` (not whatever `active` happens to be).
+pub(crate) unsafe fn open_pane(i: usize) {
     open_items(collect_pane(i));
 }
 
@@ -2392,44 +2396,62 @@ fn issue_text(issue: Issue) -> &'static str {
 
 unsafe fn collect_pane(i: usize) -> Vec<BatchItem> {
     let Some(fv) = crate::view_of::<IFolderView2>(i) else { return Vec::new() };
-    // Prefer IFolderView2::GetSelection — same path as copy/paste. Walking every item with
-    // GetSelectionState often returns no hits after TranslateAccelerator select-all (Ctrl+A),
-    // so Ctrl+Shift+R only beeped and never opened MaguroRename (L1/P3).
-    let via_sel = collect_selection(&fv);
-    if !via_sel.is_empty() {
-        return via_sel;
+    // GetSelection only. Walking SVGIO_ALLVIEW with GetSelectionState can report every
+    // child of a shell namespace (This PC / user profile) as selected, so the preview
+    // listed 3D Objects / Downloads / OneDrive instead of the files the user highlighted (L3).
+    let mut out = collect_selection(&fv);
+    if out.is_empty() {
+        out = collect_selection_enum(&fv);
     }
-    // Fallback for namespace folders where GetSelection is empty but selection state is set.
-    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0).max(0);
-    if n == 0 || n > 50_000 {
-        return via_sel;
+    scope_to_folder(&fv, out)
+}
+
+unsafe fn scope_to_folder(fv: &IFolderView2, mut out: Vec<BatchItem>) -> Vec<BatchItem> {
+    let Some(folder) = fv
+        .GetFolder::<IShellItem>()
+        .ok()
+        .and_then(|it| it.GetDisplayName(SIGDN_FILESYSPATH).ok())
+        .map(|p| crate::pwstr(p))
+    else {
+        return out;
+    };
+    let folder = folder.trim_end_matches(['\\', '/']).to_string();
+    if !crate::is_fs(&folder) {
+        return out;
     }
-    let Ok(sf) = fv.GetFolder::<IShellFolder>() else { return via_sel };
+    out.retain(|it| engine::dir_key(&it.dir) == engine::dir_key(&folder));
+    out
+}
+
+unsafe fn collect_selection_enum(fv: &IFolderView2) -> Vec<BatchItem> {
+    let Ok(en) = fv.Items::<IEnumIDList>(SVGIO_SELECTION) else { return Vec::new() };
+    let Ok(sf) = fv.GetFolder::<IShellFolder>() else { return Vec::new() };
     let mut out = Vec::new();
-    for k in 0..n {
+    loop {
         if out.len() >= 10_000 {
             break;
         }
-        let Ok(pidl) = fv.Item(k) else { continue };
-        let selected = fv.GetSelectionState(pidl).unwrap_or(0) & SVSI_SELECT.0 as u32 != 0;
-        if !selected {
-            CoTaskMemFree(Some(pidl as _));
-            continue;
+        let mut slot = [std::ptr::null_mut()];
+        let mut n = 0u32;
+        let hr = en.Next(&mut slot, Some(&mut n));
+        if !hr.is_ok() || n == 0 || slot[0].is_null() {
+            break;
         }
+        let pidl = slot[0];
         let mut attr = SFGAO_FOLDER.0 | SFGAO_STREAM.0;
         let pidl_ref = pidl as *const ITEMIDLIST;
         let _ = sf.GetAttributesOf(&[pidl_ref], &mut attr);
         let is_dir = crate::real_folder(attr);
         let mut sr = STRRET::default();
         let mut name = PWSTR::null();
-        let path = if sf.GetDisplayNameOf(pidl_ref, SHGDNF(SHGDN_FORPARSING.0), &mut sr).is_ok() && StrRetToStrW(&mut sr, Some(pidl_ref), &mut name).is_ok() {
-            let p = crate::pwstr(name); // pwstr frees the buffer
-            p
+        let path = if sf.GetDisplayNameOf(pidl_ref, SHGDNF(SHGDN_FORPARSING.0), &mut sr).is_ok()
+            && StrRetToStrW(&mut sr, Some(pidl_ref), &mut name).is_ok()
+        {
+            crate::pwstr(name)
         } else {
             String::new()
         };
         CoTaskMemFree(Some(pidl as _));
-        // Skip shell special folders / non-fs parsing names that slipped through selection state.
         if let Some(it) = item_from_path(&path, is_dir) {
             out.push(it);
         }

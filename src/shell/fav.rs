@@ -840,7 +840,7 @@ unsafe fn popup_ctx(owner: HWND, cm: IContextMenu, paths: &[String], items: &[(S
     } else if cmd == ID_CTX_BATCH as i32 {
         // The pane's own menu can re-read the selection in view order. Search results pass their paths.
         if pane_selection {
-            crate::rename::open_active();
+            crate::rename::open_pane(pane);
         } else {
             crate::rename::open_paths(owner, items);
         }
