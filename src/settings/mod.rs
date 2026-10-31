@@ -293,6 +293,12 @@ fn page_match(q: &str, page: usize) -> bool {
     if page_cards(page).iter().any(|c| card_hit(c, q)) {
         return true;
     }
+    if page == 9 {
+        return has(tx(crate::Key::MitLicense2026Efww), q)
+            || has("Maguro", q)
+            || has(env!("CARGO_PKG_VERSION"), q)
+            || has("github.com/Samek86/maguro", q);
+    }
     if page == 4 {
         let rows = fav_tree_rows();
         return !crate::filter_fav_rows(&rows, q).is_empty() || has(tx(LIST_H), q);
@@ -530,7 +536,10 @@ fn right_box(card: RECT, w: i32, h: i32, pad: i32) -> RECT {
 fn card_h(spec: &Spec, dpi: i32) -> i32 {
     // 12px vertical padding, 14px label, optional 12px description.
     // The settings-file card adds a line for the live path.
-    if spec.ctl == Ctl::WmPath {
+    // About stacks version, description, license, and repo.
+    if spec.ctl == Ctl::About {
+        sc(dpi, 120)
+    } else if spec.ctl == Ctl::WmPath {
         sc(dpi, 120)
     } else if spec.ctl == Ctl::Adv || spec.ctl == Ctl::EvStatus || spec.ctl == Ctl::EvAct || spec.ctl == Ctl::WmStatus {
         sc(dpi, 84)
@@ -554,13 +563,24 @@ fn geo(rc: RECT, sn: &Snap) -> Geo {
     let mut show = [false; PAGE_N];
     let mut nav = [RECT::default(); PAGE_N];
     let mut y = search.bottom + sc(dpi, 8);
+    // Keep every visible nav row (including About) above the footer so the last
+    // sidebar item stays hittable when the window is short or DPI is high.
+    let n_show = (0..PAGE_N).filter(|&i| page_match(q, i)).count() as i32;
+    let avail = (footer.top - y).max(0);
+    let row_ideal = sc(dpi, 36);
+    let row_min = sc(dpi, 22);
+    let row_h = if n_show > 0 {
+        (avail / n_show).clamp(row_min, row_ideal)
+    } else {
+        row_ideal
+    };
     for i in 0..PAGE_N {
         show[i] = page_match(q, i);
         if !show[i] {
             continue;
         }
-        nav[i] = RECT { left: sc(dpi, 8), top: y, right: nav_w - sc(dpi, 8), bottom: y + sc(dpi, 36) };
-        y += sc(dpi, 36);
+        nav[i] = RECT { left: sc(dpi, 8), top: y, right: nav_w - sc(dpi, 8), bottom: y + row_h };
+        y += row_h;
     }
     // No page matches: leave the body empty so paint can show the miss message
     // instead of the retained page (Shortcuts would otherwise lay out an empty table).
@@ -1055,6 +1075,24 @@ mod tests {
         let prev = crate::UI.load(Ordering::Relaxed);
         crate::UI.store(v, Ordering::Relaxed);
         Lang(prev)
+    }
+
+    #[test]
+    fn about_nav_fits_above_footer_when_short() {
+        let sn = shot(9, "");
+        // Client shorter than 10*36 + search + footer — rows must compress.
+        let rc = RECT { left: 0, top: 0, right: 1000, bottom: 420 };
+        let g = geo(rc, &sn);
+        assert!(g.show[9], "About nav must stay visible");
+        assert!(
+            g.nav[9].bottom <= g.footer.top,
+            "About nav must sit above footer: {:?} vs footer {:?}",
+            g.nav[9],
+            g.footer
+        );
+        let cx = (g.nav[9].left + g.nav[9].right) / 2;
+        let cy = (g.nav[9].top + g.nav[9].bottom) / 2;
+        assert!(inside(g.nav[9], cx, cy));
     }
 
     #[test]
