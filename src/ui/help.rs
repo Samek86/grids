@@ -44,14 +44,16 @@ pub(crate) struct HelpLay {
     pub close: RECT,
     pub tabs: Vec<RECT>,
     pub tabs_bottom: i32,
+    /// True when labels do not fit one row: tabs sit in a left rail, body on the right.
+    pub side_tabs: bool,
     pub body: RECT,
     pub text_h: i32,
     pub extra_h: i32,
     pub content_h: i32,
 }
 
-/// Tabs stay on one row when labels fit; they wrap only on a very narrow window.
-/// The body sits 16 DIP under the last row. `extra_h` is the live shortcut list.
+/// Tabs stay on one row when labels fit. If they would wrap, use a left vertical list instead.
+/// extra_h is the live shortcut list under the body text.
 pub(crate) fn help_layout(client_w: i32, client_h: i32, dpi: i32, tab_text_w: &[i32], line_h: i32, text_h: i32, extra_h: i32) -> HelpLay {
     let dpi = dpi.max(1);
     let s = |v: i32| v * dpi / 96;
@@ -63,24 +65,37 @@ pub(crate) fn help_layout(client_w: i32, client_h: i32, dpi: i32, tab_text_w: &[
     let title = RECT { left: pad, top: 0, right: (close.left - gap).max(pad + 1), bottom: head };
     let tab_h = line_h.max(1) + 2 * tight;
     let limit = (cw - pad).max(pad + 1);
-    let mut x = pad;
-    let mut y = head + gap;
-    let mut tabs = Vec::with_capacity(tab_text_w.len());
-    // Tighter chip padding so ko/ja/en fit one row in the default Help width.
     let chip_pad = tight;
     let chip_gap = tight.max(s(2));
-    for w in tab_text_w {
+    let mut row_w = pad;
+    for (i, w) in tab_text_w.iter().enumerate() {
         let cell = (*w).max(0) + 2 * chip_pad;
-        if x > pad && x + cell > limit {
-            x = pad;
-            y += tab_h + gap;
+        if i > 0 {
+            row_w += chip_gap;
         }
-        tabs.push(RECT { left: x, top: y, right: x + cell, bottom: y + tab_h });
-        x += cell + chip_gap;
+        row_w += cell;
     }
-    let tabs_bottom = tabs.iter().map(|r| r.bottom).max().unwrap_or(head);
-    let body_top = tabs_bottom + s(HELP_PAD);
-    let body_left = pad;
+    let side_tabs = row_w > limit && !tab_text_w.is_empty();
+    let mut tabs = Vec::with_capacity(tab_text_w.len());
+    let (tabs_bottom, body_left, body_top) = if side_tabs {
+        let rail = tab_text_w.iter().copied().max().unwrap_or(0).max(0) + 2 * chip_pad + s(8);
+        let mut y = head + gap;
+        for _ in tab_text_w {
+            tabs.push(RECT { left: pad, top: y, right: pad + rail, bottom: y + tab_h });
+            y += tab_h + chip_gap;
+        }
+        (head, pad + rail + gap, head + gap)
+    } else {
+        let mut x = pad;
+        let y = head + gap;
+        for w in tab_text_w {
+            let cell = (*w).max(0) + 2 * chip_pad;
+            tabs.push(RECT { left: x, top: y, right: x + cell, bottom: y + tab_h });
+            x += cell + chip_gap;
+        }
+        let bottom = tabs.iter().map(|r| r.bottom).max().unwrap_or(head);
+        (bottom, pad, bottom + s(HELP_PAD))
+    };
     let body_right = (cw - pad - s(HELP_GAP)).max(body_left + 1);
     let body_bottom = (ch - pad).max(body_top);
     let text_h = text_h.max(0);
@@ -92,6 +107,7 @@ pub(crate) fn help_layout(client_w: i32, client_h: i32, dpi: i32, tab_text_w: &[
         close,
         tabs,
         tabs_bottom,
+        side_tabs,
         body: RECT { left: body_left, top: body_top, right: body_right, bottom: body_bottom },
         text_h,
         extra_h,
@@ -181,17 +197,28 @@ unsafe fn paint_help(h: HWND) {
         text(dc, lay.close, "\u{E711}", icon_font, pal().sub, DT_CENTER);
         fill(dc, RECT { top: lay.head - 1, bottom: lay.head, ..rc }, pal().line);
         let rad = s(HELP_TIGHT).max(1);
+        let tab_align = if lay.side_tabs { DT_LEFT } else { DT_CENTER };
         for (i, r) in lay.tabs.iter().enumerate() {
             let title = tr(HELP_TAB_ORDER[i]);
+            let label = if lay.side_tabs {
+                RECT { left: r.left + s(HELP_TIGHT) + s(4), right: r.right - s(HELP_TIGHT), ..*r }
+            } else {
+                *r
+            };
             if i == tab {
                 aa_rfill(dc, *r, rad, accent, None, pal().card);
-                text(dc, *r, title, font, on, DT_CENTER);
+                text(dc, label, title, font, on, tab_align);
             } else {
                 aa_rfill(dc, *r, rad, pal().pill, Some(pal().line), pal().card);
-                text(dc, *r, title, font, pal().text, DT_CENTER);
+                text(dc, label, title, font, pal().text, tab_align);
             }
         }
-        if lay.tabs_bottom > lay.head {
+        if lay.side_tabs {
+            if let Some(right) = lay.tabs.iter().map(|r| r.right).max() {
+                let x = right + s(HELP_GAP) / 2;
+                fill(dc, RECT { left: x, top: lay.head, right: x + 1, bottom: rc.bottom }, pal().line);
+            }
+        } else if lay.tabs_bottom > lay.head {
             fill(dc, RECT { top: lay.tabs_bottom, bottom: lay.tabs_bottom + 1, ..rc }, pal().line);
         }
         let saved = SaveDC(dc);
@@ -447,8 +474,12 @@ mod tests {
         assert_eq!(wide.content_h, 2000);
         assert!(help_scroll_max(wide.content_h, wide.body.bottom - wide.body.top) > 0);
         let narrow = help_layout(280, 900, 96, &widths, 16, 40, 200);
+        assert!(narrow.side_tabs, "narrow window uses a left tab list");
+        assert!(narrow.tabs.iter().all(|r| r.left == narrow.tabs[0].left));
         assert!(narrow.tabs.iter().map(|r| r.top).collect::<std::collections::BTreeSet<_>>().len() > 1);
+        assert!(narrow.body.left > HELP_PAD);
         assert_eq!(narrow.content_h, 40 + HELP_PAD + 200);
+        assert!(!wide.side_tabs);
         for dpi in [96, 144, 192] {
             let lay = help_layout(900 * dpi / 96, 700 * dpi / 96, dpi, &vec![80 * dpi / 96; HELP_TABS], 16 * dpi / 96, 100, 0);
             let pad = HELP_PAD * dpi / 96;
