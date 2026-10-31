@@ -957,9 +957,9 @@ pub(crate) unsafe fn hotkey_pressed() {
     }
 }
 
-/// F1 / Help. The in-app Help window replaces this. Until that lands, open the shortcut list.
+/// F1 / Help. Opens the in-app Help window. Ctrl+/ still opens the compact shortcut list.
 pub(crate) unsafe fn open_help() {
-    open_keys();
+    open_help_window();
 }
 
 pub(crate) unsafe fn about(owner: HWND) {
