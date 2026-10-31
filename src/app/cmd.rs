@@ -557,7 +557,10 @@ unsafe fn dispatch(id: &str, vk: u16, a: usize, list: bool, shell: impl Fn() -> 
             }
             copy_paths(a);
         }
-        "file.rename" => crate::rename::open_active(),
+        "file.rename" => {
+            focus_view(a);
+            crate::rename::open_active();
+        }
         "file.new" => new_file(a),
         "file.dir" => new_folder(a),
         "file.mkdir" if list => explorer_new_folder(a),

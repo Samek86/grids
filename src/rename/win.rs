@@ -2392,11 +2392,19 @@ fn issue_text(issue: Issue) -> &'static str {
 
 unsafe fn collect_pane(i: usize) -> Vec<BatchItem> {
     let Some(fv) = crate::view_of::<IFolderView2>(i) else { return Vec::new() };
-    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0).max(0);
-    if n > 50_000 {
-        return collect_selection(&fv);
+    // Prefer IFolderView2::GetSelection — same path as copy/paste. Walking every item with
+    // GetSelectionState often returns no hits after TranslateAccelerator select-all (Ctrl+A),
+    // so Ctrl+Shift+R only beeped and never opened MaguroRename (L1/P3).
+    let via_sel = collect_selection(&fv);
+    if !via_sel.is_empty() {
+        return via_sel;
     }
-    let Ok(sf) = fv.GetFolder::<IShellFolder>() else { return collect_selection(&fv) };
+    // Fallback for namespace folders where GetSelection is empty but selection state is set.
+    let n = fv.ItemCount(SVGIO_ALLVIEW).unwrap_or(0).max(0);
+    if n == 0 || n > 50_000 {
+        return via_sel;
+    }
+    let Ok(sf) = fv.GetFolder::<IShellFolder>() else { return via_sel };
     let mut out = Vec::new();
     for k in 0..n {
         if out.len() >= 10_000 {
@@ -2421,6 +2429,7 @@ unsafe fn collect_pane(i: usize) -> Vec<BatchItem> {
             String::new()
         };
         CoTaskMemFree(Some(pidl as _));
+        // Skip shell special folders / non-fs parsing names that slipped through selection state.
         if let Some(it) = item_from_path(&path, is_dir) {
             out.push(it);
         }
