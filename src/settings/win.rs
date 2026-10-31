@@ -714,12 +714,33 @@ unsafe fn draw_card(dc: HDC, c: &CardItem, sn: &Snap, accent: u32) {
         draw_field(dc, c.ctl, dpi, crate::pal().card);
         return;
     }
+    if c.spec.ctl == Ctl::About {
+        let copy = live_about();
+        let text_r = RECT {
+            left: c.rect.left + sc(dpi, 16),
+            top: c.rect.top + sc(dpi, 12),
+            right: c.rect.right - sc(dpi, 16),
+            bottom: c.rect.bottom - sc(dpi, 12),
+        };
+        let line = sc(dpi, 18);
+        let title_line = RECT { bottom: text_r.top + sc(dpi, 20), ..text_r };
+        crate::text(dc, title_line, &format!("{} v{}", copy.title, copy.version), sn.font, crate::pal().text, DT_LEFT);
+        let mut y = title_line.bottom;
+        for (s, color) in [
+            (copy.desc.as_str(), crate::pal().sub),
+            (copy.license.as_str(), crate::pal().sub),
+            (copy.repo.as_str(), crate::pal().sub),
+        ] {
+            let r = RECT { top: y, bottom: (y + line).min(text_r.bottom), ..text_r };
+            if r.bottom > r.top {
+                crate::text(dc, r, s, sn.small, color, DT_LEFT);
+            }
+            y = r.bottom;
+        }
+        return;
+    }
     let color = if c.spec.live { crate::pal().text } else { crate::pal().sub };
-    let title = if c.spec.ctl == Ctl::About {
-        format!("Maguro v{}", env!("CARGO_PKG_VERSION"))
-    } else {
-        tx(c.spec.title).to_string()
-    };
+    let title = tx(c.spec.title).to_string();
     let text_r = RECT { left: c.rect.left + sc(dpi, 16), top: c.rect.top + sc(dpi, 12), right: c.ctl.left.min(c.sw.first().map(|s| s.left).unwrap_or(i32::MAX)) - sc(dpi, 12), bottom: c.rect.bottom - sc(dpi, 12) };
     let title_line = if tx(c.spec.desc).is_empty() { text_r } else { RECT { bottom: text_r.top + sc(dpi, 20), ..text_r } };
     crate::text(dc, title_line, &title, sn.font, color, DT_LEFT);
