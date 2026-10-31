@@ -192,7 +192,6 @@ unsafe fn build_children(h: HWND) {
     btn(S_RESET, tx(crate::Key::ResetAllDefaults), true);
     btn(S_SESS, tx(crate::Key::OpenFolder), true);
     btn(S_ACCENT, tx(crate::Key::Custom2), true);
-    btn(S_GITHUB, tx(crate::Key::OpenGithub), true);
     btn(S_ADV_OPEN, tx(crate::Key::OpenFolder), true);
     btn(S_ADV_EX, tx(crate::Key::Export), true);
     btn(S_ADV_IM, tx(crate::Key::Import), true);
@@ -208,7 +207,7 @@ unsafe fn build_children(h: HWND) {
 }
 
 fn each_child(h: HWND, mut f: impl FnMut(HWND)) {
-    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE];
+    let ids = [S_SEARCH, S_CLOSE, S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE];
     for id in ids {
         let c = unsafe { GetDlgItem(Some(h), id).unwrap_or_default() };
         if !c.0.is_null() {
@@ -262,7 +261,6 @@ unsafe fn fill_strings(h: HWND) {
         (S_RESET, tx(crate::Key::ResetAllDefaults)),
         (S_SESS, tx(crate::Key::OpenFolder)),
         (S_ACCENT, tx(crate::Key::Custom2)),
-        (S_GITHUB, tx(crate::Key::OpenGithub)),
         (S_ADV_OPEN, tx(crate::Key::OpenFolder)),
         (S_ADV_EX, tx(crate::Key::Export)),
         (S_ADV_IM, tx(crate::Key::Import)),
@@ -393,7 +391,7 @@ unsafe fn place(h: HWND, g: &Geo, sn: &Snap) {
             let _ = ShowWindow(c, SW_HIDE);
         }
     };
-    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_GITHUB, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE] {
+    for id in [S_KEYQ, S_RESET, S_LANG, S_FACE, S_START, S_THEME, S_VIEW, S_DIR, S_DEL, S_NEW, S_DROP, S_LAYOUT, S_SIDE, S_SESS, S_ACCENT, S_ADV_OPEN, S_ADV_EX, S_ADV_IM, S_ADV_RESET, S_EV, S_FV_DEF, S_FV_RESET, S_FV_CLEAR, S_CTX_RESET, S_CTX_REFRESH, S_WM, S_WM_BROWSE] {
         hide(id);
     }
     let n = fav_tree_rows().len().min(FAV_MAX as usize) as i32;
@@ -1300,9 +1298,6 @@ unsafe fn on_command(h: HWND, id: i32, code: u32) {
             crate::save_session();
             redraw();
         }
-        S_GITHUB => {
-            ShellExecuteW(Some(h), w!("open"), &HSTRING::from(crate::HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
-        }
         S_ADV_OPEN => {
             let d = crate::store::config_dir();
             let _ = std::fs::create_dir_all(&d);
@@ -1982,6 +1977,268 @@ fn settings_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
 thread_local! {
     static ASK_EDIT: Cell<HWND> = Cell::new(HWND(std::ptr::null_mut()));
     static ASK_OUT: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+    static ABOUT_DONE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct AboutCopy {
+    pub title: String,
+    pub version: String,
+    pub desc: String,
+    pub license: String,
+}
+
+/// Body of the About window: product name, version, one-line description, license. No address.
+pub(crate) fn about_copy(version: &str, desc: &str, license: &str) -> AboutCopy {
+    AboutCopy { title: "Maguro".into(), version: version.into(), desc: desc.into(), license: license.into() }
+}
+
+pub(crate) fn about_body(c: &AboutCopy) -> String {
+    format!("{}\n{}\n{}\n{}", c.title, c.version, c.desc, c.license)
+}
+
+/// Group 1 is the light-background icon. Group 2 is the dark-background icon.
+pub(crate) fn about_icon_group(dark: bool) -> usize {
+    if dark { 2 } else { 1 }
+}
+
+pub(crate) struct AboutLay {
+    pub icon: RECT,
+    pub title: RECT,
+    pub version: RECT,
+    pub desc: RECT,
+    pub license: RECT,
+    pub ok: RECT,
+}
+
+const ABOUT_W_DIP: i32 = 440;
+const ABOUT_ICON_DIP: i32 = 48;
+const ABOUT_BTN_W_DIP: i32 = 88;
+const ABOUT_BTN_H_DIP: i32 = 28;
+
+/// Client height for the stacked About body. `desc_h` and `lic_h` are already in pixels.
+pub(crate) fn about_client_h(dpi: i32, desc_h: i32, lic_h: i32) -> i32 {
+    let dpi = dpi.max(96);
+    let m = sc(dpi, 16);
+    sc(dpi, ABOUT_ICON_DIP) + desc_h + lic_h + sc(dpi, ABOUT_BTN_H_DIP) + m * 2 + sc(dpi, 16) + sc(dpi, 8) + sc(dpi, 16)
+}
+
+pub(crate) fn about_lay(client_w: i32, client_h: i32, dpi: i32, desc_h: i32, lic_h: i32) -> AboutLay {
+    let dpi = dpi.max(96);
+    let s = |v: i32| sc(dpi, v);
+    let m = s(16);
+    let cw = client_w.max(1);
+    let ch = client_h.max(1);
+    let icon_s = s(ABOUT_ICON_DIP);
+    let icon = RECT { left: m, top: m, right: m + icon_s, bottom: m + icon_s };
+    let text_l = icon.right + s(12);
+    let text_r = (cw - m).max(text_l + 1);
+    let title_h = s(22);
+    let ver_h = s(18);
+    let title = RECT { left: text_l, top: m, right: text_r, bottom: m + title_h };
+    let version = RECT { left: text_l, top: title.bottom + s(4), right: text_r, bottom: title.bottom + s(4) + ver_h };
+    let desc_top = icon.bottom + s(16);
+    let desc = RECT { left: m, top: desc_top, right: text_r, bottom: desc_top + desc_h.max(1) };
+    let lic_top = desc.bottom + s(8);
+    let license = RECT { left: m, top: lic_top, right: text_r, bottom: lic_top + lic_h.max(1) };
+    let btn_h = s(ABOUT_BTN_H_DIP);
+    let btn_w = s(ABOUT_BTN_W_DIP).min((cw - 2 * m).max(1));
+    let ok_top = license.bottom + s(16);
+    let ok = RECT { left: (cw - m - btn_w).max(0), top: ok_top, right: (cw - m).max(1), bottom: ok_top + btn_h };
+    let _ = ch;
+    AboutLay { icon, title, version, desc, license, ok }
+}
+
+fn live_about() -> AboutCopy {
+    about_copy(
+        env!("CARGO_PKG_VERSION"),
+        tx(crate::Key::FastMultiPaneFileManagerForWindows),
+        tx(crate::Key::MitLicense2026Efww),
+    )
+}
+
+unsafe fn about_line_h(text: &str, width: i32, font: HFONT, dpi: i32) -> i32 {
+    let min = sc(dpi.max(96), 18);
+    if text.is_empty() || font.is_invalid() || width < 1 {
+        return min;
+    }
+    let dc = GetDC(None);
+    if dc.is_invalid() {
+        return min;
+    }
+    let (_, h) = crate::wrap_text(dc, RECT { right: width, ..Default::default() }, text, font, 0, true);
+    let _ = ReleaseDC(None, dc);
+    h.max(min)
+}
+
+unsafe fn about_metrics(cw: i32, ch: i32, dpi: i32) -> AboutLay {
+    let dpi = dpi.max(96);
+    let font = ask_font();
+    let inner = (cw - 2 * sc(dpi, 16)).max(1);
+    let copy = live_about();
+    let desc_h = about_line_h(&copy.desc, inner, font, dpi);
+    let lic_h = about_line_h(&copy.license, inner, font, dpi);
+    about_lay(cw, ch, dpi, desc_h, lic_h)
+}
+
+unsafe fn paint_about(h: HWND) {
+    let dpi = GetDpiForWindow(h).max(96) as i32;
+    let copy = live_about();
+    crate::buffered(h, |dc, rc| {
+        let cw = rc.right - rc.left;
+        let ch = rc.bottom - rc.top;
+        crate::fill(dc, rc, crate::pal().card);
+        let lay = about_metrics(cw, ch, dpi);
+        let font = ask_font();
+        let small = app(|a| a.small_font);
+        let small = if small.is_invalid() { font } else { small };
+        let bold = crate::bold_ui_font();
+        let bold = if bold.is_invalid() { font } else { bold };
+        if let Ok(module) = GetModuleHandleW(None) {
+            let hinst: HINSTANCE = module.into();
+            let id = about_icon_group(crate::DARK_ON.load(Ordering::Relaxed));
+            if let Ok(icon) = LoadIconW(Some(hinst), PCWSTR(id as _)) {
+                let _ = DrawIconEx(dc, lay.icon.left, lay.icon.top, icon, lay.icon.right - lay.icon.left, lay.icon.bottom - lay.icon.top, 0, None, DI_NORMAL);
+            }
+        }
+        crate::text(dc, lay.title, &copy.title, bold, crate::pal().text, DT_LEFT);
+        crate::text(dc, lay.version, &copy.version, small, crate::pal().sub, DT_LEFT);
+        crate::wrap_text(dc, lay.desc, &copy.desc, font, crate::pal().text, false);
+        crate::wrap_text(dc, lay.license, &copy.license, small, crate::pal().sub, false);
+    });
+}
+
+unsafe fn layout_about(h: HWND) {
+    let dpi = GetDpiForWindow(h).max(96) as i32;
+    let mut rc = RECT::default();
+    let _ = GetClientRect(h, &mut rc);
+    let lay = about_metrics(rc.right - rc.left, rc.bottom - rc.top, dpi);
+    move_to(ctl(h, 1), lay.ok, true);
+    let _ = InvalidateRect(Some(h), None, false);
+}
+
+unsafe extern "system" fn about_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    crate::crash::catch_wnd(std::panic::AssertUnwindSafe(|| unsafe { about_proc_inner(h, msg, wp, lp) }))
+}
+
+unsafe fn about_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            paint_about(h);
+            return LRESULT(0);
+        }
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_DRAWITEM => {
+            draw_btn(&*(lp.0 as *const DRAWITEMSTRUCT));
+            return LRESULT(1);
+        }
+        WM_COMMAND => {
+            let id = (wp.0 & 0xffff) as i32;
+            if id == 1 {
+                let _ = DestroyWindow(h);
+                return LRESULT(0);
+            }
+        }
+        WM_CLOSE => {
+            let _ = DestroyWindow(h);
+            return LRESULT(0);
+        }
+        WM_DESTROY => {
+            ABOUT_DONE.with(|d| d.set(true));
+            return LRESULT(0);
+        }
+        WM_DPICHANGED => {
+            let r = &*(lp.0 as *const RECT);
+            let _ = SetWindowPos(h, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            let font = ask_font();
+            if !font.is_invalid() {
+                SendMessageW(ctl(h, 1), WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+            }
+            layout_about(h);
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    DefWindowProcW(h, msg, wp, lp)
+}
+
+fn ensure_about_class() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let Ok(m) = GetModuleHandleW(None) else { return };
+        let hinst: HINSTANCE = m.into();
+        let _ = RegisterClassW(&WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(about_proc),
+            hInstance: hinst,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            hIcon: LoadIconW(Some(hinst), PCWSTR(1 as _)).unwrap_or_default(),
+            lpszClassName: w!("MaguroAbout"),
+            ..Default::default()
+        });
+    });
+}
+
+/// About Maguro. One OK button. The body is the name, version, description, and license.
+pub(crate) unsafe fn show_about(owner: HWND) {
+    ensure_about_class();
+    ABOUT_DONE.with(|d| d.set(false));
+    let dpi = GetDpiForWindow(owner).max(96) as i32;
+    let client_w = sc(dpi, ABOUT_W_DIP);
+    let font = ask_font();
+    let copy = live_about();
+    let inner = (client_w - 2 * sc(dpi, 16)).max(1);
+    let desc_h = about_line_h(&copy.desc, inner, font, dpi);
+    let lic_h = about_line_h(&copy.license, inner, font, dpi);
+    let client_h = about_client_h(dpi, desc_h, lic_h);
+    let mut r = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
+    let (ww, hh) = if AdjustWindowRectExForDpi(&mut r, ask_style(), false, WS_EX_DLGMODALFRAME, dpi as u32).is_ok() {
+        ((r.right - r.left).max(client_w), (r.bottom - r.top).max(client_h))
+    } else {
+        (client_w, client_h + sc(dpi, 48))
+    };
+    let mut orc = RECT::default();
+    let _ = GetWindowRect(owner, &mut orc);
+    let x = orc.left + (orc.right - orc.left - ww) / 2;
+    let y = orc.top + (orc.bottom - orc.top - hh) / 2;
+    let title = HSTRING::from(tx(crate::Key::AboutMaguro));
+    let h = CreateWindowExW(WS_EX_DLGMODALFRAME, w!("MaguroAbout"), &title, ask_style(), x, y, ww, hh, Some(owner), None, None, None).unwrap_or_default();
+    if h.0.is_null() {
+        return;
+    }
+    style_window(h);
+    let _ = child_at(h, w!("BUTTON"), tx(crate::Key::Ok), 0xB | 0x00010000, 1, font);
+    layout_about(h);
+    let _ = ShowWindow(h, SW_SHOW);
+    crate::keys::set_modal(true);
+    let _ = EnableWindow(owner, false);
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(ctl(h, 1)));
+    let mut msg = MSG::default();
+    while !ABOUT_DONE.with(|d| d.get()) {
+        if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            ABOUT_DONE.with(|d| d.set(true));
+            PostQuitMessage(0);
+            break;
+        }
+        let mine = msg.hwnd == h || IsChild(h, msg.hwnd).as_bool();
+        if msg.message == WM_MOUSEMOVE {
+            crate::set_hover(if crate::is_icon_button(msg.hwnd) { msg.hwnd } else { HWND::default() });
+        } else if msg.message == WM_MOUSELEAVE && app(|a| a.hover) == msg.hwnd {
+            crate::set_hover(HWND::default());
+        }
+        if msg.message == WM_KEYDOWN && mine {
+            let vk = msg.wParam.0 as u16;
+            if vk == VK_RETURN.0 || vk == VK_ESCAPE.0 {
+                let _ = SendMessageW(h, WM_COMMAND, Some(WPARAM(1)), Some(LPARAM(0)));
+                continue;
+            }
+        }
+        let _ = TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    crate::set_hover(HWND::default());
+    crate::keys::set_modal(false);
+    let _ = EnableWindow(owner, true);
+    let _ = SetForegroundWindow(owner);
 }
 
 unsafe extern "system" fn ask_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -2206,6 +2463,54 @@ pub(crate) unsafe fn ask(owner: HWND, title: &str, initial: &str) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_body_is_name_version_description_and_license() {
+        let copy = about_copy("0.1.77", "Fast multi-pane file manager for Windows", "MIT License · © 2026 efww");
+        let body = about_body(&copy);
+        assert_eq!(copy.title, "Maguro");
+        assert!(body.starts_with("Maguro\n0.1.77\n"));
+        assert!(body.contains("Fast multi-pane file manager for Windows"));
+        assert!(body.contains("MIT License · © 2026 efww"));
+        let low = body.to_ascii_lowercase();
+        assert!(!low.contains("github"));
+        assert!(!body.contains("http"));
+        assert!(!low.contains("samek86"));
+        assert!(!body.contains("efww/grids"));
+        assert!(!body.contains('?'));
+        assert_eq!(about_icon_group(false), 1);
+        assert_eq!(about_icon_group(true), 2);
+    }
+
+    #[test]
+    fn about_layout_stacks_the_ok_button_under_the_text() {
+        for dpi in [96, 144, 192] {
+            let cw = sc(dpi, ABOUT_W_DIP);
+            let desc_h = sc(dpi, 20);
+            let lic_h = sc(dpi, 18);
+            let ch = about_client_h(dpi, desc_h, lic_h);
+            let lay = about_lay(cw, ch, dpi, desc_h, lic_h);
+            let m = sc(dpi, 16);
+            assert_eq!(lay.icon.left, m);
+            assert_eq!(lay.icon.top, m);
+            assert_eq!(lay.icon.right - lay.icon.left, sc(dpi, ABOUT_ICON_DIP));
+            assert_eq!(lay.icon.bottom - lay.icon.top, sc(dpi, ABOUT_ICON_DIP));
+            assert!(lay.title.left >= lay.icon.right);
+            assert_eq!(lay.title.top, lay.icon.top);
+            assert!(lay.version.top >= lay.title.bottom);
+            assert!(lay.version.bottom <= lay.icon.bottom);
+            assert_eq!(lay.desc.top, lay.icon.bottom + m);
+            assert_eq!(lay.desc.bottom - lay.desc.top, desc_h);
+            assert_eq!(lay.license.top, lay.desc.bottom + sc(dpi, 8));
+            assert_eq!(lay.ok.top, lay.license.bottom + m);
+            assert_eq!(lay.ok.right, cw - m);
+            assert_eq!(ch - lay.ok.bottom, m);
+            assert_eq!(lay.ok.bottom - lay.ok.top, sc(dpi, ABOUT_BTN_H_DIP));
+            assert_eq!(lay.ok.right - lay.ok.left, sc(dpi, ABOUT_BTN_W_DIP));
+            assert!(lay.desc.left == m && lay.license.left == m);
+            assert!(lay.ok.top >= lay.license.bottom);
+        }
+    }
     
 
     fn span(line: &[i32], gap: i32) -> i32 {

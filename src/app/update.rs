@@ -440,13 +440,14 @@ pub(crate) unsafe fn on_update(h: HWND, stage: usize) {
     }
 }
 
+/// Zip-only notice. Versions only: no address and no site name.
+pub(crate) fn zip_notice(tag: &str, current: &str) -> String {
+    tr(crate::Key::MaguroNewIsAvailableYouHaveCur2).replace("{new}", tag).replace("{cur}", current)
+}
+
 /// A newer release published only a zip. Tell the user; do not download or extract it.
 unsafe fn zip_only(h: HWND, tag: &str) {
-    let url = format!("{HOME}/releases/latest");
-    let text = tr(crate::Key::MaguroNewIsAvailableYouHaveCur2)
-    .replace("{new}", tag)
-    .replace("{cur}", &format!("v{APP_VERSION}"))
-    .replace("{url}", &url);
+    let text = zip_notice(tag, &format!("v{APP_VERSION}"));
     let title = tr(crate::Key::MaguroUpdate);
     MessageBoxW(Some(h), &HSTRING::from(text), &HSTRING::from(title), MB_OK | MB_ICONINFORMATION);
 }
@@ -545,6 +546,18 @@ mod tests {
         assert_eq!(args, vec![r"C:\Work".to_string()]);
         assert!(!take_keep_tabs(&mut args));
         assert_eq!(args, vec![r"C:\Work".to_string()]);
+    }
+
+    #[test]
+    fn zip_notice_has_versions_and_no_address() {
+        let text = zip_notice("v0.2.0", "v0.1.77");
+        assert!(text.contains("v0.2.0"), "{text}");
+        assert!(text.contains("v0.1.77"), "{text}");
+        let low = text.to_ascii_lowercase();
+        assert!(!low.contains("github"), "{text}");
+        assert!(!text.contains("http"), "{text}");
+        assert!(!text.contains("{url}"), "{text}");
+        assert!(!text.contains('{'), "{text}");
     }
 
     #[test]

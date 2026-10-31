@@ -957,39 +957,13 @@ pub(crate) unsafe fn hotkey_pressed() {
     }
 }
 
-// The README on GitHub, in the UI language.
+/// F1 / Help. The in-app Help window replaces this. Until that lands, open the shortcut list.
 pub(crate) unsafe fn open_help() {
-    let url = format!("{HOME}/blob/main/{}", tr(crate::Key::ReadmeMd));
-    ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    open_keys();
 }
 
 pub(crate) unsafe fn about(owner: HWND) {
-    let text = format!(
-        "Maguro {}\n{}\n\n{}\n{}\n{HOME}\n\n{}",
-        env!("CARGO_PKG_VERSION"),
-        tr(crate::Key::FastMultiPaneFileManagerForWindows),
-        tr(crate::Key::MaguroIsForkOfEfwwGridsBy),
-        tr(crate::Key::MitLicense2026Efww),
-        tr(crate::Key::OpenProjectPage),
-    );
-    let body = HSTRING::from(text);
-    let title = HSTRING::from(tr(crate::Key::AboutMaguro));
-    // Group 1 is the light-bg icon (also the exe). Group 2 is the dark-bg icon.
-    let icon_id = if crate::DARK_ON.load(Ordering::Relaxed) { 2usize } else { 1 };
-    let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
-    let params = MSGBOXPARAMSW {
-        cbSize: std::mem::size_of::<MSGBOXPARAMSW>() as u32,
-        hwndOwner: owner,
-        hInstance: hinst,
-        lpszText: PCWSTR(body.as_ptr()),
-        lpszCaption: PCWSTR(title.as_ptr()),
-        dwStyle: MB_YESNO | MB_USERICON,
-        lpszIcon: PCWSTR(icon_id as _),
-        ..Default::default()
-    };
-    if MessageBoxIndirectW(&params) == IDYES {
-        ShellExecuteW(None, w!("open"), &HSTRING::from(HOME), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
-    }
+    crate::settings::show_about(owner);
 }
 
 // Tab-row buttons: id, accessible name, tooltip.
