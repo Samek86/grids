@@ -676,4 +676,40 @@ mod tests {
         assert_eq!(tr(Key::FollowWindows), "Windows の設定に従う");
         UI.store(prev, Ordering::Relaxed);
     }
+
+    #[test]
+    fn update_and_help_copy_names_no_site() {
+        let ids = [
+            "asks_github_for_newer_maguro_release_and",
+            "maguro_new_is_available_you_have_cur",
+            "maguro_new_is_available_you_have_cur_2",
+            "maguro_new_is_available_you_have_cur_3",
+            "help_online_f1",
+            "fast_multi_pane_file_manager_for_windows",
+            "mit_license_2026_efww",
+        ];
+        let clean = |s: &str| {
+            let l = s.to_ascii_lowercase();
+            !l.contains("github") && !l.contains("http://") && !l.contains("https://") && !s.contains("{url}")
+        };
+        for id in ids {
+            let i = KEY_ID.iter().position(|k| *k == id).unwrap();
+            assert!(clean(EN[i]), "en {id}: {}", EN[i]);
+            for (code, text) in [("ko", KO_INI), ("ja", JA_INI), ("fr", FR_INI), ("de", DE_INI)] {
+                let (_, map) = parse_ini(text);
+                let v = &map[id];
+                assert!(clean(v), "{code} {id}: {v}");
+            }
+        }
+        let help_i = KEY_ID.iter().position(|k| *k == "help_online_f1").unwrap();
+        assert!(EN[help_i].contains("F1"));
+        assert!(!EN[help_i].to_ascii_lowercase().contains("online"), "{}", EN[help_i]);
+        for (code, text) in [("ko", KO_INI), ("ja", JA_INI), ("fr", FR_INI), ("de", DE_INI)] {
+            let (_, map) = parse_ini(text);
+            let v = &map["help_online_f1"];
+            let l = v.to_ascii_lowercase();
+            assert!(v.contains("F1"), "{code}");
+            assert!(!l.contains("online") && !v.contains("オンライン") && !v.contains("온라인") && !l.contains("en ligne"), "{code} {v}");
+        }
+    }
 }

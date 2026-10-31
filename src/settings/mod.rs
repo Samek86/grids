@@ -21,7 +21,6 @@ const S_NEW: i32 = 17;
 const S_DROP: i32 = 18;
 const S_SESS: i32 = 20;
 const S_ACCENT: i32 = 21;
-const S_GITHUB: i32 = 22;
 const S_ADV_OPEN: i32 = 23;
 const S_ADV_EX: i32 = 24;
 const S_ADV_IM: i32 = 25;
@@ -256,7 +255,7 @@ const SIDE_FAV: crate::Key = crate::Key::FavouritesOnTop;
 const SIDE_TREE: crate::Key = crate::Key::FolderTreeOnTop;
 const ABOUT: &[Spec] = &[Spec {
     title: crate::Key::Maguro,
-    desc: crate::Key::MaguroIsForkOfEfwwGridsBy2,
+    desc: crate::Key::FastMultiPaneFileManagerForWindows,
     live: true,
     ctl: Ctl::About,
 }];
@@ -855,7 +854,7 @@ fn card_item(rect: RECT, spec: Spec, dpi: i32) -> CardItem {
             right_box(rect, sc(dpi, 230), sc(dpi, 32), pad)
         }
         Ctl::Sess => right_box(rect, sc(dpi, 108), sc(dpi, 32), pad),
-        Ctl::About => right_box(rect, sc(dpi, 120), sc(dpi, 32), pad),
+        Ctl::About => RECT { left: rect.right - pad, top: rect.top, right: rect.right - pad, bottom: rect.top },
         Ctl::Accent => {
             let btn = right_box(rect, sc(dpi, 108), sc(dpi, 32), pad);
             let mut x = btn.left - sc(dpi, 10) - sc(dpi, 22);
@@ -1024,7 +1023,7 @@ fn ctl_id(c: Ctl) -> Option<i32> {
         Ctl::Layout => S_LAYOUT,
         Ctl::SideOrder => S_SIDE,
         Ctl::Sess => S_SESS,
-        Ctl::About => S_GITHUB,
+        Ctl::About => return None,
         Ctl::Accent => S_ACCENT,
         _ => return None,
     })
@@ -1056,6 +1055,19 @@ mod tests {
         let prev = crate::UI.load(Ordering::Relaxed);
         crate::UI.store(v, Ordering::Relaxed);
         Lang(prev)
+    }
+
+    #[test]
+    fn about_card_has_no_link_button() {
+        assert_eq!(ctl_id(Ctl::About), None);
+        assert_eq!(ABOUT[0].title, crate::Key::Maguro);
+        assert_eq!(ABOUT[0].desc, crate::Key::FastMultiPaneFileManagerForWindows);
+        let desc = tx(ABOUT[0].desc);
+        let low = desc.to_ascii_lowercase();
+        assert!(!low.contains("github"), "{desc}");
+        assert!(!desc.contains("http"), "{desc}");
+        assert!(!low.contains("samek86"), "{desc}");
+        assert!(!desc.contains("efww/grids"), "{desc}");
     }
 
     fn shot(page: usize, query: &str) -> Snap {

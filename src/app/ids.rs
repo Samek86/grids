@@ -41,7 +41,6 @@ pub(crate) const WM_THEME_SCROLL: u32 = WM_APP + 64; // scroll and select-all, a
 pub(crate) const WM_THEME_RELAUNCH: u32 = WM_APP + 65; // DirectUIHWND birth theme: save+relaunch after theme flip
 pub(crate) const ID_HELP: usize = 1105;
 pub(crate) const ID_ABOUT: usize = 1106;
-pub(crate) const HOME: &str = "https://github.com/Samek86/maguro";
 pub(crate) const ID_ACCENT: usize = 1400; // + preset index
 pub(crate) const ID_ACCENT_PICK: usize = 1410;
 pub(crate) const EM_SETSEL: u32 = 0xB1;

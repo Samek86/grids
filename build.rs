@@ -147,7 +147,7 @@ fn version_info() -> Vec<u8> {
         version_string("OriginalFilename", "maguro.exe"),
         version_string("FileVersion", ver_text),
         version_string("ProductVersion", ver_text),
-        version_string("Comments", "https://github.com/Samek86/maguro"),
+        version_string("Comments", "Fast multi-pane file manager for Windows"),
         version_string("LegalCopyright", "Copyright (c) 2026 Samek86. Based on efww/grids, Copyright (c) 2026 efww. MIT License."),
     ];
     let table = version_node("040904B0", &[], 0, true, &strings);
