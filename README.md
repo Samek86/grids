@@ -26,85 +26,89 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.png">
-    <img alt="Maguro" src="docs/images/hero_light.png">
+    <img alt="Maguro — one pane, light" src="docs/images/hero_light.png">
   </picture>
 </p>
 
-Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Lay out up to 16 of them in one window, then save the current tab as a session.
+Every pane is a real Windows Explorer view: the full right-click menu, drag and drop, thumbnails, and Windows' own copy / move dialog all just work. Maguro opens with a single pane by default; grow the layout when you need more.
 
 ## Features
 
-### 🧩 Multi-pane layouts & sessions
+### 🧩 Layouts & sessions
 
-Up to 4 columns × 4 panes. Click or drag across the layout picker, drag any boundary to resize, and drag a pane number to rearrange panes (Ctrl+drag copies a pane tab into another cell). Save the current tab — layout, folders, columns, and colour labels — as a named session. Opening one adds a new tab beside the current one.
+Start with one pane, then grow to a multi-pane grid (up to 4×4). Drag any boundary to resize, and drag a pane number to rearrange. Save the current tab — layout, folders, columns, and colour labels — as a named session. Opening a session adds a new window tab beside the current one.
 
-With a single pane, the ⇄ button splits the tab: the selected folder (or the current one, if nothing or only files are selected) opens in a new right pane with the same columns and view. With two or more panes, ⇄ keeps its menu.
+With a single pane, the ⇄ button splits the tab: the selected folder (or the current one) opens in a new right pane with the same columns and view. With two or more panes, ⇄ keeps its menu.
 
-<table><tr><td><img alt="layout" src="docs/images/layout.png"></td><td><img alt="sessions" src="docs/images/sessions.png"></td></tr></table>
+<p align="center"><img width="760" alt="Multi-pane layout" src="docs/images/layout.png"></p>
 
 ### 🗂️ Tabs that name themselves
 
-Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (path in the tooltip); double-click or right-click → Rename to pin your own name, lock a tab, duplicate it (Ctrl+Alt+K), move it to a new window, save it as a session, and pick a tab colour. Window tabs are wider by default (135 px), so more of the name shows.
+Chrome-style window tabs plus tabs inside each pane. A tab is named after its active folder (full path in the tooltip). Double-click or right-click → Rename to pin your own name, lock a tab, duplicate it (Ctrl+Alt+K), move it to a new window, save it as a session, or pick a tab colour.
 
-<p align="center"><img width="560" alt="tabs" src="docs/images/tabs.png"></p>
+### ⭐ Favourites & folder tree
 
-### ⭐ Favourites popup with Explorer pins
-
-The ★ on the toolbar opens a themed favourites popup: your Explorer Quick-access pins at the top, then your own groups, with nesting and drag to reorder. Hover a row to see its full location, and drop files or folders from a pane or Explorer onto the panel to add them as favourites. Ctrl+B opens the quick favourites list.
-
-<p align="center"><img width="760" alt="favorites" src="docs/images/favorites.png"></p>
+The sidebar is split evenly: favourites on top, folder tree below. Favourites hold your Explorer Quick-access pins plus your own groups (nesting and drag to reorder). Ctrl+B opens the quick favourites list. Drop files or folders onto the panel to pin them.
 
 ### 🌐 Server connections
 
-Right-click the favourites panel background, or a group, and choose **Add server connection…**. SMB and WebDAV open as normal Windows folders (UNC, signed in with `WNetAddConnection2`). SFTP and FTP are mounted with rclone and WinFsp, then browse like any other folder — including preview, the context menu, and fast copy. Passwords stay in Windows Credential Manager and are never written to `maguro.json`.
+Right-click the favourites panel (or a group) → **Add server connection…**. SMB and WebDAV open as normal Windows folders. SFTP and FTP are mounted with rclone and WinFsp, then browse like any other folder — including preview, the context menu, and fast copy. Passwords stay in Windows Credential Manager and are never written to `maguro.json`.
+
+<p align="center"><img width="560" alt="Server connection dialog" src="docs/images/servers.png"></p>
 
 ### 👁️ Quick preview
 
-Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP, HWP/HWPX (Hancom) and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files. Resizable, and it remembers its size.
-
-<p align="center"><img width="760" alt="preview" src="docs/images/preview.png"></p>
+Space or F3 previews pictures, PDF, Office, HTML, Markdown, code, CSV, ZIP, HWP/HWPX (Hancom) and more. Ctrl+wheel zooms (10–800%), drag pans, the wheel scrolls, ←/→ step through files.
 
 ### 🔎 Pane search via Everything
 
 Ctrl+F in any pane filters as you type; tick Subfolders and it asks voidtools Everything for instant results (or walks the disk if Everything isn't running).
 
-<p align="center"><img width="760" alt="search" src="docs/images/search.png"></p>
-
 ### 🖱️ The real Explorer, everywhere
 
-The full Explorer context menu (shell extensions included, plus Properties on empty space), and copy / move through Windows' standard IFileOperation dialog — up to 10,000 items to another pane.
+The full Explorer context menu (shell extensions included), and copy / move through Windows' standard IFileOperation dialog.
 
 **Fast copy.** Paste and drag to or from a network folder can use robocopy (Settings → File operations, off by default). Right-click → Fast paste always uses it, with Maguro's own progress and overwrite / skip / cancel. A move copies first and deletes the originals only after that copy succeeds.
 
-<p align="center"><img width="760" alt="explorer" src="docs/images/explorer.png"></p>
-
 ### ⚡ Small details
 
-- **Full path on hover.** When a pane's address bar is too narrow and shows `…`, hover it to see the whole path. Favourites rows and locked tabs have hover tooltips too.
-- **Per-folder view memory.** Sort, columns, view mode, icon size and grouping come back when you open that folder again (saved in `folder-views.json` next to the settings; on by default).
-- **Mouse side buttons everywhere.** Back and forward work in folder panes, also over Remote Desktop.
-- **Right-click menu without the first-click lag.** Shell context menus are warmed up in the background after launch and after a long idle.
-- **Theme switch keeps history.** Changing light / dark rebuilds the views without wiping back / forward or the folder you were in.
-- **Optional update check.** On startup Maguro can check GitHub Releases for a newer `maguro.exe` (SHA-256 verified) and offer to install it.
-- **Crash report on the next launch.** If a third-party shell extension takes Maguro down, the report names it, and you can block that DLL inside Maguro only (`blocked_shell_extensions` in `maguro.json`).
+- **Help (F1).** Tabbed help for shortcuts, tips, and how-tos — no browser required.
+- **About.** Version, license, and the plain-text address `github.com/Samek86/maguro` (not a link).
+- **Full path on hover.** When an address bar shows `…`, hover it for the whole path.
+- **Per-folder view memory.** Sort, columns, view mode, icon size and grouping come back next time.
+- **Mouse side buttons.** Back and forward work in folder panes, also over Remote Desktop.
+- **Warm context menus.** Shell menus are primed after launch and after a long idle.
+- **Theme switch keeps history.** Light / dark rebuilds views without wiping back / forward.
+- **Antialiasing.** Crisp UI edges at any DPI.
+- **Optional update check.** Can check GitHub Releases for a newer `maguro.exe` (SHA-256 verified).
+- **Crash report on the next launch.** Names a third-party shell extension that took Maguro down; you can block that DLL inside Maguro only.
 
 ### 🎨 Themes & accent
 
-Light and dark that follow Windows, six accent colours per theme, per-pane colours, and a settings window in English, 한국어 and 日本語.
+Light and dark that follow Windows, six accent colours per theme (default mint `#2EC4A6`), per-pane colours, and a settings window in English, 한국어 and 日本語.
 
-<p align="center"><img width="760" alt="settings" src="docs/images/settings.png"></p>
+<table>
+<tr>
+<td><img alt="Settings" src="docs/images/settings.png"></td>
+<td><img alt="Help" src="docs/images/help.png"></td>
+</tr>
+<tr>
+<td><img alt="About" src="docs/images/about.png"></td>
+<td><img alt="Dark theme" src="docs/images/hero_dark.png"></td>
+</tr>
+</table>
 
 📦 **A small single exe.** Nothing to install.
 
 ## Install
 
-Download the latest `maguro.exe` from [Releases](https://github.com/Samek86/maguro/releases/latest). Put it in any folder and run it. A small single exe — nothing to install. Releases ship that raw exe and a `maguro.exe.sha256` checksum, not a zip.
+Download the latest `maguro.exe` from [Releases](https://github.com/Samek86/maguro/releases/latest). Put it in any folder and run it. Releases ship that raw exe and a `maguro.exe.sha256` checksum, not a zip.
 
 The exe is not code-signed, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**.
 
-**Requirements:** Windows 10 (1903 or later) or Windows 11, x64.
+**Requirements:** Windows 10 (1903 or later) or Windows 11, x64. SFTP/FTP also need [rclone](https://rclone.org/) and [WinFsp](https://winfsp.dev/) (Maguro can install them when you add a connection).
 
-Settings live in `%APPDATA%\Maguro\maguro.json`. Put a file named `portable.txt` next to `maguro.exe` to keep `maguro.json` beside the exe instead. Named sessions stay `.grids` files in the `maguro-sessions` folder next to the exe (existing `sessions` `.grids` files are copied once).
+Settings live in `%APPDATA%\Maguro\maguro.json`. Put a file named `portable.txt` next to `maguro.exe` to keep `maguro.json` beside the exe instead. Named sessions stay `.grids` files in the `maguro-sessions` folder next to the exe.
 
 To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -118,64 +122,39 @@ Defaults; every one can be changed in Settings → Shortcuts.
 |  | Ctrl+W | Close tab |
 |  | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 |  | Ctrl+Shift+T | Reopen closed tab |
-|  | Ctrl+Alt+K | Duplicate tab |
-|  | Double-click a tab | Rename tab |
-| **Panes** | Ctrl+PgDn / Ctrl+PgUp | Next / previous pane |
-|  | Ctrl+1 … 9 | Go to pane 1–9 |
-|  | Alt+Shift+arrows | Move to the pane in that direction |
-|  | Ctrl+Alt+Shift+arrows | Swap with the pane in that direction |
-|  | Ctrl+Shift+M | Maximise / restore pane |
-| **Pane tabs** | Ctrl+Alt+T / Ctrl+Alt+W | New / close pane tab |
-|  | Ctrl+Alt+PgDn / PgUp | Next / previous pane tab |
-| **Navigate** | Alt+← / Alt+→ | Back / forward |
-|  | Alt+↑ / Alt+↓ | Parent folder / recent folders |
-|  | Ctrl+L, Alt+D, F4 | Address bar |
-| **View** | Ctrl+F | Search this folder (Subfolders → Everything) |
-|  | Space / F3 | Quick preview |
-|  | F6 / Shift+F6 | Next / previous focus |
-|  | Ctrl+H | Show hidden files |
-|  | Ctrl+Shift+E | Left panel |
-|  | Ctrl+Shift+O | Open folders from Explorer windows |
-| **Preview** | Ctrl+wheel | Zoom 10–800% |
-|  | Ctrl+0 | Reset zoom |
-|  | Drag | Pan a zoomed picture |
-|  | Wheel, ↓, PgDn, Home / End | Scroll |
-|  | ← / → | Previous / next file |
-|  | Esc / Space / F3 | Close |
+| **Panes** | Alt+1…9 | Focus pane |
+|  | Ctrl+\ | Layout picker |
+| **Preview** | Space / F3 | Preview |
+|  | Esc / Space / F3 | Close preview |
 | **File** | Ctrl+Shift+C | Copy full path |
 |  | Ctrl+Shift+R | Batch rename |
 |  | Num+ or Ctrl+Shift+A / Num− / Num* | Select / deselect / invert by pattern |
 |  | Ctrl+Alt+N | New text file |
 |  | Ctrl+Shift+N, F7 | New folder |
 |  | Ctrl+Alt+C | Compare the two panes in WinMerge |
-|  | F2, Del, Ctrl+C / V, F5 | Same as Explorer. F5 reloads the active pane from the list, address bar, filter, folder tree, or favourites; a failed network folder is tried again (Ctrl+V of a copied picture saves it here as a PNG) |
+|  | F2, Del, Ctrl+C / V, F5 | Same as Explorer. F5 reloads the active pane; a failed network folder is tried again |
 | **Other** | Ctrl+B | Quick favourites list |
 |  | Ctrl+S | Save this tab |
 |  | Ctrl+, | Settings |
-|  | F1 / Ctrl+/ | Shortcut help / list |
+|  | F1 / Ctrl+/ | Help / shortcut list |
 |  | Ctrl+N | New window |
 |  | Win+Shift+E | Bring Maguro to the front (global) |
 
 ## Known issues
 
-**Don't run Maguro as administrator.** A user reported that PowerToys Mouse Crosshairs (and similar tools) stopped following the cursor and froze where they clicked over Maguro. It happens only when Maguro runs as administrator: Windows doesn't let a program without administrator rights receive mouse input over a window that has them (UIPI), so a normal PowerToys gets no mouse movement over an elevated Maguro. Give both the same rights, either way:
-
-1. **Recommended**: run Maguro normally. Don't open `maguro.exe` with right-click → **Run as administrator**, and in the shortcut's or `maguro.exe`'s **Properties → Compatibility**, clear **Run this program as an administrator**.
-2. If you need Maguro as administrator, run PowerToys as administrator too: **PowerToys Settings → General → Always run as administrator**, then restart PowerToys.
+**Don't run Maguro as administrator.** Tools such as PowerToys Mouse Crosshairs cannot follow the cursor over an elevated Maguro window (UIPI). Run Maguro normally, or run both Maguro and PowerToys as administrator.
 
 ## Settings
 
 The gear on the tab row opens the view menu. Settings is in that menu (`Ctrl+,`).
 
-Language (Auto, English, and every language file), font, light / dark theme, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `maguro.json` key table are in [docs/settings.md](docs/settings.md).
+Language (Auto, English, and every language file), font, light / dark theme, accent, and shortcuts are all set there. Migration from older Grids settings, how the file is written, and the full `maguro.json` key table are in [docs/settings.md](docs/settings.md).
 
 ## Language files
 
-English is compiled into the program and is the fallback. Korean, Japanese, French, and German ship as `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, and `lang/lang.de.ini`. On first run, and again whenever the version changes, Maguro writes those four files into the `lang` folder next to the settings file (`%APPDATA%\Maguro\lang`, or beside `maguro.exe` when `portable.txt` is there). It always overwrites those four. It never writes, overwrites, or deletes a `lang.xx.user.ini`, or any other `lang.xx.ini` you add.
+English is compiled into the program and is the fallback. Korean, Japanese, French, and German ship as `lang/lang.ko.ini`, `lang/lang.ja.ini`, `lang/lang.fr.ini`, and `lang/lang.de.ini`. On first run, and again whenever the version changes, Maguro writes those four files into the `lang` folder next to the settings file. It always overwrites those four. It never writes, overwrites, or deletes a `lang.xx.user.ini`, or any other `lang.xx.ini` you add.
 
-A file is UTF-8 (a leading BOM is ignored). Lines are `key = text`. One space after `=` is the separator. `\\` is a backslash and `\n` is a newline. A line that starts with `#` or `;` is a comment. `[meta]` `name` is the label in the language list. `[meta]` `font` is an optional UI font (Korean and Japanese default to Malgun Gothic and Yu Gothic UI; other languages use Segoe UI). A missing key uses the English text.
-
-`lang.xx.user.ini` (for example `lang.ko.user.ini`) is loaded on top of `lang.xx.ini` and wins. Add `lang.es.ini` and Spanish appears in the list. Auto matches the Windows display language when a file for that ISO code is present, and otherwise uses English. Saved values `en`, `ko`, and `ja` still work.
+A file is UTF-8 (a leading BOM is ignored). Lines are `key = text`. `[meta]` `name` is the label in the language list. `[meta]` `font` is an optional UI font. A missing key uses the English text. `lang.xx.user.ini` is loaded on top and wins.
 
 ## Roadmap
 
@@ -190,4 +169,4 @@ Inspired by [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir) and [voidt
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) · © 2026 efww, Samek86
