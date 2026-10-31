@@ -135,7 +135,7 @@ const KEYS_OWNER_PCT: i32 = 85;
 
 /// Popup size in px. `content_h(width)` is the header plus the list at that width.
 /// The 760-dip design width and the content height win when they sit under the cap.
-fn keys_fit_size(owner_w: i32, owner_h: i32, dpi: i32, content_h: impl FnOnce(i32) -> i32) -> (i32, i32) {
+pub(crate) fn keys_fit_size(owner_w: i32, owner_h: i32, dpi: i32, content_h: impl FnOnce(i32) -> i32) -> (i32, i32) {
     let px = |dip: i32| dip * dpi / 96;
     let cap = |span: i32| span.max(0) * KEYS_OWNER_PCT / 100;
     let w = px(760).min(cap(owner_w)).max(px(320));
@@ -144,7 +144,7 @@ fn keys_fit_size(owner_w: i32, owner_h: i32, dpi: i32, content_h: impl FnOnce(i3
 }
 
 /// Top-left that centers `w`×`h` on `owner`. A real work rect then keeps it on that monitor.
-fn keys_fit_origin(owner: RECT, w: i32, h: i32, work: RECT) -> (i32, i32) {
+pub(crate) fn keys_fit_origin(owner: RECT, w: i32, h: i32, work: RECT) -> (i32, i32) {
     let x = (owner.left + owner.right - w) / 2;
     let y = (owner.top + owner.bottom - h) / 2;
     if work.right <= work.left || work.bottom <= work.top {

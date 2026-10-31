@@ -712,4 +712,65 @@ mod tests {
             assert!(!l.contains("online") && !v.contains("オンライン") && !v.contains("온라인") && !l.contains("en ligne"), "{code} {v}");
         }
     }
+
+    #[test]
+    fn help_topics_explain_the_app_in_every_language() {
+        let tabs = [
+            ("help_tab_getting_started", "Getting started"),
+            ("help_tab_panes_tabs", "Panes & tabs"),
+            ("help_tab_favorites", "Favorites"),
+            ("help_tab_file_operations", "File operations"),
+            ("help_tab_server_connections", "Server connections"),
+            ("help_tab_shortcuts", "Shortcuts"),
+            ("help_tab_settings", "Settings"),
+            ("help_tab_troubleshooting", "Troubleshooting"),
+        ];
+        let bodies = [
+            "help_body_getting_started",
+            "help_body_panes_tabs",
+            "help_body_favorites",
+            "help_body_file_operations",
+            "help_body_server_connections",
+            "help_body_shortcuts",
+            "help_body_settings",
+            "help_body_troubleshooting",
+        ];
+        let clean = |s: &str| {
+            let l = s.to_ascii_lowercase();
+            !l.contains("github") && !s.contains("http://") && !s.contains("https://") && !l.contains("samek86") && !s.contains("{url}")
+        };
+        for (id, title) in tabs {
+            let i = KEY_ID.iter().position(|k| *k == id).unwrap();
+            assert_eq!(EN[i], title);
+            assert!(clean(EN[i]), "{title}");
+            for (code, text) in [("ko", KO_INI), ("ja", JA_INI), ("fr", FR_INI), ("de", DE_INI)] {
+                let (_, map) = parse_ini(text);
+                let v = &map[id];
+                assert!(!v.is_empty() && !v.contains('\n'), "{code} {id}: {v}");
+                assert!(clean(v), "{code} {id}: {v}");
+            }
+        }
+        let mut all = String::new();
+        for id in bodies {
+            let i = KEY_ID.iter().position(|k| *k == id).unwrap();
+            assert!(EN[i].contains('\n'), "{id}");
+            assert!(clean(EN[i]), "{id}");
+            all.push_str(&EN[i].to_ascii_lowercase());
+            all.push('\n');
+            for (code, text) in [("ko", KO_INI), ("ja", JA_INI), ("fr", FR_INI), ("de", DE_INI)] {
+                let (_, map) = parse_ini(text);
+                let v = &map[id];
+                assert!(v.contains('\n'), "{code} {id}");
+                assert!(v.chars().count() > 280, "{code} {id} {}", v.chars().count());
+                assert!(clean(v), "{code} {id}");
+            }
+        }
+        for needle in [
+            "pane", "ctrl+t", "session", "favourites", "robocopy", "smb", "webdav", "sftp", "ftp", "everything", "preview", "portable.txt", "crash", "ctrl+,", "theme", "winmerge", "fast copy",
+        ] {
+            assert!(all.contains(needle), "{needle}");
+        }
+        let shortcuts = EN[KEY_ID.iter().position(|k| *k == "help_body_shortcuts").unwrap()].to_ascii_lowercase();
+        assert!(shortcuts.contains("ctrl+/") && shortcuts.contains("f1"));
+    }
 }
