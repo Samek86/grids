@@ -995,15 +995,28 @@ pub(crate) unsafe fn prime_theme(dark: bool) {
 }
 
 /// Title-bar icon follows the theme. Group 1 is the light-bg exe icon. Group 2 is the dark-bg logo.
+/// LoadImageW picks the real 16/32 (etc.) frames from the kit .ico instead of stretching one size.
 pub(crate) unsafe fn apply_window_icon(hwnd: HWND) {
     if hwnd.0.is_null() {
         return;
     }
     let id = if DARK_ON.load(Ordering::Relaxed) { 2usize } else { 1 };
     let Ok(module) = GetModuleHandleW(None) else { return };
-    let Ok(icon) = LoadIconW(Some(module.into()), PCWSTR(id as _)) else { return };
-    _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(1)), Some(LPARAM(icon.0 as isize)));
-    _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(0)), Some(LPARAM(icon.0 as isize)));
+    let hinst: HINSTANCE = module.into();
+    let dpi = GetDpiForWindow(hwnd);
+    let small_px = GetSystemMetricsForDpi(SM_CXSMICON, dpi).max(16);
+    let large_px = GetSystemMetricsForDpi(SM_CXICON, dpi).max(32);
+    let load = |px: i32| {
+        LoadImageW(Some(hinst), PCWSTR(id as _), IMAGE_ICON, px, px, IMAGE_FLAGS(0)).ok().map(|h| HICON(h.0))
+    };
+    let small = load(small_px).or_else(|| LoadIconW(Some(hinst), PCWSTR(id as _)).ok());
+    let large = load(large_px).or_else(|| LoadIconW(Some(hinst), PCWSTR(id as _)).ok());
+    if let Some(icon) = large {
+        _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(1)), Some(LPARAM(icon.0 as isize))); // ICON_BIG
+    }
+    if let Some(icon) = small {
+        _ = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(0)), Some(LPARAM(icon.0 as isize))); // ICON_SMALL
+    }
 }
 
 /// One window: title bar, tree, and that window's Explorer panes.

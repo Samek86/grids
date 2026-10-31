@@ -20,6 +20,7 @@ pub(crate) use fsize::*;
 pub(crate) use icon::*;
 pub(crate) use nav::*;
 pub(crate) use peek::*;
+pub(crate) use preview::decode_pic;
 pub(crate) use ptabs::*;
 pub(crate) use select::*;
 pub(crate) use status::*;

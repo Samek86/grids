@@ -31,7 +31,7 @@ pub(crate) use windows::Win32::UI::Controls::{
     LVM_GETCOLUMNWIDTH, LVM_SETCOLUMNWIDTH, NMCUSTOMDRAW, NMHDR, NMLVCUSTOMDRAW, NM_CUSTOMDRAW,
     TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTM_UPDATETIPTEXTW, TTTOOLINFOW, WM_MOUSELEAVE,
 };
-pub(crate) use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
+pub(crate) use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi};
 pub(crate) use windows::Win32::UI::Input::KeyboardAndMouse::*;
 pub(crate) use windows::Win32::UI::Shell::Common::{ITEMIDLIST, STRRET};
 pub(crate) use windows::Win32::UI::Shell::*;

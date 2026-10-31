@@ -2093,11 +2093,22 @@ unsafe fn paint_about(h: HWND) {
         let small = if small.is_invalid() { font } else { small };
         let bold = crate::bold_ui_font();
         let bold = if bold.is_invalid() { font } else { bold };
-        if let Ok(module) = GetModuleHandleW(None) {
-            let hinst: HINSTANCE = module.into();
-            let id = about_icon_group(crate::DARK_ON.load(Ordering::Relaxed));
-            if let Ok(icon) = LoadIconW(Some(hinst), PCWSTR(id as _)) {
-                let _ = DrawIconEx(dc, lay.icon.left, lay.icon.top, icon, lay.icon.right - lay.icon.left, lay.icon.bottom - lay.icon.top, 0, None, DI_NORMAL);
+        {
+            let dark = crate::DARK_ON.load(Ordering::Relaxed);
+            let png: &[u8] = if dark {
+                include_bytes!("../../assets/maguro-lockup-dark.png")
+            } else {
+                include_bytes!("../../assets/maguro-lockup-light.png")
+            };
+            let side = (lay.icon.right - lay.icon.left).max(1);
+            if let Some(pix) = crate::decode_pic(png, side, side) {
+                crate::blit_bgra(dc, lay.icon, pix.w, pix.h, &pix.bgra);
+            } else if let Ok(module) = GetModuleHandleW(None) {
+                let hinst: HINSTANCE = module.into();
+                let id = about_icon_group(dark);
+                if let Ok(icon) = LoadIconW(Some(hinst), PCWSTR(id as _)) {
+                    let _ = DrawIconEx(dc, lay.icon.left, lay.icon.top, icon, side, side, 0, None, DI_NORMAL);
+                }
             }
         }
         crate::text(dc, lay.title, &copy.title, bold, crate::pal().text, DT_LEFT);
