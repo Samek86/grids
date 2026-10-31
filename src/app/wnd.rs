@@ -273,7 +273,10 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                     }
                 }
                 ID_HELP => open_help(),
-                ID_ABOUT => about(h),
+                // Post so SendMessage(WM_COMMAND, ID_ABOUT) returns before the modal About loop runs.
+                ID_ABOUT => {
+                    _ = PostMessageW(Some(h), WM_ABOUT, WPARAM(0), LPARAM(0));
+                }
                 id @ ID_ACCENT..=1405 => set_accent(pal().accents[id - ID_ACCENT].1),
                 ID_ACCENT_PICK => pick_accent(),
                 ID_KEYS => toggle_keys(),
@@ -417,6 +420,7 @@ fn main_proc_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 return DefWindowProcW(h, msg, wp, lp);
             }
             WM_THEME_SYNC => theme_sync(),
+            WM_ABOUT => about(h),
             WM_THEME_PANE => theme_pane_step(),
             WM_THEME_RELAUNCH => theme_relaunch(),
             WM_UPDATE => on_update(h, wp.0),
