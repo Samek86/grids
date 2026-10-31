@@ -298,7 +298,7 @@ pub(crate) struct Session {
     /// Paste and drag use robocopy when a path is on the network. Missing means off.
     /// Fast paste on the menu uses robocopy either way.
     pub(crate) fast_copy: bool,
-    pub(crate) layout_new: u8,         // 0 side by side, 1 top/bottom, 2 is 2×2, 3 one pane (missing = 0)
+    pub(crate) layout_new: u8,         // 0 side by side, 1 top/bottom, 2 is 2×2, 3 one pane (fresh default 3; missing parse = 0)
     pub(crate) boot: u8,               // 0 restore last layout, 1 open boot_file, 2 the default layout
     pub(crate) boot_file: String,
     pub(crate) update_check: bool,     // ask GitHub for a newer release at startup
@@ -443,7 +443,7 @@ impl Default for Session {
             new_name: String::new(),
             dropm: 0,
             fast_copy: false,
-            layout_new: 0,
+            layout_new: 3,
             boot: 0,
             boot_file: String::new(),
             autosave: false,
@@ -459,7 +459,7 @@ impl Default for Session {
             ctx_win11_view: false,
             blocked_shell_extensions: Vec::new(),
         };
-        // A first-ever start: layout_new 0 is two panes, left and right.
+        // A first-ever start: layout_new 3 is one pane. Saved maguro.json without layout_new stays 0 (two panes).
         s.set_heights(s.layout_heights());
         s.anchor();
         s
@@ -709,6 +709,9 @@ impl Session {
 
     pub(crate) fn parse(text: &str) -> Session {
         let mut s = Session::default();
+        // Older ini without layout= meant two panes. Fresh Session::default is one pane (3).
+        s.layout_new = 0;
+        s.set_heights(layout_heights_for(0));
         s.tabs.clear();
         let mut rowr: Vec<Vec<f64>> = Vec::new();
         let mut pane_b: Vec<Option<(usize, Vec<String>)>> = vec![None; MAXP];
@@ -2260,11 +2263,12 @@ mod crumb_tests {
     #[test]
     fn layout_new_round_trips_and_each_value_has_even_heights() {
         let fresh = Session::default();
-        assert_eq!(fresh.layout_new, 0);
-        assert_eq!(fresh.heights, vec![1, 1]);
-        assert_eq!(fresh.colr, super::even(2));
-        assert_eq!(fresh.rowr, vec![super::even(1), super::even(1)]);
+        assert_eq!(fresh.layout_new, 3);
+        assert_eq!(fresh.heights, vec![1]);
+        assert_eq!(fresh.colr, super::even(1));
+        assert_eq!(fresh.rowr, vec![super::even(1)]);
         assert_eq!(fresh.active, 0);
+        // Older ini / omitted layout key still means two panes side by side.
         assert_eq!(Session::parse("").layout_new, 0);
         assert_eq!(Session::parse("drop=1\n").layout_new, 0);
         assert_eq!(Session::parse("layout=\n").layout_new, 0);
@@ -2303,7 +2307,7 @@ mod crumb_tests {
 
     #[test]
     fn new_window_tab_copies_the_active_layout() {
-        // Dragged ratios and an uneven grid. The settings default is an even 1×2, not this.
+        // Dragged ratios and an uneven grid. The settings default is an even 1×1, not this.
         let heights = vec![1usize, 3];
         let colr = vec![0.25, 0.75];
         let rowr = vec![vec![1.0], vec![0.2, 0.5, 0.3]];

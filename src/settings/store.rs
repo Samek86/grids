@@ -77,7 +77,8 @@ fn view_details() -> i32 {
     4
 }
 fn left_right() -> Vec<usize> {
-    // A missing saved grid, including a first start: layout_new defaults to 0, two panes side by side.
+    // Missing layout.columns in an older maguro.json: keep two panes (layout_new omitted also meant 0).
+    // A brand-new Session::default() uses layout_new 3 (one pane) instead.
     crate::layout_heights_for(0)
 }
 
@@ -243,7 +244,8 @@ struct SettingsFile {
     /// Omitted while off. Fast paste on the menu does not read this.
     #[serde(default, skip_serializing_if = "is_off")]
     fast_copy: bool,
-    /// New tab / new window. Omitted when 0, which is two panes side by side.
+    /// New tab / new window. Omitted when 0 (two panes). Fresh Session::default uses 3 (one pane) and writes it.
+    /// A missing key still loads as 0 so existing configs stay two panes.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     layout_new: u8,
     #[serde(default)]
@@ -387,7 +389,7 @@ impl SettingsFile {
             new_name: String::new(),
             drop: 0,
             fast_copy: false,
-            layout_new: 0,
+            layout_new: 3,
             boot: 0,
             boot_file: String::new(),
             autosave: false,
@@ -1227,13 +1229,15 @@ mod tests {
 
     #[test]
     fn layout_new_defaults_to_zero_and_round_trips() {
+        // Empty JSON (older file without the key) still means two panes.
         let fresh = adopt("{}").unwrap();
         assert_eq!(fresh.layout_new, 0);
         assert_eq!(fresh.heights, vec![1, 1]);
-        assert_eq!(Session::default().layout_new, 0);
-        assert_eq!(Session::default().heights, left_right());
+        // Brand-new in-memory default is one pane, and the key is written.
+        assert_eq!(Session::default().layout_new, 3);
+        assert_eq!(Session::default().heights, vec![1]);
         let omitted = sync_text(&Session::default());
-        assert!(serde_json::from_str::<Value>(&omitted).unwrap().get("layout_new").is_none(), "{omitted}");
+        assert_eq!(serde_json::from_str::<Value>(&omitted).unwrap().get("layout_new"), Some(&serde_json::json!(3)), "{omitted}");
 
         let zero = adopt(r#"{"version":1,"layout_new":0}"#).unwrap();
         assert_eq!(zero.layout_new, 0);
@@ -1261,7 +1265,7 @@ mod tests {
             k.borrow_mut().extra.insert("layout_new".into(), serde_json::json!(2));
         });
         let kept: Value = serde_json::from_str(&sync_text(&Session::default())).unwrap();
-        assert!(kept.get("layout_new").is_none(), "{kept}");
+        assert_eq!(kept.get("layout_new"), Some(&serde_json::json!(3)), "{kept}");
         assert_eq!(kept["future"]["keep"], true);
     }
 

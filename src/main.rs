@@ -317,7 +317,7 @@ mod tests {
         let mut kept = Session::default();
         kept.take_layout(&Session::parse("sideorder=tree\n"));
         assert!(kept.fav_top);
-        assert_eq!((round.dropm, round.layout_new, round.boot, round.autosave, round.dot), (0, 0, 0, false, true));
+        assert_eq!((round.dropm, round.layout_new, round.boot, round.autosave, round.dot), (0, 3, 0, false, true));
         assert!(round.new_name.is_empty() && round.start_path.is_empty() && round.boot_file.is_empty());
         // An older file has dark= and no theme=. That stays an explicit choice, and new keys keep defaults.
         let old = Session::parse("dark=1\ndblup=1\n");

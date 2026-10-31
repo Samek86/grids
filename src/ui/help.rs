@@ -50,7 +50,8 @@ pub(crate) struct HelpLay {
     pub content_h: i32,
 }
 
-/// Tabs wrap. The body sits 16 DIP under the last row. `extra_h` is the live shortcut list.
+/// Tabs stay on one row when labels fit; they wrap only on a very narrow window.
+/// The body sits 16 DIP under the last row. `extra_h` is the live shortcut list.
 pub(crate) fn help_layout(client_w: i32, client_h: i32, dpi: i32, tab_text_w: &[i32], line_h: i32, text_h: i32, extra_h: i32) -> HelpLay {
     let dpi = dpi.max(1);
     let s = |v: i32| v * dpi / 96;
@@ -65,14 +66,17 @@ pub(crate) fn help_layout(client_w: i32, client_h: i32, dpi: i32, tab_text_w: &[
     let mut x = pad;
     let mut y = head + gap;
     let mut tabs = Vec::with_capacity(tab_text_w.len());
+    // Tighter chip padding so ko/ja/en fit one row in the default Help width.
+    let chip_pad = tight;
+    let chip_gap = tight.max(s(2));
     for w in tab_text_w {
-        let cell = (*w).max(0) + 2 * s(HELP_GAP);
+        let cell = (*w).max(0) + 2 * chip_pad;
         if x > pad && x + cell > limit {
             x = pad;
             y += tab_h + gap;
         }
         tabs.push(RECT { left: x, top: y, right: x + cell, bottom: y + tab_h });
-        x += cell + gap;
+        x += cell + chip_gap;
     }
     let tabs_bottom = tabs.iter().map(|r| r.bottom).max().unwrap_or(head);
     let body_top = tabs_bottom + s(HELP_PAD);
@@ -436,7 +440,7 @@ mod tests {
         assert_eq!(wide.tabs.len(), HELP_TABS);
         assert!(wide.tabs.iter().all(|r| r.top == wide.tabs[0].top));
         assert_eq!(wide.tabs[0].left, HELP_PAD);
-        assert_eq!(wide.tabs[1].left - wide.tabs[0].right, HELP_GAP);
+        assert_eq!(wide.tabs[1].left - wide.tabs[0].right, HELP_TIGHT);
         assert_eq!(wide.tabs[0].top, HELP_HEAD + HELP_GAP);
         assert_eq!(wide.body.left, HELP_PAD);
         assert_eq!(wide.body.top, wide.tabs_bottom + HELP_PAD);
