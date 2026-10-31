@@ -20,72 +20,119 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | 한국어
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | 한국어
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero_dark.ko.png">
-    <img alt="Maguro — 단일 패널, 라이트" src="docs/images/hero_light.ko.png">
+    <img alt="Maguro — 라이트 테마" src="docs/images/hero_light.ko.png">
   </picture>
 </p>
 
-모든 패널은 진짜 Windows 탐색기 뷰입니다. 전체 우클릭 메뉴, 끌어서 놓기, 미리보기 썸네일, Windows 복사/이동 대화상자가 그대로 동작합니다. Maguro는 기본적으로 패널 하나로 열리고, 필요할 때 레이아웃을 늘리면 됩니다.
+모든 패널은 진짜 Windows 탐색기 뷰입니다. 전체 우클릭 메뉴, 끌어서 놓기, 썸네일, Windows 복사/이동 대화상자가 그대로 동작합니다. Maguro는 기본적으로 패널 하나로 열리고, 필요할 때 레이아웃을 늘리면 됩니다.
 
 ## 기능
 
-### 🧩 레이아웃과 세션
+### 1. 레이아웃 갤러리 — 모든 프리셋
 
-패널 하나로 시작한 뒤 최대 4×4 다중 패널 격자로 키울 수 있습니다. 경계를 끌어 크기를 바꾸고, 패널 번호를 끌어 자리를 바꿉니다. 현재 탭(레이아웃·폴더·열·색 라벨)을 이름 있는 세션으로 저장하고, 세션을 열면 창 탭이 옆에 추가됩니다.
-
-패널이 하나일 때 ⇄ 버튼은 탭을 나눕니다. 선택한 폴더(없으면 현재 폴더)가 같은 열·보기로 오른쪽 새 패널에 열립니다. 패널이 둘 이상이면 ⇄는 메뉴를 유지합니다.
+패널 하나로 시작한 뒤 내장 격자(최대 4×4)를 고를 수 있습니다. 경계를 끌어 크기를 바꿉니다. 이름 있는 세션에는 레이아웃·폴더·열·색 라벨이 들어가고, 세션을 열면 지금 탭 옆에 창 탭이 추가됩니다.
 
 <p align="center"><img width="760" alt="다중 패널 레이아웃" src="docs/images/layout.ko.png"></p>
 
-### 🗂️ 이름이 저절로 붙는 탭
+<table>
+<tr>
+<td><img alt="1 패널" src="docs/images/layout_1.png"></td>
+<td><img alt="가로 2" src="docs/images/layout_2h.png"></td>
+<td><img alt="세로 2" src="docs/images/layout_2v.png"></td>
+</tr>
+<tr>
+<td><img alt="3 패널" src="docs/images/layout_3.png"></td>
+<td><img alt="세로 쌓기 3" src="docs/images/layout_3_stack.png"></td>
+<td><img alt="3열" src="docs/images/layout_3col.png"></td>
+</tr>
+<tr>
+<td><img alt="4 패널" src="docs/images/layout_4.png"></td>
+<td><img alt="세로형 4" src="docs/images/layout_4_tall.png"></td>
+<td><img alt="5 패널" src="docs/images/layout_5.png"></td>
+</tr>
+<tr>
+<td><img alt="1+1+2" src="docs/images/layout_preset_112.png"></td>
+<td><img alt="3+1" src="docs/images/layout_preset_31.png"></td>
+<td></td>
+</tr>
+</table>
 
-크롬 스타일 창 탭과 패널 안 탭. 탭 이름은 활성 폴더에서 오고, 툴팁에 전체 경로가 보입니다. 더블클릭 또는 우클릭 → 이름 바꾸기로 고정 이름을 달거나, 잠그거나, 복제(Ctrl+Alt+K)하거나, 새 창으로 옮기거나, 세션으로 저장하거나, 탭 색을 고를 수 있습니다.
+### 2. 창 탭과 패널 안 중첩 탭
 
-### ⭐ 즐겨찾기와 폴더 트리
+창 전체의 크롬 스타일 탭에 더해, 각 패널 안에도 탭이 있습니다. 탭 이름은 활성 폴더에서 오고, 툴팁에 전체 경로가 보입니다. 탭 복제, 새 창으로 이동, 세션 저장도 됩니다.
 
-사이드바는 위·아래 절반으로 나뉩니다. 위는 즐겨찾기, 아래는 폴더 트리. 즐겨찾기에는 탐색기 빠른 액세스 고정과 직접 만든 그룹(중첩·끌어 정렬)이 들어갑니다. Ctrl+B는 빠른 즐겨찾기 목록을 엽니다. 패널에 파일·폴더를 놓으면 즐겨찾기에 추가됩니다.
+<p align="center"><img width="760" alt="창 탭과 패널 탭" src="docs/images/tabs.ko.png"></p>
 
-### 🌐 서버 연결
+### 3. 탭 이름 고정·잠금·색
 
-즐겨찾기 패널(또는 그룹)을 우클릭 → **서버 연결 추가…**. SMB·WebDAV는 일반 Windows 폴더로 열립니다. SFTP·FTP는 rclone과 WinFsp로 마운트한 뒤 미리보기·우클릭 메뉴·빠른 복사까지 다른 폴더처럼 씁니다. 비밀번호는 Windows 자격 증명 관리자에만 두고 `maguro.json`에는 쓰지 않습니다.
+탭을 더블클릭하거나 우클릭 → 이름 바꾸기로 원하는 이름을 고정할 수 있습니다. 잠그면 실수로 닫기 어렵습니다. 색을 입히면 관련 작업을 한눈에 구분할 수 있습니다.
 
-<p align="center"><img width="560" alt="서버 연결 대화상자" src="docs/images/servers.ko.png"></p>
+### 4. 패널 번호를 끌어 자리 바꾸기 — Ctrl+끌기로 복제
 
-### 👁️ 빠른 미리보기
+패널 번호 배지를 잡아 다른 패널에 놓으면 자리가 바뀝니다. **Ctrl**을 누른 채 끌면 바꾸지 않고 그 패널을 복제합니다.
+
+<p align="center">
+  <img width="360" alt="끌기 전" src="docs/images/panedrag_before.png">
+  <img width="360" alt="자리 바꾼 뒤" src="docs/images/panedrag_after.png">
+</p>
+<p align="center"><img width="560" alt="Ctrl+끌기로 패널 복제" src="docs/images/panedrag_dup.png"></p>
+
+### 5. 패널별 색
+
+패널마다 강조색을 줄 수 있습니다. 소스와 목적지를 헷갈리기 쉬운 다중 패널에서 특히 유용합니다.
+
+<p align="center"><img width="760" alt="패널별 색" src="docs/images/pane_colors.ko.png"></p>
+
+### 6. 속도를 위한 설계
+
+이 포터블 데모에서 콜드 스타트 실측은 **607 ms**입니다. 네트워크 폴더로 붙여넣기·끌기는 robocopy를 쓸 수 있습니다(설정 → 파일 작업, 기본 끔). 우클릭 → 빠른 붙여넣기는 항상 쓰고, Maguro 자체 진행률과 덮어쓰기/건너뛰기/취소를 제공합니다.
+
+**Everything 연동 패널 검색.** 패널에서 Ctrl+F로 입력하는 대로 걸러집니다. 하위 폴더를 켜면 [voidtools Everything](https://www.voidtools.com/)에 물어 바로 결과를 받고, Everything이 없으면 디스크를 직접 걷습니다.
+
+<p align="center"><img width="760" alt="Everything 연동 패널 검색" src="docs/images/search.ko.png"></p>
+
+### 7. 즐겨찾기 — 폴더와 파일, 그룹으로
+
+사이드바는 위·아래 절반입니다. 위는 즐겨찾기, 아래는 폴더 트리. 즐겨찾기에는 탐색기 빠른 액세스 고정과 직접 만든 그룹(폴더·파일 모두, 끌어 정렬)이 들어갑니다. Ctrl+B는 빠른 즐겨찾기 목록을 엽니다. 패널에 파일·폴더를 놓으면 즐겨찾기에 추가됩니다.
+
+<p align="center"><img width="760" alt="그룹으로 나눈 즐겨찾기" src="docs/images/favorites.ko.png"></p>
+
+### 8. 빠른 미리보기
 
 Space 또는 F3으로 그림, PDF, Office, HTML, Markdown, 코드, CSV, ZIP, HWP/HWPX(한컴) 등을 미리봅니다. Ctrl+휠로 확대(10–800%), 끌어서 이동, 휠로 스크롤, ←/→로 파일 이동.
 
-### 🔎 Everything으로 패널 검색
+<p align="center">
+  <img width="480" alt="패널 미리보기" src="docs/images/preview.ko.png">
+  <img width="240" alt="피크 미리보기" src="docs/images/preview_peek.ko.png">
+</p>
 
-패널에서 Ctrl+F로 입력하는 대로 걸러집니다. 하위 폴더를 켜면 voidtools Everything에 물어 바로 결과를 받고, Everything이 없으면 디스크를 직접 걷습니다.
+### 9. 구성 가능한 우클릭 메뉴
 
-### 🖱️ 어디서나 진짜 탐색기
+설정 → 우클릭 메뉴 항목에서 Maguro 고유 명령의 표시/숨김을 고를 수 있습니다. 메뉴를 짧게 유지해도, 전부 되살려도 됩니다.
 
-탐색기 전체 우클릭 메뉴(셸 확장 포함)와 Windows 표준 IFileOperation 복사/이동 대화상자.
+<p align="center"><img width="560" alt="우클릭 메뉴 설정" src="docs/images/settings_ctxmenu.ko.png"></p>
 
-**빠른 복사.** 네트워크 폴더로 붙여넣기·끌기는 robocopy를 쓸 수 있습니다(설정 → 파일 작업, 기본 끔). 우클릭 → 빠른 붙여넣기는 항상 쓰고, Maguro 자체 진행률과 덮어쓰기/건너뛰기/취소를 제공합니다. 이동은 먼저 복사한 뒤 성공했을 때만 원본을 지웁니다.
+### 10. 이름 미리보기가 있는 일괄 이름 바꾸기
 
-### ⚡ 작은 편의 기능
+파일을 고른 뒤 Ctrl+Shift+R. 찾기/바꾸기, 번호 매기기, 확장자, 프리셋을 바꿀 때마다 확정 전 새 이름이 목록으로 갱신됩니다.
 
-- **도움말(F1).** 단축키·팁·사용법이 탭으로 나뉜 도움말. 브라우저 없음.
-- **정보.** 버전, 라이선스, 그리고 링크가 아닌 일반 텍스트 주소 `github.com/Samek86/maguro`.
-- **호버 전체 경로.** 주소 표시줄이 `…`일 때 올리면 전체 경로.
-- **폴더별 보기 기억.** 정렬·열·보기·아이콘 크기·그룹이 다음에도 그대로.
-- **마우스 옆 버튼.** 패널에서 뒤로/앞으로. 원격 데스크톱에서도.
-- **우클릭 메뉴 예열.** 시작 후·오래 쉰 뒤 셸 메뉴를 미리 준비.
-- **테마 전환이 기록을 유지.** 라이트/다크를 바꿔도 뒤로/앞으로와 현재 폴더를 지치지 않음.
-- **안티앨리어싱.** 어떤 DPI에서도 선명한 UI.
-- **선택적 업데이트 확인.** GitHub Releases에서 새 `maguro.exe`를 확인하고 SHA-256으로 검증.
-- **다음 실행의 크래시 보고.** Maguro를 쓰러뜨린 타사 셸 확장을 알려 주고, Maguro 안에서만 그 DLL을 막을 수 있음.
+<p align="center"><img width="560" alt="이름 미리보기 일괄 바꾸기" src="docs/images/rename.ko.png"></p>
 
-### 🎨 테마와 강조색
+### 11. 서버 연결
 
-Windows를 따르는 라이트/다크, 테마마다 강조색 여섯(기본 민트 `#2EC4A6`), 패널별 색, English·한국어·日本語 설정 창.
+즐겨찾기 패널(또는 그룹)을 우클릭 → **서버 연결 추가…**. SMB·WebDAV는 일반 Windows 폴더로 열립니다. SFTP·FTP는 rclone과 WinFsp로 마운트한 뒤 미리보기·우클릭 메뉴·빠른 복사까지 다른 폴더처럼 씁니다. 비밀번호는 Windows 자격 증명 관리자에만 두고 `maguro.json`에는 쓰지 않습니다.
+
+<p align="center"><img width="420" alt="값이 채워진 서버 연결 대화상자" src="docs/images/servers.ko.png"></p>
+
+### 테마와 강조색
+
+Windows를 따르는 라이트/다크, 테마마다 강조색 여섯(기본 민트 `#2EC4A6`). 설정 창은 English·日本語·한국어를 지원합니다.
 
 <table>
 <tr>
@@ -93,8 +140,7 @@ Windows를 따르는 라이트/다크, 테마마다 강조색 여섯(기본 민�
 <td><img alt="도움말" src="docs/images/help.ko.png"></td>
 </tr>
 <tr>
-<td><img alt="정보" src="docs/images/about.ko.png"></td>
-<td><img alt="다크 테마" src="docs/images/hero_dark.ko.png"></td>
+<td colspan="2"><img alt="다크 테마" src="docs/images/hero_dark.ko.png"></td>
 </tr>
 </table>
 
