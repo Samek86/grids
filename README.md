@@ -132,7 +132,7 @@ Right-click the favourites panel (or a group) → **Add server connection…**. 
 
 ### Themes & accent
 
-Light and dark that follow Windows, six accent colours per theme (default mint `#2EC4A6`), and a settings window in English, 日本語, and 한국어.
+Light and dark that follow Windows, six accent colours per theme (default cerulean `#0A9BD6`), and a settings window in English, 日本語, and 한국어.
 
 <table>
 <tr>

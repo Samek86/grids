@@ -128,10 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn mint_fill_keeps_dark_text() {
-        // Default accent is mint. It is brighter than the pane-label swatches, so it stays
-        // out of the menu list: a dark-theme #2EC4A6 label fails the quiet-fill contrast rule.
-        assert_eq!(on_color(0x2EC4A6), INK);
+    fn cerulean_fill_text_contrast() {
+        // Default accent is cerulean #0A9BD6. Mid luminance → white text on the fill
+        // (mint #2EC4A6 used to keep dark ink; do not revive mint).
+        assert_eq!(on_color(0x0A9BD6), 0xFFFFFF);
         assert_eq!(LIGHT.accents.len(), 6);
         assert_eq!(LIGHT.accents[1].1, 0xC5C5C5);
     }

@@ -132,7 +132,7 @@ Space 또는 F3으로 그림, PDF, Office, HTML, Markdown, 코드, CSV, ZIP, HWP
 
 ### 테마와 강조색
 
-Windows를 따르는 라이트/다크, 테마마다 강조색 여섯(기본 민트 `#2EC4A6`). 설정 창은 English·日本語·한국어를 지원합니다.
+Windows를 따르는 라이트/다크, 테마마다 강조색 여섯(기본 세룰리안 `#0A9BD6`). 설정 창은 English·日本語·한국어를 지원합니다.
 
 <table>
 <tr>

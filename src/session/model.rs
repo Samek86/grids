@@ -394,8 +394,8 @@ impl Default for Session {
             active: 0,
             paths: vec![String::new(); MAXP],
             views: vec![(0, 0); MAXP],
-            accent: 0x2EC4A6, // mint; a chosen swatch replaces it
-            accent_dark: 0x2EC4A6,
+            accent: 0x0A9BD6, // cerulean brand; a chosen swatch replaces it
+            accent_dark: 0x0A9BD6,
             dark: false,
             dblup: true,
             space_preview: true,
