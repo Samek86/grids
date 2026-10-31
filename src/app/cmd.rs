@@ -287,13 +287,23 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
     let a = active_pane();
     let addr = pane_ctl(a, ID_EDIT) == Some(m.hwnd);
     let filt = pane_ctl(a, ID_FILTER) == Some(m.hwnd);
+    // Focus often sits on MaguroPane (the host) rather than DefView. Ctrl+A/C/V and other
+    // Explorer accelerators must still reach the shell view, or copy/paste creates nothing.
     let shell = || {
         let Some(sv) = view_of::<IShellView>(a) else { return false };
         let svh = sv.GetWindow().unwrap_or_default();
-        (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool()) && sv.TranslateAccelerator(m) == S_OK
+        if svh.0.is_null() {
+            return false;
+        }
+        let on_view = svh == m.hwnd || IsChild(svh, m.hwnd).as_bool();
+        // Address/filter return before this closure runs. Pane chrome is fine to forward.
+        let on_pane = pane_of(m.hwnd) == Some(a);
+        (on_view || on_pane) && sv.TranslateAccelerator(m) == S_OK
     };
     // view_list is the items surface: SysListView32, or the DirectUIHWND Windows 10 uses instead.
     // Focus on a child of the shell view (a scrollbar, an in-place edit) still counts by class.
+    // Click often leaves focus on MaguroPane rather than DefView — still the items surface for
+    // paste/delete/Space (address/filter return before this runs).
     let list = view_of::<IFolderView2>(a).is_some_and(|fv| {
         if view_list(&fv) == m.hwnd {
             return true;
@@ -301,9 +311,13 @@ pub(crate) unsafe fn key(m: &MSG) -> bool {
         let svh = fv.cast::<IShellView>().and_then(|v| v.GetWindow()).unwrap_or_default();
         let mut c = [0u16; 32];
         let n = GetClassNameW(m.hwnd, &mut c) as usize;
-        matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32")
+        if matches!(String::from_utf16_lossy(&c[..n]).as_str(), "DirectUIHWND" | "SysListView32")
             && !svh.0.is_null()
             && (svh == m.hwnd || IsChild(svh, m.hwnd).as_bool())
+        {
+            return true;
+        }
+        pane_of(m.hwnd) == Some(a)
     });
     // A failed share keeps its path. F5 retries that path; the shell's refresh would reload the
     // previous folder and leave the failure behind. The error view's Retry button does the same.
