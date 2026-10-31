@@ -639,7 +639,7 @@ impl SettingsFile {
         s.start_path = self.start_path.clone();
         s.ext = self.ext;
         s.tree_on = self.tree;
-        s.side_split = crate::sane_split(self.side_split);
+        s.side_split = crate::persist_split(self.side_split);
         s.fav_top = self.side_order != "tree";
         s.pins_open = self.explorer_pins_open;
         s.files_open = self.explorer_files_open;
@@ -1634,7 +1634,11 @@ mod tests {
         let dropped: Value = serde_json::from_str(&sync_text(&only)).unwrap();
         assert!(dropped.get("panel").is_none());
         let wide = adopt(r#"{"side_split":9}"#).unwrap();
-        assert!((wide.side_split - 1.0).abs() < 1e-9);
+        assert!((wide.side_split - 0.5).abs() < 1e-9);
+        let zero = adopt(r#"{"side_split":0}"#).unwrap();
+        assert!((zero.side_split - 0.5).abs() < 1e-9);
+        let one = adopt(r#"{"side_split":1}"#).unwrap();
+        assert!((one.side_split - 0.5).abs() < 1e-9);
         assert!(even.get("side_order").is_none());
         assert!(Session::default().fav_top);
     }
